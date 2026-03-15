@@ -1,0 +1,67 @@
+@import "tailwindcss";
+
+:root {
+  --ui-bg: radial-gradient(120% 120% at 10% 10%, #1f2937 0%, #111827 45%, #0b1019 100%);
+  --ui-panel: rgba(15, 23, 42, 0.72);
+  --ui-panel-2: rgba(15, 23, 42, 0.46);
+  --ui-border: rgba(250, 204, 21, 0.25);
+  --ui-text: #f8fafc;
+  --ui-muted: #cbd5e1;
+  --ui-accent: #f59e0b;
+  --ui-accent-soft: rgba(245, 158, 11, 0.14);
+  --ui-accent-text: #111827;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+  font-family: "Manrope", "DM Sans", "SF Pro Text", "Segoe UI", sans-serif;
+}
+
+.card {
+  height: 100%;
+  border-radius: 1rem;
+  border: 1px solid var(--ui-border);
+  background: linear-gradient(170deg, rgba(30, 41, 59, 0.85), rgba(15, 23, 42, 0.64));
+  padding: 1rem;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.26);
+}
+
+.panel-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.panel-subtitle {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ui-muted);
+}
+
+.empty-block {
+  border-radius: 0.75rem;
+  border: 1px dashed var(--ui-border);
+  background: rgba(148, 163, 184, 0.06);
+  padding: 1rem;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--ui-muted);
+}
+
+.chip {
+  border-radius: 9999px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-panel-2);
+  padding: 0.25rem 0.6rem;
+  font-size: 0.68rem;
+  color: var(--ui-muted);
+}
