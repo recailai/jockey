@@ -1,15 +1,15 @@
 @import "tailwindcss";
 
 :root {
-  --ui-bg: radial-gradient(120% 120% at 10% 10%, #1f2937 0%, #111827 45%, #0b1019 100%);
-  --ui-panel: rgba(15, 23, 42, 0.72);
-  --ui-panel-2: rgba(15, 23, 42, 0.46);
-  --ui-border: rgba(250, 204, 21, 0.25);
-  --ui-text: #f8fafc;
-  --ui-muted: #cbd5e1;
+  --ui-bg: #09090b;
+  --ui-panel: rgba(24, 24, 27, 0.66);
+  --ui-panel-2: rgba(39, 39, 42, 0.34);
+  --ui-border: rgba(255, 255, 255, 0.09);
+  --ui-text: #ededed;
+  --ui-muted: #a1a1aa;
   --ui-accent: #f59e0b;
-  --ui-accent-soft: rgba(245, 158, 11, 0.14);
-  --ui-accent-text: #111827;
+  --ui-accent-soft: rgba(245, 158, 11, 0.1);
+  --ui-accent-text: #09090b;
 }
 
 * {
@@ -20,17 +20,40 @@ html,
 body,
 #root {
   margin: 0;
+  height: 100%;
   min-height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background-color: var(--ui-bg);
   font-family: "Manrope", "DM Sans", "SF Pro Text", "Segoe UI", sans-serif;
+}
+
+body {
+  background: var(--ui-bg);
+}
+
+:where(button, input, select, textarea):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ui-accent) 68%, white 32%);
+  outline-offset: 1px;
+}
+
+.window-bg {
+  position: relative;
+  background-color: var(--ui-bg);
+  background-image:
+    radial-gradient(135% 120% at 50% -20%, #1f1f24 0%, #101015 45%, #09090b 100%),
+    linear-gradient(160deg, rgba(245, 158, 11, 0.04), rgba(9, 9, 11, 0));
 }
 
 .card {
   height: 100%;
   border-radius: 1rem;
   border: 1px solid var(--ui-border);
-  background: linear-gradient(170deg, rgba(30, 41, 59, 0.85), rgba(15, 23, 42, 0.64));
+  background: linear-gradient(160deg, rgba(32, 32, 36, 0.72), rgba(18, 18, 21, 0.58));
+  backdrop-filter: blur(8px) saturate(1.06);
+  -webkit-backdrop-filter: blur(8px) saturate(1.06);
   padding: 1rem;
-  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.26);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 6px 18px rgba(0, 0, 0, 0.28);
 }
 
 .panel-title {
@@ -64,4 +87,15 @@ body,
   padding: 0.25rem 0.6rem;
   font-size: 0.68rem;
   color: var(--ui-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

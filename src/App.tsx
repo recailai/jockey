@@ -2,8 +2,24 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
 
-type Team = { id: string; name: string; workspacePath: string; createdAt: number };
-type Role = { id: string; teamId: string; roleName: string; runtimeKind: string; systemPrompt: string };
+type Role = {
+  id: string; teamId: string; roleName: string; runtimeKind: string;
+  systemPrompt: string; model: string | null; mode: string | null;
+  mcpServersJson: string; configOptionsJson: string; autoApprove: boolean;
+};
+type ToolCallState = { toolCallId: string; title: string; kind: string; status: string; content?: unknown[] };
+type PlanEntry = { title?: string; status?: string; description?: string };
+type PermissionState = { requestId: string; title: string; description: string | null; options: Array<{ optionId: string; title?: string }> };
+type AcpStreamEvent = {
+  kind: string;
+  text?: string;
+  toolCallId?: string; title?: string; toolKind?: string; status?: string; content?: unknown[];
+  entries?: PlanEntry[];
+  requestId?: string; description?: string | null; options?: unknown[];
+  modeId?: string;
+  commands?: unknown[];
+  modes?: Array<{ id: string; title?: string }>; current?: string | null;
+};
 type AssistantRuntime = { key: string; label: string; binary: string; available: boolean; version: string | null };
 type ChatCommandResult = { ok: boolean; message: string; selectedTeamId: string | null; selectedAssistant: string | null; sessionId: string | null; payload: Record<string, unknown> };
 type AssistantChatResponse = { ok: boolean; reply: string; selectedTeamId: string | null; selectedAssistant: string | null; sessionId: string | null; commandResult: ChatCommandResult | null };
@@ -11,9 +27,16 @@ type SessionUpdateEvent = { sessionId: string; teamId: string; roleName: string;
 type WorkflowStateEvent = { sessionId: string; teamId: string; status: string; activeRole: string | null; message: string };
 type AcpDeltaEvent = { role: string; delta: string };
 type ChatMessage = { id: string; role: "system" | "user" | "assistant" | "event"; text: string; at: number };
+type MentionCandidate = { value: string; kind: "role" | "file" | "dir" | "hint" | "command"; detail: string };
 
 const now = () => Date.now();
-const fmt = (ts: number) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const fmt = (ts: number) =>
+  new Date(ts).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
 
 const RUNTIMES = ["gemini-cli", "claude-code", "codex-cli", "mock"];
 const RUNTIME_COLOR: Record<string, string> = {
@@ -22,153 +45,509 @@ const RUNTIME_COLOR: Record<string, string> = {
   "codex-cli": "text-purple-300",
   mock: "text-zinc-400",
 };
+const INTERACTIVE_MOTION = "motion-safe:transition-colors motion-safe:transition-transform motion-safe:duration-150 motion-safe:ease-out active:scale-[0.98]";
+const ASSISTANT_STORAGE_KEY = "unionai.defaultAssistant";
+const MAX_MESSAGES = 500;
+const MESSAGE_RENDER_WINDOW = 280;
+const MENTION_DEBOUNCE_MS = 90;
+const MENTION_CACHE_LIMIT = 80;
 
 export default function App() {
-  const [teams, setTeams] = createSignal<Team[]>([]);
   const [roles, setRoles] = createSignal<Role[]>([]);
   const [assistants, setAssistants] = createSignal<AssistantRuntime[]>([]);
-  const [selectedTeamId, setSelectedTeamId] = createSignal<string | null>(null);
   const [selectedAssistant, setSelectedAssistant] = createSignal<string | null>(null);
-  const [systemPrompt, setSystemPrompt] = createSignal("You are UnionAI assistant. Use UnionAI commands to complete CRUD operations for team/role/workflow/session/context.");
   const [input, setInput] = createSignal("");
+  const [toolCalls, setToolCalls] = createSignal<Map<string, ToolCallState>>(new Map());
+  const [currentPlan, setCurrentPlan] = createSignal<PlanEntry[] | null>(null);
+  const [pendingPermission, setPendingPermission] = createSignal<PermissionState | null>(null);
+  const [agentModes, setAgentModes] = createSignal<Array<{ id: string; title?: string }>>([]);
+  const [currentMode, setCurrentMode] = createSignal<string | null>(null);
+  const [mentionOpen, setMentionOpen] = createSignal(false);
+  const [mentionItems, setMentionItems] = createSignal<MentionCandidate[]>([]);
+  const [mentionActiveIndex, setMentionActiveIndex] = createSignal(0);
+  const [mentionRange, setMentionRange] = createSignal<{ start: number; end: number; query: string } | null>(null);
+  const [slashOpen, setSlashOpen] = createSignal(false);
+  const [slashItems, setSlashItems] = createSignal<MentionCandidate[]>([]);
+  const [slashActiveIndex, setSlashActiveIndex] = createSignal(0);
+  const [slashRange, setSlashRange] = createSignal<{ end: number; query: string } | null>(null);
+  const [activeRole, setActiveRole] = createSignal<string | null>(null);
   const [submitting, setSubmitting] = createSignal(false);
   const [messages, setMessages] = createSignal<ChatMessage[]>([]);
-  const [streamingId, setStreamingId] = createSignal<string | null>(null);
+  const [streamingMessage, setStreamingMessage] = createSignal<ChatMessage | null>(null);
+  let mentionReqSeq = 0;
+  let slashReqSeq = 0;
+  let mentionCloseTimer: number | null = null;
+  let mentionDebounceTimer: number | null = null;
+  let mentionPathCache = new Map<string, MentionCandidate[]>();
+  let inputEl: HTMLInputElement | undefined;
   let streamBuffer = "";
-  let streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
-
-  // Team creation
-  const [newTeamName, setNewTeamName] = createSignal("");
+  let streamFlushRaf: number | null = null;
+  let streamAccepting = false;
+  let runTokenSeq = 0;
+  let canceledRunToken = 0;
+  let queuedInputs: string[] = [];
+  let scrollRaf: number | null = null;
+  let pendingSessionEvents: string[] = [];
+  let sessionEventFlushTimer: number | null = null;
+  let inputHistory: string[] = [];
+  let historyIndex = -1;
+  let historySavedInput = "";
+  const HISTORY_MAX = 200;
 
   // Role creation form
   const [showRoleForm, setShowRoleForm] = createSignal(false);
   const [roleFormName, setRoleFormName] = createSignal("Developer");
   const [roleFormRuntime, setRoleFormRuntime] = createSignal("gemini-cli");
   const [roleFormPrompt, setRoleFormPrompt] = createSignal("You are a senior developer. Implement the solution step by step.");
+  const [roleFormModel, setRoleFormModel] = createSignal("");
+  const [roleFormMode, setRoleFormMode] = createSignal("");
+  const [roleFormAutoApprove, setRoleFormAutoApprove] = createSignal(true);
 
-  const scrollToBottom = () => {
-    setTimeout(() => {
+  const scheduleScrollToBottom = () => {
+    if (scrollRaf !== null) return;
+    scrollRaf = window.requestAnimationFrame(() => {
+      scrollRaf = null;
       const el = document.getElementById("msg-list");
       if (el) el.scrollTop = el.scrollHeight;
-    }, 0);
+    });
+  };
+
+  const appendMessage = (message: ChatMessage) => {
+    setMessages((prev) => {
+      const trimmed =
+        prev.length >= MAX_MESSAGES
+          ? prev.slice(prev.length - MAX_MESSAGES + 1)
+          : prev.slice();
+      trimmed.push(message);
+      return trimmed;
+    });
+    scheduleScrollToBottom();
   };
 
   const pushMessage = (role: ChatMessage["role"], text: string) => {
-    setMessages((prev) => [...prev, { id: `${now()}-${Math.random().toString(36).slice(2)}`, role, text, at: now() }]);
-    scrollToBottom();
+    appendMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, role, text, at: now() });
   };
 
-  // Start a streaming assistant message, return its id
   const startStream = () => {
     const id = `stream-${now()}`;
-    setMessages((prev) => [...prev, { id, role: "assistant", text: "", at: now() }]);
-    setStreamingId(id);
-    return id;
+    const row: ChatMessage = { id, role: "assistant", text: "", at: now() };
+    setStreamingMessage(row);
+    setToolCalls(new Map());
+    setCurrentPlan(null);
+    setPendingPermission(null);
+    scheduleScrollToBottom();
+    return row;
   };
 
-  const appendStream = (id: string, chunk: string) => {
-    setMessages((prev) => prev.map((m) => m.id === id ? { ...m, text: m.text + chunk } : m));
-    scrollToBottom();
+  const appendStream = (chunk: string) => {
+    if (!chunk) return;
+    setStreamingMessage((prev) => (prev ? { ...prev, text: prev.text + chunk } : prev));
+    scheduleScrollToBottom();
   };
 
   const flushStreamBuffer = () => {
-    const id = streamingId();
-    if (id && streamBuffer) {
-      appendStream(id, streamBuffer);
+    if (streamBuffer) {
+      appendStream(streamBuffer);
       streamBuffer = "";
-    }
-    if (streamFlushTimer !== null) {
-      clearTimeout(streamFlushTimer);
-      streamFlushTimer = null;
     }
   };
 
   const scheduleStreamFlush = () => {
-    if (streamFlushTimer !== null) return;
-    streamFlushTimer = window.setTimeout(() => {
+    if (streamFlushRaf !== null) return;
+    streamFlushRaf = window.requestAnimationFrame(() => {
+      streamFlushRaf = null;
       flushStreamBuffer();
-    }, 15);
+      if (streamBuffer) scheduleStreamFlush();
+    });
   };
 
   const resetStreamState = () => {
     streamBuffer = "";
-    if (streamFlushTimer !== null) {
-      clearTimeout(streamFlushTimer);
-      streamFlushTimer = null;
+    if (streamFlushRaf !== null) {
+      window.cancelAnimationFrame(streamFlushRaf);
+      streamFlushRaf = null;
     }
-    setStreamingId(null);
   };
 
-  const refreshRoles = async (teamId: string) => {
+  const completeStream = (finalReply?: string) => {
+    flushStreamBuffer();
+    const row = streamingMessage();
+    if (row) {
+      const text = finalReply ?? row.text;
+      appendMessage({ ...row, text, at: now() });
+      setStreamingMessage(null);
+    } else if (finalReply) {
+      pushMessage("assistant", finalReply);
+    }
+    resetStreamState();
+    setToolCalls(new Map());
+    setCurrentPlan(null);
+    setPendingPermission(null);
+  };
+
+  const dropStream = () => {
+    setStreamingMessage(null);
+    resetStreamState();
+  };
+
+  const scheduleSessionEventFlush = () => {
+    if (sessionEventFlushTimer !== null) return;
+    sessionEventFlushTimer = window.setTimeout(() => {
+      sessionEventFlushTimer = null;
+      if (pendingSessionEvents.length === 0) return;
+      pushMessage("event", pendingSessionEvents.join("\n"));
+      pendingSessionEvents = [];
+    }, 120);
+  };
+
+  const runNextQueued = () => {
+    if (submitting()) return;
+    const next = queuedInputs.shift();
+    if (!next) return;
+    void sendRaw(next);
+  };
+
+  const cancelCurrentRun = async () => {
+    if (!submitting()) return;
+    canceledRunToken = Math.max(canceledRunToken, runTokenSeq);
+    streamAccepting = false;
+    dropStream();
+    setToolCalls(new Map());
+    setCurrentPlan(null);
+    setPendingPermission(null);
+    setSubmitting(false);
+    pushMessage("event", "Cancellation requested.");
+    const assistant = selectedAssistant();
+    if (assistant) {
+      try {
+        await invoke("cancel_acp_session", { runtimeKind: assistant, roleName: "UnionAIAssistant" });
+      } catch { /* best effort */ }
+    }
+    runNextQueued();
+  };
+
+  const visibleMessages = () => {
+    const rows = messages();
+    if (rows.length <= MESSAGE_RENDER_WINDOW) return rows;
+    return rows.slice(rows.length - MESSAGE_RENDER_WINDOW);
+  };
+
+  const hiddenMessageCount = () => {
+    const count = messages().length - MESSAGE_RENDER_WINDOW;
+    return count > 0 ? count : 0;
+  };
+
+  const refreshRoles = async () => {
     try {
-      const rows = await invoke<Role[]>("list_roles", { teamId });
+      const rows = await invoke<Role[]>("list_roles", { teamId: null });
       setRoles(rows);
     } catch { setRoles([]); }
   };
 
-  const selectTeam = async (teamId: string) => {
-    setSelectedTeamId(teamId);
-    await refreshRoles(teamId);
-  };
-
-  const refreshTeams = async () => {
-    const rows = await invoke<Team[]>("list_teams");
-    setTeams(rows);
-    if (!selectedTeamId() && rows.length > 0) await selectTeam(rows[0].id);
-    else if (selectedTeamId()) await refreshRoles(selectedTeamId()!);
+  const setPreferredAssistant = (assistantKey: string | null) => {
+    setSelectedAssistant(assistantKey);
+    if (assistantKey) window.localStorage.setItem(ASSISTANT_STORAGE_KEY, assistantKey);
+    else window.localStorage.removeItem(ASSISTANT_STORAGE_KEY);
   };
 
   const refreshAssistants = async () => {
     const rows = await invoke<AssistantRuntime[]>("detect_assistants");
     setAssistants(rows);
-    if (!selectedAssistant()) {
-      const first = rows.find((a) => a.available);
-      if (first) setSelectedAssistant(first.key);
+    const preferred = window.localStorage.getItem(ASSISTANT_STORAGE_KEY);
+    const current = selectedAssistant();
+    const currentAvailable = current ? rows.find((a) => a.key === current && a.available) : null;
+    if (currentAvailable) return;
+    const preferredAvailable = preferred ? rows.find((a) => a.key === preferred && a.available) : null;
+    const first = preferredAvailable ?? rows.find((a) => a.available) ?? null;
+    if (first) {
+      setPreferredAssistant(first.key);
     }
   };
 
-  // Commands that mutate team/role structure and require a sidebar refresh
-  const MUTATING_CMDS = ["/team", "/role", "/init", "/workflow"];
+  // Commands that mutate role/workflow/context structure and require a sidebar refresh
+  const MUTATING_CMDS = ["/role", "/init", "/workflow", "/context"];
   const needsRefresh = (text: string) => MUTATING_CMDS.some((c) => text.startsWith(c));
 
+  const closeMentionMenu = () => {
+    setMentionOpen(false);
+    setMentionItems([]);
+    setMentionActiveIndex(0);
+    setMentionRange(null);
+  };
+
+  const closeSlashMenu = () => {
+    setSlashOpen(false);
+    setSlashItems([]);
+    setSlashActiveIndex(0);
+    setSlashRange(null);
+  };
+
+  const extractMentionContext = (text: string, caret: number) => {
+    const left = text.slice(0, caret);
+    const at = left.lastIndexOf("@");
+    if (at < 0) return null;
+    const prev = at > 0 ? left[at - 1] : " ";
+    if (!/\s/.test(prev)) return null;
+    const query = left.slice(at + 1);
+    if (/\s/.test(query)) return null;
+    let end = caret;
+    while (end < text.length && !/\s/.test(text[end])) end += 1;
+    return { start: at + 1, end, query };
+  };
+
+  const listRoleMentionCandidates = (query: string) => {
+    const q = query.toLowerCase();
+    const out: MentionCandidate[] = [];
+    const rolePrefix = query.startsWith("role:");
+    const roleQuery = rolePrefix ? query.slice(5).toLowerCase() : q;
+    for (const role of roles()) {
+      const nameLower = role.roleName.toLowerCase();
+      if (roleQuery && !nameLower.includes(roleQuery)) continue;
+      out.push({
+        value: rolePrefix || query.length === 0 ? `role:${role.roleName}` : role.roleName,
+        kind: "role",
+        detail: role.runtimeKind,
+      });
+    }
+    return out;
+  };
+
+  const extractSlashContext = (text: string, caret: number) => {
+    const left = text.slice(0, caret);
+    if (!left.startsWith("/")) return null;
+    if (left.includes("\n")) return null;
+    return { end: caret, query: left.trimEnd() };
+  };
+
+  const shouldPathComplete = (query: string) => {
+    return query.startsWith("file:")
+      || query.startsWith("dir:")
+      || query.includes("/")
+      || query.startsWith(".")
+      || query.startsWith("~")
+      || query.length === 0;
+  };
+
+  const refreshMentionSuggestions = async (text: string, caret: number) => {
+    const ctx = extractMentionContext(text, caret);
+    if (!ctx) {
+      closeMentionMenu();
+      return;
+    }
+    setMentionRange(ctx);
+    const staticItems: MentionCandidate[] = [];
+    if (ctx.query.length === 0) {
+      staticItems.push(
+        { value: "file:", kind: "hint", detail: "explicit file path" },
+        { value: "dir:", kind: "hint", detail: "explicit directory path" },
+      );
+    }
+    let items = [...staticItems, ...listRoleMentionCandidates(ctx.query)];
+
+    if (shouldPathComplete(ctx.query)) {
+      const seq = ++mentionReqSeq;
+      const cached = mentionPathCache.get(ctx.query);
+      if (cached) {
+        items = [...items, ...cached];
+      } else {
+        try {
+          const rows = await invoke<MentionCandidate[]>("complete_mentions", {
+            selectedTeamId: null,
+            query: ctx.query,
+            limit: 12,
+          });
+          if (seq !== mentionReqSeq) return;
+          mentionPathCache.set(ctx.query, rows);
+          if (mentionPathCache.size > MENTION_CACHE_LIMIT) {
+            const firstKey = mentionPathCache.keys().next().value;
+            if (firstKey !== undefined) mentionPathCache.delete(firstKey);
+          }
+          items = [...items, ...rows];
+        } catch {
+          // Keep role suggestions only.
+        }
+      }
+    }
+
+    const dedup = new Set<string>();
+    const merged = items.filter((it) => {
+      const key = `${it.kind}:${it.value}`;
+      if (dedup.has(key)) return false;
+      dedup.add(key);
+      return true;
+    }).slice(0, 12);
+
+    if (merged.length === 0) {
+      closeMentionMenu();
+      return;
+    }
+    setMentionItems(merged);
+    setMentionActiveIndex(0);
+    setMentionOpen(true);
+  };
+
+  const refreshSlashSuggestions = async (text: string, caret: number) => {
+    const ctx = extractSlashContext(text, caret);
+    if (!ctx) {
+      closeSlashMenu();
+      return;
+    }
+    setSlashRange(ctx);
+    const seq = ++slashReqSeq;
+    try {
+      const rows = await invoke<MentionCandidate[]>("complete_cli", {
+        query: ctx.query,
+        limit: 20,
+      });
+      if (seq !== slashReqSeq) return;
+      const merged = rows.slice(0, 20);
+      if (merged.length === 0) {
+        closeSlashMenu();
+        return;
+      }
+      setSlashItems(merged);
+      setSlashActiveIndex(0);
+      setSlashOpen(true);
+    } catch {
+      closeSlashMenu();
+    }
+  };
+
+  const refreshInputCompletions = (value: string, caret: number) => {
+    if (extractSlashContext(value, caret)) {
+      closeMentionMenu();
+      void refreshSlashSuggestions(value, caret);
+      return;
+    }
+    closeSlashMenu();
+    void refreshMentionSuggestions(value, caret);
+  };
+
+  const applyMentionCandidate = (item: MentionCandidate) => {
+    const target = inputEl;
+    if (!target) return;
+    const range = mentionRange();
+    if (!range) return;
+    const current = input();
+    const left = current.slice(0, range.start);
+    const right = current.slice(range.end);
+    const next = `${left}${item.value} ${right}`;
+    setInput(next);
+    closeMentionMenu();
+    const caret = range.start + item.value.length + 1;
+    queueMicrotask(() => {
+      target.focus();
+      target.setSelectionRange(caret, caret);
+    });
+  };
+
+  const applySlashCandidate = (item: MentionCandidate) => {
+    const target = inputEl;
+    if (!target) return;
+    const range = slashRange();
+    if (!range) return;
+    const current = input();
+    const right = current.slice(range.end);
+    const next = `${item.value} ${right}`;
+    setInput(next);
+    closeSlashMenu();
+    const caret = item.value.length + 1;
+    queueMicrotask(() => {
+      target.focus();
+      target.setSelectionRange(caret, caret);
+    });
+  };
+
   const sendRaw = async (text: string, silent = false) => {
+    const runToken = ++runTokenSeq;
+    closeMentionMenu();
+    closeSlashMenu();
+
+    const isCommand = text.startsWith("/");
+    let routedText = text;
+
+    if (!isCommand) {
+      const mentionMatch = text.match(/^@(\S+)/);
+      if (mentionMatch) {
+        const target = mentionMatch[1];
+        if (target === "assistant") {
+          setActiveRole(null);
+        } else {
+          setActiveRole(target);
+        }
+      } else if (activeRole() && !text.startsWith("@")) {
+        routedText = `@${activeRole()} ${text}`;
+      }
+    }
+
     if (!silent) pushMessage("user", text);
     setSubmitting(true);
 
-    const isCommand = text.startsWith("/");
-    let streamId: string | null = null;
+    const isAgentCmd = isCommand && activeRole() && /^\/(plan|act|auto|cancel)\b/.test(text);
+    if (isAgentCmd) {
+      const role = activeRole()!;
+      const assistant = selectedAssistant();
+      const cmd = text.split(/\s+/)[0].slice(1);
+      try {
+        if (cmd === "cancel") {
+          if (assistant) await invoke("cancel_acp_session", { runtimeKind: assistant, roleName: role });
+          pushMessage("event", `cancelled ${role}`);
+        } else {
+          if (assistant) await invoke("set_acp_mode", { runtimeKind: assistant, roleName: role, modeId: cmd });
+          pushMessage("event", `${role} mode → ${cmd}`);
+        }
+      } catch (e) {
+        pushMessage("event", String(e));
+      } finally {
+        setSubmitting(false);
+        runNextQueued();
+      }
+      return;
+    }
+
+    let streamStarted = false;
     if (!isCommand && selectedAssistant()) {
-      streamId = startStream();
+      streamAccepting = true;
+      startStream();
+      streamStarted = true;
     }
 
     try {
       const res = await invoke<AssistantChatResponse>("assistant_chat", {
-        input: { input: text, selectedTeamId: selectedTeamId(), selectedAssistant: selectedAssistant(), systemPrompt: null }
+        input: {
+          input: routedText,
+          selectedTeamId: null,
+          selectedAssistant: selectedAssistant(),
+        }
       });
-      if (res.selectedTeamId) setSelectedTeamId(res.selectedTeamId);
-      if (res.selectedAssistant) setSelectedAssistant(res.selectedAssistant);
+      if (runToken <= canceledRunToken) return;
+      if (res.selectedAssistant) setPreferredAssistant(res.selectedAssistant);
 
-      if (streamId) {
-        resetStreamState();
-        setMessages((prev) => prev.map((m) => m.id === streamId ? { ...m, text: res.reply } : m));
+      if (streamStarted) {
+        completeStream(res.reply);
       } else {
         pushMessage("assistant", res.reply);
       }
 
       // Only refresh sidebar when team/role structure may have changed
       if (needsRefresh(text)) {
-        await refreshTeams();
-      } else if (res.selectedTeamId && res.selectedTeamId !== selectedTeamId()) {
-        await refreshRoles(res.selectedTeamId);
+        await refreshRoles();
       }
     } catch (e) {
-      if (streamId) {
-        resetStreamState();
-        setMessages((prev) => prev.filter((m) => m.id !== streamId));
+      if (runToken <= canceledRunToken) return;
+      if (streamStarted || streamingMessage()) {
+        dropStream();
       }
       pushMessage("event", String(e));
     } finally {
+      streamAccepting = false;
+      if (runToken <= canceledRunToken) {
+        setSubmitting(false);
+        runNextQueued();
+        return;
+      }
       setSubmitting(false);
+      runNextQueued();
     }
   };
 
@@ -176,145 +555,273 @@ export default function App() {
     e.preventDefault();
     const text = input().trim();
     if (!text) return;
-    if (!selectedAssistant() && !text.startsWith("/")) {
-      pushMessage("system", "请先在左侧选择一个 Assistant。");
+    if (submitting()) {
+      queuedInputs.push(text);
+      setInput("");
+      pushMessage("system", `Queued request (${queuedInputs.length}). Press Esc to cancel current run.`);
       return;
     }
+    if (!selectedAssistant() && !activeRole() && !text.startsWith("/")) {
+      pushMessage("system", "Select an assistant or a role first.");
+      return;
+    }
+    closeMentionMenu();
+    closeSlashMenu();
+    inputHistory.unshift(text);
+    if (inputHistory.length > HISTORY_MAX) inputHistory.length = HISTORY_MAX;
+    historyIndex = -1;
+    historySavedInput = "";
     setInput("");
     await sendRaw(text);
   };
 
-  const handleCreateTeam = async () => {
-    const name = newTeamName().trim();
-    if (!name) return;
-    setNewTeamName("");
-    await sendRaw(`/team create ${name}`);
+  const handleInputEvent = (el: HTMLInputElement) => {
+    const value = el.value;
+    const caret = el.selectionStart ?? value.length;
+    setInput(value);
+    historyIndex = -1;
+    if (mentionDebounceTimer !== null) window.clearTimeout(mentionDebounceTimer);
+    mentionDebounceTimer = window.setTimeout(() => {
+      mentionDebounceTimer = null;
+      refreshInputCompletions(value, caret);
+    }, MENTION_DEBOUNCE_MS);
+  };
+
+  const handleInputKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape" && submitting()) {
+      e.preventDefault();
+      void cancelCurrentRun();
+      return;
+    }
+
+    const slash = slashItems();
+    if (slashOpen() && slash.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashActiveIndex((i) => (i + 1) % slash.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashActiveIndex((i) => (i - 1 + slash.length) % slash.length);
+        return;
+      }
+      if (e.key === "Tab" || e.key === "Enter") {
+        e.preventDefault();
+        applySlashCandidate(slash[slashActiveIndex()] ?? slash[0]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeSlashMenu();
+        return;
+      }
+    }
+
+    const items = mentionItems();
+    if (mentionOpen() && items.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setMentionActiveIndex((i) => (i + 1) % items.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setMentionActiveIndex((i) => (i - 1 + items.length) % items.length);
+        return;
+      }
+      if (e.key === "Tab" || e.key === "Enter") {
+        e.preventDefault();
+        applyMentionCandidate(items[mentionActiveIndex()] ?? items[0]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeMentionMenu();
+        return;
+      }
+    }
+
+    if (e.key === "ArrowUp" && inputHistory.length > 0) {
+      e.preventDefault();
+      if (historyIndex === -1) historySavedInput = input();
+      if (historyIndex < inputHistory.length - 1) {
+        historyIndex++;
+        setInput(inputHistory[historyIndex]);
+      }
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (historyIndex > 0) {
+        historyIndex--;
+        setInput(inputHistory[historyIndex]);
+      } else if (historyIndex === 0) {
+        historyIndex = -1;
+        setInput(historySavedInput);
+      }
+      return;
+    }
   };
 
   const handleCreateRole = async () => {
     const name = roleFormName().trim();
-    const runtime = roleFormRuntime();
+    const runtime = roleFormRuntime() || selectedAssistant() || "gemini-cli";
     const prompt = roleFormPrompt().trim();
     if (!name) return;
-    const cmd = `/role bind ${name} ${runtime} ${prompt || "You are a helpful AI assistant."}`;
     setShowRoleForm(false);
-    await sendRaw(cmd);
-    if (selectedTeamId()) await refreshRoles(selectedTeamId()!);
+    await sendRaw(`/role bind ${name} ${runtime} ${prompt || "You are a helpful AI assistant."}`);
+    const model = roleFormModel().trim();
+    const mode = roleFormMode();
+    const autoApprove = roleFormAutoApprove();
+    if (model) await sendRaw(`/role edit ${name} model ${model}`, true);
+    if (mode) await sendRaw(`/role edit ${name} mode ${mode}`, true);
+    if (!autoApprove) await sendRaw(`/role edit ${name} auto-approve false`, true);
+    await refreshRoles();
   };
 
   onMount(() => {
     const handlers: UnlistenFn[] = [];
-    pushMessage("system", "欢迎使用 UnionAI。Gemini CLI 正在后台初始化会话，首次对话无需等待冷启动。");
+    pushMessage("system", "Welcome to UnionAI. Agent sessions are warming up in the background.");
 
-    void refreshAssistants();
-    void refreshTeams();
+    void (async () => {
+      await refreshAssistants();
+      await refreshRoles();
+    })();
 
     void Promise.all([
       listen<AcpDeltaEvent>("acp/delta", (ev) => {
-        let currentId = streamingId();
-        if (!currentId) {
-          currentId = `stream-${now()}`;
-          setMessages((prev) => [...prev, { id: currentId as string, role: "assistant", text: "", at: now() }]);
-          setStreamingId(currentId);
-        }
+        if (!streamAccepting) return;
+        if (!streamingMessage()) startStream();
         streamBuffer += ev.payload.delta;
-        if (streamBuffer.length >= 6) {
+        if (streamBuffer.length >= 24) {
           flushStreamBuffer();
           return;
         }
         scheduleStreamFlush();
       }),
       listen<SessionUpdateEvent>("session/update", (ev) => {
-        if (ev.payload.delta) pushMessage("event", `[${ev.payload.roleName}] ${ev.payload.delta}`);
+        if (!ev.payload.delta) return;
+        pendingSessionEvents.push(`[${ev.payload.roleName}] ${ev.payload.delta}`);
+        scheduleSessionEventFlush();
       }),
       listen<WorkflowStateEvent>("workflow/state_changed", (ev) => {
         const p = ev.payload;
         pushMessage("event", `[workflow] ${p.status} ${p.activeRole ?? ""} ${p.message}`);
       }),
+      listen<AcpStreamEvent>("acp/stream", (ev) => {
+        const e = ev.payload;
+        switch (e.kind) {
+          case "thoughtDelta":
+            if (e.text && streamAccepting) {
+              streamBuffer += `\n> ${e.text}`;
+              scheduleStreamFlush();
+            }
+            break;
+          case "toolCall":
+            if (e.toolCallId) {
+              setToolCalls((prev) => {
+                const next = new Map(prev);
+                next.set(e.toolCallId!, { toolCallId: e.toolCallId!, title: e.title ?? "", kind: e.toolKind ?? "unknown", status: e.status ?? "pending" });
+                return next;
+              });
+            }
+            break;
+          case "toolCallUpdate":
+            if (e.toolCallId) {
+              setToolCalls((prev) => {
+                const next = new Map(prev);
+                const existing = next.get(e.toolCallId!);
+                if (existing) {
+                  next.set(e.toolCallId!, { ...existing, status: e.status ?? existing.status, title: e.title ?? existing.title, content: (e.content as unknown[]) ?? existing.content });
+                }
+                return next;
+              });
+            }
+            break;
+          case "plan":
+            if (e.entries) setCurrentPlan(e.entries as PlanEntry[]);
+            break;
+          case "permissionRequest":
+            if (e.requestId) {
+              setPendingPermission({
+                requestId: e.requestId,
+                title: e.title ?? "Permission Required",
+                description: e.description ?? null,
+                options: (e.options as Array<{ optionId: string; title?: string }>) ?? [],
+              });
+            }
+            break;
+          case "modeUpdate":
+            if (e.modeId) setCurrentMode(e.modeId);
+            break;
+          case "availableModes":
+            if (e.modes) setAgentModes(e.modes);
+            if (e.current !== undefined) setCurrentMode(e.current ?? null);
+            break;
+          default:
+            break;
+        }
+      }),
     ]).then((hs) => handlers.push(...hs));
 
     onCleanup(() => {
-      resetStreamState();
+      dropStream();
+      queuedInputs = [];
+      if (mentionCloseTimer !== null) window.clearTimeout(mentionCloseTimer);
+      if (mentionDebounceTimer !== null) window.clearTimeout(mentionDebounceTimer);
+      if (sessionEventFlushTimer !== null) window.clearTimeout(sessionEventFlushTimer);
+      if (scrollRaf !== null) {
+        window.cancelAnimationFrame(scrollRaf);
+        scrollRaf = null;
+      }
+      closeMentionMenu();
+      closeSlashMenu();
       handlers.forEach((h) => h());
     });
   });
 
-  const selectedTeam = () => teams().find((t) => t.id === selectedTeamId());
-
   return (
-    <div class="min-h-screen bg-[var(--ui-bg)] text-[var(--ui-text)]">
-      <div class="mx-auto grid min-h-screen max-w-[1600px] grid-cols-1 gap-3 px-3 py-3 lg:grid-cols-[260px_1fr]">
+    <div class="window-bg h-dvh overflow-hidden text-[var(--ui-text)]">
+      <div class="mx-auto grid h-full max-w-[1600px] grid-cols-1 gap-3 px-3 py-3 lg:grid-cols-[260px_1fr]">
 
         {/* ── Sidebar ── */}
-        <aside class="card flex h-[calc(100vh-1.5rem)] flex-col overflow-hidden p-0">
+        <aside class="card flex h-full flex-col overflow-hidden p-0">
 
           {/* Assistants */}
           <div class="shrink-0 border-b border-[var(--ui-border)] p-3">
-            <div class="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--ui-muted)]">Assistant</div>
+            <div class="mb-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--ui-muted)]">Assistant</div>
             <div class="space-y-1">
               <For each={assistants()}>
                 {(a) => (
                   <button
-                    class={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors ${
+                    class={`flex min-h-9 w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left text-sm ${INTERACTIVE_MOTION} ${
                       selectedAssistant() === a.key
                         ? "border-[var(--ui-accent)] bg-[var(--ui-accent-soft)]"
                         : "border-transparent bg-[var(--ui-panel-2)] hover:border-[var(--ui-border)]"
                     } ${!a.available ? "opacity-40" : ""}`}
-                    onClick={() => a.available && setSelectedAssistant(a.key)}
+                    onClick={() => a.available && setPreferredAssistant(a.key)}
                   >
                     <span class={`h-1.5 w-1.5 shrink-0 rounded-full ${a.available ? "bg-emerald-400" : "bg-rose-400"}`} />
                     <span class="flex-1 font-medium">{a.label}</span>
-                    <Show when={a.version}><span class="text-[10px] text-[var(--ui-muted)]">v{a.version}</span></Show>
+                    <Show when={a.version}><span class="text-xs text-[var(--ui-muted)]">v{a.version}</span></Show>
                   </button>
                 )}
               </For>
-            </div>
-          </div>
-
-          {/* Teams */}
-          <div class="shrink-0 border-b border-[var(--ui-border)] p-3">
-            <div class="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--ui-muted)]">Teams</div>
-            <div class="mb-2 flex gap-1.5">
-              <input
-                value={newTeamName()}
-                onInput={(e) => setNewTeamName(e.currentTarget.value)}
-                onKeyDown={(e) => e.key === "Enter" && void handleCreateTeam()}
-                placeholder="team name…"
-                class="h-7 min-w-0 flex-1 rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2 text-xs outline-none placeholder:text-[var(--ui-muted)]"
-              />
-              <button onClick={() => void handleCreateTeam()} class="h-7 rounded bg-[var(--ui-accent)] px-2.5 text-xs font-bold text-[var(--ui-accent-text)]">+</button>
-            </div>
-            <div class="space-y-1 max-h-32 overflow-auto">
-              <For each={teams()}>
-                {(t) => (
-                  <button
-                    class={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors ${
-                      selectedTeamId() === t.id
-                        ? "border-[var(--ui-accent)] bg-[var(--ui-accent-soft)]"
-                        : "border-transparent bg-[var(--ui-panel-2)] hover:border-[var(--ui-border)]"
-                    }`}
-                    onClick={() => void selectTeam(t.id)}
-                  >
-                    <span class="flex-1 font-medium">{t.name}</span>
-                    <span class="text-[9px] text-[var(--ui-muted)]">{t.id.slice(0, 6)}…</span>
-                  </button>
-                )}
-              </For>
-              <Show when={teams().length === 0}>
-                <p class="rounded-lg border border-dashed border-[var(--ui-border)] p-2 text-center text-[10px] text-[var(--ui-muted)]">暂无 team</p>
-              </Show>
             </div>
           </div>
 
           {/* Roles */}
           <div class="flex flex-1 flex-col overflow-hidden p-3">
             <div class="mb-2 flex items-center justify-between">
-              <span class="text-[10px] font-semibold uppercase tracking-wider text-[var(--ui-muted)]">
-                Roles{selectedTeam() ? ` · ${selectedTeam()!.name}` : ""}
-              </span>
+              <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--ui-muted)]">Roles</span>
               <button
-                onClick={() => setShowRoleForm((v) => !v)}
-                class="rounded border border-[var(--ui-border)] px-1.5 py-0.5 text-[10px] text-[var(--ui-muted)] hover:text-[var(--ui-text)]"
+                onClick={() => setShowRoleForm((v) => {
+                  const next = !v;
+                  if (next && selectedAssistant()) setRoleFormRuntime(selectedAssistant()!);
+                  return next;
+                })}
+                class={`min-h-8 rounded border border-[var(--ui-border)] px-2 py-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)] ${INTERACTIVE_MOTION}`}
               >
                 {showRoleForm() ? "cancel" : "+ role"}
               </button>
@@ -327,12 +834,12 @@ export default function App() {
                   value={roleFormName()}
                   onInput={(e) => setRoleFormName(e.currentTarget.value)}
                   placeholder="Role name (e.g. Developer)"
-                  class="h-7 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2 text-xs outline-none"
+                  class="h-9 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 text-sm"
                 />
                 <select
                   value={roleFormRuntime()}
                   onChange={(e) => setRoleFormRuntime(e.currentTarget.value)}
-                  class="h-7 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2 text-xs outline-none"
+                  class="h-9 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 text-sm"
                 >
                   <For each={RUNTIMES}>{(r) => <option value={r}>{r}</option>}</For>
                 </select>
@@ -341,11 +848,36 @@ export default function App() {
                   onInput={(e) => setRoleFormPrompt(e.currentTarget.value)}
                   rows={3}
                   placeholder="System prompt for this role…"
-                  class="w-full resize-none rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2 py-1 text-xs outline-none"
+                  class="w-full resize-none rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 py-2 text-sm"
                 />
+                <input
+                  value={roleFormModel()}
+                  onInput={(e) => setRoleFormModel(e.currentTarget.value)}
+                  placeholder="Model (optional)"
+                  class="h-9 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 text-sm"
+                />
+                <select
+                  value={roleFormMode()}
+                  onChange={(e) => setRoleFormMode(e.currentTarget.value)}
+                  class="h-9 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 text-sm"
+                >
+                  <option value="">Mode (default)</option>
+                  <option value="plan">plan</option>
+                  <option value="act">act</option>
+                  <option value="auto">auto</option>
+                </select>
+                <label class="flex items-center gap-2 text-xs text-[var(--ui-muted)]">
+                  <input
+                    type="checkbox"
+                    checked={roleFormAutoApprove()}
+                    onChange={(e) => setRoleFormAutoApprove(e.currentTarget.checked)}
+                    class="rounded"
+                  />
+                  Auto-approve permissions
+                </label>
                 <button
                   onClick={() => void handleCreateRole()}
-                  class="h-7 w-full rounded bg-[var(--ui-accent)] text-xs font-semibold text-[var(--ui-accent-text)]"
+                  class={`h-9 w-full rounded bg-[var(--ui-accent)] text-sm font-semibold text-[var(--ui-accent-text)] ${INTERACTIVE_MOTION}`}
                 >
                   Create Role
                 </button>
@@ -356,73 +888,114 @@ export default function App() {
             <div class="flex-1 space-y-1 overflow-auto">
               <For each={roles()}>
                 {(role) => (
-                  <div class="group flex items-start gap-1.5 rounded-lg bg-[var(--ui-panel-2)] px-2 py-1.5">
+                  <div class="group flex items-start gap-1.5 rounded-lg border border-transparent bg-[var(--ui-panel-2)] px-2 py-1.5 motion-safe:transition-colors motion-safe:duration-150 motion-safe:ease-out hover:border-[var(--ui-border)] hover:bg-[var(--ui-panel)]">
                     <div class="flex-1 min-w-0">
-                      <div class="flex items-center gap-1.5">
+                      <div class="flex items-center gap-1.5 flex-wrap">
                         <span class="text-xs font-medium">{role.roleName}</span>
-                        <span class={`text-[10px] ${RUNTIME_COLOR[role.runtimeKind] ?? "text-[var(--ui-muted)]"}`}>{role.runtimeKind}</span>
+                        <span class={`text-xs ${RUNTIME_COLOR[role.runtimeKind] ?? "text-[var(--ui-muted)]"}`}>{role.runtimeKind}</span>
+                        <Show when={role.model}><span class="rounded bg-blue-500/20 px-1 text-[9px] text-blue-200">{role.model}</span></Show>
+                        <Show when={role.mode}><span class="rounded bg-indigo-500/20 px-1 text-[9px] text-indigo-200">{role.mode}</span></Show>
+                        <Show when={!role.autoApprove}><span class="rounded bg-amber-500/20 px-1 text-[9px] text-amber-200">manual</span></Show>
                       </div>
-                      <p class="truncate text-[10px] text-[var(--ui-muted)]">{role.systemPrompt}</p>
+                      <p class="truncate text-xs text-[var(--ui-muted)]">{role.systemPrompt}</p>
                     </div>
-                    <button
-                      onClick={() => void sendRaw(`@${role.roleName} hello`)}
-                      class="shrink-0 rounded px-1 py-0.5 text-[9px] text-[var(--ui-muted)] opacity-0 hover:text-[var(--ui-text)] group-hover:opacity-100"
-                    >
-                      chat
-                    </button>
+                    <div class="flex shrink-0 gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
+                      <button
+                        onClick={() => { setActiveRole(role.roleName); inputEl?.focus(); }}
+                        class={`rounded px-1.5 py-0.5 text-xs ${activeRole() === role.roleName ? "text-blue-300" : "text-[var(--ui-muted)] hover:text-[var(--ui-text)]"} ${INTERACTIVE_MOTION}`}
+                      >
+                        {activeRole() === role.roleName ? "active" : "chat"}
+                      </button>
+                      <button
+                        onClick={() => { void sendRaw(`/role copy ${role.roleName} ${role.roleName}Copy`, true); setTimeout(() => void refreshRoles(), 500); }}
+                        class={`rounded px-1.5 py-0.5 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)] ${INTERACTIVE_MOTION}`}
+                      >
+                        copy
+                      </button>
+                      <button
+                        onClick={() => { void sendRaw(`/role delete ${role.roleName}`, true); setTimeout(() => void refreshRoles(), 300); }}
+                        class={`rounded px-1.5 py-0.5 text-xs text-rose-400/60 hover:text-rose-300 ${INTERACTIVE_MOTION}`}
+                      >
+                        del
+                      </button>
+                    </div>
                   </div>
                 )}
               </For>
               <Show when={roles().length === 0 && !showRoleForm()}>
-                <p class="rounded-lg border border-dashed border-[var(--ui-border)] p-2 text-center text-[10px] text-[var(--ui-muted)]">
-                  暂无 role，点击 "+ role" 添加
+                <p class="rounded-lg border border-dashed border-[var(--ui-border)] p-2 text-center text-xs text-[var(--ui-muted)]">
+                  No roles yet. Click "+ role" to add one.
                 </p>
               </Show>
             </div>
 
             {/* Quick actions */}
             <div class="mt-2 flex flex-wrap gap-1 border-t border-[var(--ui-border)] pt-2">
-              <button onClick={() => void sendRaw("/workflow list")} class="rounded border border-[var(--ui-border)] px-1.5 py-0.5 text-[10px] text-[var(--ui-muted)] hover:text-[var(--ui-text)]">workflows</button>
-              <button onClick={() => void sendRaw("/context list")} class="rounded border border-[var(--ui-border)] px-1.5 py-0.5 text-[10px] text-[var(--ui-muted)] hover:text-[var(--ui-text)]">context</button>
-              <button onClick={() => void sendRaw("/session list")} class="rounded border border-[var(--ui-border)] px-1.5 py-0.5 text-[10px] text-[var(--ui-muted)] hover:text-[var(--ui-text)]">sessions</button>
+              <button onClick={() => void sendRaw("/workflow list")} class={`min-h-8 rounded border border-[var(--ui-border)] px-2 py-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)] ${INTERACTIVE_MOTION}`}>workflows</button>
+              <button onClick={() => void sendRaw("/context list")} class={`min-h-8 rounded border border-[var(--ui-border)] px-2 py-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)] ${INTERACTIVE_MOTION}`}>context</button>
+              <button onClick={() => void sendRaw("/session list")} class={`min-h-8 rounded border border-[var(--ui-border)] px-2 py-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)] ${INTERACTIVE_MOTION}`}>sessions</button>
             </div>
           </div>
         </aside>
 
         {/* ── Chat ── */}
-        <main class="card flex h-[calc(100vh-1.5rem)] flex-col overflow-hidden p-0">
+        <main class="card flex h-full flex-col overflow-hidden p-0">
 
           {/* Header */}
           <div class="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--ui-border)] px-4 py-2">
             <div>
-              <h1 class="text-sm font-semibold">UnionAI Chat</h1>
-              <p class="text-[11px] text-[var(--ui-muted)]">
-                <Show when={selectedTeam()} fallback={<span>no team</span>}>{selectedTeam()!.name}</Show>
-                {" · "}
-                <span class={selectedAssistant() ? RUNTIME_COLOR[selectedAssistant()!] ?? "text-emerald-400" : "text-rose-400"}>
-                  {selectedAssistant() ?? "no assistant"}
-                </span>
+              <h1 class="text-sm font-semibold">
+                <Show when={activeRole()} fallback="UnionAI Chat">
+                  <span class="text-blue-300">{activeRole()}</span>
+                  <span class="text-[var(--ui-muted)]"> @ </span>
+                  <span class={RUNTIME_COLOR[selectedAssistant() ?? ""] ?? "text-[var(--ui-muted)]"}>{selectedAssistant() ?? "?"}</span>
+                </Show>
+              </h1>
+              <p class="text-xs text-[var(--ui-muted)]">
+                <Show when={!activeRole()}>
+                  <span>Assistant: </span>
+                  <span class={selectedAssistant() ? RUNTIME_COLOR[selectedAssistant()!] ?? "text-emerald-400" : "text-rose-400"}>
+                    {selectedAssistant() ?? "no assistant"}
+                  </span>
+                </Show>
+                <Show when={currentMode()}>
+                  <span class={activeRole() ? "" : "ml-2"}>
+                    <span class="rounded bg-indigo-500/20 px-1 text-[10px] text-indigo-200">{currentMode()}</span>
+                  </span>
+                </Show>
               </p>
             </div>
-            <button onClick={() => { void refreshAssistants(); void refreshTeams(); }} class="rounded border border-[var(--ui-border)] bg-[var(--ui-panel-2)] px-2.5 py-1 text-xs hover:bg-[var(--ui-panel)]">
-              Refresh
-            </button>
-          </div>
-
-          {/* System prompt */}
-          <div class="shrink-0 border-b border-[var(--ui-border)] bg-[var(--ui-panel-2)] px-4 py-2">
-            <textarea
-              value={systemPrompt()}
-              onInput={(e) => setSystemPrompt(e.currentTarget.value)}
-              rows={2}
-              class="w-full resize-none rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2 py-1 text-xs outline-none"
-              placeholder="System prompt…"
-            />
+            <div class="flex items-center gap-2">
+              <Show when={agentModes().length > 0}>
+                <div class="flex gap-1">
+                  <For each={agentModes()}>{(m) => (
+                    <button
+                      class={`min-h-7 rounded border px-2 py-0.5 text-xs ${INTERACTIVE_MOTION} ${currentMode() === m.id ? "border-[var(--ui-accent)] bg-[var(--ui-accent-soft)] text-[var(--ui-text)]" : "border-[var(--ui-border)] text-[var(--ui-muted)] hover:text-[var(--ui-text)]"}`}
+                      onClick={() => {
+                        const assistant = selectedAssistant();
+                        const role = activeRole() ?? "UnionAIAssistant";
+                        if (assistant) void invoke("set_acp_mode", { runtimeKind: assistant, roleName: role, modeId: m.id });
+                      }}
+                    >
+                      {m.title ?? m.id}
+                    </button>
+                  )}</For>
+                </div>
+              </Show>
+              <button onClick={() => { void refreshAssistants(); void refreshRoles(); }} class={`min-h-8 rounded border border-[var(--ui-border)] bg-[var(--ui-panel-2)] px-3 py-1 text-sm hover:bg-[var(--ui-panel)] ${INTERACTIVE_MOTION}`}>
+                Refresh
+              </button>
+            </div>
           </div>
 
           {/* Messages */}
-          <div id="msg-list" class="flex-1 overflow-auto p-3 space-y-1.5">
-            <For each={messages()}>
+          <div id="msg-list" role="log" aria-live="polite" aria-relevant="additions text" class="flex-1 overflow-auto p-3 space-y-1.5">
+            <Show when={hiddenMessageCount() > 0}>
+              <div class="rounded border border-[var(--ui-border)] bg-[var(--ui-panel-2)] px-2 py-1 text-center text-xs text-[var(--ui-muted)]">
+                {hiddenMessageCount()} older messages hidden for performance
+              </div>
+            </Show>
+            <For each={visibleMessages()}>
               {(msg) => (
                 <div class={`rounded-lg border px-3 py-2 ${
                   msg.role === "user"
@@ -431,32 +1004,180 @@ export default function App() {
                     ? "mr-10 border-[var(--ui-border)] bg-[var(--ui-panel-2)]"
                     : "border-[var(--ui-border)] bg-black/10 opacity-70"
                 }`}>
-                  <div class="mb-0.5 flex items-center justify-between text-[10px] text-[var(--ui-muted)]">
+                  <div class="mb-0.5 flex items-center justify-between text-xs text-[var(--ui-muted)]">
                     <span class="font-medium">{msg.role}</span>
                     <span>{fmt(msg.at)}</span>
                   </div>
-                  <pre class="whitespace-pre-wrap break-words text-xs leading-relaxed">{msg.text}</pre>
+                  <pre class="whitespace-pre-wrap break-words text-sm leading-relaxed">{msg.text}</pre>
                 </div>
               )}
             </For>
+            <Show when={streamingMessage()}>
+              {(streaming) => (
+                <div class="mr-10 rounded-lg border border-[var(--ui-border)] bg-[var(--ui-panel-2)] px-3 py-2">
+                  <div class="mb-0.5 flex items-center justify-between text-xs text-[var(--ui-muted)]">
+                    <span class="font-medium">assistant</span>
+                    <span>{fmt(streaming().at)}</span>
+                  </div>
+                  <pre class="whitespace-pre-wrap break-words text-sm leading-relaxed">{streaming().text}</pre>
+                </div>
+              )}
+            </Show>
+            <Show when={pendingPermission()}>
+              {(perm) => (
+                <div class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                  <div class="mb-1 text-xs font-semibold text-amber-300">{perm().title}</div>
+                  <Show when={perm().description}><p class="mb-2 text-xs text-[var(--ui-muted)]">{perm().description}</p></Show>
+                  <div class="flex gap-2">
+                    <For each={perm().options}>{(opt) => (
+                      <button
+                        class={`min-h-8 rounded border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-300 hover:bg-emerald-500/20 ${INTERACTIVE_MOTION}`}
+                        onClick={() => {
+                          void invoke("respond_permission", { requestId: perm().requestId, optionId: opt.optionId, cancelled: false });
+                          setPendingPermission(null);
+                        }}
+                      >
+                        {opt.title ?? opt.optionId}
+                      </button>
+                    )}</For>
+                    <button
+                      class={`min-h-8 rounded border border-rose-500/40 bg-rose-500/10 px-3 py-1 text-xs text-rose-300 hover:bg-rose-500/20 ${INTERACTIVE_MOTION}`}
+                      onClick={() => {
+                        void invoke("respond_permission", { requestId: perm().requestId, optionId: "", cancelled: true });
+                        setPendingPermission(null);
+                      }}
+                    >
+                      Deny
+                    </button>
+                  </div>
+                </div>
+              )}
+            </Show>
+            <Show when={currentPlan()}>
+              {(plan) => (
+                <div class="rounded-lg border border-[var(--ui-border)] bg-[var(--ui-panel-2)] px-3 py-2">
+                  <div class="mb-1 text-xs font-semibold text-[var(--ui-muted)]">Plan</div>
+                  <ol class="list-inside list-decimal space-y-0.5 text-xs">
+                    <For each={plan()}>{(entry) => (
+                      <li class="flex items-center gap-1.5">
+                        <span class={`inline-block h-1.5 w-1.5 rounded-full ${entry.status === "completed" ? "bg-emerald-400" : entry.status === "in_progress" ? "bg-amber-400 animate-pulse" : "bg-zinc-500"}`} />
+                        <span>{entry.title ?? entry.description ?? "step"}</span>
+                      </li>
+                    )}</For>
+                  </ol>
+                </div>
+              )}
+            </Show>
+            <Show when={toolCalls().size > 0}>
+              <div class="space-y-1">
+                <For each={[...toolCalls().values()]}>{(tc) => (
+                  <details class="rounded-lg border border-[var(--ui-border)] bg-[var(--ui-panel-2)]">
+                    <summary class="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs">
+                      <span class={`h-1.5 w-1.5 rounded-full ${tc.status === "success" || tc.status === "completed" ? "bg-emerald-400" : tc.status === "failure" || tc.status === "error" ? "bg-rose-400" : tc.status === "running" || tc.status === "in_progress" ? "bg-amber-400 animate-pulse" : "bg-zinc-500"}`} />
+                      <span class="font-medium">{tc.title || tc.toolCallId}</span>
+                      <span class="ml-auto text-[var(--ui-muted)]">{tc.status}</span>
+                    </summary>
+                    <Show when={tc.content && tc.content.length > 0}>
+                      <pre class="whitespace-pre-wrap break-words border-t border-[var(--ui-border)] px-3 py-1.5 text-xs text-[var(--ui-muted)]">
+                        {JSON.stringify(tc.content, null, 2)}
+                      </pre>
+                    </Show>
+                  </details>
+                )}</For>
+              </div>
+            </Show>
             <Show when={submitting()}>
-              <div class="flex items-center gap-2 px-1 text-xs text-[var(--ui-muted)]">
-                <span class="animate-pulse">●</span> 等待响应…
+              <div class="flex items-center gap-2 px-1 text-xs text-[var(--ui-muted)] opacity-80">
+                <span class="h-2 w-2 rounded-full bg-[var(--ui-accent)] animate-pulse" />
+                <span>Agent is thinking...</span>
               </div>
             </Show>
           </div>
 
           {/* Input */}
           <form onSubmit={handleSend} class="shrink-0 border-t border-[var(--ui-border)] p-3 flex gap-2">
-            <input
-              value={input()}
-              onInput={(e) => setInput(e.currentTarget.value)}
-              placeholder="自然语言 / /命令 / @Role 路由"
-              disabled={submitting()}
-              class="h-9 flex-1 rounded-lg border border-[var(--ui-border)] bg-[var(--ui-panel-2)] px-3 text-sm outline-none disabled:opacity-50"
-            />
-            <button type="submit" disabled={submitting()} class="h-9 rounded-lg bg-[var(--ui-accent)] px-4 text-sm font-semibold text-[var(--ui-accent-text)] disabled:opacity-50">
-              {submitting() ? "…" : "Send"}
+            <div class="relative flex-1">
+              <div class="flex h-10 items-center rounded-lg border border-[var(--ui-border)] bg-[var(--ui-panel-2)]">
+                <button
+                  type="button"
+                  onClick={() => setActiveRole(null)}
+                  class={`shrink-0 pl-3 pr-1.5 text-sm font-mono ${activeRole() ? "text-blue-300 hover:text-blue-200" : "text-[var(--ui-muted)]"}`}
+                  title={activeRole() ? "Click to exit role context" : "UnionAI assistant mode"}
+                >
+                  {activeRole() ?? "UnionAI"} &gt;
+                </button>
+                <input
+                  ref={(el) => { inputEl = el; }}
+                  value={input()}
+                  onInput={(e) => handleInputEvent(e.currentTarget)}
+                  onClick={(e) => refreshInputCompletions(e.currentTarget.value, e.currentTarget.selectionStart ?? e.currentTarget.value.length)}
+                  onKeyDown={handleInputKeyDown}
+                  onBlur={() => {
+                    if (mentionCloseTimer !== null) window.clearTimeout(mentionCloseTimer);
+                    mentionCloseTimer = window.setTimeout(() => {
+                      closeMentionMenu();
+                      closeSlashMenu();
+                    }, 120);
+                  }}
+                  onFocus={(e) => {
+                    if (mentionCloseTimer !== null) window.clearTimeout(mentionCloseTimer);
+                    if (mentionDebounceTimer !== null) {
+                      window.clearTimeout(mentionDebounceTimer);
+                      mentionDebounceTimer = null;
+                    }
+                    refreshInputCompletions(input(), e.currentTarget.selectionStart ?? input().length);
+                  }}
+                  placeholder={activeRole() ? `Chat with ${activeRole()}... (/plan /act /auto /cancel)` : "Natural language / commands / @role @file:path"}
+                  class="h-full flex-1 bg-transparent pr-3 text-sm outline-none"
+                />
+              </div>
+              <Show when={slashOpen() && slashItems().length > 0}>
+                <div class="absolute bottom-12 left-0 right-0 z-30 max-h-56 overflow-auto rounded-lg border border-[var(--ui-border)] bg-[var(--ui-panel)] p-1 shadow-xl">
+                  <For each={slashItems()}>
+                    {(item, i) => (
+                      <button
+                        type="button"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          applySlashCandidate(item);
+                        }}
+                        class={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${i() === slashActiveIndex() ? "bg-[var(--ui-accent-soft)] text-[var(--ui-text)]" : "text-[var(--ui-muted)] hover:bg-[var(--ui-panel-2)]"}`}
+                      >
+                        <span class="rounded bg-indigo-500/20 px-1 text-[10px] uppercase tracking-wide text-indigo-200">
+                          cmd
+                        </span>
+                        <span class="truncate font-mono text-xs">{item.value}</span>
+                        <span class="ml-auto truncate text-[10px] opacity-70">{item.detail}</span>
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </Show>
+              <Show when={mentionOpen() && mentionItems().length > 0}>
+                <div class="absolute bottom-12 left-0 right-0 z-30 max-h-56 overflow-auto rounded-lg border border-[var(--ui-border)] bg-[var(--ui-panel)] p-1 shadow-xl">
+                  <For each={mentionItems()}>
+                    {(item, i) => (
+                      <button
+                        type="button"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          applyMentionCandidate(item);
+                        }}
+                        class={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${i() === mentionActiveIndex() ? "bg-[var(--ui-accent-soft)] text-[var(--ui-text)]" : "text-[var(--ui-muted)] hover:bg-[var(--ui-panel-2)]"}`}
+                      >
+                        <span class={`rounded px-1 text-[10px] uppercase tracking-wide ${item.kind === "role" ? "bg-blue-500/20 text-blue-200" : item.kind === "dir" ? "bg-emerald-500/20 text-emerald-200" : item.kind === "file" ? "bg-amber-500/20 text-amber-200" : item.kind === "command" ? "bg-indigo-500/20 text-indigo-200" : "bg-zinc-500/20 text-zinc-300"}`}>
+                          {item.kind}
+                        </span>
+                        <span class="truncate font-mono text-xs">{item.value}</span>
+                        <span class="ml-auto truncate text-[10px] opacity-70">{item.detail}</span>
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </Show>
+            </div>
+            <button type="submit" class={`h-10 rounded-lg bg-[var(--ui-accent)] px-4 text-sm font-semibold text-[var(--ui-accent-text)] ${INTERACTIVE_MOTION}`}>
+              {submitting() ? "Queue" : "Send"}
             </button>
           </form>
         </main>
