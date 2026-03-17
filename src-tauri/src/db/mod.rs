@@ -1,9 +1,12 @@
 pub(crate) mod app_session;
 pub(crate) mod context;
+pub(crate) mod pool;
 pub(crate) mod role;
 pub(crate) mod session;
 pub(crate) mod skill;
 pub(crate) mod workflow;
+
+pub(crate) use pool::DbPool;
 
 use crate::now_ms;
 use crate::types::*;
@@ -136,9 +139,10 @@ pub(crate) fn with_db<T>(
     state: &AppState,
     f: impl FnOnce(&Connection) -> Result<T, String>,
 ) -> Result<T, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.get().map_err(|e| e.to_string())?;
     f(&conn)
 }
+
 
 pub(crate) fn parse_payload(payload: String) -> Value {
     serde_json::from_str::<Value>(&payload).unwrap_or(json!({ "text": payload }))

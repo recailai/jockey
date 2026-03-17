@@ -1,11 +1,10 @@
+use crate::db::DbPool;
 use dashmap::DashMap;
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Mutex;
 
 pub(crate) struct AppState {
-    pub(crate) db: Mutex<Connection>,
+    pub(crate) db: DbPool,
     pub(crate) shared_context: DashMap<String, String>,
 }
 

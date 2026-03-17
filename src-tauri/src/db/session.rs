@@ -182,9 +182,20 @@ pub(crate) async fn run_workflow(
     let workspace_path = load_team_workspace_path(state.inner(), &session.team_id)
         .unwrap_or_else(|_| ".".to_string());
     let mut prompt = seed_prompt;
-    for role_name in workflow.steps.iter() {
+    for (step_idx, role_name) in workflow.steps.iter().enumerate() {
         let runtime_kind = load_role_runtime_kind(state.inner(), &session.team_id, role_name)
             .unwrap_or_else(|_| "mock".to_string());
+
+        // Proactively prewarm the next step's agent so its cold-start overlaps with this step's execution.
+        if let Some(next_role) = workflow.steps.get(step_idx + 1) {
+            let next_runtime = load_role_runtime_kind(state.inner(), &session.team_id, next_role)
+                .unwrap_or_else(|_| "mock".to_string());
+            let next_role = next_role.clone();
+            let next_cwd = workspace_path.clone();
+            tauri::async_runtime::spawn(async move {
+                acp::prewarm_role(&next_runtime, &next_role, &next_cwd, None).await;
+            });
+        }
         let started = WorkflowStateEvent {
             session_id: session.id.clone(),
             team_id: session.team_id.clone(),

@@ -3,13 +3,14 @@ use crate::db::context::{
     context_scope_for_role, list_shared_context_internal, set_shared_context_internal,
 };
 use crate::db::get_state;
-use crate::db::role::{load_role, resolve_role_prompt, resolve_role_runtime};
+use crate::db::role::{load_role, load_role_runtime_kind, resolve_role_prompt_raw};
 use crate::db::skill::load_skill_by_name;
 use crate::types::*;
 use crate::{acp, build_unionai_tool_prompt, clip_text, now_ms, resolve_chat_cwd};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::VecDeque;
+use std::fmt::Write as FmtWrite;
 use std::io::Read;
 use std::time::Instant;
 use tauri::{AppHandle, State};
@@ -155,6 +156,8 @@ struct RecentRoleChat {
     role: String,
     user: String,
     assistant: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    cwd: String,
 }
 
 fn collapse_whitespace(raw: &str) -> String {
@@ -181,6 +184,7 @@ fn append_recent_role_chat(
     role_name: &str,
     user: &str,
     assistant: &str,
+    cwd: &str,
 ) {
     let mut chats = load_recent_role_chats(state, team_id);
     chats.retain(|c| c.role != role_name);
@@ -188,6 +192,7 @@ fn append_recent_role_chat(
         role: role_name.to_string(),
         user: normalize_recent_chat_text(user),
         assistant: normalize_recent_chat_text(assistant),
+        cwd: cwd.to_string(),
     });
     if chats.len() > RECENT_ROLE_CHATS_LIMIT {
         let drop_count = chats.len() - RECENT_ROLE_CHATS_LIMIT;
@@ -613,44 +618,116 @@ pub(crate) async fn assistant_chat(
     }
     let mut role_outputs: Vec<(String, String)> = Vec::new();
 
+    // Extract Send-able handles once so spawn_blocking closures can own them.
+    let db_pool = get_state(&state).db.clone();
+    let shared_ctx = get_state(&state).shared_context.clone();
+
     for role_name in role_targets {
         let is_union_assistant = role_name == "UnionAIAssistant";
-        let mut runtime = assistant.clone();
-        if !is_union_assistant {
-            runtime = resolve_role_runtime(state.clone(), &team_id, &role_name).unwrap_or(runtime);
+
+        // Batch all synchronous DB reads for this role into a single spawn_blocking
+        // call so the Tokio worker thread is not blocked on Mutex acquisition + SQLite I/O.
+        struct RoleDbData {
+            runtime: String,
+            context_pairs: Vec<(String, String)>,
+            auto_approve: bool,
+            role_mode: Option<String>,
+            role_config: Vec<(String, String)>,
+            context_log: Option<(usize, Option<String>)>,
+        }
+        let pool_clone = db_pool.clone();
+        let ctx_clone = shared_ctx.clone();
+        let team_id_clone = team_id.clone();
+        let role_name_clone = role_name.clone();
+        let assistant_clone = assistant.clone();
+        let db_data: RoleDbData = tokio::task::spawn_blocking(move || {
+            // Build a transient AppState view backed by the cloned pool + shared_context.
+            let tmp_state = AppState { db: pool_clone, shared_context: ctx_clone };
+
+            let runtime = if role_name_clone == "UnionAIAssistant" {
+                assistant_clone
+            } else {
+                load_role_runtime_kind(&tmp_state, &team_id_clone, &role_name_clone)
+                    .unwrap_or(assistant_clone)
+            };
+
+            let scope = context_scope_for_role(&role_name_clone);
+            let entries = list_shared_context_internal(&tmp_state, &scope).unwrap_or_default();
+            let mut context_pairs: Vec<(String, String)> =
+                entries.into_iter().map(|e| (e.key, e.value)).collect();
+
+            let mut context_log = None;
+            if role_name_clone != "UnionAIAssistant" {
+                let role_prompt =
+                    resolve_role_prompt_raw(&tmp_state, &team_id_clone, &role_name_clone)
+                        .unwrap_or_default();
+
+                if !role_prompt.is_empty() {
+                    context_pairs.push(("role_prompt".to_string(), role_prompt));
+                }
+                let recent_chats: Vec<_> = load_recent_role_chats(&tmp_state, &team_id_clone)
+                    .into_iter()
+                    .filter(|c| c.role != role_name_clone)
+                    .collect();
+                let inherited_cwd: Option<String> = recent_chats
+                    .iter()
+                    .rev()
+                    .find(|c| !c.cwd.is_empty())
+                    .map(|c| c.cwd.clone());
+                if !recent_chats.is_empty() {
+                    if let Ok(payload) = serde_json::to_string(&recent_chats) {
+                        upsert_context_pair(&mut context_pairs, "from_last_role_context", payload);
+                    }
+                    context_log = Some((recent_chats.len(), inherited_cwd.clone()));
+                }
+                if let Some(prev_cwd) = inherited_cwd {
+                    upsert_context_pair(&mut context_pairs, "cwd", prev_cwd);
+                }
+            }
+
+            let role_data = if role_name_clone != "UnionAIAssistant" {
+                load_role(&tmp_state, &team_id_clone, &role_name_clone).unwrap_or(None)
+            } else {
+                None
+            };
+            let auto_approve = role_data.as_ref().map(|r| r.auto_approve).unwrap_or(true);
+            let role_mode = role_data.as_ref().and_then(|r| r.mode.clone());
+            let role_config: Vec<(String, String)> = role_data
+                .as_ref()
+                .and_then(|r| serde_json::from_str::<serde_json::Value>(&r.config_options_json).ok())
+                .and_then(|v| {
+                    v.as_object().map(|m| {
+                        m.iter()
+                            .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                            .collect()
+                    })
+                })
+                .unwrap_or_default();
+
+            RoleDbData { runtime, context_pairs, auto_approve, role_mode, role_config, context_log }
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let runtime = db_data.runtime;
+        let mut context_pairs = db_data.context_pairs;
+        let auto_approve = db_data.auto_approve;
+        let role_mode = db_data.role_mode;
+        let role_config = db_data.role_config;
+
+        if let Some((count, inherited_cwd)) = db_data.context_log {
+            chat_log(
+                "route.context.share",
+                json!({
+                    "role": role_name.clone(),
+                    "recentChatCount": count,
+                    "inheritedCwd": inherited_cwd
+                }),
+            );
         }
 
-        let mut context_pairs: Vec<(String, String)> = Vec::new();
-        let scope = context_scope_for_role(&role_name);
-        let entries = list_shared_context_internal(get_state(&state), &scope).unwrap_or_default();
-        for entry in entries {
-            context_pairs.push((entry.key, entry.value));
-        }
-        if !is_union_assistant {
-            let role_prompt =
-                resolve_role_prompt(state.clone(), &team_id, &role_name).unwrap_or_default();
-            if !role_prompt.is_empty() {
-                context_pairs.push(("role_prompt".to_string(), role_prompt));
-            }
-            let recent_chats: Vec<_> = load_recent_role_chats(get_state(&state), &team_id)
-                .into_iter()
-                .filter(|c| c.role != role_name)
-                .collect();
-            if !recent_chats.is_empty() {
-                if let Ok(payload) = serde_json::to_string(&recent_chats) {
-                    upsert_context_pair(&mut context_pairs, "from_last_role_context", payload);
-                }
-                chat_log(
-                    "route.context.share",
-                    json!({
-                        "role": role_name.clone(),
-                        "recentChatCount": recent_chats.len()
-                    }),
-                );
-            }
-        }
-        context_pairs.extend(attachment_pairs.clone());
-        context_pairs.extend(skill_pairs.clone());
+        context_pairs.extend(attachment_pairs.iter().cloned());
+        context_pairs.extend(skill_pairs.iter().cloned());
         if !attach_notes.is_empty() {
             context_pairs.push(("attachment_notes".to_string(), attach_notes.join("\n")));
         }
@@ -658,20 +735,35 @@ pub(crate) async fn assistant_chat(
             context_pairs.insert(0, ("cwd".to_string(), cwd.clone()));
         }
 
-        let mut parts = Vec::new();
+        // Build the prompt directly into one pre-allocated buffer to avoid
+        // the intermediate Vec<String> + join() chain of allocations.
+        let ctx_bytes: usize = context_pairs.iter().map(|(k, v)| k.len() + v.len() + 4).sum();
+        let estimated = if is_union_assistant { tool_prompt.len() + 10 } else { 0 }
+            + ctx_bytes
+            + message.len()
+            + 64;
+        let mut prepared = String::with_capacity(estimated);
         if is_union_assistant {
-            parts.push(format!("Tools:\n{}", tool_prompt));
+            prepared.push_str("Tools:\n");
+            prepared.push_str(tool_prompt);
         }
         if !context_pairs.is_empty() {
-            let ctx = context_pairs
-                .iter()
-                .map(|(k, v)| format!("{}: {}", k, v))
-                .collect::<Vec<_>>()
-                .join("\n");
-            parts.push(format!("Context:\n{}", ctx));
+            if !prepared.is_empty() {
+                prepared.push_str("\n\n");
+            }
+            prepared.push_str("Context:\n");
+            for (i, (k, v)) in context_pairs.iter().enumerate() {
+                if i > 0 {
+                    prepared.push('\n');
+                }
+                let _ = write!(prepared, "{}: {}", k, v);
+            }
         }
-        parts.push(format!("User:\n{}", message));
-        let prepared = parts.join("\n\n");
+        if !prepared.is_empty() {
+            prepared.push_str("\n\n");
+        }
+        prepared.push_str("User:\n");
+        prepared.push_str(&message);
 
         chat_log(
             "route.acp.start",
@@ -684,24 +776,6 @@ pub(crate) async fn assistant_chat(
             }),
         );
         let acp_started = Instant::now();
-        let role_data = if !is_union_assistant {
-            load_role(get_state(&state), &team_id, &role_name).unwrap_or(None)
-        } else {
-            None
-        };
-        let auto_approve = role_data.as_ref().map(|r| r.auto_approve).unwrap_or(true);
-        let role_mode = role_data.as_ref().and_then(|r| r.mode.clone());
-        let role_config: Vec<(String, String)> = role_data
-            .as_ref()
-            .and_then(|r| serde_json::from_str::<serde_json::Value>(&r.config_options_json).ok())
-            .and_then(|v| {
-                v.as_object().map(|m| {
-                    m.iter()
-                        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
-                        .collect()
-                })
-            })
-            .unwrap_or_default();
         let app_session_id_ref = input.app_session_id.as_deref().unwrap_or("");
         let llm = acp::execute_runtime(
             &runtime,
@@ -765,6 +839,7 @@ pub(crate) async fn assistant_chat(
                 &role_name,
                 &message,
                 &final_output,
+                &cwd,
             );
         }
         role_outputs.push((role_name.clone(), final_output));

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import { createStore, produce } from "solid-js/store";
 
 type Role = {
   id: string; teamId: string; roleName: string; runtimeKind: string;
@@ -113,13 +114,13 @@ const makeDefaultSession = (title: string): AppSession => ({
 });
 
 export default function App() {
-  const [sessions, setSessions] = createSignal<AppSession[]>([]);
+  const [sessions, setSessions] = createStore<AppSession[]>([]);
   const [activeSessionId, setActiveSessionId] = createSignal<string | null>(null);
 
-  const activeSession = () => sessions().find((s) => s.id === activeSessionId()) ?? null;
+  const activeSession = () => sessions.find((s) => s.id === activeSessionId()) ?? null;
 
   const updateSession = (id: string, patch: Partial<AppSession>) => {
-    setSessions((prev) => prev.map((s) => s.id === id ? { ...s, ...patch } : s));
+    setSessions((s) => s.id === id, produce((s) => Object.assign(s, patch)));
   };
 
   const patchActiveSession = (patch: Partial<AppSession>) => {
@@ -219,7 +220,7 @@ export default function App() {
     if (persistTimer !== null) window.clearTimeout(persistTimer);
     persistTimer = window.setTimeout(() => {
       persistTimer = null;
-      const s = sessions().find((x) => x.id === sessionId);
+      const s = sessions.find((x) => x.id === sessionId);
       if (!s) return;
       void invoke("update_app_session", {
         id: sessionId,
@@ -235,13 +236,11 @@ export default function App() {
   const appendMessage = (message: AppMessage) => {
     const id = activeSessionId();
     if (!id) return;
-    setSessions((prev) => prev.map((s) => {
-      if (s.id !== id) return s;
-      const trimmed = s.messages.length >= MAX_MESSAGES
-        ? s.messages.slice(s.messages.length - MAX_MESSAGES + 1)
-        : s.messages.slice();
-      trimmed.push(message);
-      return { ...s, messages: trimmed };
+    const idx = sessions.findIndex((s) => s.id === id);
+    if (idx === -1) return;
+    setSessions(idx, "messages", produce((msgs: AppMessage[]) => {
+      if (msgs.length >= MAX_MESSAGES) msgs.splice(0, msgs.length - MAX_MESSAGES + 1);
+      msgs.push(message);
     }));
     scheduleScrollToBottom();
     persistSessionDebounced(id);
@@ -263,11 +262,9 @@ export default function App() {
     if (!chunk) return;
     const sid = activeSessionId();
     if (!sid) return;
-    setSessions((prev) => prev.map((s) => {
-      if (s.id !== sid) return s;
-      if (!s.streamingMessage) return s;
-      return { ...s, streamingMessage: { ...s.streamingMessage, text: s.streamingMessage.text + chunk } };
-    }));
+    const idx = sessions.findIndex((s) => s.id === sid);
+    if (idx === -1 || !sessions[idx].streamingMessage) return;
+    setSessions(idx, "streamingMessage", "text", (t) => t + chunk);
     scheduleScrollToBottom();
   };
 
@@ -435,12 +432,8 @@ export default function App() {
       const parsed = parseAgentCommands(raw);
       const sid = activeSessionId();
       if (!sid) return;
-      setSessions((prev) => prev.map((s) => {
-        if (s.id !== sid) return s;
-        const next = new Map(s.agentCommands);
-        next.set(roleName, parsed);
-        return { ...s, agentCommands: next };
-      }));
+      const cidx = sessions.findIndex((s) => s.id === sid);
+      if (cidx !== -1) setSessions(cidx, "agentCommands", produce((m: Map<string, Array<{ name: string; description: string; hint?: string }>>) => { m.set(roleName, parsed); }));
     }).catch(() => {});
   };
 
@@ -635,12 +628,8 @@ export default function App() {
               const parsed = parseAgentCommands(raw);
               const sid = activeSessionId();
               if (sid) {
-                setSessions((prev) => prev.map((sess) => {
-                  if (sess.id !== sid) return sess;
-                  const next = new Map(sess.agentCommands);
-                  next.set(role.roleName, parsed);
-                  return { ...sess, agentCommands: next };
-                }));
+                const aidx = sessions.findIndex((sess) => sess.id === sid);
+                if (aidx !== -1) setSessions(aidx, "agentCommands", produce((m: Map<string, Array<{ name: string; description: string; hint?: string }>>) => { m.set(role.roleName, parsed); }));
               }
             }).catch(() => {}).finally(() => resolve());
           });
@@ -769,7 +758,7 @@ export default function App() {
       pushMessage("user", text);
       const sid = activeSessionId();
       if (sid) {
-        const sess = sessions().find((x) => x.id === sid);
+        const sess = sessions.find((x) => x.id === sid);
         if (sess && sess.title === "New Session" && sess.messages.filter((m) => m.role === "user").length === 0) {
           const autoTitle = text.slice(0, 30);
           updateSession(sid, { title: autoTitle });
@@ -965,16 +954,16 @@ export default function App() {
     const prompt = roleFormPrompt().trim();
     if (!name) return;
     setShowRoleForm(false);
-    await sendRaw(`/role bind ${name} ${runtime} ${prompt || "You are a helpful AI assistant."}`);
+    await sendRaw(`/app_role bind ${name} ${runtime} ${prompt || "You are a helpful AI assistant."}`);
     const model = roleFormModel().trim();
     const mode = roleFormMode();
     const autoApprove = roleFormAutoApprove();
-    if (model) await sendRaw(`/role edit ${name} model ${model}`, true);
-    if (mode) await sendRaw(`/role edit ${name} mode ${mode}`, true);
-    if (!autoApprove) await sendRaw(`/role edit ${name} auto-approve false`, true);
+    if (model) await sendRaw(`/app_role edit ${name} model ${model}`, true);
+    if (mode) await sendRaw(`/app_role edit ${name} mode ${mode}`, true);
+    if (!autoApprove) await sendRaw(`/app_role edit ${name} auto-approve false`, true);
     const cfgSelections = roleFormConfigSelections();
     for (const [cfgId, cfgVal] of Object.entries(cfgSelections)) {
-      if (cfgVal) await sendRaw(`/role edit ${name} config ${cfgId} ${cfgVal}`, true);
+      if (cfgVal) await sendRaw(`/app_role edit ${name} config ${cfgId} ${cfgVal}`, true);
     }
     setRoleFormConfigSelections({});
     setCreateFormConfigOptions([]);
@@ -1061,19 +1050,17 @@ export default function App() {
       ? assistants().find((a) => a.key === preferred && a.available)?.key ?? null
       : assistants().find((a) => a.available)?.key ?? null;
     s.selectedAssistant = availableAssistant;
-    setSessions((prev) => [...prev, s]);
+    setSessions(sessions.length, s);
     setActiveSessionId(s.id);
     void invoke("create_app_session", { title: s.title }).catch(() => {});
   };
 
   const closeSession = (id: string) => {
-    setSessions((prev) => {
-      const remaining = prev.filter((s) => s.id !== id);
-      if (remaining.length === 0) return prev;
-      return remaining;
-    });
+    const remaining = sessions.filter((s) => s.id !== id);
+    if (remaining.length === 0) { void invoke("delete_app_session", { id }).catch(() => {}); return; }
+    setSessions(remaining);
     if (activeSessionId() === id) {
-      const remaining = sessions().filter((s) => s.id !== id);
+      const remaining = sessions.filter((s) => s.id !== id);
       if (remaining.length > 0) {
         setActiveSessionId(remaining[remaining.length - 1].id);
       }
@@ -1118,10 +1105,9 @@ export default function App() {
         ? assistants().find((a) => a.key === preferred && a.available)?.key ?? null
         : assistants().find((a) => a.available)?.key ?? null;
 
-      setSessions((prev) => prev.map((s) => {
-        if (s.selectedAssistant) return s;
-        return { ...s, selectedAssistant: availableAssistant };
-      }));
+      sessions.forEach((s, i) => {
+        if (!s.selectedAssistant) setSessions(i, "selectedAssistant", availableAssistant);
+      });
 
       pushMessage("system", "Welcome to UnionAI. Agent sessions are warming up in the background.");
     })();
@@ -1131,7 +1117,7 @@ export default function App() {
         if (!streamAccepting) return;
         const sid = activeSessionId();
         if (!sid) return;
-        const s = sessions().find((x) => x.id === sid);
+        const s = sessions.find((x) => x.id === sid);
         if (!s?.streamingMessage) startStream();
         streamBuffer += ev.payload.delta;
         if (streamBuffer.length >= 64) {
@@ -1161,30 +1147,30 @@ export default function App() {
           case "toolCall":
             if (e.toolCallId) {
               const sid = activeSessionId();
-              if (sid) setSessions((prev) => prev.map((s) => {
-                if (s.id !== sid) return s;
-                const next = new Map(s.toolCalls);
-                next.set(e.toolCallId!, { toolCallId: e.toolCallId!, title: e.title ?? "", kind: e.toolKind ?? "unknown", status: e.status ?? "pending" });
-                return { ...s, toolCalls: next };
-              }));
+              if (sid) {
+                const tidx = sessions.findIndex((s) => s.id === sid);
+                if (tidx !== -1) setSessions(tidx, "toolCalls", produce((m: Map<string, AppToolCall>) => {
+                  m.set(e.toolCallId!, { toolCallId: e.toolCallId!, title: e.title ?? "", kind: e.toolKind ?? "unknown", status: e.status ?? "pending" });
+                }));
+              }
             }
             break;
           case "toolCallUpdate":
             if (e.toolCallId) {
               const sid = activeSessionId();
-              if (sid) setSessions((prev) => prev.map((s) => {
-                if (s.id !== sid) return s;
-                const next = new Map(s.toolCalls);
-                const existing = next.get(e.toolCallId!);
-                if (existing) {
-                  const newContent = (e.content as unknown[]) ?? existing.content;
-                  const contentJson = newContent !== existing.content
-                    ? (newContent && newContent.length > 0 ? JSON.stringify(newContent, null, 2) : undefined)
-                    : existing.contentJson;
-                  next.set(e.toolCallId!, { ...existing, status: e.status ?? existing.status, title: e.title ?? existing.title, content: newContent, contentJson });
-                }
-                return { ...s, toolCalls: next };
-              }));
+              if (sid) {
+                const tidx = sessions.findIndex((s) => s.id === sid);
+                if (tidx !== -1) setSessions(tidx, "toolCalls", produce((m: Map<string, AppToolCall>) => {
+                  const existing = m.get(e.toolCallId!);
+                  if (existing) {
+                    const newContent = (e.content as unknown[]) ?? existing.content;
+                    const contentJson = newContent !== existing.content
+                      ? (newContent && newContent.length > 0 ? JSON.stringify(newContent, null, 2) : undefined)
+                      : existing.contentJson;
+                    m.set(e.toolCallId!, { ...existing, status: e.status ?? existing.status, title: e.title ?? existing.title, content: newContent, contentJson });
+                  }
+                }));
+              }
             }
             break;
           case "plan":
@@ -1216,12 +1202,10 @@ export default function App() {
               if (roleName) {
                 const parsed = parseAgentCommands(e.commands as unknown[]);
                 const sid = activeSessionId();
-                if (sid) setSessions((prev) => prev.map((s) => {
-                  if (s.id !== sid) return s;
-                  const next = new Map(s.agentCommands);
-                  next.set(roleName, parsed);
-                  return { ...s, agentCommands: next };
-                }));
+                if (sid) {
+                  const aidx = sessions.findIndex((s) => s.id === sid);
+                  if (aidx !== -1) setSessions(aidx, "agentCommands", produce((m: Map<string, Array<{ name: string; description: string; hint?: string }>>) => { m.set(roleName, parsed); }));
+                }
               }
             }
             break;
@@ -1262,7 +1246,7 @@ export default function App() {
 
       {/* ── Tabs Bar ── */}
       <div class="flex h-9 shrink-0 items-center border-b border-white/[0.06] bg-[#0d0d10] gap-1" style="padding-left: max(8px, env(titlebar-area-x, 78px)); padding-right: 8px;">
-        <For each={sessions()}>
+        <For each={sessions}>
           {(s) => (
             <div
               onClick={() => { if (renamingSessionId() !== s.id) setActiveSessionId(s.id); }}
@@ -1313,7 +1297,7 @@ export default function App() {
                   onClick={(e) => e.stopPropagation()}
                 />
               </Show>
-              <Show when={sessions().length > 1}>
+              <Show when={sessions.length > 1}>
                 <button
                   onClick={(e) => { e.stopPropagation(); closeSession(s.id); }}
                   class="ml-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 text-zinc-400 leading-none"

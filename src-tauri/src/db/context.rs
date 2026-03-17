@@ -43,6 +43,38 @@ pub(crate) fn set_shared_context_internal(
     })
 }
 
+/// Append `suffix` to an existing context value without a read-then-write round-trip.
+/// Uses `DashMap::entry` for an atomic in-place mutation, then persists the new value.
+pub(crate) fn append_shared_context_internal(
+    state: &AppState,
+    team_id: &str,
+    key: &str,
+    suffix: &str,
+) -> Result<ContextEntry, String> {
+    let now = now_ms();
+    let cache_key = shared_key(team_id, key);
+    let new_value = {
+        let mut entry = state.shared_context.entry(cache_key.clone()).or_default();
+        entry.push_str(suffix);
+        entry.clone()
+    };
+    with_db(state, |conn| {
+        conn.execute(
+            "INSERT INTO shared_context_snapshots (team_id, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(team_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            params![team_id, key, &new_value, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })?;
+    Ok(ContextEntry {
+        team_id: team_id.to_string(),
+        key: key.to_string(),
+        value: new_value,
+        updated_at: now,
+    })
+}
+
 pub(crate) fn clear_shared_context_internal(
     state: &AppState,
     scope: &str,
@@ -100,6 +132,16 @@ pub(crate) fn set_shared_context(
     value: String,
 ) -> Result<ContextEntry, String> {
     set_shared_context_internal(get_state(&state), &team_id, &key, &value)
+}
+
+#[tauri::command]
+pub(crate) fn append_shared_context(
+    state: State<'_, AppState>,
+    team_id: String,
+    key: String,
+    suffix: String,
+) -> Result<ContextEntry, String> {
+    append_shared_context_internal(get_state(&state), &team_id, &key, &suffix)
 }
 
 #[tauri::command]

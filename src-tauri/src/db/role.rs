@@ -225,7 +225,15 @@ pub(crate) fn resolve_role_prompt(
     team_id: &str,
     role_name: &str,
 ) -> Result<String, String> {
-    with_db(get_state(&state), |conn| {
+    resolve_role_prompt_raw(get_state(&state), team_id, role_name)
+}
+
+pub(crate) fn resolve_role_prompt_raw(
+    state: &AppState,
+    team_id: &str,
+    role_name: &str,
+) -> Result<String, String> {
+    with_db(state, |conn| {
         conn.query_row(
             "SELECT system_prompt FROM roles WHERE team_id = ?1 AND role_name = ?2",
             params![team_id, role_name],

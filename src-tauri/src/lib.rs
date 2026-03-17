@@ -6,10 +6,9 @@ mod db;
 mod types;
 
 use dashmap::DashMap;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
 use std::fs;
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 
@@ -17,7 +16,7 @@ use assistant::assistant_catalog;
 use db::context::shared_key;
 use db::{
     ensure_default_team_id, init_db, load_team_workspace_path, seed_default_dynamic_catalog,
-    with_db,
+    with_db, DbPool,
 };
 use types::*;
 
@@ -169,16 +168,23 @@ pub fn run() {
             fs::create_dir_all(&app_dir)?;
             acp::set_app_data_dir(app_dir.clone());
             let db_path = app_dir.join("unionai.sqlite3");
-            let conn = Connection::open(db_path)?;
-            init_db(&conn).map_err(std::io::Error::other)?;
+            // Per-connection PRAGMAs run by the pool on every new connection.
+            const CONN_INIT_SQL: &str =
+                "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;";
+            let db_pool = DbPool::new(db_path, 8, CONN_INIT_SQL)
+                .map_err(std::io::Error::other)?;
+            {
+                let conn = db_pool.get().map_err(std::io::Error::other)?;
+                init_db(&conn).map_err(std::io::Error::other)?;
+            }
             let state = AppState {
-                db: Mutex::new(conn),
+                db: db_pool,
                 shared_context: DashMap::new(),
             };
 
             {
                 let existing = {
-                    let guard = state.db.lock().map_err(|e| std::io::Error::other(e.to_string()))?;
+                    let guard = state.db.get().map_err(|e| std::io::Error::other(e.to_string()))?;
                     let mut stmt = guard.prepare(
                         "SELECT team_id, key, value FROM shared_context_snapshots ORDER BY updated_at DESC",
                     )?;
@@ -268,6 +274,7 @@ pub fn run() {
             db::session::list_sessions,
             db::session::list_session_events,
             db::context::set_shared_context,
+            db::context::append_shared_context,
             db::context::get_shared_context,
             db::context::list_shared_context,
             db::session::start_workflow,
