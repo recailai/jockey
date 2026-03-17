@@ -1,6 +1,6 @@
+use crate::db::{get_state, with_db};
 use crate::types::*;
-use crate::db::{with_db, get_state};
-use crate::{now_ms, acp};
+use crate::{acp, now_ms};
 use rusqlite::{params, OptionalExtension};
 use tauri::State;
 
@@ -43,7 +43,11 @@ pub(crate) fn set_shared_context_internal(
     })
 }
 
-pub(crate) fn clear_shared_context_internal(state: &AppState, scope: &str, key: &str) -> Result<(), String> {
+pub(crate) fn clear_shared_context_internal(
+    state: &AppState,
+    scope: &str,
+    key: &str,
+) -> Result<(), String> {
     with_db(state, |conn| {
         conn.execute(
             "DELETE FROM shared_context_snapshots WHERE team_id = ?1 AND key = ?2",
@@ -182,7 +186,11 @@ pub(crate) fn upsert_dynamic_catalog_item(
     Ok(normalized)
 }
 
-pub(crate) fn remove_dynamic_catalog_item(state: &AppState, kind: &str, name: &str) -> Result<bool, String> {
+pub(crate) fn remove_dynamic_catalog_item(
+    state: &AppState,
+    kind: &str,
+    name: &str,
+) -> Result<bool, String> {
     let normalized = sanitize_dynamic_item_name(name)
         .ok_or_else(|| format!("invalid {} name: {}", kind, name))?;
     with_db(state, |conn| {
@@ -217,7 +225,11 @@ pub(crate) fn list_dynamic_catalog(state: &AppState, kind: &str) -> Result<Vec<S
     })
 }
 
-pub(crate) fn dynamic_catalog_contains(state: &AppState, kind: &str, name: &str) -> Result<bool, String> {
+pub(crate) fn dynamic_catalog_contains(
+    state: &AppState,
+    kind: &str,
+    name: &str,
+) -> Result<bool, String> {
     let normalized = sanitize_dynamic_item_name(name)
         .ok_or_else(|| format!("invalid {} name: {}", kind, name))?;
     with_db(state, |conn| {
@@ -252,14 +264,20 @@ pub(crate) fn resolve_model_runtime(selected_assistant: Option<&str>) -> String 
         .to_string()
 }
 
-pub(crate) fn merge_model_lists(mut discovered: Vec<String>, configured: Vec<String>) -> Vec<String> {
+pub(crate) fn merge_model_lists(
+    mut discovered: Vec<String>,
+    configured: Vec<String>,
+) -> Vec<String> {
     discovered.extend(configured);
     discovered.sort_unstable();
     discovered.dedup();
     discovered
 }
 
-pub(crate) fn list_models_for_runtime(state: &AppState, runtime: &str) -> Result<Vec<String>, String> {
+pub(crate) fn list_models_for_runtime(
+    state: &AppState,
+    runtime: &str,
+) -> Result<Vec<String>, String> {
     let configured = list_dynamic_catalog(state, "model")?;
     let discovered = acp::list_discovered_models(runtime);
     Ok(merge_model_lists(discovered, configured))

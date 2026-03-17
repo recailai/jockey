@@ -1,6 +1,6 @@
+use crate::db::{get_state, with_db};
 use crate::types::*;
-use crate::db::{with_db, get_state};
-use crate::{now_ms, resolve_chat_cwd, acp};
+use crate::{acp, now_ms, resolve_chat_cwd};
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use tauri::State;
@@ -128,8 +128,12 @@ fn role_from_row(row: &rusqlite::Row) -> rusqlite::Result<Role> {
         system_prompt: row.get(4)?,
         model: row.get(5)?,
         mode: row.get(6)?,
-        mcp_servers_json: row.get::<_, Option<String>>(7)?.unwrap_or_else(|| "[]".to_string()),
-        config_options_json: row.get::<_, Option<String>>(8)?.unwrap_or_else(|| "{}".to_string()),
+        mcp_servers_json: row
+            .get::<_, Option<String>>(7)?
+            .unwrap_or_else(|| "[]".to_string()),
+        config_options_json: row
+            .get::<_, Option<String>>(8)?
+            .unwrap_or_else(|| "{}".to_string()),
         auto_approve: row.get::<_, Option<bool>>(9)?.unwrap_or(true),
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
@@ -156,7 +160,10 @@ pub(crate) fn list_roles_for_team(state: &AppState, team_id: &str) -> Result<Vec
 }
 
 #[tauri::command]
-pub(crate) fn list_roles(state: State<'_, AppState>, team_id: Option<String>) -> Result<Vec<Role>, String> {
+pub(crate) fn list_roles(
+    state: State<'_, AppState>,
+    team_id: Option<String>,
+) -> Result<Vec<Role>, String> {
     let active = match team_id {
         Some(id) if crate::db::team_exists(get_state(&state), &id)? => id,
         _ => crate::db::ensure_default_team_id(get_state(&state))?,
@@ -164,7 +171,11 @@ pub(crate) fn list_roles(state: State<'_, AppState>, team_id: Option<String>) ->
     list_roles_for_team(get_state(&state), &active)
 }
 
-pub(crate) fn load_role(state: &AppState, team_id: &str, role_name: &str) -> Result<Option<Role>, String> {
+pub(crate) fn load_role(
+    state: &AppState,
+    team_id: &str,
+    role_name: &str,
+) -> Result<Option<Role>, String> {
     with_db(state, |conn| {
         conn.query_row(
             "SELECT id, team_id, role_name, runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, auto_approve, created_at, updated_at FROM roles WHERE team_id = ?1 AND role_name = ?2",

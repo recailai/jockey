@@ -1,9 +1,10 @@
-use crate::types::*;
-use crate::db::{get_state, team_exists, ensure_default_team_id};
-use crate::db::context::{list_dynamic_catalog, list_all_known_models};
+use crate::acp;
+use crate::chat::{is_within_workspace, relative_or_abs, resolve_attach_path, should_skip_name};
+use crate::db::context::{list_all_known_models, list_dynamic_catalog};
 use crate::db::role::list_roles_for_team;
+use crate::db::{ensure_default_team_id, get_state, team_exists};
 use crate::resolve_chat_cwd;
-use crate::chat::{resolve_attach_path, is_within_workspace, relative_or_abs, should_skip_name};
+use crate::types::*;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::OnceLock;
@@ -217,13 +218,7 @@ fn append_dynamic_catalog_cli_templates(
     let models = list_all_known_models(state);
     for model in &models {
         let value = format!("/model select {model}");
-        push_matching_cli_template(
-            out,
-            seen,
-            query_lower,
-            &value,
-            "Select configured model",
-        );
+        push_matching_cli_template(out, seen, query_lower, &value, "Select configured model");
     }
 
     let mcps = list_dynamic_catalog(state, "mcp").unwrap_or_default();
@@ -262,11 +257,17 @@ fn append_role_cli_templates(
         for value in [
             format!("/role prompt {} ", role_name),
             format!("/role delete {}", role_name),
+            format!("/role edit {} mode", role_name),
+            format!("/role edit {} mode clear", role_name),
             format!("/session reset role {}", role_name),
             format!("/context list role {}", role_name),
             format!("/model select role {} <model>", role_name),
         ] {
             push_matching_cli_template(out, seen, query_lower, &value, "Role command");
+        }
+        for mode in acp::list_discovered_modes(&role.runtime_kind) {
+            let value = format!("/role edit {} mode {}", role_name, mode);
+            push_matching_cli_template(out, seen, query_lower, &value, "Role mode (ACP)");
         }
     }
     Ok(())

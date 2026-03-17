@@ -1,9 +1,9 @@
-use crate::types::*;
-use crate::db::{with_db, get_state, load_team_workspace_path, parse_payload};
-use crate::db::context::{set_shared_context_internal, list_shared_context_internal};
+use crate::db::context::{list_shared_context_internal, set_shared_context_internal};
 use crate::db::role::{load_role, load_role_runtime_kind};
 use crate::db::workflow::load_workflow;
-use crate::{now_ms, acp};
+use crate::db::{get_state, load_team_workspace_path, parse_payload, with_db};
+use crate::types::*;
+use crate::{acp, now_ms};
 use rusqlite::params;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -36,7 +36,11 @@ pub(crate) fn record_session_event(
     })
 }
 
-pub(crate) fn update_session_status(state: &AppState, session_id: &str, status: &str) -> Result<(), String> {
+pub(crate) fn update_session_status(
+    state: &AppState,
+    session_id: &str,
+    status: &str,
+) -> Result<(), String> {
     let now = now_ms();
     with_db(state, |conn| {
         conn.execute(
@@ -49,7 +53,10 @@ pub(crate) fn update_session_status(state: &AppState, session_id: &str, status: 
 }
 
 #[tauri::command]
-pub(crate) fn list_sessions(state: State<'_, AppState>, team_id: String) -> Result<Vec<Session>, String> {
+pub(crate) fn list_sessions(
+    state: State<'_, AppState>,
+    team_id: String,
+) -> Result<Vec<Session>, String> {
     with_db(get_state(&state), |conn| {
         let mut stmt = conn
             .prepare(
@@ -213,9 +220,16 @@ pub(crate) async fn run_workflow(
         let role_data = load_role(state.inner(), &session.team_id, role_name).unwrap_or(None);
         let auto_approve = role_data.as_ref().map(|r| r.auto_approve).unwrap_or(true);
         let role_mode = role_data.as_ref().and_then(|r| r.mode.clone());
-        let role_config: Vec<(String, String)> = role_data.as_ref()
+        let role_config: Vec<(String, String)> = role_data
+            .as_ref()
             .and_then(|r| serde_json::from_str::<serde_json::Value>(&r.config_options_json).ok())
-            .and_then(|v| v.as_object().map(|m| m.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string())).collect()))
+            .and_then(|v| {
+                v.as_object().map(|m| {
+                    m.iter()
+                        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                        .collect()
+                })
+            })
             .unwrap_or_default();
         let acp_result = acp::execute_runtime(
             &runtime_kind,

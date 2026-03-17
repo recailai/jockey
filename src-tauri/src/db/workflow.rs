@@ -1,8 +1,8 @@
-use crate::types::*;
-use crate::db::{with_db, get_state};
-use crate::now_ms;
 use crate::assistant::normalize_runtime_key;
 use crate::db::role::upsert_role;
+use crate::db::{get_state, with_db};
+use crate::now_ms;
+use crate::types::*;
 use rusqlite::{params, OptionalExtension};
 use tauri::State;
 use uuid::Uuid;
@@ -49,7 +49,10 @@ pub(crate) fn create_workflow(
 }
 
 #[tauri::command]
-pub(crate) fn list_workflows(state: State<'_, AppState>, team_id: String) -> Result<Vec<Workflow>, String> {
+pub(crate) fn list_workflows(
+    state: State<'_, AppState>,
+    team_id: String,
+) -> Result<Vec<Workflow>, String> {
     with_db(get_state(&state), |conn| {
         let mut stmt = conn
             .prepare(
@@ -170,7 +173,10 @@ pub(crate) fn ensure_quick_workflow(
     )
 }
 
-pub(crate) fn latest_workflow_id(state: State<'_, AppState>, team_id: &str) -> Result<Option<String>, String> {
+pub(crate) fn latest_workflow_id(
+    state: State<'_, AppState>,
+    team_id: &str,
+) -> Result<Option<String>, String> {
     with_db(get_state(&state), |conn| {
         conn.query_row(
             "SELECT id FROM workflows WHERE team_id = ?1 ORDER BY updated_at DESC LIMIT 1",

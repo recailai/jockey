@@ -29,21 +29,56 @@ pub struct AcpPromptResult {
 #[derive(Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum AcpEvent {
-    TextDelta { text: String },
-    ThoughtDelta { text: String },
-    ToolCall { tool_call_id: String, title: String, tool_kind: String, status: String },
-    ToolCallUpdate { tool_call_id: String, status: Option<String>, title: Option<String>, content: Option<Vec<Value>> },
-    Plan { entries: Vec<Value> },
-    PermissionRequest { request_id: String, title: String, description: Option<String>, options: Vec<Value> },
-    ModeUpdate { mode_id: String },
-    ConfigUpdate { options: Vec<Value> },
-    SessionInfo { title: Option<String> },
-    AvailableCommands { commands: Vec<Value> },
-    AvailableModes { modes: Vec<Value>, current: Option<String> },
+    TextDelta {
+        text: String,
+    },
+    ThoughtDelta {
+        text: String,
+    },
+    ToolCall {
+        tool_call_id: String,
+        title: String,
+        tool_kind: String,
+        status: String,
+    },
+    ToolCallUpdate {
+        tool_call_id: String,
+        status: Option<String>,
+        title: Option<String>,
+        content: Option<Vec<Value>>,
+    },
+    Plan {
+        entries: Vec<Value>,
+    },
+    PermissionRequest {
+        request_id: String,
+        title: String,
+        description: Option<String>,
+        options: Vec<Value>,
+    },
+    ModeUpdate {
+        mode_id: String,
+    },
+    ConfigUpdate {
+        options: Vec<Value>,
+    },
+    SessionInfo {
+        title: Option<String>,
+    },
+    AvailableCommands {
+        commands: Vec<Value>,
+    },
+    AvailableModes {
+        modes: Vec<Value>,
+        current: Option<String>,
+    },
 }
 
-static PERMISSION_REQUESTS: OnceLock<DashMap<String, oneshot::Sender<acp::RequestPermissionOutcome>>> = OnceLock::new();
-pub(super) fn permission_requests() -> &'static DashMap<String, oneshot::Sender<acp::RequestPermissionOutcome>> {
+static PERMISSION_REQUESTS: OnceLock<
+    DashMap<String, oneshot::Sender<acp::RequestPermissionOutcome>>,
+> = OnceLock::new();
+pub(super) fn permission_requests(
+) -> &'static DashMap<String, oneshot::Sender<acp::RequestPermissionOutcome>> {
     PERMISSION_REQUESTS.get_or_init(DashMap::new)
 }
 
@@ -105,6 +140,9 @@ pub(super) enum WorkerMsg {
 
 static WORKER_TX: OnceLock<mpsc::UnboundedSender<WorkerMsg>> = OnceLock::new();
 static RUNTIME_MODELS: OnceLock<DashMap<String, Vec<String>>> = OnceLock::new();
+static RUNTIME_MODES: OnceLock<DashMap<String, Vec<String>>> = OnceLock::new();
+static RUNTIME_CONFIG_OPTIONS: OnceLock<DashMap<String, Vec<Value>>> = OnceLock::new();
+static RUNTIME_AVAILABLE_COMMANDS: OnceLock<DashMap<String, Vec<Value>>> = OnceLock::new();
 
 pub(super) fn worker_tx() -> &'static mpsc::UnboundedSender<WorkerMsg> {
     WORKER_TX.get_or_init(|| {
@@ -125,6 +163,14 @@ fn runtime_models() -> &'static DashMap<String, Vec<String>> {
     RUNTIME_MODELS.get_or_init(DashMap::new)
 }
 
+fn runtime_modes() -> &'static DashMap<String, Vec<String>> {
+    RUNTIME_MODES.get_or_init(DashMap::new)
+}
+
+fn runtime_config_options() -> &'static DashMap<String, Vec<Value>> {
+    RUNTIME_CONFIG_OPTIONS.get_or_init(DashMap::new)
+}
+
 pub(super) fn remember_runtime_models(runtime_key: &str, mut models: Vec<String>) {
     if models.is_empty() {
         return;
@@ -134,8 +180,53 @@ pub(super) fn remember_runtime_models(runtime_key: &str, mut models: Vec<String>
     runtime_models().insert(runtime_key.to_string(), models);
 }
 
+pub(super) fn remember_runtime_modes(runtime_key: &str, mut modes: Vec<String>) {
+    if modes.is_empty() {
+        return;
+    }
+    modes.sort_unstable();
+    modes.dedup();
+    runtime_modes().insert(runtime_key.to_string(), modes);
+}
+
 pub fn list_discovered_models(runtime_key: &str) -> Vec<String> {
     runtime_models()
+        .get(runtime_key)
+        .map(|v| v.clone())
+        .unwrap_or_default()
+}
+
+pub fn list_discovered_modes(runtime_key: &str) -> Vec<String> {
+    runtime_modes()
+        .get(runtime_key)
+        .map(|v| v.clone())
+        .unwrap_or_default()
+}
+
+pub(super) fn remember_runtime_config_options(runtime_key: &str, options: Vec<Value>) {
+    if options.is_empty() {
+        return;
+    }
+    runtime_config_options().insert(runtime_key.to_string(), options);
+}
+
+pub fn list_discovered_config_options(runtime_key: &str) -> Vec<Value> {
+    runtime_config_options()
+        .get(runtime_key)
+        .map(|v| v.clone())
+        .unwrap_or_default()
+}
+
+fn runtime_available_commands() -> &'static DashMap<String, Vec<Value>> {
+    RUNTIME_AVAILABLE_COMMANDS.get_or_init(DashMap::new)
+}
+
+pub(super) fn remember_runtime_available_commands(runtime_key: &str, commands: Vec<Value>) {
+    runtime_available_commands().insert(runtime_key.to_string(), commands);
+}
+
+pub fn list_available_commands(runtime_key: &str) -> Vec<Value> {
+    runtime_available_commands()
         .get(runtime_key)
         .map(|v| v.clone())
         .unwrap_or_default()
@@ -242,7 +333,20 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
             } => {
                 let slot = get_slot_handle(runtime_key, &role_name);
                 tokio::task::spawn_local(async move {
-                    handle_prewarm(slot, runtime_key, binary, args, env, role_name, cwd, auto_approve, mcp_servers, role_mode, role_config_options).await;
+                    handle_prewarm(
+                        slot,
+                        runtime_key,
+                        binary,
+                        args,
+                        env,
+                        role_name,
+                        cwd,
+                        auto_approve,
+                        mcp_servers,
+                        role_mode,
+                        role_config_options,
+                    )
+                    .await;
                 });
             }
             WorkerMsg::Cancel {
@@ -250,12 +354,15 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 role_name,
             } => {
                 let slot = get_slot_handle(runtime_key, &role_name);
-                slot.cancel_flag.store(true, std::sync::atomic::Ordering::Release);
+                slot.cancel_flag
+                    .store(true, std::sync::atomic::Ordering::Release);
                 tokio::task::spawn_local(async move {
-                    if let Ok(guard) = slot.conn.try_lock() {
-                        if let Some(live) = guard.as_ref() {
-                            let _ = live.conn.cancel(acp::CancelNotification::new(live.session_id.clone())).await;
-                        }
+                    let guard = slot.conn.lock().await;
+                    if let Some(live) = guard.as_ref() {
+                        let _ = live
+                            .conn
+                            .cancel(acp::CancelNotification::new(live.session_id.clone()))
+                            .await;
                     }
                 });
             }
@@ -330,7 +437,8 @@ async fn handle_execute(
     role_mode: Option<String>,
     role_config_options: Vec<(String, String)>,
 ) {
-    slot.cancel_flag.store(false, std::sync::atomic::Ordering::Release);
+    slot.cancel_flag
+        .store(false, std::sync::atomic::Ordering::Release);
     let mut guard = slot.conn.lock().await;
     let resolved = resolve_cwd(&cwd);
 
@@ -344,7 +452,17 @@ async fn handle_execute(
 
     let is_cold = guard.is_none();
     if is_cold {
-        match cold_start(runtime_key, &binary, &args, &env, &resolved, auto_approve, mcp_servers).await {
+        match cold_start(
+            runtime_key,
+            &binary,
+            &args,
+            &env,
+            &resolved,
+            auto_approve,
+            mcp_servers,
+        )
+        .await
+        {
             Ok(conn) => {
                 acp_log(
                     "pool.cold_start",
@@ -380,18 +498,23 @@ async fn handle_execute(
         }
 
         if let Some(mode) = &role_mode {
-            let _ = conn.conn.set_session_mode(
-                acp::SetSessionModeRequest::new(session_id.clone(), acp::SessionModeId::from(mode.clone())),
-            ).await;
+            let _ = conn
+                .conn
+                .set_session_mode(acp::SetSessionModeRequest::new(
+                    session_id.clone(),
+                    acp::SessionModeId::from(mode.clone()),
+                ))
+                .await;
         }
         for (key, value) in &role_config_options {
-            let _ = conn.conn.set_session_config_option(
-                acp::SetSessionConfigOptionRequest::new(
+            let _ = conn
+                .conn
+                .set_session_config_option(acp::SetSessionConfigOptionRequest::new(
                     session_id.clone(),
                     acp::SessionConfigId::from(key.clone()),
                     acp::SessionConfigValueId::from(value.clone()),
-                ),
-            ).await;
+                ))
+                .await;
         }
     }
 
@@ -464,7 +587,17 @@ async fn handle_prewarm(
         "prewarm.start",
         json!({ "runtime": runtime_key, "role": role_name }),
     );
-    match cold_start(runtime_key, &binary, &args, &env, &resolved, auto_approve, mcp_servers).await {
+    match cold_start(
+        runtime_key,
+        &binary,
+        &args,
+        &env,
+        &resolved,
+        auto_approve,
+        mcp_servers,
+    )
+    .await
+    {
         Ok(conn) => {
             acp_log(
                 "prewarm.ok",
@@ -472,18 +605,23 @@ async fn handle_prewarm(
             );
             let session_id = conn.session_id.clone();
             if let Some(mode) = &role_mode {
-                let _ = conn.conn.set_session_mode(
-                    acp::SetSessionModeRequest::new(session_id.clone(), acp::SessionModeId::from(mode.clone())),
-                ).await;
+                let _ = conn
+                    .conn
+                    .set_session_mode(acp::SetSessionModeRequest::new(
+                        session_id.clone(),
+                        acp::SessionModeId::from(mode.clone()),
+                    ))
+                    .await;
             }
             for (key, value) in &role_config_options {
-                let _ = conn.conn.set_session_config_option(
-                    acp::SetSessionConfigOptionRequest::new(
+                let _ = conn
+                    .conn
+                    .set_session_config_option(acp::SetSessionConfigOptionRequest::new(
                         session_id.clone(),
                         acp::SessionConfigId::from(key.clone()),
                         acp::SessionConfigValueId::from(value.clone()),
-                    ),
-                ).await;
+                    ))
+                    .await;
             }
             *guard = Some(conn);
         }

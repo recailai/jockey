@@ -7,6 +7,11 @@ type Role = {
   systemPrompt: string; model: string | null; mode: string | null;
   mcpServersJson: string; configOptionsJson: string; autoApprove: boolean;
 };
+type RoleUpsertInput = {
+  teamId: string; roleName: string; runtimeKind: string; systemPrompt: string;
+  model: string | null; mode: string | null; mcpServersJson: string; configOptionsJson: string;
+  autoApprove: boolean;
+};
 type ToolCallState = { toolCallId: string; title: string; kind: string; status: string; content?: unknown[] };
 type PlanEntry = { title?: string; status?: string; description?: string };
 type PermissionState = { requestId: string; title: string; description: string | null; options: Array<{ optionId: string; title?: string }> };
@@ -19,6 +24,15 @@ type AcpStreamEvent = {
   modeId?: string;
   commands?: unknown[];
   modes?: Array<{ id: string; title?: string }>; current?: string | null;
+};
+type ConfigOptionValue = { value: string; name: string; description?: string };
+type ConfigOptionGroup = { group: string; name: string; options: ConfigOptionValue[] };
+type AcpConfigOption = {
+  id: string; name: string; description?: string;
+  category?: string;
+  type: "select";
+  currentValue: string;
+  options: ConfigOptionValue[] | ConfigOptionGroup[];
 };
 type AssistantRuntime = { key: string; label: string; binary: string; available: boolean; version: string | null };
 type ChatCommandResult = { ok: boolean; message: string; selectedTeamId: string | null; selectedAssistant: string | null; sessionId: string | null; payload: Record<string, unknown> };
@@ -47,6 +61,8 @@ const RUNTIME_COLOR: Record<string, string> = {
 };
 const INTERACTIVE_MOTION = "motion-safe:transition-colors motion-safe:transition-transform motion-safe:duration-150 motion-safe:ease-out active:scale-[0.98]";
 const ASSISTANT_STORAGE_KEY = "unionai.defaultAssistant";
+const DEFAULT_BACKEND_ROLE = "UnionAIAssistant";
+const DEFAULT_ROLE_ALIAS = "UnionAI";
 const MAX_MESSAGES = 500;
 const MESSAGE_RENDER_WINDOW = 280;
 const MENTION_DEBOUNCE_MS = 90;
@@ -70,7 +86,7 @@ export default function App() {
   const [slashItems, setSlashItems] = createSignal<MentionCandidate[]>([]);
   const [slashActiveIndex, setSlashActiveIndex] = createSignal(0);
   const [slashRange, setSlashRange] = createSignal<{ end: number; query: string } | null>(null);
-  const [activeRole, setActiveRole] = createSignal<string | null>(null);
+  const [activeRole, setActiveRole] = createSignal(DEFAULT_ROLE_ALIAS);
   const [submitting, setSubmitting] = createSignal(false);
   const [messages, setMessages] = createSignal<ChatMessage[]>([]);
   const [streamingMessage, setStreamingMessage] = createSignal<ChatMessage | null>(null);
@@ -102,6 +118,17 @@ export default function App() {
   const [roleFormModel, setRoleFormModel] = createSignal("");
   const [roleFormMode, setRoleFormMode] = createSignal("");
   const [roleFormAutoApprove, setRoleFormAutoApprove] = createSignal(true);
+  const [editingRoleId, setEditingRoleId] = createSignal<string | null>(null);
+  const [editRolePrompt, setEditRolePrompt] = createSignal("");
+  const [editRoleModel, setEditRoleModel] = createSignal("");
+  const [editRoleMode, setEditRoleMode] = createSignal("");
+  const [editRoleAutoApprove, setEditRoleAutoApprove] = createSignal(true);
+  const [editRoleMcpServersJson, setEditRoleMcpServersJson] = createSignal("[]");
+  const [editRoleConfigOptionsJson, setEditRoleConfigOptionsJson] = createSignal("{}");
+  const [discoveredConfigOptions, setDiscoveredConfigOptions] = createSignal<AcpConfigOption[]>([]);
+  const [roleFormConfigSelections, setRoleFormConfigSelections] = createSignal<Record<string, string>>({});
+  const [createFormConfigOptions, setCreateFormConfigOptions] = createSignal<AcpConfigOption[]>([]);
+  const [agentCommands, setAgentCommands] = createSignal<Map<string, Array<{ name: string; description: string; hint?: string }>>>(new Map());
 
   const scheduleScrollToBottom = () => {
     if (scrollRaf !== null) return;
@@ -207,6 +234,9 @@ export default function App() {
     void sendRaw(next);
   };
 
+  const isCustomRole = () => activeRole() !== DEFAULT_ROLE_ALIAS && activeRole() !== DEFAULT_BACKEND_ROLE;
+  const activeBackendRole = () => isCustomRole() ? activeRole() : DEFAULT_BACKEND_ROLE;
+
   const cancelCurrentRun = async () => {
     if (!submitting()) return;
     canceledRunToken = Math.max(canceledRunToken, runTokenSeq);
@@ -218,9 +248,10 @@ export default function App() {
     setSubmitting(false);
     pushMessage("event", "Cancellation requested.");
     const assistant = selectedAssistant();
+    const role = activeBackendRole();
     if (assistant) {
       try {
-        await invoke("cancel_acp_session", { runtimeKind: assistant, roleName: "UnionAIAssistant" });
+        await invoke("cancel_acp_session", { runtimeKind: assistant, roleName: role });
       } catch { /* best effort */ }
     }
     runNextQueued();
@@ -242,6 +273,32 @@ export default function App() {
       const rows = await invoke<Role[]>("list_roles", { teamId: null });
       setRoles(rows);
     } catch { setRoles([]); }
+  };
+
+  const fetchConfigOptions = async (runtimeKey: string): Promise<AcpConfigOption[]> => {
+    try {
+      const raw = await invoke<unknown[]>("list_discovered_config_options_cmd", { runtimeKey });
+      return raw as AcpConfigOption[];
+    } catch { return []; }
+  };
+
+  const flattenConfigValues = (opts: ConfigOptionValue[] | ConfigOptionGroup[]): ConfigOptionValue[] => {
+    if (!opts || opts.length === 0) return [];
+    if ("value" in opts[0]) return opts as ConfigOptionValue[];
+    return (opts as ConfigOptionGroup[]).flatMap((g) => g.options);
+  };
+
+  const parseAgentCommands = (raw: unknown[]): Array<{ name: string; description: string; hint?: string }> => {
+    return (raw as Array<{ name: string; description?: string; input?: { hint?: string } }>).map((c) => ({
+      name: c.name, description: c.description ?? "", hint: c.input?.hint,
+    }));
+  };
+
+  const fetchAndCacheAgentCommands = (runtimeKey: string) => {
+    void invoke<unknown[]>("list_available_commands_cmd", { runtimeKey }).then((raw) => {
+      const parsed = parseAgentCommands(raw);
+      setAgentCommands((prev) => { const next = new Map(prev); next.set(runtimeKey, parsed); return next; });
+    }).catch(() => {});
   };
 
   const setPreferredAssistant = (assistantKey: string | null) => {
@@ -386,6 +443,26 @@ export default function App() {
     setMentionOpen(true);
   };
 
+  const buildAgentSlashCandidates = (runtimeKey: string, query: string): MentionCandidate[] => {
+    const queryLower = query.toLowerCase().replace(/^\//, "");
+    const out: MentionCandidate[] = [];
+    const cmds = agentCommands().get(runtimeKey) ?? [];
+    for (const cmd of cmds) {
+      const value = `/${cmd.name}`;
+      if (queryLower && !cmd.name.toLowerCase().includes(queryLower)) continue;
+      out.push({ value, kind: "command", detail: cmd.description });
+    }
+    for (const opt of discoveredConfigOptions()) {
+      const vals = flattenConfigValues(opt.options);
+      for (const v of vals) {
+        const value = `/${opt.id} ${v.value}`;
+        if (queryLower && !value.toLowerCase().includes(queryLower)) continue;
+        out.push({ value, kind: "command", detail: `${opt.name}: ${v.name}` });
+      }
+    }
+    return out.slice(0, 30);
+  };
+
   const refreshSlashSuggestions = async (text: string, caret: number) => {
     const ctx = extractSlashContext(text, caret);
     if (!ctx) {
@@ -394,6 +471,28 @@ export default function App() {
     }
     setSlashRange(ctx);
     const seq = ++slashReqSeq;
+
+    if (isCustomRole()) {
+      const role = roles().find((r) => r.roleName === activeRole());
+      if (role) {
+        if (discoveredConfigOptions().length === 0) {
+          const opts = await fetchConfigOptions(role.runtimeKind);
+          if (seq !== slashReqSeq) return;
+          setDiscoveredConfigOptions(opts);
+        }
+        if ((agentCommands().get(role.runtimeKind) ?? []).length === 0) {
+          fetchAndCacheAgentCommands(role.runtimeKind);
+        }
+        const candidates = buildAgentSlashCandidates(role.runtimeKind, ctx.query);
+        if (seq !== slashReqSeq) return;
+        if (candidates.length === 0) { closeSlashMenu(); return; }
+        setSlashItems(candidates);
+        setSlashActiveIndex(0);
+        setSlashOpen(true);
+        return;
+      }
+    }
+
     try {
       const rows = await invoke<MentionCandidate[]>("complete_cli", {
         query: ctx.query,
@@ -464,28 +563,46 @@ export default function App() {
     closeSlashMenu();
 
     const isCommand = text.startsWith("/");
+    const inRoleContext = isCustomRole();
+    const isUnionAiCommand = isCommand && !inRoleContext;
+    const isRoleSlashCmd = isCommand && inRoleContext;
     let routedText = text;
 
     if (!isCommand) {
       const mentionMatch = text.match(/^@(\S+)/);
       if (mentionMatch) {
         const target = mentionMatch[1];
-        if (target === "assistant") {
-          setActiveRole(null);
+        if (
+          target === "assistant" ||
+          target === DEFAULT_ROLE_ALIAS ||
+          target === DEFAULT_BACKEND_ROLE
+        ) {
+          setActiveRole(DEFAULT_ROLE_ALIAS);
+          routedText = text.replace(/^@\S+\s*/, "").trim();
         } else {
           setActiveRole(target);
+          setDiscoveredConfigOptions([]);
+          const targetRole = roles().find((r) => r.roleName === target);
+          if (targetRole) {
+            void fetchConfigOptions(targetRole.runtimeKind).then(setDiscoveredConfigOptions);
+            fetchAndCacheAgentCommands(targetRole.runtimeKind);
+          }
         }
-      } else if (activeRole() && !text.startsWith("@")) {
+      } else if (isCustomRole() && !text.startsWith("@")) {
         routedText = `@${activeRole()} ${text}`;
       }
+    }
+
+    if (isRoleSlashCmd) {
+      routedText = `@${activeRole()} ${text}`;
     }
 
     if (!silent) pushMessage("user", text);
     setSubmitting(true);
 
-    const isAgentCmd = isCommand && activeRole() && /^\/(plan|act|auto|cancel)\b/.test(text);
+    const isAgentCmd = isCommand && !inRoleContext && /^\/(plan|act|auto|cancel)\b/.test(text);
     if (isAgentCmd) {
-      const role = activeRole()!;
+      const role = activeBackendRole();
       const assistant = selectedAssistant();
       const cmd = text.split(/\s+/)[0].slice(1);
       try {
@@ -506,7 +623,7 @@ export default function App() {
     }
 
     let streamStarted = false;
-    if (!isCommand && selectedAssistant()) {
+    if ((!isUnionAiCommand) && selectedAssistant()) {
       streamAccepting = true;
       startStream();
       streamStarted = true;
@@ -558,10 +675,10 @@ export default function App() {
     if (submitting()) {
       queuedInputs.push(text);
       setInput("");
-      pushMessage("system", `Queued request (${queuedInputs.length}). Press Esc to cancel current run.`);
+      pushMessage("system", `Queued (${queuedInputs.length}): ${text}`);
       return;
     }
-    if (!selectedAssistant() && !activeRole() && !text.startsWith("/")) {
+    if (!selectedAssistant() && !isCustomRole() && !text.startsWith("/")) {
       pushMessage("system", "Select an assistant or a role first.");
       return;
     }
@@ -677,7 +794,79 @@ export default function App() {
     if (model) await sendRaw(`/role edit ${name} model ${model}`, true);
     if (mode) await sendRaw(`/role edit ${name} mode ${mode}`, true);
     if (!autoApprove) await sendRaw(`/role edit ${name} auto-approve false`, true);
+    const cfgSelections = roleFormConfigSelections();
+    for (const [cfgId, cfgVal] of Object.entries(cfgSelections)) {
+      if (cfgVal) await sendRaw(`/role edit ${name} config ${cfgId} ${cfgVal}`, true);
+    }
+    setRoleFormConfigSelections({});
+    setCreateFormConfigOptions([]);
     await refreshRoles();
+  };
+
+  const openRoleEditor = (role: Role) => {
+    setShowRoleForm(false);
+    setEditingRoleId(role.id);
+    setEditRolePrompt(role.systemPrompt ?? "");
+    setEditRoleModel(role.model ?? "");
+    setEditRoleMode(role.mode ?? "");
+    setEditRoleAutoApprove(role.autoApprove);
+    setEditRoleMcpServersJson(role.mcpServersJson || "[]");
+    setEditRoleConfigOptionsJson(role.configOptionsJson || "{}");
+    void fetchConfigOptions(role.runtimeKind).then(setDiscoveredConfigOptions);
+  };
+
+  const closeRoleEditor = () => {
+    setEditingRoleId(null);
+  };
+
+  const editingRole = () => {
+    const id = editingRoleId();
+    if (!id) return null;
+    return roles().find((role) => role.id === id) ?? null;
+  };
+
+  const handleSaveRoleEdit = async () => {
+    const role = editingRole();
+    if (!role) return;
+    let parsedMcp: unknown;
+    let parsedConfig: unknown;
+    try {
+      parsedMcp = JSON.parse(editRoleMcpServersJson().trim() || "[]");
+      if (!Array.isArray(parsedMcp)) throw new Error("MCP servers JSON must be an array");
+    } catch (e) {
+      pushMessage("event", `Invalid MCP JSON: ${String(e)}`);
+      return;
+    }
+    try {
+      parsedConfig = JSON.parse(editRoleConfigOptionsJson().trim() || "{}");
+      if (!parsedConfig || typeof parsedConfig !== "object" || Array.isArray(parsedConfig)) {
+        throw new Error("Config options JSON must be an object");
+      }
+    } catch (e) {
+      pushMessage("event", `Invalid config JSON: ${String(e)}`);
+      return;
+    }
+
+    const payload: RoleUpsertInput = {
+      teamId: role.teamId,
+      roleName: role.roleName,
+      runtimeKind: role.runtimeKind,
+      systemPrompt: editRolePrompt().trim(),
+      model: editRoleModel().trim() || null,
+      mode: editRoleMode().trim() || null,
+      mcpServersJson: JSON.stringify(parsedMcp),
+      configOptionsJson: JSON.stringify(parsedConfig),
+      autoApprove: editRoleAutoApprove(),
+    };
+
+    try {
+      await invoke<Role>("upsert_role_cmd", { input: payload });
+      closeRoleEditor();
+      await refreshRoles();
+      pushMessage("event", `role updated: ${role.roleName}`);
+    } catch (e) {
+      pushMessage("event", String(e));
+    }
   };
 
   onMount(() => {
@@ -759,6 +948,23 @@ export default function App() {
             if (e.modes) setAgentModes(e.modes);
             if (e.current !== undefined) setCurrentMode(e.current ?? null);
             break;
+          case "availableCommands":
+            if (e.commands) {
+              const raw = ev.payload as unknown as { role?: string };
+              const roleName = raw.role;
+              if (roleName) {
+                const role = roles().find((r) => r.roleName === roleName);
+                if (role) {
+                  const parsed = parseAgentCommands(e.commands as unknown[]);
+                  setAgentCommands((prev) => {
+                    const next = new Map(prev);
+                    next.set(role.runtimeKind, parsed);
+                    return next;
+                  });
+                }
+              }
+            }
+            break;
           default:
             break;
         }
@@ -818,6 +1024,7 @@ export default function App() {
               <button
                 onClick={() => setShowRoleForm((v) => {
                   const next = !v;
+                  if (next) closeRoleEditor();
                   if (next && selectedAssistant()) setRoleFormRuntime(selectedAssistant()!);
                   return next;
                 })}
@@ -838,7 +1045,11 @@ export default function App() {
                 />
                 <select
                   value={roleFormRuntime()}
-                  onChange={(e) => setRoleFormRuntime(e.currentTarget.value)}
+                  onChange={(e) => {
+                    setRoleFormRuntime(e.currentTarget.value);
+                    setRoleFormConfigSelections({});
+                    void fetchConfigOptions(e.currentTarget.value).then(setCreateFormConfigOptions);
+                  }}
                   class="h-9 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 text-sm"
                 >
                   <For each={RUNTIMES}>{(r) => <option value={r}>{r}</option>}</For>
@@ -850,22 +1061,81 @@ export default function App() {
                   placeholder="System prompt for this role…"
                   class="w-full resize-none rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 py-2 text-sm"
                 />
-                <input
-                  value={roleFormModel()}
-                  onInput={(e) => setRoleFormModel(e.currentTarget.value)}
-                  placeholder="Model (optional)"
-                  class="h-9 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 text-sm"
-                />
-                <select
-                  value={roleFormMode()}
-                  onChange={(e) => setRoleFormMode(e.currentTarget.value)}
-                  class="h-9 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 text-sm"
-                >
-                  <option value="">Mode (default)</option>
-                  <option value="plan">plan</option>
-                  <option value="act">act</option>
-                  <option value="auto">auto</option>
-                </select>
+                <For each={createFormConfigOptions()}>
+                  {(opt) => {
+                    const values = () => flattenConfigValues(opt.options);
+                    const selected = () => roleFormConfigSelections()[opt.id] ?? "";
+                    const isModel = () => opt.category === "model" || opt.id === "model";
+                    const isMode = () => opt.category === "mode" || opt.id === "mode";
+                    return (
+                      <Show when={!isModel() && !isMode()}>
+                        <div class="flex flex-col gap-0.5">
+                          <label class="text-[10px] text-[var(--ui-muted)]">{opt.name}{opt.description ? ` — ${opt.description}` : ""}</label>
+                          <select
+                            value={selected()}
+                            onChange={(e) => setRoleFormConfigSelections((prev) => ({ ...prev, [opt.id]: e.currentTarget.value }))}
+                            class="h-8 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2 text-xs"
+                          >
+                            <option value="">(default: {opt.currentValue})</option>
+                            <For each={values()}>{(v) => <option value={v.value}>{v.name}{v.description ? ` — ${v.description}` : ""}</option>}</For>
+                          </select>
+                        </div>
+                      </Show>
+                    );
+                  }}
+                </For>
+                <Show when={createFormConfigOptions().some((o) => o.category === "model" || o.id === "model")}>
+                  {(() => {
+                    const modelOpt = () => createFormConfigOptions().find((o) => o.category === "model" || o.id === "model")!;
+                    const values = () => flattenConfigValues(modelOpt().options);
+                    return (
+                      <select
+                        value={roleFormModel()}
+                        onChange={(e) => setRoleFormModel(e.currentTarget.value)}
+                        class="h-9 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 text-sm"
+                      >
+                        <option value="">Model (default: {modelOpt().currentValue})</option>
+                        <For each={values()}>{(v) => <option value={v.value}>{v.name}{v.description ? ` — ${v.description}` : ""}</option>}</For>
+                      </select>
+                    );
+                  })()}
+                </Show>
+                <Show when={!createFormConfigOptions().some((o) => o.category === "model" || o.id === "model")}>
+                  <input
+                    value={roleFormModel()}
+                    onInput={(e) => setRoleFormModel(e.currentTarget.value)}
+                    placeholder="Model (optional)"
+                    class="h-9 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 text-sm"
+                  />
+                </Show>
+                <Show when={createFormConfigOptions().some((o) => o.category === "mode" || o.id === "mode")}>
+                  {(() => {
+                    const modeOpt = () => createFormConfigOptions().find((o) => o.category === "mode" || o.id === "mode")!;
+                    const values = () => flattenConfigValues(modeOpt().options);
+                    return (
+                      <select
+                        value={roleFormMode()}
+                        onChange={(e) => setRoleFormMode(e.currentTarget.value)}
+                        class="h-9 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 text-sm"
+                      >
+                        <option value="">Mode (default: {modeOpt().currentValue})</option>
+                        <For each={values()}>{(v) => <option value={v.value}>{v.name}{v.description ? ` — ${v.description}` : ""}</option>}</For>
+                      </select>
+                    );
+                  })()}
+                </Show>
+                <Show when={!createFormConfigOptions().some((o) => o.category === "mode" || o.id === "mode")}>
+                  <select
+                    value={roleFormMode()}
+                    onChange={(e) => setRoleFormMode(e.currentTarget.value)}
+                    class="h-9 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 text-sm"
+                  >
+                    <option value="">Mode (default)</option>
+                    <option value="plan">plan</option>
+                    <option value="act">act</option>
+                    <option value="auto">auto</option>
+                  </select>
+                </Show>
                 <label class="flex items-center gap-2 text-xs text-[var(--ui-muted)]">
                   <input
                     type="checkbox"
@@ -884,6 +1154,114 @@ export default function App() {
               </div>
             </Show>
 
+            <Show when={editingRole()}>
+              {(role) => (
+                <div class="mb-2 space-y-1.5 rounded-lg border border-[var(--ui-border)] bg-[var(--ui-panel-2)] p-2">
+                  <div class="flex items-center justify-between">
+                    <div class="text-xs font-semibold text-[var(--ui-text)]">Edit {role().roleName}</div>
+                    <button
+                      onClick={closeRoleEditor}
+                      class={`rounded px-1.5 py-0.5 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)] ${INTERACTIVE_MOTION}`}
+                    >
+                      close
+                    </button>
+                  </div>
+                  <div class="text-[10px] text-[var(--ui-muted)]">provider locked: {role().runtimeKind}</div>
+                  <textarea
+                    value={editRolePrompt()}
+                    onInput={(e) => setEditRolePrompt(e.currentTarget.value)}
+                    rows={3}
+                    placeholder="System prompt"
+                    class="w-full resize-none rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 py-2 text-sm"
+                  />
+                  {(() => {
+                    const opts = discoveredConfigOptions();
+                    const currentCfg = (): Record<string, string> => {
+                      try { return JSON.parse(editRoleConfigOptionsJson() || "{}"); } catch { return {}; }
+                    };
+                    const updateCfg = (id: string, val: string) => {
+                      const map = { ...currentCfg() };
+                      if (val) map[id] = val; else delete map[id];
+                      setEditRoleConfigOptionsJson(JSON.stringify(map));
+                    };
+                    const modelOpt = () => opts.find((o) => o.category === "model" || o.id === "model");
+                    const modeOpt = () => opts.find((o) => o.category === "mode" || o.id === "mode");
+                    const otherOpts = () => opts.filter((o) => o.id !== "model" && o.id !== "mode" && o.category !== "model" && o.category !== "mode");
+                    return (
+                      <>
+                        <Show when={modelOpt()} fallback={
+                          <input value={editRoleModel()} onInput={(e) => setEditRoleModel(e.currentTarget.value)} placeholder="Model (optional)" class="h-9 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 text-sm" />
+                        }>
+                          {(mo) => {
+                            const values = () => flattenConfigValues(mo().options);
+                            return (
+                              <select value={editRoleModel() || mo().currentValue} onChange={(e) => setEditRoleModel(e.currentTarget.value)} class="h-9 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 text-sm">
+                                <option value="">Model (default: {mo().currentValue})</option>
+                                <For each={values()}>{(v) => <option value={v.value}>{v.name}{v.description ? ` — ${v.description}` : ""}</option>}</For>
+                              </select>
+                            );
+                          }}
+                        </Show>
+                        <Show when={modeOpt()} fallback={
+                          <input value={editRoleMode()} onInput={(e) => setEditRoleMode(e.currentTarget.value)} placeholder="Mode (optional)" class="h-9 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 text-sm" />
+                        }>
+                          {(mo) => {
+                            const values = () => flattenConfigValues(mo().options);
+                            return (
+                              <select value={editRoleMode() || mo().currentValue} onChange={(e) => setEditRoleMode(e.currentTarget.value)} class="h-9 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 text-sm">
+                                <option value="">Mode (default: {mo().currentValue})</option>
+                                <For each={values()}>{(v) => <option value={v.value}>{v.name}{v.description ? ` — ${v.description}` : ""}</option>}</For>
+                              </select>
+                            );
+                          }}
+                        </Show>
+                        <For each={otherOpts()}>
+                          {(opt) => {
+                            const values = () => flattenConfigValues(opt.options);
+                            const selected = () => currentCfg()[opt.id] ?? "";
+                            return (
+                              <div class="flex flex-col gap-0.5">
+                                <label class="text-[10px] text-[var(--ui-muted)]">{opt.name}{opt.description ? ` — ${opt.description}` : ""}</label>
+                                <select value={selected()} onChange={(e) => updateCfg(opt.id, e.currentTarget.value)} class="h-8 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2 text-xs">
+                                  <option value="">(default: {opt.currentValue})</option>
+                                  <For each={values()}>{(v) => <option value={v.value}>{v.name}{v.description ? ` — ${v.description}` : ""}</option>}</For>
+                                </select>
+                              </div>
+                            );
+                          }}
+                        </For>
+                        <Show when={opts.length === 0}>
+                          <div class="text-[10px] text-[var(--ui-muted)] italic">No config options discovered yet. Run the role once to discover agent capabilities.</div>
+                        </Show>
+                      </>
+                    );
+                  })()}
+                  <textarea
+                    value={editRoleMcpServersJson()}
+                    onInput={(e) => setEditRoleMcpServersJson(e.currentTarget.value)}
+                    rows={2}
+                    placeholder='MCP servers JSON (e.g. [{"name":"..." }])'
+                    class="w-full resize-y rounded border border-[var(--ui-border)] bg-[var(--ui-panel)] px-2.5 py-2 text-xs font-mono"
+                  />
+                  <label class="flex items-center gap-2 text-xs text-[var(--ui-muted)]">
+                    <input
+                      type="checkbox"
+                      checked={editRoleAutoApprove()}
+                      onChange={(e) => setEditRoleAutoApprove(e.currentTarget.checked)}
+                      class="rounded"
+                    />
+                    Auto-approve permissions
+                  </label>
+                  <button
+                    onClick={() => void handleSaveRoleEdit()}
+                    class={`h-9 w-full rounded bg-[var(--ui-accent)] text-sm font-semibold text-[var(--ui-accent-text)] ${INTERACTIVE_MOTION}`}
+                  >
+                    Save Role
+                  </button>
+                </div>
+              )}
+            </Show>
+
             {/* Roles list */}
             <div class="flex-1 space-y-1 overflow-auto">
               <For each={roles()}>
@@ -896,27 +1274,22 @@ export default function App() {
                         <Show when={role.model}><span class="rounded bg-blue-500/20 px-1 text-[9px] text-blue-200">{role.model}</span></Show>
                         <Show when={role.mode}><span class="rounded bg-indigo-500/20 px-1 text-[9px] text-indigo-200">{role.mode}</span></Show>
                         <Show when={!role.autoApprove}><span class="rounded bg-amber-500/20 px-1 text-[9px] text-amber-200">manual</span></Show>
+                        {(() => {
+                          try {
+                            const cfg = JSON.parse(role.configOptionsJson || "{}");
+                            const keys = Object.keys(cfg).filter((k) => k !== "model" && k !== "mode" && cfg[k]);
+                            return keys.length > 0 ? <span class="rounded bg-teal-500/20 px-1 text-[9px] text-teal-200">{keys.length} cfg</span> : null;
+                          } catch { return null; }
+                        })()}
                       </div>
                       <p class="truncate text-xs text-[var(--ui-muted)]">{role.systemPrompt}</p>
                     </div>
                     <div class="flex shrink-0 gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
                       <button
-                        onClick={() => { setActiveRole(role.roleName); inputEl?.focus(); }}
-                        class={`rounded px-1.5 py-0.5 text-xs ${activeRole() === role.roleName ? "text-blue-300" : "text-[var(--ui-muted)] hover:text-[var(--ui-text)]"} ${INTERACTIVE_MOTION}`}
+                        onClick={() => openRoleEditor(role)}
+                        class={`rounded px-1.5 py-0.5 text-xs ${editingRoleId() === role.id ? "text-blue-300" : "text-[var(--ui-muted)] hover:text-[var(--ui-text)]"} ${INTERACTIVE_MOTION}`}
                       >
-                        {activeRole() === role.roleName ? "active" : "chat"}
-                      </button>
-                      <button
-                        onClick={() => { void sendRaw(`/role copy ${role.roleName} ${role.roleName}Copy`, true); setTimeout(() => void refreshRoles(), 500); }}
-                        class={`rounded px-1.5 py-0.5 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)] ${INTERACTIVE_MOTION}`}
-                      >
-                        copy
-                      </button>
-                      <button
-                        onClick={() => { void sendRaw(`/role delete ${role.roleName}`, true); setTimeout(() => void refreshRoles(), 300); }}
-                        class={`rounded px-1.5 py-0.5 text-xs text-rose-400/60 hover:text-rose-300 ${INTERACTIVE_MOTION}`}
-                      >
-                        del
+                        {editingRoleId() === role.id ? "editing" : "edit"}
                       </button>
                     </div>
                   </div>
@@ -945,21 +1318,21 @@ export default function App() {
           <div class="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--ui-border)] px-4 py-2">
             <div>
               <h1 class="text-sm font-semibold">
-                <Show when={activeRole()} fallback="UnionAI Chat">
+                <Show when={isCustomRole()} fallback="UnionAI Chat">
                   <span class="text-blue-300">{activeRole()}</span>
                   <span class="text-[var(--ui-muted)]"> @ </span>
                   <span class={RUNTIME_COLOR[selectedAssistant() ?? ""] ?? "text-[var(--ui-muted)]"}>{selectedAssistant() ?? "?"}</span>
                 </Show>
               </h1>
               <p class="text-xs text-[var(--ui-muted)]">
-                <Show when={!activeRole()}>
+                <Show when={!isCustomRole()}>
                   <span>Assistant: </span>
                   <span class={selectedAssistant() ? RUNTIME_COLOR[selectedAssistant()!] ?? "text-emerald-400" : "text-rose-400"}>
                     {selectedAssistant() ?? "no assistant"}
                   </span>
                 </Show>
                 <Show when={currentMode()}>
-                  <span class={activeRole() ? "" : "ml-2"}>
+                  <span class={isCustomRole() ? "" : "ml-2"}>
                     <span class="rounded bg-indigo-500/20 px-1 text-[10px] text-indigo-200">{currentMode()}</span>
                   </span>
                 </Show>
@@ -973,7 +1346,7 @@ export default function App() {
                       class={`min-h-7 rounded border px-2 py-0.5 text-xs ${INTERACTIVE_MOTION} ${currentMode() === m.id ? "border-[var(--ui-accent)] bg-[var(--ui-accent-soft)] text-[var(--ui-text)]" : "border-[var(--ui-border)] text-[var(--ui-muted)] hover:text-[var(--ui-text)]"}`}
                       onClick={() => {
                         const assistant = selectedAssistant();
-                        const role = activeRole() ?? "UnionAIAssistant";
+                        const role = activeBackendRole();
                         if (assistant) void invoke("set_acp_mode", { runtimeKind: assistant, roleName: role, modeId: m.id });
                       }}
                     >
@@ -1100,11 +1473,11 @@ export default function App() {
               <div class="flex h-10 items-center rounded-lg border border-[var(--ui-border)] bg-[var(--ui-panel-2)]">
                 <button
                   type="button"
-                  onClick={() => setActiveRole(null)}
-                  class={`shrink-0 pl-3 pr-1.5 text-sm font-mono ${activeRole() ? "text-blue-300 hover:text-blue-200" : "text-[var(--ui-muted)]"}`}
-                  title={activeRole() ? "Click to exit role context" : "UnionAI assistant mode"}
+                  onClick={() => setActiveRole(DEFAULT_ROLE_ALIAS)}
+                  class={`shrink-0 pl-3 pr-1.5 text-sm font-mono ${isCustomRole() ? "text-blue-300 hover:text-blue-200" : "text-[var(--ui-muted)]"}`}
+                  title={isCustomRole() ? "Click to return to UnionAI" : "UnionAI mode"}
                 >
-                  {activeRole() ?? "UnionAI"} &gt;
+                  {activeRole()} &gt;
                 </button>
                 <input
                   ref={(el) => { inputEl = el; }}
@@ -1127,7 +1500,7 @@ export default function App() {
                     }
                     refreshInputCompletions(input(), e.currentTarget.selectionStart ?? input().length);
                   }}
-                  placeholder={activeRole() ? `Chat with ${activeRole()}... (/plan /act /auto /cancel)` : "Natural language / commands / @role @file:path"}
+                  placeholder={isCustomRole() ? `Chat with ${activeRole()}... (type / for agent commands)` : "Natural language / commands / @role @file:path"}
                   class="h-full flex-1 bg-transparent pr-3 text-sm outline-none"
                 />
               </div>

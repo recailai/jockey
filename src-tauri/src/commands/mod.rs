@@ -1,13 +1,13 @@
 pub(crate) mod completion;
 
-use crate::types::*;
-use crate::db::{with_db, get_state, team_exists, ensure_default_team_id};
+use crate::assistant::normalize_runtime_key;
 use crate::db::context::*;
 use crate::db::role::*;
 use crate::db::session::*;
 use crate::db::workflow::*;
-use crate::assistant::normalize_runtime_key;
-use crate::{now_ms, resolve_chat_cwd, acp, build_unionai_tool_prompt};
+use crate::db::{ensure_default_team_id, get_state, team_exists, with_db};
+use crate::types::*;
+use crate::{acp, build_unionai_tool_prompt, now_ms, resolve_chat_cwd};
 use rusqlite::params;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
@@ -226,7 +226,11 @@ pub(crate) async fn apply_chat_command(
                 result.message = format!("unsupported mcp server: {}", server);
                 result.payload = json!({ "supported": supported });
             } else {
-                let value = if *mode == "enable" { "enabled" } else { "disabled" };
+                let value = if *mode == "enable" {
+                    "enabled"
+                } else {
+                    "disabled"
+                };
                 let entry = set_shared_context(
                     state.clone(),
                     "assistant:main".to_string(),
@@ -276,7 +280,11 @@ pub(crate) async fn apply_chat_command(
                 result.message = format!("unsupported skill: {}", skill);
                 result.payload = json!({ "supported": supported });
             } else {
-                let value = if *mode == "enable" { "enabled" } else { "disabled" };
+                let value = if *mode == "enable" {
+                    "enabled"
+                } else {
+                    "disabled"
+                };
                 let entry = set_shared_context(
                     state.clone(),
                     "assistant:main".to_string(),
@@ -291,11 +299,8 @@ pub(crate) async fn apply_chat_command(
             let normalized_runtime = normalize_runtime_key(runtime_kind)
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| (*runtime_kind).to_string());
-            let workflow = ensure_quick_workflow(
-                state.clone(),
-                &active_team_id,
-                &normalized_runtime,
-            )?;
+            let workflow =
+                ensure_quick_workflow(state.clone(), &active_team_id, &normalized_runtime)?;
             result.message = format!("initialized quick workflow: {}", workflow.name);
             result.selected_assistant = Some(normalized_runtime.clone());
             result.payload = json!({ "workspaceId": active_team_id.clone(), "workflow": workflow });
@@ -332,7 +337,10 @@ pub(crate) async fn apply_chat_command(
             )
             .await?;
             result.message = if auto_created.is_some() {
-                format!("run started with auto-created quick workflow: {}", session.id)
+                format!(
+                    "run started with auto-created quick workflow: {}",
+                    session.id
+                )
             } else {
                 format!("run started: {}", session.id)
             };
@@ -411,7 +419,11 @@ pub(crate) async fn apply_chat_command(
             result.payload = json!({ "roleName": role_name });
         }
         ["/role", "edit", role_name, "model", value @ ..] => {
-            let model_value = if value.is_empty() { None } else { Some(value.join(" ")) };
+            let model_value = if value.is_empty() {
+                None
+            } else {
+                Some(value.join(" "))
+            };
             with_db(get_state(&state), |conn| {
                 conn.execute(
                     "UPDATE roles SET model = ?1, updated_at = ?2 WHERE team_id = ?3 AND role_name = ?4",
@@ -422,17 +434,54 @@ pub(crate) async fn apply_chat_command(
             result.message = format!("role {} model updated", role_name);
             result.payload = json!({ "role": role_name, "model": model_value });
         }
-        ["/role", "edit", role_name, "mode", value] => {
-            let mode_value = if *value == "none" || *value == "clear" { None } else { Some((*value).to_string()) };
-            with_db(get_state(&state), |conn| {
-                conn.execute(
-                    "UPDATE roles SET mode = ?1, updated_at = ?2 WHERE team_id = ?3 AND role_name = ?4",
-                    params![mode_value, now_ms(), &active_team_id, role_name],
-                ).map_err(|e| e.to_string())?;
-                Ok(())
-            })?;
-            result.message = format!("role {} mode updated", role_name);
-            result.payload = json!({ "role": role_name, "mode": mode_value });
+        ["/role", "edit", role_name, "mode", value @ ..] => {
+            let runtime = resolve_role_runtime(state.clone(), &active_team_id, role_name)?;
+            let available_modes = acp::list_discovered_modes(&runtime);
+            if value.is_empty() {
+                result.message = format!(
+                    "role {} available modes for {}: {}",
+                    role_name,
+                    runtime,
+                    if available_modes.is_empty() {
+                        "<unknown yet, run the role once to discover>".to_string()
+                    } else {
+                        available_modes.join(", ")
+                    }
+                );
+                result.payload = json!({ "role": role_name, "runtime": runtime, "availableModes": available_modes });
+            } else {
+                let requested_mode = value.join(" ");
+                let mode_value = if requested_mode.eq_ignore_ascii_case("none")
+                    || requested_mode.eq_ignore_ascii_case("clear")
+                {
+                    None
+                } else {
+                    Some(requested_mode.clone())
+                };
+                if let Some(ref selected) = mode_value {
+                    if !available_modes.is_empty()
+                        && !available_modes
+                            .iter()
+                            .any(|m| m.eq_ignore_ascii_case(selected))
+                    {
+                        result.ok = false;
+                        result.message =
+                            format!("unsupported mode '{}' for runtime {}", selected, runtime);
+                        result.payload = json!({ "role": role_name, "runtime": runtime, "availableModes": available_modes });
+                    }
+                }
+                if result.ok {
+                    with_db(get_state(&state), |conn| {
+                        conn.execute(
+                            "UPDATE roles SET mode = ?1, updated_at = ?2 WHERE team_id = ?3 AND role_name = ?4",
+                            params![mode_value, now_ms(), &active_team_id, role_name],
+                        ).map_err(|e| e.to_string())?;
+                        Ok(())
+                    })?;
+                    result.message = format!("role {} mode updated", role_name);
+                    result.payload = json!({ "role": role_name, "mode": mode_value });
+                }
+            }
         }
         ["/role", "edit", role_name, "auto-approve", value] => {
             let auto = *value == "true" || *value == "1" || *value == "yes";
@@ -453,7 +502,8 @@ pub(crate) async fn apply_chat_command(
                     "SELECT mcp_servers_json FROM roles WHERE team_id = ?1 AND role_name = ?2",
                     params![&active_team_id, role_name],
                     |row| row.get::<_, String>(0),
-                ).map_err(|e| e.to_string())
+                )
+                .map_err(|e| e.to_string())
             })?;
             let mut servers: Vec<Value> = serde_json::from_str(&current).unwrap_or_default();
             let new_server: Value = serde_json::from_str(&json_str).map_err(|e| e.to_string())?;
@@ -475,7 +525,8 @@ pub(crate) async fn apply_chat_command(
                     "SELECT mcp_servers_json FROM roles WHERE team_id = ?1 AND role_name = ?2",
                     params![&active_team_id, role_name],
                     |row| row.get::<_, String>(0),
-                ).map_err(|e| e.to_string())
+                )
+                .map_err(|e| e.to_string())
             })?;
             let mut servers: Vec<Value> = serde_json::from_str(&current).unwrap_or_default();
             servers.retain(|s| s.get("name").and_then(|n| n.as_str()) != Some(name));
@@ -498,7 +549,18 @@ pub(crate) async fn apply_chat_command(
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?, row.get::<_, bool>(6)?)),
                 ).map_err(|e| e.to_string())
             })?;
-            let role = upsert_role(state.clone(), active_team_id.clone(), (*dst_name).to_string(), src.0, src.1, src.2, src.3, Some(src.4), Some(src.5), Some(src.6))?;
+            let role = upsert_role(
+                state.clone(),
+                active_team_id.clone(),
+                (*dst_name).to_string(),
+                src.0,
+                src.1,
+                src.2,
+                src.3,
+                Some(src.4),
+                Some(src.5),
+                Some(src.6),
+            )?;
             result.message = format!("role copied: {} -> {}", src_name, dst_name);
             result.payload = json!({ "role": role });
         }
@@ -646,14 +708,12 @@ pub(crate) async fn apply_chat_command(
             result.payload = json!({ "sessionId": session_id });
         }
         ["/context", "list"] => {
-            let entries =
-                list_shared_context(state.clone(), "assistant:main".to_string())?;
+            let entries = list_shared_context(state.clone(), "assistant:main".to_string())?;
             result.message = format!("{} context entries", entries.len());
             result.payload = json!({ "entries": entries });
         }
         ["/context", "list", "role", role_name] => {
-            let entries =
-                list_shared_context(state.clone(), context_scope_for_role(role_name))?;
+            let entries = list_shared_context(state.clone(), context_scope_for_role(role_name))?;
             result.message = format!("{} context entries", entries.len());
             result.payload = json!({ "entries": entries });
         }

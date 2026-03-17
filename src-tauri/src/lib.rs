@@ -13,10 +13,13 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 
-use types::*;
-use db::{init_db, seed_default_dynamic_catalog, ensure_default_team_id, with_db, load_team_workspace_path};
-use db::context::shared_key;
 use assistant::assistant_catalog;
+use db::context::shared_key;
+use db::{
+    ensure_default_team_id, init_db, load_team_workspace_path, seed_default_dynamic_catalog,
+    with_db,
+};
+use types::*;
 
 pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
@@ -95,22 +98,47 @@ async fn cancel_acp_session(runtime_kind: String, role_name: String) -> Result<(
 }
 
 #[tauri::command]
-async fn set_acp_mode(runtime_kind: String, role_name: String, mode_id: String) -> Result<(), String> {
+async fn set_acp_mode(
+    runtime_kind: String,
+    role_name: String,
+    mode_id: String,
+) -> Result<(), String> {
     acp::set_mode(&runtime_kind, &role_name, &mode_id).await
 }
 
 #[tauri::command]
-async fn set_acp_config_option(runtime_kind: String, role_name: String, config_id: String, value: String) -> Result<(), String> {
+async fn set_acp_config_option(
+    runtime_kind: String,
+    role_name: String,
+    config_id: String,
+    value: String,
+) -> Result<(), String> {
     acp::set_config_option(&runtime_kind, &role_name, &config_id, &value).await
 }
 
 #[tauri::command]
-async fn respond_permission(request_id: String, option_id: String, cancelled: bool) -> Result<(), String> {
+fn list_available_commands_cmd(runtime_key: String) -> Vec<serde_json::Value> {
+    acp::list_available_commands(&runtime_key)
+}
+
+#[tauri::command]
+fn list_discovered_config_options_cmd(runtime_key: String) -> Vec<serde_json::Value> {
+    acp::list_discovered_config_options(&runtime_key)
+}
+
+#[tauri::command]
+async fn respond_permission(
+    request_id: String,
+    option_id: String,
+    cancelled: bool,
+) -> Result<(), String> {
     use agent_client_protocol as acpsdk;
     let outcome = if cancelled {
         acpsdk::RequestPermissionOutcome::Cancelled
     } else {
-        acpsdk::RequestPermissionOutcome::Selected(acpsdk::SelectedPermissionOutcome::new(acpsdk::PermissionOptionId::from(option_id)))
+        acpsdk::RequestPermissionOutcome::Selected(acpsdk::SelectedPermissionOutcome::new(
+            acpsdk::PermissionOptionId::from(option_id),
+        ))
     };
     acp::respond_to_permission(&request_id, outcome);
     Ok(())
@@ -230,6 +258,8 @@ pub fn run() {
             cancel_acp_session,
             set_acp_mode,
             set_acp_config_option,
+            list_discovered_config_options_cmd,
+            list_available_commands_cmd,
             respond_permission
         ])
         .run(tauri::generate_context!())

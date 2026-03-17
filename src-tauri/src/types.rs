@@ -180,7 +180,10 @@ pub(crate) const DEFAULT_SKILLS: &[&str] = &[];
 pub(crate) const BASE_CLI_COMMANDS: &[(&str, &str)] = &[
     ("/help", "Show command help"),
     ("/assistant list", "List detected assistant runtimes"),
-    ("/assistant select <runtime>", "Select active assistant runtime"),
+    (
+        "/assistant select <runtime>",
+        "Select active assistant runtime",
+    ),
     ("/model list", "List configurable model catalog"),
     ("/model add <model>", "Add model to dynamic catalog"),
     ("/model remove <model>", "Remove model from dynamic catalog"),
@@ -202,14 +205,23 @@ pub(crate) const BASE_CLI_COMMANDS: &[(&str, &str)] = &[
     ("/skill enable <name>", "Enable skill"),
     ("/skill disable <name>", "Disable skill"),
     ("/role list", "List roles"),
-    ("/role bind <role> <runtime> [prompt]", "Create or update role"),
+    (
+        "/role bind <role> <runtime> [prompt]",
+        "Create or update role",
+    ),
     ("/role prompt <role> <prompt>", "Update role system prompt"),
     ("/role delete <role>", "Delete role"),
     ("/role edit <role> model <model>", "Set role model"),
     ("/role edit <role> mode <mode>", "Set role mode"),
-    ("/role edit <role> auto-approve <true|false>", "Set role auto-approve"),
+    (
+        "/role edit <role> auto-approve <true|false>",
+        "Set role auto-approve",
+    ),
     ("/role edit <role> mcp-add <json>", "Add MCP server to role"),
-    ("/role edit <role> mcp-remove <name>", "Remove MCP server from role"),
+    (
+        "/role edit <role> mcp-remove <name>",
+        "Remove MCP server from role",
+    ),
     ("/role copy <src> <dst>", "Duplicate role"),
     ("/workflow list", "List workflows"),
     ("/workflow create <name> <r1,r2>", "Create workflow"),

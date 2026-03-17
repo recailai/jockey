@@ -1,14 +1,21 @@
-use crate::types::*;
+use crate::commands::{apply_chat_command, ensure_team_selected};
+use crate::db::context::{
+    context_scope_for_role, list_shared_context_internal, set_shared_context_internal,
+};
 use crate::db::get_state;
-use crate::db::context::{context_scope_for_role, list_shared_context_internal};
 use crate::db::role::{load_role, resolve_role_prompt, resolve_role_runtime};
-use crate::commands::{ensure_team_selected, apply_chat_command};
-use crate::{now_ms, clip_text, resolve_chat_cwd, build_unionai_tool_prompt, acp};
+use crate::types::*;
+use crate::{acp, build_unionai_tool_prompt, clip_text, now_ms, resolve_chat_cwd};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::VecDeque;
 use std::io::Read;
 use std::time::Instant;
 use tauri::{AppHandle, State};
+
+const RECENT_ROLE_CHATS_KEY: &str = "recentRoleChats";
+const RECENT_ROLE_CHATS_LIMIT: usize = 3;
+const RECENT_ROLE_CHAT_TEXT_MAX: usize = 1000;
 
 pub(crate) fn parse_route_input(raw: &str) -> ParsedRouteInput {
     let mut out = ParsedRouteInput::default();
@@ -27,7 +34,11 @@ pub(crate) fn parse_route_input(raw: &str) -> ParsedRouteInput {
 
         if let Some(role) = mention.strip_prefix("role:") {
             if let Some(clean_role) = sanitize_role_name(role) {
-                if !out.role_names.iter().any(|n| n.eq_ignore_ascii_case(&clean_role)) {
+                if !out
+                    .role_names
+                    .iter()
+                    .any(|n| n.eq_ignore_ascii_case(&clean_role))
+                {
                     out.role_names.push(clean_role);
                 }
                 continue;
@@ -73,7 +84,11 @@ pub(crate) fn parse_route_input(raw: &str) -> ParsedRouteInput {
         }
 
         if let Some(clean_role) = sanitize_role_name(mention) {
-            if !out.role_names.iter().any(|n| n.eq_ignore_ascii_case(&clean_role)) {
+            if !out
+                .role_names
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case(&clean_role))
+            {
                 out.role_names.push(clean_role);
             }
             continue;
@@ -114,6 +129,62 @@ fn sanitize_role_name(raw: &str) -> Option<String> {
 
 pub(crate) fn chat_log(event: &str, payload: serde_json::Value) {
     eprintln!("[unionai.chat] {} {} {}", now_ms(), event, payload);
+}
+
+fn upsert_context_pair(context_pairs: &mut Vec<(String, String)>, key: &str, value: String) {
+    if let Some(existing) = context_pairs.iter_mut().find(|(k, _)| k == key) {
+        existing.1 = value;
+    } else {
+        context_pairs.push((key.to_string(), value));
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RecentRoleChat {
+    role: String,
+    user: String,
+    assistant: String,
+}
+
+fn collapse_whitespace(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn normalize_recent_chat_text(raw: &str) -> String {
+    let compact = collapse_whitespace(raw.trim());
+    clip_text(&compact, RECENT_ROLE_CHAT_TEXT_MAX)
+}
+
+fn load_recent_role_chats(state: &AppState, team_id: &str) -> Vec<RecentRoleChat> {
+    let entries = list_shared_context_internal(state, team_id).unwrap_or_default();
+    entries
+        .into_iter()
+        .find(|entry| entry.key == RECENT_ROLE_CHATS_KEY)
+        .and_then(|entry| serde_json::from_str::<Vec<RecentRoleChat>>(&entry.value).ok())
+        .unwrap_or_default()
+}
+
+fn append_recent_role_chat(
+    state: &AppState,
+    team_id: &str,
+    role_name: &str,
+    user: &str,
+    assistant: &str,
+) {
+    let mut chats = load_recent_role_chats(state, team_id);
+    chats.push(RecentRoleChat {
+        role: role_name.to_string(),
+        user: normalize_recent_chat_text(user),
+        assistant: normalize_recent_chat_text(assistant),
+    });
+    if chats.len() > RECENT_ROLE_CHATS_LIMIT {
+        let drop_count = chats.len() - RECENT_ROLE_CHATS_LIMIT;
+        chats.drain(0..drop_count);
+    }
+    if let Ok(payload) = serde_json::to_string(&chats) {
+        let _ = set_shared_context_internal(state, team_id, RECENT_ROLE_CHATS_KEY, &payload);
+    }
 }
 
 pub(crate) fn detect_reply_signals(reply: &str) -> Vec<String> {
@@ -534,6 +605,19 @@ pub(crate) async fn assistant_chat(
             if !role_prompt.is_empty() {
                 context_pairs.push(("role_prompt".to_string(), role_prompt));
             }
+            let recent_chats = load_recent_role_chats(get_state(&state), &team_id);
+            if !recent_chats.is_empty() {
+                if let Ok(payload) = serde_json::to_string(&recent_chats) {
+                    upsert_context_pair(&mut context_pairs, "recent_chat_last3", payload);
+                }
+                chat_log(
+                    "route.context.share",
+                    json!({
+                        "role": role_name.clone(),
+                        "recentChatCount": recent_chats.len()
+                    }),
+                );
+            }
         }
         context_pairs.extend(attachment_pairs.clone());
         if !attach_notes.is_empty() {
@@ -576,12 +660,30 @@ pub(crate) async fn assistant_chat(
         };
         let auto_approve = role_data.as_ref().map(|r| r.auto_approve).unwrap_or(true);
         let role_mode = role_data.as_ref().and_then(|r| r.mode.clone());
-        let role_config: Vec<(String, String)> = role_data.as_ref()
+        let role_config: Vec<(String, String)> = role_data
+            .as_ref()
             .and_then(|r| serde_json::from_str::<serde_json::Value>(&r.config_options_json).ok())
-            .and_then(|v| v.as_object().map(|m| m.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string())).collect()))
+            .and_then(|v| {
+                v.as_object().map(|m| {
+                    m.iter()
+                        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                        .collect()
+                })
+            })
             .unwrap_or_default();
-        let llm = acp::execute_runtime(&runtime, &role_name, &prepared, &context_pairs, &cwd, &app, auto_approve, vec![], role_mode, role_config)
-            .await;
+        let llm = acp::execute_runtime(
+            &runtime,
+            &role_name,
+            &prepared,
+            &context_pairs,
+            &cwd,
+            &app,
+            auto_approve,
+            vec![],
+            role_mode,
+            role_config,
+        )
+        .await;
         let output = llm.output.trim().to_string();
         let llm_delta_count = llm.deltas.len();
         let llm_meta = llm.meta.clone();
@@ -623,7 +725,16 @@ pub(crate) async fn assistant_chat(
                 );
             }
         }
-        role_outputs.push((role_name, final_output));
+        if !is_union_assistant {
+            append_recent_role_chat(
+                get_state(&state),
+                &team_id,
+                &role_name,
+                &message,
+                &final_output,
+            );
+        }
+        role_outputs.push((role_name.clone(), final_output));
     }
 
     let reply = if role_outputs.len() == 1 {

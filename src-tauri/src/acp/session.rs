@@ -10,8 +10,9 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use super::adapter::{acp_log, build_stdio_adapter, clip, friendly_error_message};
 use super::client::UnionAiClient;
 use super::worker::{
-    AcpEvent, AcpPromptResult, AgentKind, DeltaSlot, LiveConnection, WorkerMsg,
-    remember_runtime_models, worker_tx,
+    remember_runtime_available_commands, remember_runtime_config_options, remember_runtime_models,
+    remember_runtime_modes, worker_tx, AcpEvent, AcpPromptResult, AgentKind, DeltaSlot,
+    LiveConnection, WorkerMsg,
 };
 
 pub(super) fn collect_models_from_select_options(
@@ -43,7 +44,10 @@ pub(super) fn extract_models_from_config_options(
     };
     let mut out = HashSet::new();
     for option in options {
-        let is_model_category = matches!(option.category, Some(acp::SessionConfigOptionCategory::Model));
+        let is_model_category = matches!(
+            option.category,
+            Some(acp::SessionConfigOptionCategory::Model)
+        );
         let is_model_id = option.id.to_string().eq_ignore_ascii_case("model");
         if !(is_model_category || is_model_id) {
             continue;
@@ -56,6 +60,22 @@ pub(super) fn extract_models_from_config_options(
     let mut models = out.into_iter().collect::<Vec<_>>();
     models.sort_unstable();
     models
+}
+
+pub(super) fn extract_mode_ids(modes: &[Value]) -> Vec<String> {
+    let mut out = HashSet::new();
+    for mode in modes {
+        if let Some(id) = mode.get("id").and_then(|v| v.as_str()) {
+            out.insert(id.to_string());
+            continue;
+        }
+        if let Some(id) = mode.as_str() {
+            out.insert(id.to_string());
+        }
+    }
+    let mut items = out.into_iter().collect::<Vec<_>>();
+    items.sort_unstable();
+    items
 }
 
 pub(super) async fn cold_start(
@@ -131,7 +151,9 @@ pub(super) async fn cold_start(
             .client_info(acp::Implementation::new("unionai", "0.1.0").title("UnionAI"))
             .client_capabilities(
                 acp::ClientCapabilities::new()
-                    .fs(acp::FileSystemCapabilities::new().read_text_file(true).write_text_file(true))
+                    .fs(acp::FileSystemCapabilities::new()
+                        .read_text_file(true)
+                        .write_text_file(true))
                     .terminal(true),
             ),
     )
@@ -147,23 +169,52 @@ pub(super) async fn cold_start(
     if !mcp_servers.is_empty() {
         req = req.mcp_servers(mcp_servers);
     }
-    let resp = conn
-        .new_session(req)
-        .await
-        .map_err(|e| e.to_string())?;
+    let resp = conn.new_session(req).await.map_err(|e| e.to_string())?;
     let discovered_models = extract_models_from_config_options(resp.config_options.as_ref());
     remember_runtime_models(runtime_key, discovered_models.clone());
+    if let Some(ref opts) = resp.config_options {
+        let serialized: Vec<Value> = opts
+            .iter()
+            .filter_map(|o| serde_json::to_value(o).ok())
+            .collect();
+        acp_log(
+            "config_options.discovered",
+            json!({
+                "runtime": runtime_key,
+                "count": serialized.len(),
+                "ids": serialized.iter().filter_map(|v| v.get("id").and_then(|i| i.as_str()).map(|s| s.to_string())).collect::<Vec<_>>()
+            }),
+        );
+        remember_runtime_config_options(runtime_key, serialized);
+    } else {
+        acp_log(
+            "config_options.none",
+            json!({ "runtime": runtime_key }),
+        );
+    }
     let session_id = resp.session_id;
 
-    let available_modes = resp.modes.as_ref().map(|m| {
-        serde_json::to_value(m).ok().and_then(|v| v.get("modes").cloned()).unwrap_or(json!([]))
-    }).unwrap_or(json!([]));
+    let available_modes = resp
+        .modes
+        .as_ref()
+        .map(|m| {
+            serde_json::to_value(m)
+                .ok()
+                .and_then(|v| v.get("modes").cloned())
+                .unwrap_or(json!([]))
+        })
+        .unwrap_or(json!([]));
     let available_modes = match available_modes {
         Value::Array(a) => a,
         _ => vec![],
     };
+    remember_runtime_modes(runtime_key, extract_mode_ids(&available_modes));
     let current_mode = resp.modes.as_ref().and_then(|m| {
-        serde_json::to_value(m).ok().and_then(|v| v.get("current").and_then(|c| c.as_str()).map(|s| s.to_string()))
+        serde_json::to_value(m).ok().and_then(|v| {
+            v.get("current")
+                .and_then(|c| c.as_str())
+                .map(|s| s.to_string())
+        })
     });
 
     acp_log(
@@ -284,6 +335,22 @@ pub async fn execute_runtime(
                             last_emit = Instant::now();
                         }
                     }
+                    Some(AcpEvent::ConfigUpdate { ref options }) => {
+                        delta_count += 1;
+                        remember_runtime_config_options(adapter.runtime_key, options.clone());
+                        let _ = app.emit("acp/stream", json!({
+                            "role": role_owned,
+                            "event": serde_json::to_value(&AcpEvent::ConfigUpdate { options: options.clone() }).unwrap_or(json!({}))
+                        }));
+                    }
+                    Some(AcpEvent::AvailableCommands { ref commands }) => {
+                        delta_count += 1;
+                        remember_runtime_available_commands(adapter.runtime_key, commands.clone());
+                        let _ = app.emit("acp/stream", json!({
+                            "role": role_owned,
+                            "event": serde_json::to_value(&AcpEvent::AvailableCommands { commands: commands.clone() }).unwrap_or(json!({}))
+                        }));
+                    }
                     Some(other) => {
                         delta_count += 1;
                         let _ = app.emit("acp/stream", json!({
@@ -397,21 +464,44 @@ fn normalize_runtime_key(runtime_kind: &str) -> Option<&'static str> {
 }
 
 pub async fn cancel_session(runtime_kind: &str, role_name: &str) {
-    let Some(runtime_key) = normalize_runtime_key(runtime_kind) else { return };
-    let _ = worker_tx().send(WorkerMsg::Cancel { runtime_key, role_name: role_name.to_string() });
+    let Some(runtime_key) = normalize_runtime_key(runtime_kind) else {
+        return;
+    };
+    let _ = worker_tx().send(WorkerMsg::Cancel {
+        runtime_key,
+        role_name: role_name.to_string(),
+    });
 }
 
 pub async fn set_mode(runtime_kind: &str, role_name: &str, mode_id: &str) -> Result<(), String> {
-    let runtime_key = normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
+    let runtime_key =
+        normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
     let (tx, rx) = oneshot::channel();
-    let _ = worker_tx().send(WorkerMsg::SetMode { runtime_key, role_name: role_name.to_string(), mode_id: mode_id.to_string(), result_tx: tx });
+    let _ = worker_tx().send(WorkerMsg::SetMode {
+        runtime_key,
+        role_name: role_name.to_string(),
+        mode_id: mode_id.to_string(),
+        result_tx: tx,
+    });
     rx.await.map_err(|_| "worker disconnected".to_string())?
 }
 
-pub async fn set_config_option(runtime_kind: &str, role_name: &str, key: &str, value: &str) -> Result<(), String> {
-    let runtime_key = normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
+pub async fn set_config_option(
+    runtime_kind: &str,
+    role_name: &str,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
+    let runtime_key =
+        normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
     let (tx, rx) = oneshot::channel();
-    let _ = worker_tx().send(WorkerMsg::SetConfigOption { runtime_key, role_name: role_name.to_string(), config_id: key.to_string(), value: value.to_string(), result_tx: tx });
+    let _ = worker_tx().send(WorkerMsg::SetConfigOption {
+        runtime_key,
+        role_name: role_name.to_string(),
+        config_id: key.to_string(),
+        value: value.to_string(),
+        result_tx: tx,
+    });
     rx.await.map_err(|_| "worker disconnected".to_string())?
 }
 
