@@ -1,9 +1,31 @@
 use serde_json::Value;
 use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use which::which;
 
 use super::worker::AgentKind;
+
+static APP_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_app_data_dir(path: PathBuf) {
+    let _ = APP_DATA_DIR.set(path);
+}
+
+fn app_data_adapter_bin(binary: &str) -> Option<PathBuf> {
+    let base = APP_DATA_DIR.get()?;
+    let candidate = base
+        .join("adapters")
+        .join("node_modules")
+        .join(".bin")
+        .join(binary);
+    if candidate.exists() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
 
 pub(super) struct StdioAdapterSpec {
     pub(super) kind: AgentKind,
@@ -105,6 +127,13 @@ fn resolve_candidate(
     for (binary, args) in candidates {
         if !seen.insert(*binary) {
             continue;
+        }
+        if let Some(app_data_path) = app_data_adapter_bin(binary) {
+            return Ok((
+                app_data_path.to_string_lossy().to_string(),
+                args.iter().map(|s| s.to_string()).collect(),
+                vec![],
+            ));
         }
         if let Ok(path) = which(binary) {
             return Ok((

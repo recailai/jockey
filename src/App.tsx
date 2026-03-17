@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 
 type Role = {
   id: string; teamId: string; roleName: string; runtimeKind: string;
@@ -40,8 +40,9 @@ type AssistantChatResponse = { ok: boolean; reply: string; selectedTeamId: strin
 type SessionUpdateEvent = { sessionId: string; teamId: string; roleName: string; delta: string; done: boolean };
 type WorkflowStateEvent = { sessionId: string; teamId: string; status: string; activeRole: string | null; message: string };
 type AcpDeltaEvent = { role: string; delta: string };
-type AppMessage = { id: string; role: "system" | "user" | "assistant" | "event"; text: string; at: number };
-type AppMentionItem = { value: string; kind: "role" | "file" | "dir" | "hint" | "command"; detail: string };
+type AppMessage = { id: string; role: "system" | "user" | "assistant" | "event"; text: string; at: number; roleLabel?: string };
+type AppMentionItem = { value: string; kind: "role" | "file" | "dir" | "hint" | "command" | "skill"; detail: string };
+type AppSkill = { id: string; name: string; description: string; content: string; createdAt: number; updatedAt: number };
 
 type AppSession = {
   id: string;
@@ -138,6 +139,8 @@ export default function App() {
   const [slashActiveIndex, setSlashActiveIndex] = createSignal(0);
   const [slashRange, setSlashRange] = createSignal<{ end: number; query: string } | null>(null);
   const [showDrawer, setShowDrawer] = createSignal(false);
+  const [renamingSessionId, setRenamingSessionId] = createSignal<string | null>(null);
+  const [renameValue, setRenameValue] = createSignal("");
 
   let mentionReqSeq = 0;
   let slashReqSeq = 0;
@@ -145,6 +148,8 @@ export default function App() {
   let mentionDebounceTimer: number | null = null;
   let mentionPathCache = new Map<string, AppMentionItem[]>();
   let inputEl: HTMLInputElement | undefined;
+  let slashListEl: HTMLDivElement | undefined;
+  let mentionListEl: HTMLDivElement | undefined;
   let streamBuffer = "";
   let streamFlushRaf: number | null = null;
   let streamAccepting = false;
@@ -159,6 +164,22 @@ export default function App() {
   let historySavedInput = "";
   let persistTimer: number | null = null;
   const HISTORY_MAX = 200;
+
+  createEffect(() => {
+    const idx = slashActiveIndex();
+    const container = slashListEl;
+    if (!container) return;
+    const item = container.children[idx] as HTMLElement | undefined;
+    item?.scrollIntoView({ block: "nearest" });
+  });
+
+  createEffect(() => {
+    const idx = mentionActiveIndex();
+    const container = mentionListEl;
+    if (!container) return;
+    const item = container.children[idx] as HTMLElement | undefined;
+    item?.scrollIntoView({ block: "nearest" });
+  });
 
   const [showRoleForm, setShowRoleForm] = createSignal(false);
   const [roleFormName, setRoleFormName] = createSignal("Developer");
@@ -176,6 +197,13 @@ export default function App() {
   const [editRoleConfigOptionsJson, setEditRoleConfigOptionsJson] = createSignal("{}");
   const [roleFormConfigSelections, setRoleFormConfigSelections] = createSignal<Record<string, string>>({});
   const [createFormConfigOptions, setCreateFormConfigOptions] = createSignal<AcpConfigOption[]>([]);
+
+  const [skills, setSkills] = createSignal<AppSkill[]>([]);
+  const [showSkillForm, setShowSkillForm] = createSignal(false);
+  const [skillFormName, setSkillFormName] = createSignal("");
+  const [skillFormDescription, setSkillFormDescription] = createSignal("");
+  const [skillFormContent, setSkillFormContent] = createSignal("");
+  const [editingSkillId, setEditingSkillId] = createSignal<string | null>(null);
 
   const scheduleScrollToBottom = () => {
     if (scrollRaf !== null) return;
@@ -223,9 +251,9 @@ export default function App() {
     appendMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, role, text, at: now() });
   };
 
-  const startStream = () => {
+  const startStream = (roleLabel?: string) => {
     const id = `stream-${now()}`;
-    const row: AppMessage = { id, role: "assistant", text: "", at: now() };
+    const row: AppMessage = { id, role: "assistant", text: "", at: now(), roleLabel: roleLabel ?? activeSession()?.activeRole };
     patchActiveSession({ streamingMessage: row, toolCalls: new Map(), currentPlan: null, pendingPermission: null });
     scheduleScrollToBottom();
     return row;
@@ -267,7 +295,7 @@ export default function App() {
     }
   };
 
-  const completeStream = (finalReply?: string) => {
+  const completeStream = (finalReply?: string, roleLabel?: string) => {
     flushStreamBuffer();
     const s = activeSession();
     const row = s?.streamingMessage ?? null;
@@ -276,7 +304,7 @@ export default function App() {
       appendMessage({ ...row, text, at: now() });
       patchActiveSession({ streamingMessage: null });
     } else if (finalReply) {
-      pushMessage("assistant", finalReply);
+      appendMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, role: "assistant", text: finalReply, at: now(), roleLabel });
     }
     resetStreamState();
     patchActiveSession({ toolCalls: new Map(), currentPlan: null, pendingPermission: null });
@@ -347,6 +375,42 @@ export default function App() {
     } catch { setRoles([]); }
   };
 
+  const refreshSkills = async () => {
+    try {
+      const rows = await invoke<AppSkill[]>("list_app_skills");
+      setSkills(rows);
+    } catch { setSkills([]); }
+  };
+
+  const saveSkill = async () => {
+    const name = skillFormName().trim();
+    if (!name) return;
+    try {
+      await invoke("upsert_app_skill", { input: { name, description: skillFormDescription().trim(), content: skillFormContent().trim() } });
+      setShowSkillForm(false);
+      setEditingSkillId(null);
+      setSkillFormName("");
+      setSkillFormDescription("");
+      setSkillFormContent("");
+      await refreshSkills();
+    } catch (e) { pushMessage("event", String(e)); }
+  };
+
+  const deleteSkill = async (id: string) => {
+    try {
+      await invoke("delete_app_skill", { id });
+      await refreshSkills();
+    } catch (e) { pushMessage("event", String(e)); }
+  };
+
+  const openSkillEditor = (skill: AppSkill) => {
+    setEditingSkillId(skill.id);
+    setSkillFormName(skill.name);
+    setSkillFormDescription(skill.description);
+    setSkillFormContent(skill.content);
+    setShowSkillForm(true);
+  };
+
   const fetchConfigOptions = async (runtimeKey: string): Promise<AcpConfigOption[]> => {
     try {
       const raw = await invoke<unknown[]>("list_discovered_config_options_cmd", { runtimeKey });
@@ -366,15 +430,15 @@ export default function App() {
     }));
   };
 
-  const fetchAndCacheAgentCommands = (runtimeKey: string) => {
-    void invoke<unknown[]>("list_available_commands_cmd", { runtimeKey }).then((raw) => {
+  const fetchAndCacheAgentCommands = (runtimeKey: string, roleName: string) => {
+    void invoke<unknown[]>("list_available_commands_cmd", { runtimeKey, roleName }).then((raw) => {
       const parsed = parseAgentCommands(raw);
       const sid = activeSessionId();
       if (!sid) return;
       setSessions((prev) => prev.map((s) => {
         if (s.id !== sid) return s;
         const next = new Map(s.agentCommands);
-        next.set(runtimeKey, parsed);
+        next.set(roleName, parsed);
         return { ...s, agentCommands: next };
       }));
     }).catch(() => {});
@@ -400,7 +464,7 @@ export default function App() {
     }
   };
 
-  const MUTATING_CMDS = ["/role", "/init", "/workflow", "/context"];
+  const MUTATING_CMDS = ["/app_role"];
   const needsRefresh = (text: string) => MUTATING_CMDS.some((c) => text.startsWith(c));
 
   const closeMentionMenu = () => {
@@ -419,30 +483,27 @@ export default function App() {
 
   const extractMentionContext = (text: string, caret: number) => {
     const left = text.slice(0, caret);
-    const at = left.lastIndexOf("@");
-    if (at < 0) return null;
-    const prev = at > 0 ? left[at - 1] : " ";
-    if (!/\s/.test(prev)) return null;
-    const query = left.slice(at + 1);
-    if (/\s/.test(query)) return null;
-    let end = caret;
-    while (end < text.length && !/\s/.test(text[end])) end += 1;
-    return { start: at + 1, end, query };
+    for (const trigger of ["@", "#"]) {
+      const at = left.lastIndexOf(trigger);
+      if (at < 0) continue;
+      const prev = at > 0 ? left[at - 1] : " ";
+      if (!/\s/.test(prev)) continue;
+      const query = left.slice(at + 1);
+      if (/\s/.test(query)) continue;
+      let end = caret;
+      while (end < text.length && !/\s/.test(text[end])) end += 1;
+      return { start: at + 1, end, query, trigger };
+    }
+    return null;
   };
 
   const listRoleMentionCandidates = (query: string) => {
-    const q = query.toLowerCase();
+    const q = query.startsWith("role:") ? query.slice(5).toLowerCase() : query.toLowerCase();
     const out: AppMentionItem[] = [];
-    const rolePrefix = query.startsWith("role:");
-    const roleQuery = rolePrefix ? query.slice(5).toLowerCase() : q;
     for (const role of roles()) {
       const nameLower = role.roleName.toLowerCase();
-      if (roleQuery && !nameLower.includes(roleQuery)) continue;
-      out.push({
-        value: rolePrefix || query.length === 0 ? `role:${role.roleName}` : role.roleName,
-        kind: "role",
-        detail: role.runtimeKind,
-      });
+      if (q && !nameLower.includes(q)) continue;
+      out.push({ value: role.roleName, kind: "role", detail: role.runtimeKind });
     }
     return out;
   };
@@ -470,6 +531,16 @@ export default function App() {
       return;
     }
     setMentionRange(ctx);
+    if (ctx.trigger === "#") {
+      const q = ctx.query.toLowerCase();
+      const skillItems: AppMentionItem[] = skills()
+        .filter((s) => !q || s.name.toLowerCase().includes(q))
+        .map((s) => ({ value: s.name, kind: "skill" as const, detail: s.description || s.content.slice(0, 60) }));
+      setMentionItems(skillItems);
+      setMentionActiveIndex(0);
+      if (skillItems.length > 0) setMentionOpen(true); else closeMentionMenu();
+      return;
+    }
     const staticItems: AppMentionItem[] = [];
     if (ctx.query.length === 0) {
       staticItems.push(
@@ -520,10 +591,10 @@ export default function App() {
     setMentionOpen(true);
   };
 
-  const buildAgentSlashCandidates = (runtimeKey: string, query: string): AppMentionItem[] => {
+  const buildAgentSlashCandidates = (roleName: string, query: string): AppMentionItem[] => {
     const queryLower = query.toLowerCase().replace(/^\//, "");
     const out: AppMentionItem[] = [];
-    const cmds = activeSession()?.agentCommands.get(runtimeKey) ?? [];
+    const cmds = activeSession()?.agentCommands.get(roleName) ?? [];
     for (const cmd of cmds) {
       const value = `/${cmd.name}`;
       if (queryLower && !cmd.name.toLowerCase().includes(queryLower)) continue;
@@ -549,7 +620,7 @@ export default function App() {
     setSlashRange(ctx);
     const seq = ++slashReqSeq;
 
-    if (isCustomRole()) {
+    if (isCustomRole() && !ctx.query.startsWith("app_")) {
       const s = activeSession();
       const role = roles().find((r) => r.roleName === s?.activeRole);
       if (role) {
@@ -558,10 +629,23 @@ export default function App() {
           if (seq !== slashReqSeq) return;
           patchActiveSession({ discoveredConfigOptions: opts });
         }
-        if ((s?.agentCommands.get(role.runtimeKind) ?? []).length === 0) {
-          fetchAndCacheAgentCommands(role.runtimeKind);
+        if ((s?.agentCommands.get(role.roleName) ?? []).length === 0) {
+          await new Promise<void>((resolve) => {
+            void invoke<unknown[]>("list_available_commands_cmd", { runtimeKey: role.runtimeKind, roleName: role.roleName }).then((raw) => {
+              const parsed = parseAgentCommands(raw);
+              const sid = activeSessionId();
+              if (sid) {
+                setSessions((prev) => prev.map((sess) => {
+                  if (sess.id !== sid) return sess;
+                  const next = new Map(sess.agentCommands);
+                  next.set(role.roleName, parsed);
+                  return { ...sess, agentCommands: next };
+                }));
+              }
+            }).catch(() => {}).finally(() => resolve());
+          });
         }
-        const candidates = buildAgentSlashCandidates(role.runtimeKind, ctx.query);
+        const candidates = buildAgentSlashCandidates(role.roleName, ctx.query);
         if (seq !== slashReqSeq) return;
         if (candidates.length === 0) { closeSlashMenu(); return; }
         setSlashItems(candidates);
@@ -641,30 +725,36 @@ export default function App() {
     closeSlashMenu();
 
     const s = activeSession();
+    let sendRoleLabel = s?.activeRole;
     const isCommand = text.startsWith("/");
     const inRoleContext = isCustomRole();
-    const isUnionAiCommand = isCommand && !inRoleContext;
-    const isRoleSlashCmd = isCommand && inRoleContext;
+    const isUnionAiCommand = text.startsWith("/app_");
+    const isRoleSlashCmd = isCommand && inRoleContext && !isUnionAiCommand;
     let routedText = text;
 
     if (!isCommand) {
       const mentionMatch = text.match(/^@(\S+)/);
       if (mentionMatch) {
-        const target = mentionMatch[1];
+        const rawTarget = mentionMatch[1];
+        const target = rawTarget.startsWith("role:") ? rawTarget.slice(5) : rawTarget;
         if (
           target === "assistant" ||
           target === DEFAULT_ROLE_ALIAS ||
           target === DEFAULT_BACKEND_ROLE
         ) {
           patchActiveSession({ activeRole: DEFAULT_ROLE_ALIAS });
+          sendRoleLabel = DEFAULT_ROLE_ALIAS;
           routedText = text.replace(/^@\S+\s*/, "").trim();
         } else {
           patchActiveSession({ activeRole: target, discoveredConfigOptions: [] });
+          sendRoleLabel = target;
           const targetRole = roles().find((r) => r.roleName === target);
           if (targetRole) {
             void fetchConfigOptions(targetRole.runtimeKind).then((opts) => patchActiveSession({ discoveredConfigOptions: opts }));
-            fetchAndCacheAgentCommands(targetRole.runtimeKind);
+            fetchAndCacheAgentCommands(targetRole.runtimeKind, targetRole.roleName);
           }
+          routedText = text.replace(/^@\S+\s*/, "").trim();
+          if (!routedText) return;
         }
       } else if (isCustomRole() && !text.startsWith("@")) {
         routedText = `@${s?.activeRole ?? ""} ${text}`;
@@ -713,7 +803,7 @@ export default function App() {
     let streamStarted = false;
     if ((!isUnionAiCommand) && activeSession()?.selectedAssistant) {
       streamAccepting = true;
-      startStream();
+      startStream(sendRoleLabel);
       streamStarted = true;
     }
 
@@ -723,15 +813,16 @@ export default function App() {
           input: routedText,
           selectedTeamId: null,
           selectedAssistant: activeSession()?.selectedAssistant ?? null,
+          appSessionId: activeSessionId() ?? null,
         }
       });
       if (runToken <= canceledRunToken) return;
       if (res.selectedAssistant) setPreferredAssistant(res.selectedAssistant);
 
       if (streamStarted) {
-        completeStream(res.reply);
+        completeStream(res.reply, sendRoleLabel);
       } else {
-        pushMessage("assistant", res.reply);
+        appendMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, role: "assistant", text: res.reply, at: now(), roleLabel: sendRoleLabel });
       }
 
       if (needsRefresh(text)) {
@@ -765,7 +856,7 @@ export default function App() {
       pushMessage("system", `Queued (${queuedInputs.length}): ${text}`);
       return;
     }
-    if (!activeSession()?.selectedAssistant && !isCustomRole() && !text.startsWith("/")) {
+    if (!activeSession()?.selectedAssistant && !isCustomRole() && !text.startsWith("/app_")) {
       pushMessage("system", "Select an assistant or a role first.");
       return;
     }
@@ -1020,6 +1111,7 @@ export default function App() {
 
       await refreshAssistants();
       await refreshRoles();
+      await refreshSkills();
 
       const preferred = window.localStorage.getItem(ASSISTANT_STORAGE_KEY);
       const availableAssistant = preferred
@@ -1122,17 +1214,14 @@ export default function App() {
               const raw = ev.payload as unknown as { role?: string };
               const roleName = raw.role;
               if (roleName) {
-                const role = roles().find((r) => r.roleName === roleName);
-                if (role) {
-                  const parsed = parseAgentCommands(e.commands as unknown[]);
-                  const sid = activeSessionId();
-                  if (sid) setSessions((prev) => prev.map((s) => {
-                    if (s.id !== sid) return s;
-                    const next = new Map(s.agentCommands);
-                    next.set(role.runtimeKind, parsed);
-                    return { ...s, agentCommands: next };
-                  }));
-                }
+                const parsed = parseAgentCommands(e.commands as unknown[]);
+                const sid = activeSessionId();
+                if (sid) setSessions((prev) => prev.map((s) => {
+                  if (s.id !== sid) return s;
+                  const next = new Map(s.agentCommands);
+                  next.set(roleName, parsed);
+                  return { ...s, agentCommands: next };
+                }));
               }
             }
             break;
@@ -1142,7 +1231,16 @@ export default function App() {
       }),
     ]).then((hs) => handlers.push(...hs));
 
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setShowDrawer((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", handleGlobalKeyDown);
+
     onCleanup(() => {
+      window.removeEventListener("keydown", handleGlobalKeyDown);
       dropStream();
       queuedInputs = [];
       if (mentionCloseTimer !== null) window.clearTimeout(mentionCloseTimer);
@@ -1163,12 +1261,16 @@ export default function App() {
     <div class="window-bg h-dvh overflow-hidden text-[var(--ui-text)] relative flex flex-col">
 
       {/* ── Tabs Bar ── */}
-      <div class="flex h-9 shrink-0 items-center border-b border-white/[0.06] bg-[#0d0d10] px-2 gap-1">
+      <div class="flex h-9 shrink-0 items-center border-b border-white/[0.06] bg-[#0d0d10] gap-1" style="padding-left: max(8px, env(titlebar-area-x, 78px)); padding-right: 8px;">
         <For each={sessions()}>
           {(s) => (
-            <button
-              onClick={() => setActiveSessionId(s.id)}
-              class={`group relative flex items-center gap-1.5 rounded-md px-3 py-1 text-xs transition-colors ${
+            <div
+              onClick={() => { if (renamingSessionId() !== s.id) setActiveSessionId(s.id); }}
+              onDblClick={() => {
+                setRenamingSessionId(s.id);
+                setRenameValue(s.title);
+              }}
+              class={`group relative flex items-center gap-1.5 rounded-md px-3 py-1 text-xs transition-colors cursor-default select-none ${
                 s.id === activeSessionId()
                   ? "bg-white/[0.08] text-white"
                   : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04]"
@@ -1180,14 +1282,44 @@ export default function App() {
               <Show when={s.status === "done" && s.id !== activeSessionId()}>
                 <span class="h-1.5 w-1.5 rounded-full bg-blue-500" />
               </Show>
-              <span class="max-w-[120px] truncate">{s.title}</span>
+              <Show when={renamingSessionId() === s.id} fallback={
+                <span class="max-w-[120px] truncate">{s.title}</span>
+              }>
+                <input
+                  class="max-w-[120px] bg-transparent outline-none border-b border-white/30 text-xs text-white"
+                  value={renameValue()}
+                  onInput={(e) => setRenameValue(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      const val = renameValue().trim();
+                      if (val) {
+                        updateSession(s.id, { title: val });
+                        void invoke("update_app_session", { id: s.id, update: { title: val } }).catch(() => {});
+                      }
+                      setRenamingSessionId(null);
+                    } else if (e.key === "Escape") {
+                      setRenamingSessionId(null);
+                    }
+                  }}
+                  onBlur={() => {
+                    const val = renameValue().trim();
+                    if (val) {
+                      updateSession(s.id, { title: val });
+                      void invoke("update_app_session", { id: s.id, update: { title: val } }).catch(() => {});
+                    }
+                    setRenamingSessionId(null);
+                  }}
+                  ref={(el) => queueMicrotask(() => el?.select())}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </Show>
               <Show when={sessions().length > 1}>
                 <button
                   onClick={(e) => { e.stopPropagation(); closeSession(s.id); }}
                   class="ml-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 text-zinc-400 leading-none"
                 >×</button>
               </Show>
-            </button>
+            </div>
           )}
         </For>
         <button
@@ -1229,7 +1361,7 @@ export default function App() {
           </div>
         </Show>
         <button
-          onClick={() => { void refreshAssistants(); void refreshRoles(); }}
+          onClick={() => { void refreshAssistants(); void refreshRoles(); void refreshSkills(); }}
           class={`flex h-7 w-7 items-center justify-center rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.05] ${INTERACTIVE_MOTION}`}
           title="Refresh"
         >
@@ -1278,7 +1410,7 @@ export default function App() {
               <div class="mb-3">
                 <div class="flex items-center gap-2 mb-0.5">
                   <span class={`text-[10px] font-semibold ${RUNTIME_COLOR[activeSession()?.selectedAssistant ?? ""] ?? "text-zinc-400"}`}>
-                    [{activeSession()?.activeRole ?? "assistant"}]
+                    [{msg.roleLabel ?? "assistant"}]
                   </span>
                   <span class="text-[10px] text-zinc-600">{fmt(msg.at)}</span>
                   <Show when={activeSession()?.currentMode}>
@@ -1419,7 +1551,7 @@ export default function App() {
             </button>
           </div>
           <Show when={slashOpen() && slashItems().length > 0}>
-            <div class="absolute bottom-14 left-0 right-0 z-30 max-h-56 overflow-auto rounded-lg border border-zinc-700 bg-zinc-900 p-1 shadow-xl">
+            <div ref={slashListEl} class="absolute bottom-14 left-0 right-0 z-30 max-h-56 overflow-auto rounded-lg border border-zinc-700 bg-zinc-900 p-1 shadow-xl">
               <For each={slashItems()}>
                 {(item, i) => (
                   <button
@@ -1439,7 +1571,7 @@ export default function App() {
             </div>
           </Show>
           <Show when={mentionOpen() && mentionItems().length > 0}>
-            <div class="absolute bottom-14 left-0 right-0 z-30 max-h-56 overflow-auto rounded-lg border border-zinc-700 bg-zinc-900 p-1 shadow-xl">
+            <div ref={mentionListEl} class="absolute bottom-14 left-0 right-0 z-30 max-h-56 overflow-auto rounded-lg border border-zinc-700 bg-zinc-900 p-1 shadow-xl">
               <For each={mentionItems()}>
                 {(item, i) => (
                   <button
@@ -1450,7 +1582,7 @@ export default function App() {
                     }}
                     class={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${i() === mentionActiveIndex() ? "bg-white/[0.08] text-white" : "text-zinc-400 hover:bg-white/[0.04]"}`}
                   >
-                    <span class={`rounded px-1 text-[10px] uppercase tracking-wide ${item.kind === "role" ? "bg-blue-500/20 text-blue-200" : item.kind === "dir" ? "bg-emerald-500/20 text-emerald-200" : item.kind === "file" ? "bg-amber-500/20 text-amber-200" : item.kind === "command" ? "bg-indigo-500/20 text-indigo-200" : "bg-zinc-500/20 text-zinc-300"}`}>
+                    <span class={`rounded px-1 text-[10px] uppercase tracking-wide ${item.kind === "role" ? "bg-blue-500/20 text-blue-200" : item.kind === "dir" ? "bg-emerald-500/20 text-emerald-200" : item.kind === "file" ? "bg-amber-500/20 text-amber-200" : item.kind === "command" ? "bg-indigo-500/20 text-indigo-200" : item.kind === "skill" ? "bg-violet-500/20 text-violet-200" : "bg-zinc-500/20 text-zinc-300"}`}>
                       {item.kind}
                     </span>
                     <span class="truncate font-mono text-xs">{item.value}</span>
@@ -1778,6 +1910,85 @@ export default function App() {
                   <Show when={roles().length === 0 && !showRoleForm()}>
                     <p class="rounded-lg border border-dashed border-zinc-700 p-2 text-center text-xs text-zinc-600">
                       No roles yet. Click "+ role" to add one.
+                    </p>
+                  </Show>
+                </div>
+              </div>
+
+              {/* Skills */}
+              <div>
+                <div class="mb-2 flex items-center justify-between">
+                  <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Skills</span>
+                  <button
+                    onClick={() => {
+                      setEditingSkillId(null);
+                      setSkillFormName("");
+                      setSkillFormDescription("");
+                      setSkillFormContent("");
+                      setShowSkillForm((v) => !v);
+                    }}
+                    class={`min-h-7 rounded-md border border-white/[0.08] px-2 py-0.5 text-xs text-zinc-500 hover:border-white/[0.15] hover:text-zinc-200 ${INTERACTIVE_MOTION}`}
+                  >
+                    {showSkillForm() && !editingSkillId() ? "cancel" : "+ skill"}
+                  </button>
+                </div>
+
+                <Show when={showSkillForm()}>
+                  <div class="mb-2 space-y-1.5 rounded-xl border border-white/[0.07] bg-white/[0.03] p-2.5">
+                    <input
+                      value={skillFormName()}
+                      onInput={(e) => setSkillFormName(e.currentTarget.value)}
+                      placeholder="Skill name (e.g. code-review)"
+                      class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-2.5 text-sm text-zinc-200"
+                    />
+                    <input
+                      value={skillFormDescription()}
+                      onInput={(e) => setSkillFormDescription(e.currentTarget.value)}
+                      placeholder="Short description"
+                      class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-2.5 text-sm text-zinc-200"
+                    />
+                    <textarea
+                      value={skillFormContent()}
+                      onInput={(e) => setSkillFormContent(e.currentTarget.value)}
+                      rows={4}
+                      placeholder="Skill content — prompt instructions, templates, context…"
+                      class="w-full resize-none rounded border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200"
+                    />
+                    <button
+                      onClick={saveSkill}
+                      class={`w-full rounded-lg bg-indigo-600 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 ${INTERACTIVE_MOTION}`}
+                    >
+                      {editingSkillId() ? "Save changes" : "Create skill"}
+                    </button>
+                  </div>
+                </Show>
+
+                <div class="space-y-1">
+                  <For each={skills()}>
+                    {(skill) => (
+                      <div class="group rounded-lg border border-white/[0.05] bg-white/[0.02] px-2.5 py-2">
+                        <div class="flex items-center justify-between gap-1">
+                          <span class="text-xs font-medium text-zinc-300">#{skill.name}</span>
+                          <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={() => openSkillEditor(skill)}
+                              class="rounded px-1.5 py-0.5 text-[10px] text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.06]"
+                            >edit</button>
+                            <button
+                              onClick={() => void deleteSkill(skill.id)}
+                              class="rounded px-1.5 py-0.5 text-[10px] text-rose-600 hover:text-rose-400 hover:bg-rose-500/10"
+                            >del</button>
+                          </div>
+                        </div>
+                        <Show when={skill.description}>
+                          <p class="mt-0.5 text-[10px] text-zinc-600 truncate">{skill.description}</p>
+                        </Show>
+                      </div>
+                    )}
+                  </For>
+                  <Show when={skills().length === 0 && !showSkillForm()}>
+                    <p class="rounded-lg border border-dashed border-zinc-700 p-2 text-center text-xs text-zinc-600">
+                      No skills yet. Click "+ skill" to add one.
                     </p>
                   </Show>
                 </div>

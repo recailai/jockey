@@ -6,7 +6,7 @@ mod db;
 mod types;
 
 use dashmap::DashMap;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashSet;
 use std::fs;
 use std::sync::Mutex;
@@ -71,24 +71,16 @@ pub(crate) fn build_unionai_tool_prompt() -> &'static str {
     "You are UnionAI assistant. Answer the user's question directly and concisely.\n\
 IMPORTANT: Do NOT use any tools, read files, run commands, or explore the filesystem.\n\
 \n\
-To control UnionAI, suggest a slash command on its own line. Commands are not auto-executed.\n\
-Prefer direct assistant or @role chat for simple/single-role tasks.\n\
-Use workflow commands only when the task is explicitly multi-step or cross-role.\n\
-  /assistant list | /assistant select <runtime>\n\
-  /model list | /model add <model> | /model remove <model>\n\
-  /model select <model> | /model select role <name> <model> | /model get | /model clear\n\
-  /mcp list | /mcp add <name> | /mcp remove <name> | /mcp enable <name> | /mcp disable <name>\n\
-  /skill list | /skill add <name> | /skill remove <name> | /skill enable <name> | /skill disable <name>\n\
-  /role list | /role bind <role> <runtime> [prompt] | /role prompt <role> <prompt> | /role delete <role>\n\
-  /workflow list | /workflow create <name> <r1,r2> | /workflow start <name> <prompt>\n\
-  /session list | /session stop <id> | /session reset assistant | /session reset role <name>\n\
-  /context list | /context list role <name>\n\
-  /context set <key> <value> | /context set role <name> <key> <value>\n\
-  /context get <key> | /context get role <name> <key>\n\
-  /context delete <key> | /context delete role <name> <key>\n\
-  /run <prompt>\n\
+App commands (prefix /app_) control UnionAI itself. Suggest them on their own line — not auto-executed.\n\
+  /app_help\n\
+  /app_assistant list | /app_assistant select <runtime>\n\
+  /app_model list | /app_model add <model> | /app_model remove <model>\n\
+  /app_model select <model> | /app_model select role <name> <model> | /app_model get | /app_model clear\n\
+  /app_mcp list | /app_mcp add <name> | /app_mcp remove <name> | /app_mcp enable <name> | /app_mcp disable <name>\n\
+  /app_role list | /app_role bind <role> <runtime> [prompt] | /app_role prompt <role> <prompt> | /app_role delete <role>\n\
+  /app_role edit <role> mode <mode> | /app_role edit <role> model <model> | /app_role copy <src> <dst>\n\
 Workspace selection is managed by the app automatically.\n\
-These are UI commands for UnionAI, NOT tools you can invoke. Only output them when the user explicitly asks to perform a UnionAI action."
+Only output app commands when the user explicitly asks to perform a UnionAI action."
 }
 
 #[tauri::command]
@@ -117,8 +109,8 @@ async fn set_acp_config_option(
 }
 
 #[tauri::command]
-fn list_available_commands_cmd(runtime_key: String) -> Vec<serde_json::Value> {
-    acp::list_available_commands(&runtime_key)
+fn list_available_commands_cmd(runtime_key: String, role_name: String) -> Vec<serde_json::Value> {
+    acp::list_available_commands(&runtime_key, &role_name)
 }
 
 #[tauri::command]
@@ -134,7 +126,9 @@ async fn prewarm_role_config_cmd(
     team_id: Option<String>,
 ) -> Result<Vec<serde_json::Value>, String> {
     let cwd = resolve_chat_cwd(&state, team_id.as_deref());
-    Ok(acp::prewarm_role_for_config(&runtime_kind, &role_name, &cwd).await)
+    let resolved_team_id = team_id.unwrap_or_default();
+    let state_inner = state.inner();
+    Ok(acp::prewarm_role_for_config(&runtime_kind, &role_name, &cwd, Some((state_inner, &resolved_team_id))).await)
 }
 
 #[tauri::command]
@@ -173,6 +167,7 @@ pub fn run() {
         .setup(|app| -> Result<(), Box<dyn std::error::Error>> {
             let app_dir = app.path().app_local_data_dir()?;
             fs::create_dir_all(&app_dir)?;
+            acp::set_app_data_dir(app_dir.clone());
             let db_path = app_dir.join("unionai.sqlite3");
             let conn = Connection::open(db_path)?;
             init_db(&conn).map_err(std::io::Error::other)?;
@@ -220,18 +215,25 @@ pub fn run() {
                 .iter()
                 .filter_map(|(key, available)| if *available { Some(key.clone()) } else { None })
                 .collect();
+            let recent_app_session: Option<(String, String)> = with_db(app_state, |conn| {
+                conn.query_row(
+                    "SELECT id, role_sessions_json FROM app_sessions ORDER BY last_active_at DESC LIMIT 1",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(|e| e.to_string())
+            }).unwrap_or(None);
             let all_roles: Vec<(String, String, String)> = with_db(app_state, |conn| {
                 let mut stmt = conn.prepare(
-                    "SELECT r.role_name, r.runtime_kind, COALESCE(t.workspace_path, '') as wp
-                     FROM roles r JOIN teams t ON r.team_id = t.id
-                     ORDER BY r.updated_at DESC
-                     LIMIT ?1"
+                    "SELECT role_name, runtime_kind, '' as wp FROM roles ORDER BY updated_at DESC LIMIT ?1"
                 ).map_err(|e| e.to_string())?;
                 let rows = stmt.query_map(params![PREWARM_ROLE_LIMIT as i64], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
                 }).map_err(|e| e.to_string())?;
                 Ok(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
             }).unwrap_or_default();
+            let app_handle = app.handle().clone();
             let default_cwd = prewarm_cwd.clone();
             tauri::async_runtime::spawn(async move {
                 for (key, available) in catalog_snapshot {
@@ -239,12 +241,20 @@ pub fn run() {
                         acp::prewarm(&key, &prewarm_cwd).await;
                     }
                 }
+                let role_sessions: serde_json::Map<String, serde_json::Value> =
+                    recent_app_session.as_ref()
+                        .and_then(|(_, json)| serde_json::from_str(json).ok())
+                        .unwrap_or_default();
+                let app_session_id = recent_app_session.as_ref().map(|(id, _)| id.as_str()).unwrap_or("");
                 for (role_name, runtime_kind, workspace_path) in all_roles {
                     if runtime_kind != "mock" && !available_runtime_keys.contains(&runtime_kind) {
                         continue;
                     }
                     let cwd = abs_cwd(if workspace_path.is_empty() { &default_cwd } else { &workspace_path });
-                    acp::prewarm_role(&runtime_kind, &role_name, &cwd).await;
+                    let state_ref = app_handle.state::<AppState>();
+                    let app_state_inner = state_ref.inner();
+                    let resume_sid = role_sessions.get(&role_name).and_then(|v| v.as_str()).map(|s| s.to_string());
+                    acp::prewarm_role_with_session_id(&runtime_kind, &role_name, &cwd, resume_sid, app_state_inner, app_session_id).await;
                 }
             });
 
@@ -276,7 +286,10 @@ pub fn run() {
             db::app_session::list_app_sessions,
             db::app_session::create_app_session,
             db::app_session::update_app_session,
-            db::app_session::delete_app_session
+            db::app_session::delete_app_session,
+            db::skill::list_app_skills,
+            db::skill::upsert_app_skill,
+            db::skill::delete_app_skill
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

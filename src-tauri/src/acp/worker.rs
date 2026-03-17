@@ -106,6 +106,7 @@ pub(super) enum WorkerMsg {
         mcp_servers: Vec<acp::McpServer>,
         role_mode: Option<String>,
         role_config_options: Vec<(String, String)>,
+        resume_session_id: Option<String>,
     },
     Prewarm {
         runtime_key: &'static str,
@@ -118,7 +119,8 @@ pub(super) enum WorkerMsg {
         mcp_servers: Vec<acp::McpServer>,
         role_mode: Option<String>,
         role_config_options: Vec<(String, String)>,
-        result_tx: Option<oneshot::Sender<Vec<Value>>>,
+        result_tx: Option<oneshot::Sender<(Vec<Value>, String)>>,
+        resume_session_id: Option<String>,
     },
     Cancel {
         runtime_key: &'static str,
@@ -222,13 +224,13 @@ fn runtime_available_commands() -> &'static DashMap<String, Vec<Value>> {
     RUNTIME_AVAILABLE_COMMANDS.get_or_init(DashMap::new)
 }
 
-pub(super) fn remember_runtime_available_commands(runtime_key: &str, commands: Vec<Value>) {
-    runtime_available_commands().insert(runtime_key.to_string(), commands);
+pub(super) fn remember_runtime_available_commands(runtime_key: &str, role_name: &str, commands: Vec<Value>) {
+    runtime_available_commands().insert(pool_key(runtime_key, role_name), commands);
 }
 
-pub fn list_available_commands(runtime_key: &str) -> Vec<Value> {
+pub fn list_available_commands(runtime_key: &str, role_name: &str) -> Vec<Value> {
     runtime_available_commands()
-        .get(runtime_key)
+        .get(&pool_key(runtime_key, role_name))
         .map(|v| v.clone())
         .unwrap_or_default()
 }
@@ -259,11 +261,6 @@ fn get_slot_handle(runtime_key: &str, role_name: &str) -> Arc<SlotHandle> {
             })
         })
         .clone()
-}
-
-pub fn reset_slot(runtime_key: &str, role_name: &str) {
-    let key = pool_key(runtime_key, role_name);
-    let _ = slot_map().remove(&key);
 }
 
 pub(super) struct LiveConnection {
@@ -297,6 +294,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 mcp_servers,
                 role_mode,
                 role_config_options,
+                resume_session_id,
             } => {
                 let slot = get_slot_handle(runtime_key, &role_name);
                 tokio::task::spawn_local(async move {
@@ -316,6 +314,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                         mcp_servers,
                         role_mode,
                         role_config_options,
+                        resume_session_id,
                     )
                     .await;
                 });
@@ -332,6 +331,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 role_mode,
                 role_config_options,
                 result_tx,
+                resume_session_id,
             } => {
                 let slot = get_slot_handle(runtime_key, &role_name);
                 tokio::task::spawn_local(async move {
@@ -348,6 +348,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                         role_mode,
                         role_config_options,
                         result_tx,
+                        resume_session_id,
                     )
                     .await;
                 });
@@ -439,6 +440,7 @@ async fn handle_execute(
     mcp_servers: Vec<acp::McpServer>,
     role_mode: Option<String>,
     role_config_options: Vec<(String, String)>,
+    resume_session_id: Option<String>,
 ) {
     slot.cancel_flag
         .store(false, std::sync::atomic::Ordering::Release);
@@ -463,6 +465,7 @@ async fn handle_execute(
             &resolved,
             auto_approve,
             mcp_servers,
+            resume_session_id,
         )
         .await
         {
@@ -580,12 +583,14 @@ async fn handle_prewarm(
     mcp_servers: Vec<acp::McpServer>,
     role_mode: Option<String>,
     role_config_options: Vec<(String, String)>,
-    result_tx: Option<oneshot::Sender<Vec<Value>>>,
+    result_tx: Option<oneshot::Sender<(Vec<Value>, String)>>,
+    resume_session_id: Option<String>,
 ) {
     let mut guard = slot.conn.lock().await;
     if guard.is_some() {
         if let Some(tx) = result_tx {
-            let _ = tx.send(list_discovered_config_options(runtime_key));
+            let session_id = guard.as_ref().map(|c| c.session_id.to_string()).unwrap_or_default();
+            let _ = tx.send((list_discovered_config_options(runtime_key), session_id));
         }
         return;
     }
@@ -602,6 +607,7 @@ async fn handle_prewarm(
         &resolved,
         auto_approve,
         mcp_servers,
+        resume_session_id,
     )
     .await
     {
@@ -611,6 +617,7 @@ async fn handle_prewarm(
                 json!({ "runtime": runtime_key, "role": role_name, "sessionId": conn.session_id.to_string() }),
             );
             let session_id = conn.session_id.clone();
+            let session_id_str = session_id.to_string();
             if let Some(mode) = &role_mode {
                 let _ = conn
                     .conn
@@ -630,9 +637,40 @@ async fn handle_prewarm(
                     ))
                     .await;
             }
+            // Install a temporary drain channel so notifications sent after session/new
+            // (e.g. AvailableCommandsUpdate via setTimeout) are captured rather than dropped.
+            let (drain_tx, mut drain_rx) = mpsc::unbounded_channel::<super::worker::AcpEvent>();
+            {
+                if let Ok(mut slot_guard) = conn.delta_slot.lock() {
+                    *slot_guard = Some(drain_tx);
+                }
+            }
             *guard = Some(conn);
+            // Drain for up to 300 ms to collect any immediate notifications.
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(300);
+            loop {
+                match tokio::time::timeout_at(deadline, drain_rx.recv()).await {
+                    Ok(Some(AcpEvent::AvailableCommands { commands })) => {
+                        acp_log("commands.discovered", json!({
+                            "runtime": runtime_key,
+                            "role": role_name,
+                            "count": commands.len(),
+                            "names": commands.iter().filter_map(|c| c.get("name").and_then(|n| n.as_str()).map(|s| s.to_string())).collect::<Vec<_>>()
+                        }));
+                        remember_runtime_available_commands(runtime_key, &role_name, commands);
+                    }
+                    Ok(Some(_)) => {}
+                    _ => break,
+                }
+            }
+            // Remove the drain sender so the slot is idle (no live receiver).
+            if let Some(live) = guard.as_ref() {
+                if let Ok(mut slot_guard) = live.delta_slot.lock() {
+                    *slot_guard = None;
+                }
+            }
             if let Some(tx) = result_tx {
-                let _ = tx.send(list_discovered_config_options(runtime_key));
+                let _ = tx.send((list_discovered_config_options(runtime_key), session_id_str));
             }
         }
         Err(e) => {
@@ -641,7 +679,7 @@ async fn handle_prewarm(
                 json!({ "runtime": runtime_key, "role": role_name, "error": e }),
             );
             if let Some(tx) = result_tx {
-                let _ = tx.send(vec![]);
+                let _ = tx.send((vec![], String::new()));
             }
         }
     }

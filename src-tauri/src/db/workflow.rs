@@ -1,9 +1,7 @@
-use crate::assistant::normalize_runtime_key;
-use crate::db::role::upsert_role;
 use crate::db::{get_state, with_db};
 use crate::now_ms;
 use crate::types::*;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 use tauri::State;
 use uuid::Uuid;
 
@@ -100,90 +98,6 @@ pub(crate) fn load_workflow(state: &AppState, workflow_id: &str) -> Result<Workf
                 })
             },
         )
-        .map_err(|e| e.to_string())
-    })
-}
-
-pub(crate) fn resolve_workflow_id(
-    state: State<'_, AppState>,
-    team_id: &str,
-    workflow_ref: &str,
-) -> Result<String, String> {
-    let by_id = with_db(get_state(&state), |conn| {
-        conn.query_row(
-            "SELECT id FROM workflows WHERE team_id = ?1 AND id = ?2",
-            params![team_id, workflow_ref],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())
-    })?;
-    if let Some(id) = by_id {
-        return Ok(id);
-    }
-    let by_name = with_db(get_state(&state), |conn| {
-        conn.query_row(
-            "SELECT id FROM workflows WHERE team_id = ?1 AND name = ?2 ORDER BY updated_at DESC LIMIT 1",
-            params![team_id, workflow_ref],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())
-    })?;
-    by_name.ok_or_else(|| "workflow not found".to_string())
-}
-
-pub(crate) fn ensure_quick_workflow(
-    state: State<'_, AppState>,
-    team_id: &str,
-    runtime_hint: &str,
-) -> Result<Workflow, String> {
-    let runtime = normalize_runtime_key(runtime_hint)
-        .unwrap_or("mock")
-        .to_string();
-    upsert_role(
-        state.clone(),
-        team_id.to_string(),
-        "Planner".to_string(),
-        runtime.clone(),
-        "Break down the task into a short, actionable plan with clear steps.".to_string(),
-        None,
-        None,
-        None,
-        None,
-        None,
-    )?;
-    upsert_role(
-        state.clone(),
-        team_id.to_string(),
-        "Executor".to_string(),
-        runtime,
-        "Execute the approved plan and provide concise progress and results.".to_string(),
-        None,
-        None,
-        None,
-        None,
-        None,
-    )?;
-    create_workflow(
-        state,
-        team_id.to_string(),
-        "quick".to_string(),
-        vec!["Planner".to_string(), "Executor".to_string()],
-    )
-}
-
-pub(crate) fn latest_workflow_id(
-    state: State<'_, AppState>,
-    team_id: &str,
-) -> Result<Option<String>, String> {
-    with_db(get_state(&state), |conn| {
-        conn.query_row(
-            "SELECT id FROM workflows WHERE team_id = ?1 ORDER BY updated_at DESC LIMIT 1",
-            params![team_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
         .map_err(|e| e.to_string())
     })
 }

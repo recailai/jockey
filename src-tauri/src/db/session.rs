@@ -234,6 +234,7 @@ pub(crate) async fn run_workflow(
             vec![],
             role_mode,
             role_config,
+            Some((state.inner(), &session.team_id)),
         )
         .await;
         record_session_event(

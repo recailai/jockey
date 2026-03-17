@@ -1,9 +1,59 @@
 use crate::db::{ensure_default_team_id, get_state, with_db};
 use crate::now_ms;
 use crate::types::*;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
+use serde_json::Value;
 use tauri::State;
 use uuid::Uuid;
+
+pub(crate) fn load_app_session_role_cli_id(
+    state: &AppState,
+    app_session_id: &str,
+    role_name: &str,
+) -> Option<String> {
+    with_db(state, |conn| {
+        conn.query_row(
+            "SELECT role_sessions_json FROM app_sessions WHERE id = ?1",
+            params![app_session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    })
+    .ok()
+    .flatten()
+    .and_then(|json| serde_json::from_str::<serde_json::Map<String, Value>>(&json).ok())
+    .and_then(|map| map.get(role_name).and_then(|v| v.as_str()).map(|s| s.to_string()))
+}
+
+pub(crate) fn save_app_session_role_cli_id(
+    state: &AppState,
+    app_session_id: &str,
+    role_name: &str,
+    cli_session_id: &str,
+) -> Result<(), String> {
+    with_db(state, |conn| {
+        let existing = conn
+            .query_row(
+                "SELECT role_sessions_json FROM app_sessions WHERE id = ?1",
+                params![app_session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some(json) = existing else { return Ok(()); };
+        let mut map: serde_json::Map<String, Value> =
+            serde_json::from_str(&json).unwrap_or_default();
+        map.insert(role_name.to_string(), Value::String(cli_session_id.to_string()));
+        let updated = serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string());
+        conn.execute(
+            "UPDATE app_sessions SET role_sessions_json = ?1 WHERE id = ?2",
+            params![updated, app_session_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
 
 #[tauri::command]
 pub(crate) fn list_app_sessions(

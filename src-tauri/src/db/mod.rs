@@ -2,6 +2,7 @@ pub(crate) mod app_session;
 pub(crate) mod context;
 pub(crate) mod role;
 pub(crate) mod session;
+pub(crate) mod skill;
 pub(crate) mod workflow;
 
 use crate::now_ms;
@@ -97,6 +98,16 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         );
         CREATE INDEX IF NOT EXISTS idx_app_sessions_last_active
           ON app_sessions(last_active_at DESC);
+        CREATE TABLE IF NOT EXISTS app_skills (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          description TEXT NOT NULL DEFAULT '',
+          content TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_app_skills_updated_at
+          ON app_skills(updated_at DESC);
         ",
     )
     .map_err(|e| e.to_string())?;
@@ -107,6 +118,8 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         "ALTER TABLE roles ADD COLUMN mcp_servers_json TEXT DEFAULT '[]'",
         "ALTER TABLE roles ADD COLUMN config_options_json TEXT DEFAULT '{}'",
         "ALTER TABLE roles ADD COLUMN auto_approve INTEGER DEFAULT 1",
+        "ALTER TABLE roles ADD COLUMN acp_session_id TEXT DEFAULT NULL",
+        "ALTER TABLE app_sessions ADD COLUMN role_sessions_json TEXT NOT NULL DEFAULT '{}'",
     ];
     for stmt in alter_stmts {
         let _ = conn.execute(stmt, []);

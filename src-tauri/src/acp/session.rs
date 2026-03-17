@@ -7,6 +7,8 @@ use tauri::Emitter;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+use crate::db::app_session::{load_app_session_role_cli_id, save_app_session_role_cli_id};
+use crate::types::AppState;
 use super::adapter::{acp_log, build_stdio_adapter, clip, friendly_error_message};
 use super::client::UnionAiClient;
 use super::worker::{
@@ -86,6 +88,7 @@ pub(super) async fn cold_start(
     abs_cwd: &str,
     auto_approve: bool,
     mcp_servers: Vec<acp::McpServer>,
+    resume_session_id: Option<String>,
 ) -> Result<LiveConnection, String> {
     let delta_slot: DeltaSlot = Arc::new(Mutex::new(None));
     acp_log("spawn.start", json!({ "binary": binary, "cwd": abs_cwd }));
@@ -146,7 +149,7 @@ pub(super) async fn cold_start(
     });
 
     let t = Instant::now();
-    conn.initialize(
+    let init_resp = conn.initialize(
         acp::InitializeRequest::new(acp::ProtocolVersion::V1)
             .client_info(acp::Implementation::new("unionai", "0.1.0").title("UnionAI"))
             .client_capabilities(
@@ -165,14 +168,79 @@ pub(super) async fn cold_start(
     );
 
     let t = Instant::now();
-    let mut req = acp::NewSessionRequest::new(std::path::PathBuf::from(abs_cwd));
-    if !mcp_servers.is_empty() {
-        req = req.mcp_servers(mcp_servers);
+    let supports_load = init_resp.agent_capabilities.load_session;
+
+    struct SessionStartResult {
+        session_id: acp::SessionId,
+        config_options: Option<Vec<acp::SessionConfigOption>>,
+        modes: Option<acp::SessionModeState>,
+        resumed: bool,
     }
-    let resp = conn.new_session(req).await.map_err(|e| e.to_string())?;
-    let discovered_models = extract_models_from_config_options(resp.config_options.as_ref());
+
+    let start_result: SessionStartResult = if supports_load {
+        if let Some(sid) = resume_session_id {
+            let mut load_req = acp::LoadSessionRequest::new(
+                acp::SessionId::from(sid.clone()),
+                std::path::PathBuf::from(abs_cwd),
+            );
+            if !mcp_servers.is_empty() {
+                load_req = load_req.mcp_servers(mcp_servers.clone());
+            }
+            match conn.load_session(load_req).await {
+                Ok(resp) => {
+                    acp_log("session.load.ok", json!({ "runtime": runtime_key, "sessionId": &sid }));
+                    SessionStartResult {
+                        session_id: acp::SessionId::from(sid),
+                        config_options: resp.config_options,
+                        modes: resp.modes,
+                        resumed: true,
+                    }
+                }
+                Err(e) => {
+                    acp_log("session.load.fallback", json!({ "runtime": runtime_key, "error": e.to_string() }));
+                    let mut req = acp::NewSessionRequest::new(std::path::PathBuf::from(abs_cwd));
+                    if !mcp_servers.is_empty() {
+                        req = req.mcp_servers(mcp_servers);
+                    }
+                    let resp = conn.new_session(req).await.map_err(|e| e.to_string())?;
+                    SessionStartResult {
+                        session_id: resp.session_id,
+                        config_options: resp.config_options,
+                        modes: resp.modes,
+                        resumed: false,
+                    }
+                }
+            }
+        } else {
+            let mut req = acp::NewSessionRequest::new(std::path::PathBuf::from(abs_cwd));
+            if !mcp_servers.is_empty() {
+                req = req.mcp_servers(mcp_servers);
+            }
+            let resp = conn.new_session(req).await.map_err(|e| e.to_string())?;
+            SessionStartResult {
+                session_id: resp.session_id,
+                config_options: resp.config_options,
+                modes: resp.modes,
+                resumed: false,
+            }
+        }
+    } else {
+        let mut req = acp::NewSessionRequest::new(std::path::PathBuf::from(abs_cwd));
+        if !mcp_servers.is_empty() {
+            req = req.mcp_servers(mcp_servers);
+        }
+        let resp = conn.new_session(req).await.map_err(|e| e.to_string())?;
+        SessionStartResult {
+            session_id: resp.session_id,
+            config_options: resp.config_options,
+            modes: resp.modes,
+            resumed: false,
+        }
+    };
+
+    let discovered_models = extract_models_from_config_options(start_result.config_options.as_ref());
     remember_runtime_models(runtime_key, discovered_models.clone());
-    if let Some(ref opts) = resp.config_options {
+    if let Some(ref opts) = start_result.config_options {
         let serialized: Vec<Value> = opts
             .iter()
             .filter_map(|o| serde_json::to_value(o).ok())
@@ -192,10 +260,9 @@ pub(super) async fn cold_start(
             json!({ "runtime": runtime_key }),
         );
     }
-    let session_id = resp.session_id;
+    let session_id = start_result.session_id;
 
-    let available_modes = resp
-        .modes
+    let available_modes = start_result.modes
         .as_ref()
         .map(|m| {
             serde_json::to_value(m)
@@ -209,7 +276,7 @@ pub(super) async fn cold_start(
         _ => vec![],
     };
     remember_runtime_modes(runtime_key, extract_mode_ids(&available_modes));
-    let current_mode = resp.modes.as_ref().and_then(|m| {
+    let current_mode = start_result.modes.as_ref().and_then(|m| {
         serde_json::to_value(m).ok().and_then(|v| {
             v.get("current")
                 .and_then(|c| c.as_str())
@@ -220,11 +287,12 @@ pub(super) async fn cold_start(
     acp_log(
         "stage.ok",
         json!({
-            "stage": "session/new",
+            "stage": if start_result.resumed { "session/load" } else { "session/new" },
             "latencyMs": t.elapsed().as_millis(),
             "sessionId": session_id.to_string(),
             "runtime": runtime_key,
-            "discoveredModelCount": discovered_models.len()
+            "discoveredModelCount": discovered_models.len(),
+            "resumed": start_result.resumed
         }),
     );
 
@@ -251,6 +319,7 @@ pub async fn execute_runtime(
     mcp_servers: Vec<acp::McpServer>,
     role_mode: Option<String>,
     role_config_options: Vec<(String, String)>,
+    state: Option<(&AppState, &str)>,
 ) -> AcpPromptResult {
     let normalized = runtime_kind.trim().to_ascii_lowercase();
 
@@ -288,6 +357,10 @@ pub async fn execute_runtime(
         }),
     );
 
+    let resume_session_id = state
+        .as_ref()
+        .and_then(|(s, app_sid)| load_app_session_role_cli_id(s, app_sid, role_name));
+
     let (delta_tx, mut delta_rx) = mpsc::unbounded_channel::<AcpEvent>();
     let (result_tx, mut result_rx) = oneshot::channel();
 
@@ -306,6 +379,7 @@ pub async fn execute_runtime(
         mcp_servers,
         role_mode,
         role_config_options,
+        resume_session_id,
     });
 
     let app = app.clone();
@@ -345,7 +419,13 @@ pub async fn execute_runtime(
                     }
                     Some(AcpEvent::AvailableCommands { ref commands }) => {
                         delta_count += 1;
-                        remember_runtime_available_commands(adapter.runtime_key, commands.clone());
+                        acp_log("commands.discovered", json!({
+                            "runtime": adapter.runtime_key,
+                            "role": role_owned,
+                            "count": commands.len(),
+                            "names": commands.iter().filter_map(|c| c.get("name").and_then(|n| n.as_str()).map(|s| s.to_string())).collect::<Vec<_>>()
+                        }));
+                        remember_runtime_available_commands(adapter.runtime_key, &role_owned, commands.clone());
                         let _ = app.emit("acp/stream", json!({
                             "role": role_owned,
                             "event": serde_json::to_value(&AcpEvent::AvailableCommands { commands: commands.clone() }).unwrap_or(json!({}))
@@ -388,6 +468,12 @@ pub async fn execute_runtime(
 
     match result {
         Ok((_output, session_id)) => {
+            if let Some((s, app_sid)) = state {
+                if !session_id.is_empty() {
+                    let _ = save_app_session_role_cli_id(s, app_sid, role_name, &session_id);
+                }
+            }
+
             let output = if full_output.is_empty() {
                 format!(
                     "{} ACP completed for role {} with no text payload.",
@@ -430,11 +516,19 @@ pub async fn execute_runtime(
     }
 }
 
-pub async fn prewarm_role(runtime_kind: &str, role_name: &str, cwd: &str) {
+pub async fn prewarm_role(
+    runtime_kind: &str,
+    role_name: &str,
+    cwd: &str,
+    state: Option<(&AppState, &str)>,
+) {
     let adapter = match build_stdio_adapter(runtime_kind) {
         Ok(Some(a)) => a,
         _ => return,
     };
+    let resume_session_id = state
+        .and_then(|(s, app_sid)| load_app_session_role_cli_id(s, app_sid, role_name));
+    let (tx, rx) = oneshot::channel();
     let _ = worker_tx().send(WorkerMsg::Prewarm {
         runtime_key: adapter.runtime_key,
         binary: adapter.binary,
@@ -446,18 +540,70 @@ pub async fn prewarm_role(runtime_kind: &str, role_name: &str, cwd: &str) {
         mcp_servers: vec![],
         role_mode: None,
         role_config_options: vec![],
-        result_tx: None,
+        result_tx: Some(tx),
+        resume_session_id,
     });
+    if let Some((s, app_sid)) = state {
+        if let Ok((_opts, sid)) = rx.await {
+            if !sid.is_empty() {
+                let _ = save_app_session_role_cli_id(s, app_sid, role_name, &sid);
+            }
+        }
+    }
 }
 
 pub async fn prewarm_role_for_config(
     runtime_kind: &str,
     role_name: &str,
     cwd: &str,
+    state: Option<(&AppState, &str)>,
 ) -> Vec<serde_json::Value> {
     let adapter = match build_stdio_adapter(runtime_kind) {
         Ok(Some(a)) => a,
         _ => return vec![],
+    };
+    let resume_session_id = state
+        .as_ref()
+        .and_then(|(s, app_sid)| load_app_session_role_cli_id(s, app_sid, role_name));
+    let (tx, rx) = oneshot::channel();
+    let _ = worker_tx().send(WorkerMsg::Prewarm {
+        runtime_key: adapter.runtime_key,
+        binary: adapter.binary,
+        args: adapter.args,
+        env: adapter.env,
+        role_name: role_name.to_string(),
+        cwd: cwd.to_string(),
+        auto_approve: true,
+        mcp_servers: vec![],
+        role_mode: None,
+        role_config_options: vec![],
+        result_tx: Some(tx),
+        resume_session_id,
+    });
+    let (opts, sid) = rx.await.unwrap_or_default();
+    if let Some((s, app_sid)) = state {
+        if !sid.is_empty() {
+            let _ = save_app_session_role_cli_id(s, app_sid, role_name, &sid);
+        }
+    }
+    opts
+}
+
+pub async fn prewarm(runtime_kind: &str, cwd: &str) {
+    prewarm_role(runtime_kind, "UnionAIAssistant", cwd, None).await;
+}
+
+pub async fn prewarm_role_with_session_id(
+    runtime_kind: &str,
+    role_name: &str,
+    cwd: &str,
+    resume_session_id: Option<String>,
+    state: &AppState,
+    app_session_id: &str,
+) {
+    let adapter = match build_stdio_adapter(runtime_kind) {
+        Ok(Some(a)) => a,
+        _ => return,
     };
     let (tx, rx) = oneshot::channel();
     let _ = worker_tx().send(WorkerMsg::Prewarm {
@@ -472,12 +618,13 @@ pub async fn prewarm_role_for_config(
         role_mode: None,
         role_config_options: vec![],
         result_tx: Some(tx),
+        resume_session_id,
     });
-    rx.await.unwrap_or_default()
-}
-
-pub async fn prewarm(runtime_kind: &str, cwd: &str) {
-    prewarm_role(runtime_kind, "UnionAIAssistant", cwd).await;
+    if let Ok((_opts, sid)) = rx.await {
+        if !sid.is_empty() {
+            let _ = save_app_session_role_cli_id(state, app_session_id, role_name, &sid);
+        }
+    }
 }
 
 fn normalize_runtime_key(runtime_kind: &str) -> Option<&'static str> {

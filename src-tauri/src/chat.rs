@@ -4,6 +4,7 @@ use crate::db::context::{
 };
 use crate::db::get_state;
 use crate::db::role::{load_role, resolve_role_prompt, resolve_role_runtime};
+use crate::db::skill::load_skill_by_name;
 use crate::types::*;
 use crate::{acp, build_unionai_tool_prompt, clip_text, now_ms, resolve_chat_cwd};
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,15 @@ pub(crate) fn parse_route_input(raw: &str) -> ParsedRouteInput {
     let mut message_tokens = Vec::new();
 
     for token in raw.split_whitespace() {
+        if let Some(skill_ref) = token.strip_prefix('#') {
+            let name = strip_trailing_punct(skill_ref).trim();
+            if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                if !out.skill_refs.iter().any(|s| s == name) {
+                    out.skill_refs.push(name.to_string());
+                }
+                continue;
+            }
+        }
         let Some(rest) = token.strip_prefix('@') else {
             message_tokens.push(token.to_string());
             continue;
@@ -173,6 +183,7 @@ fn append_recent_role_chat(
     assistant: &str,
 ) {
     let mut chats = load_recent_role_chats(state, team_id);
+    chats.retain(|c| c.role != role_name);
     chats.push(RecentRoleChat {
         role: role_name.to_string(),
         user: normalize_recent_chat_text(user),
@@ -379,90 +390,98 @@ fn collect_dir_files(
     files
 }
 
-fn attach_file_context(
-    cwd: &str,
-    raw_ref: &str,
+async fn attach_file_context(
+    cwd: String,
+    raw_ref: String,
     budget: usize,
 ) -> Result<(String, String, usize), String> {
-    let path = resolve_attach_path(cwd, raw_ref);
-    if !is_within_workspace(&path, cwd) {
-        return Err(format!("path is outside workspace: {}", raw_ref));
-    }
-    if !path.exists() {
-        return Err(format!("file not found: {}", raw_ref));
-    }
-    if path.is_dir() {
-        return Err(format!("path is directory (use @dir:): {}", raw_ref));
-    }
-    let per_file_budget = budget.min(ATTACH_MAX_FILE_BYTES);
-    let (snippet, used, _) = read_text_snippet(&path, per_file_budget)?;
-    let label = relative_or_abs(&path, cwd);
-    Ok((format!("file:{label}"), snippet, used))
+    tokio::task::spawn_blocking(move || {
+        let path = resolve_attach_path(&cwd, &raw_ref);
+        if !is_within_workspace(&path, &cwd) {
+            return Err(format!("path is outside workspace: {}", raw_ref));
+        }
+        if !path.exists() {
+            return Err(format!("file not found: {}", raw_ref));
+        }
+        if path.is_dir() {
+            return Err(format!("path is directory (use @dir:): {}", raw_ref));
+        }
+        let per_file_budget = budget.min(ATTACH_MAX_FILE_BYTES);
+        let (snippet, used, _) = read_text_snippet(&path, per_file_budget)?;
+        let label = relative_or_abs(&path, &cwd);
+        Ok((format!("file:{label}"), snippet, used))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
-fn attach_dir_context(
-    cwd: &str,
-    raw_ref: &str,
+async fn attach_dir_context(
+    cwd: String,
+    raw_ref: String,
     budget: usize,
 ) -> Result<(String, String, usize), String> {
     if budget == 0 {
         return Err("attachment budget exhausted".to_string());
     }
-    let normalized_ref = if let Some(prefix) = raw_ref.strip_suffix("/**") {
-        prefix
-    } else {
-        raw_ref
-    };
-    let path = resolve_attach_path(cwd, normalized_ref);
-    if !is_within_workspace(&path, cwd) {
-        return Err(format!("path is outside workspace: {}", raw_ref));
-    }
-    if !path.exists() {
-        return Err(format!("directory not found: {}", raw_ref));
-    }
-    if !path.is_dir() {
-        return Err(format!("path is file (use @file:): {}", raw_ref));
-    }
-
-    let files = collect_dir_files(&path, ATTACH_MAX_DIR_FILES, ATTACH_MAX_DIR_DEPTH);
-    if files.is_empty() {
-        return Err(format!("directory is empty or unreadable: {}", raw_ref));
-    }
-
-    let label = relative_or_abs(&path, cwd);
-    let mut body = format!(
-        "Directory: {label}\nFiles (sampled up to {}):",
-        ATTACH_MAX_DIR_FILES
-    );
-    let mut used = body.len();
-    for p in &files {
-        let rel = relative_or_abs(p, cwd);
-        body.push_str(&format!("\n- {rel}"));
-    }
-    used += files
-        .iter()
-        .map(|p| relative_or_abs(p, cwd).len() + 3)
-        .sum::<usize>();
-    body.push_str("\n\nContents:");
-
-    for p in files {
-        if used >= budget {
-            body.push_str("\n...[directory attachment truncated by budget]");
-            break;
-        }
-        let remaining = (budget - used).min(ATTACH_MAX_FILE_BYTES);
-        let Ok((snippet, consumed, _)) = read_text_snippet(&p, remaining) else {
-            continue;
+    tokio::task::spawn_blocking(move || {
+        let normalized_ref = if let Some(prefix) = raw_ref.strip_suffix("/**") {
+            prefix
+        } else {
+            &raw_ref
         };
-        if snippet.trim().is_empty() {
-            continue;
+        let path = resolve_attach_path(&cwd, normalized_ref);
+        if !is_within_workspace(&path, &cwd) {
+            return Err(format!("path is outside workspace: {}", raw_ref));
         }
-        let rel = relative_or_abs(&p, cwd);
-        body.push_str(&format!("\n\n### {rel}\n{snippet}"));
-        used += consumed + rel.len() + 8;
-    }
+        if !path.exists() {
+            return Err(format!("directory not found: {}", raw_ref));
+        }
+        if !path.is_dir() {
+            return Err(format!("path is file (use @file:): {}", raw_ref));
+        }
 
-    Ok((format!("dir:{label}"), body, used.min(budget)))
+        let files = collect_dir_files(&path, ATTACH_MAX_DIR_FILES, ATTACH_MAX_DIR_DEPTH);
+        if files.is_empty() {
+            return Err(format!("directory is empty or unreadable: {}", raw_ref));
+        }
+
+        let label = relative_or_abs(&path, &cwd);
+        let mut body = format!(
+            "Directory: {label}\nFiles (sampled up to {}):",
+            ATTACH_MAX_DIR_FILES
+        );
+        let mut used = body.len();
+        for p in &files {
+            let rel = relative_or_abs(p, &cwd);
+            body.push_str(&format!("\n- {rel}"));
+        }
+        used += files
+            .iter()
+            .map(|p| relative_or_abs(p, &cwd).len() + 3)
+            .sum::<usize>();
+        body.push_str("\n\nContents:");
+
+        for p in files {
+            if used >= budget {
+                body.push_str("\n...[directory attachment truncated by budget]");
+                break;
+            }
+            let remaining = (budget - used).min(ATTACH_MAX_FILE_BYTES);
+            let Ok((snippet, consumed, _)) = read_text_snippet(&p, remaining) else {
+                continue;
+            };
+            if snippet.trim().is_empty() {
+                continue;
+            }
+            let rel = relative_or_abs(&p, &cwd);
+            body.push_str(&format!("\n\n### {rel}\n{snippet}"));
+            used += consumed + rel.len() + 8;
+        }
+
+        Ok((format!("dir:{label}"), body, used.min(budget)))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -499,7 +518,7 @@ pub(crate) async fn assistant_chat(
         });
     }
 
-    if text.starts_with('/') {
+    if text.starts_with("/app_") {
         let route_started = Instant::now();
         let command_result = apply_chat_command(
             app,
@@ -559,7 +578,7 @@ pub(crate) async fn assistant_chat(
             attach_notes.push("attachment budget reached; some files skipped".to_string());
             break;
         }
-        match attach_file_context(&cwd, &file_ref, attach_budget) {
+        match attach_file_context(cwd.clone(), file_ref.clone(), attach_budget).await {
             Ok((key, value, used)) => {
                 attachment_pairs.push((key, value));
                 attach_budget = attach_budget.saturating_sub(used);
@@ -574,13 +593,21 @@ pub(crate) async fn assistant_chat(
             attach_notes.push("attachment budget reached; some directories skipped".to_string());
             break;
         }
-        match attach_dir_context(&cwd, &dir_ref, attach_budget) {
+        match attach_dir_context(cwd.clone(), dir_ref.clone(), attach_budget).await {
             Ok((key, value, used)) => {
                 attachment_pairs.push((key, value));
                 attach_budget = attach_budget.saturating_sub(used);
             }
             Err(e) => {
                 attach_notes.push(format!("{} ({})", e, dir_ref));
+            }
+        }
+    }
+    let mut skill_pairs: Vec<(String, String)> = Vec::new();
+    for skill_name in &routed.skill_refs {
+        if let Some(skill) = load_skill_by_name(get_state(&state), skill_name) {
+            if !skill.content.is_empty() {
+                skill_pairs.push((format!("skill:{}", skill.name), skill.content));
             }
         }
     }
@@ -605,10 +632,13 @@ pub(crate) async fn assistant_chat(
             if !role_prompt.is_empty() {
                 context_pairs.push(("role_prompt".to_string(), role_prompt));
             }
-            let recent_chats = load_recent_role_chats(get_state(&state), &team_id);
+            let recent_chats: Vec<_> = load_recent_role_chats(get_state(&state), &team_id)
+                .into_iter()
+                .filter(|c| c.role != role_name)
+                .collect();
             if !recent_chats.is_empty() {
                 if let Ok(payload) = serde_json::to_string(&recent_chats) {
-                    upsert_context_pair(&mut context_pairs, "recent_chat_last3", payload);
+                    upsert_context_pair(&mut context_pairs, "from_last_role_context", payload);
                 }
                 chat_log(
                     "route.context.share",
@@ -620,6 +650,7 @@ pub(crate) async fn assistant_chat(
             }
         }
         context_pairs.extend(attachment_pairs.clone());
+        context_pairs.extend(skill_pairs.clone());
         if !attach_notes.is_empty() {
             context_pairs.push(("attachment_notes".to_string(), attach_notes.join("\n")));
         }
@@ -671,6 +702,7 @@ pub(crate) async fn assistant_chat(
                 })
             })
             .unwrap_or_default();
+        let app_session_id_ref = input.app_session_id.as_deref().unwrap_or("");
         let llm = acp::execute_runtime(
             &runtime,
             &role_name,
@@ -682,6 +714,7 @@ pub(crate) async fn assistant_chat(
             vec![],
             role_mode,
             role_config,
+            if app_session_id_ref.is_empty() { None } else { Some((get_state(&state), app_session_id_ref)) },
         )
         .await;
         let output = llm.output.trim().to_string();

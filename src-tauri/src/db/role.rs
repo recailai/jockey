@@ -114,7 +114,7 @@ pub(crate) async fn upsert_role_cmd(
     let role_for_warmup = role.role_name.clone();
     let cwd_for_warmup = resolve_chat_cwd(get_state(&state), Some(&role.team_id));
     tauri::async_runtime::spawn(async move {
-        acp::prewarm_role(&runtime_for_warmup, &role_for_warmup, &cwd_for_warmup).await;
+        acp::prewarm_role(&runtime_for_warmup, &role_for_warmup, &cwd_for_warmup, None).await;
     });
     Ok(role)
 }
@@ -218,6 +218,7 @@ pub(crate) fn resolve_role_runtime(
         .map(|item| item.unwrap_or_else(|| "mock".to_string()))
     })
 }
+
 
 pub(crate) fn resolve_role_prompt(
     state: State<'_, AppState>,

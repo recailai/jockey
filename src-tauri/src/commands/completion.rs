@@ -217,31 +217,21 @@ fn append_dynamic_catalog_cli_templates(
 ) {
     let models = list_all_known_models(state);
     for model in &models {
-        let value = format!("/model select {model}");
+        let value = format!("/app_model select {model}");
         push_matching_cli_template(out, seen, query_lower, &value, "Select configured model");
     }
 
     let mcps = list_dynamic_catalog(state, "mcp").unwrap_or_default();
     for mcp in &mcps {
         for value in [
-            format!("/mcp enable {mcp}"),
-            format!("/mcp disable {mcp}"),
-            format!("/mcp remove {mcp}"),
+            format!("/app_mcp enable {mcp}"),
+            format!("/app_mcp disable {mcp}"),
+            format!("/app_mcp remove {mcp}"),
         ] {
             push_matching_cli_template(out, seen, query_lower, &value, "MCP server command");
         }
     }
 
-    let skills = list_dynamic_catalog(state, "skill").unwrap_or_default();
-    for skill in &skills {
-        for value in [
-            format!("/skill enable {skill}"),
-            format!("/skill disable {skill}"),
-            format!("/skill remove {skill}"),
-        ] {
-            push_matching_cli_template(out, seen, query_lower, &value, "Skill command");
-        }
-    }
 }
 
 fn append_role_cli_templates(
@@ -255,13 +245,11 @@ fn append_role_cli_templates(
     for role in &roles {
         let role_name = role.role_name.clone();
         for value in [
-            format!("/role prompt {} ", role_name),
-            format!("/role delete {}", role_name),
-            format!("/role edit {} mode", role_name),
-            format!("/role edit {} mode clear", role_name),
-            format!("/session reset role {}", role_name),
-            format!("/context list role {}", role_name),
-            format!("/model select role {} <model>", role_name),
+            format!("/app_role prompt {} ", role_name),
+            format!("/app_role delete {}", role_name),
+            format!("/app_role edit {} mode", role_name),
+            format!("/app_role edit {} mode clear", role_name),
+            format!("/app_model select role {} <model>", role_name),
         ] {
             push_matching_cli_template(out, seen, query_lower, &value, "Role command");
         }
