@@ -167,6 +167,28 @@ pub(crate) struct MentionCandidate {
     pub(crate) detail: String,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AppSession {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) team_id: String,
+    pub(crate) active_role: String,
+    pub(crate) selected_assistant: Option<String>,
+    pub(crate) messages_json: String,
+    pub(crate) created_at: i64,
+    pub(crate) last_active_at: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AppSessionUpdate {
+    pub(crate) title: Option<String>,
+    pub(crate) active_role: Option<String>,
+    pub(crate) selected_assistant: Option<String>,
+    pub(crate) messages_json: Option<String>,
+}
+
 pub(crate) const ATTACH_MAX_TOTAL_BYTES: usize = 160 * 1024;
 pub(crate) const ATTACH_MAX_FILE_BYTES: usize = 24 * 1024;
 pub(crate) const ATTACH_MAX_DIR_FILES: usize = 40;

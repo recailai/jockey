@@ -272,7 +272,11 @@ pub fn run() {
             list_discovered_config_options_cmd,
             list_available_commands_cmd,
             respond_permission,
-            prewarm_role_config_cmd
+            prewarm_role_config_cmd,
+            db::app_session::list_app_sessions,
+            db::app_session::create_app_session,
+            db::app_session::update_app_session,
+            db::app_session::delete_app_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

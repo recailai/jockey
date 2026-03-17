@@ -1,3 +1,4 @@
+pub(crate) mod app_session;
 pub(crate) mod context;
 pub(crate) mod role;
 pub(crate) mod session;
@@ -84,6 +85,18 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           ON shared_context_snapshots(team_id, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_dynamic_catalog_kind_updated_at
           ON dynamic_catalog_entries(kind, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS app_sessions (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          team_id TEXT NOT NULL,
+          active_role TEXT NOT NULL DEFAULT 'UnionAI',
+          selected_assistant TEXT,
+          messages_json TEXT NOT NULL DEFAULT '[]',
+          created_at INTEGER NOT NULL,
+          last_active_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_app_sessions_last_active
+          ON app_sessions(last_active_at DESC);
         ",
     )
     .map_err(|e| e.to_string())?;
