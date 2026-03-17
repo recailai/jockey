@@ -165,19 +165,11 @@ pub(crate) fn chunk_text(input: &str, size: usize) -> Vec<String> {
     if input.is_empty() {
         return vec![];
     }
-    let mut chunks = Vec::new();
-    let mut buf = String::new();
-    for ch in input.chars() {
-        buf.push(ch);
-        if buf.chars().count() >= size {
-            chunks.push(buf.clone());
-            buf.clear();
-        }
-    }
-    if !buf.is_empty() {
-        chunks.push(buf);
-    }
-    chunks
+    input
+        .as_bytes()
+        .chunks(size)
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .collect()
 }
 
 pub(crate) async fn run_workflow(
@@ -259,7 +251,7 @@ pub(crate) async fn run_workflow(
             acp_result.deltas
         };
 
-        for chunk in chunks {
+        for chunk in &chunks {
             let update = SessionUpdateEvent {
                 session_id: session.id.clone(),
                 team_id: session.team_id.clone(),
@@ -270,16 +262,16 @@ pub(crate) async fn run_workflow(
                 done: false,
                 created_at: now_ms(),
             };
-            app.emit("session/update", update.clone())
+            app.emit("session/update", update)
                 .map_err(|e| e.to_string())?;
-            record_session_event(
-                state.inner(),
-                &session.id,
-                "DeltaReceived",
-                Some(role_name),
-                json!({ "delta": chunk }),
-            )?;
         }
+        record_session_event(
+            state.inner(),
+            &session.id,
+            "StepOutput",
+            Some(role_name),
+            json!({ "output": &output }),
+        )?;
 
         let summary = summarize_text(&output);
         set_shared_context_internal(

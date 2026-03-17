@@ -323,9 +323,9 @@ pub async fn execute_runtime(
                         full_output.push_str(text);
                         delta_count += 1;
                         buffer.push_str(text);
-                        let should_emit = buffer.len() >= 4
+                        let should_emit = buffer.len() >= 32
                             || text.contains('\n')
-                            || last_emit.elapsed() >= std::time::Duration::from_millis(15);
+                            || last_emit.elapsed() >= std::time::Duration::from_millis(30);
                         if should_emit {
                             let _ = app.emit("acp/delta", json!({
                                 "role": role_owned,
@@ -446,7 +446,34 @@ pub async fn prewarm_role(runtime_kind: &str, role_name: &str, cwd: &str) {
         mcp_servers: vec![],
         role_mode: None,
         role_config_options: vec![],
+        result_tx: None,
     });
+}
+
+pub async fn prewarm_role_for_config(
+    runtime_kind: &str,
+    role_name: &str,
+    cwd: &str,
+) -> Vec<serde_json::Value> {
+    let adapter = match build_stdio_adapter(runtime_kind) {
+        Ok(Some(a)) => a,
+        _ => return vec![],
+    };
+    let (tx, rx) = oneshot::channel();
+    let _ = worker_tx().send(WorkerMsg::Prewarm {
+        runtime_key: adapter.runtime_key,
+        binary: adapter.binary,
+        args: adapter.args,
+        env: adapter.env,
+        role_name: role_name.to_string(),
+        cwd: cwd.to_string(),
+        auto_approve: true,
+        mcp_servers: vec![],
+        role_mode: None,
+        role_config_options: vec![],
+        result_tx: Some(tx),
+    });
+    rx.await.unwrap_or_default()
 }
 
 pub async fn prewarm(runtime_kind: &str, cwd: &str) {

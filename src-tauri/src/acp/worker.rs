@@ -118,6 +118,7 @@ pub(super) enum WorkerMsg {
         mcp_servers: Vec<acp::McpServer>,
         role_mode: Option<String>,
         role_config_options: Vec<(String, String)>,
+        result_tx: Option<oneshot::Sender<Vec<Value>>>,
     },
     Cancel {
         runtime_key: &'static str,
@@ -330,6 +331,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 mcp_servers,
                 role_mode,
                 role_config_options,
+                result_tx,
             } => {
                 let slot = get_slot_handle(runtime_key, &role_name);
                 tokio::task::spawn_local(async move {
@@ -345,6 +347,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                         mcp_servers,
                         role_mode,
                         role_config_options,
+                        result_tx,
                     )
                     .await;
                 });
@@ -577,9 +580,13 @@ async fn handle_prewarm(
     mcp_servers: Vec<acp::McpServer>,
     role_mode: Option<String>,
     role_config_options: Vec<(String, String)>,
+    result_tx: Option<oneshot::Sender<Vec<Value>>>,
 ) {
     let mut guard = slot.conn.lock().await;
     if guard.is_some() {
+        if let Some(tx) = result_tx {
+            let _ = tx.send(list_discovered_config_options(runtime_key));
+        }
         return;
     }
     let resolved = resolve_cwd(&cwd);
@@ -624,12 +631,18 @@ async fn handle_prewarm(
                     .await;
             }
             *guard = Some(conn);
+            if let Some(tx) = result_tx {
+                let _ = tx.send(list_discovered_config_options(runtime_key));
+            }
         }
         Err(e) => {
             acp_log(
                 "prewarm.error",
                 json!({ "runtime": runtime_key, "role": role_name, "error": e }),
             );
+            if let Some(tx) = result_tx {
+                let _ = tx.send(vec![]);
+            }
         }
     }
 }

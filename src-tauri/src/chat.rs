@@ -675,7 +675,7 @@ pub(crate) async fn assistant_chat(
             &runtime,
             &role_name,
             &prepared,
-            &context_pairs,
+            &[],
             &cwd,
             &app,
             auto_approve,

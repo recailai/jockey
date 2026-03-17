@@ -12,7 +12,7 @@ type RoleUpsertInput = {
   model: string | null; mode: string | null; mcpServersJson: string; configOptionsJson: string;
   autoApprove: boolean;
 };
-type ToolCallState = { toolCallId: string; title: string; kind: string; status: string; content?: unknown[] };
+type ToolCallState = { toolCallId: string; title: string; kind: string; status: string; content?: unknown[]; contentJson?: string };
 type PlanEntry = { title?: string; status?: string; description?: string };
 type PermissionState = { requestId: string; title: string; description: string | null; options: Array<{ optionId: string; title?: string }> };
 type AcpStreamEvent = {
@@ -110,7 +110,6 @@ export default function App() {
   let historySavedInput = "";
   const HISTORY_MAX = 200;
 
-  // Role creation form
   const [showRoleForm, setShowRoleForm] = createSignal(false);
   const [roleFormName, setRoleFormName] = createSignal("Developer");
   const [roleFormRuntime, setRoleFormRuntime] = createSignal("gemini-cli");
@@ -126,6 +125,7 @@ export default function App() {
   const [editRoleMcpServersJson, setEditRoleMcpServersJson] = createSignal("[]");
   const [editRoleConfigOptionsJson, setEditRoleConfigOptionsJson] = createSignal("{}");
   const [discoveredConfigOptions, setDiscoveredConfigOptions] = createSignal<AcpConfigOption[]>([]);
+  const [configOptionsLoading, setConfigOptionsLoading] = createSignal(false);
   const [roleFormConfigSelections, setRoleFormConfigSelections] = createSignal<Record<string, string>>({});
   const [createFormConfigOptions, setCreateFormConfigOptions] = createSignal<AcpConfigOption[]>([]);
   const [agentCommands, setAgentCommands] = createSignal<Map<string, Array<{ name: string; description: string; hint?: string }>>>(new Map());
@@ -321,7 +321,6 @@ export default function App() {
     }
   };
 
-  // Commands that mutate role/workflow/context structure and require a sidebar refresh
   const MUTATING_CMDS = ["/role", "/init", "/workflow", "/context"];
   const needsRefresh = (text: string) => MUTATING_CMDS.some((c) => text.startsWith(c));
 
@@ -646,7 +645,6 @@ export default function App() {
         pushMessage("assistant", res.reply);
       }
 
-      // Only refresh sidebar when team/role structure may have changed
       if (needsRefresh(text)) {
         await refreshRoles();
       }
@@ -812,7 +810,16 @@ export default function App() {
     setEditRoleAutoApprove(role.autoApprove);
     setEditRoleMcpServersJson(role.mcpServersJson || "[]");
     setEditRoleConfigOptionsJson(role.configOptionsJson || "{}");
-    void fetchConfigOptions(role.runtimeKind).then(setDiscoveredConfigOptions);
+    setDiscoveredConfigOptions([]);
+    setConfigOptionsLoading(true);
+    invoke<unknown[]>("prewarm_role_config_cmd", {
+      runtimeKind: role.runtimeKind,
+      roleName: role.roleName,
+      teamId: role.teamId,
+    }).then((raw) => {
+      setDiscoveredConfigOptions(raw as AcpConfigOption[]);
+      setConfigOptionsLoading(false);
+    }).catch(() => setConfigOptionsLoading(false));
   };
 
   const closeRoleEditor = () => {
@@ -883,7 +890,7 @@ export default function App() {
         if (!streamAccepting) return;
         if (!streamingMessage()) startStream();
         streamBuffer += ev.payload.delta;
-        if (streamBuffer.length >= 24) {
+        if (streamBuffer.length >= 64) {
           flushStreamBuffer();
           return;
         }
@@ -922,7 +929,11 @@ export default function App() {
                 const next = new Map(prev);
                 const existing = next.get(e.toolCallId!);
                 if (existing) {
-                  next.set(e.toolCallId!, { ...existing, status: e.status ?? existing.status, title: e.title ?? existing.title, content: (e.content as unknown[]) ?? existing.content });
+                  const newContent = (e.content as unknown[]) ?? existing.content;
+                  const contentJson = newContent !== existing.content
+                    ? (newContent && newContent.length > 0 ? JSON.stringify(newContent, null, 2) : undefined)
+                    : existing.contentJson;
+                  next.set(e.toolCallId!, { ...existing, status: e.status ?? existing.status, title: e.title ?? existing.title, content: newContent, contentJson });
                 }
                 return next;
               });
@@ -989,10 +1000,10 @@ export default function App() {
 
   return (
     <div class="window-bg h-dvh overflow-hidden text-[var(--ui-text)]">
-      <div class="mx-auto grid h-full max-w-[1600px] grid-cols-1 gap-3 px-3 py-3 lg:grid-cols-[260px_1fr]">
+      <div class="mx-auto grid h-full max-w-[1600px] grid-cols-1 gap-0 px-0 py-0 lg:grid-cols-[260px_1fr]">
 
         {/* ── Sidebar ── */}
-        <aside class="card flex h-full flex-col overflow-hidden p-0">
+        <aside class="flex h-full flex-col overflow-hidden bg-[#18181b] border-r border-white/[0.06] p-0">
 
           {/* Assistants */}
           <div class="shrink-0 border-b border-[var(--ui-border)] p-3">
@@ -1001,10 +1012,10 @@ export default function App() {
               <For each={assistants()}>
                 {(a) => (
                   <button
-                    class={`flex min-h-9 w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left text-sm ${INTERACTIVE_MOTION} ${
+                    class={`flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm ${INTERACTIVE_MOTION} ${
                       selectedAssistant() === a.key
-                        ? "border-[var(--ui-accent)] bg-[var(--ui-accent-soft)]"
-                        : "border-transparent bg-[var(--ui-panel-2)] hover:border-[var(--ui-border)]"
+                        ? "sidebar-item-selected bg-white/[0.08] pl-4"
+                        : "hover:bg-white/[0.05]"
                     } ${!a.available ? "opacity-40" : ""}`}
                     onClick={() => a.available && setPreferredAssistant(a.key)}
                   >
@@ -1028,7 +1039,7 @@ export default function App() {
                   if (next && selectedAssistant()) setRoleFormRuntime(selectedAssistant()!);
                   return next;
                 })}
-                class={`min-h-8 rounded border border-[var(--ui-border)] px-2 py-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)] ${INTERACTIVE_MOTION}`}
+                class={`min-h-8 rounded-md border border-white/[0.08] px-2 py-1 text-xs text-[var(--ui-muted)] hover:border-white/[0.15] hover:text-[var(--ui-text)] ${INTERACTIVE_MOTION}`}
               >
                 {showRoleForm() ? "cancel" : "+ role"}
               </button>
@@ -1036,7 +1047,7 @@ export default function App() {
 
             {/* Role creation form */}
             <Show when={showRoleForm()}>
-              <div class="mb-2 space-y-1.5 rounded-lg border border-[var(--ui-border)] bg-[var(--ui-panel-2)] p-2">
+              <div class="mb-2 space-y-1.5 rounded-xl border border-white/[0.07] bg-white/[0.03] p-2.5">
                 <input
                   value={roleFormName()}
                   onInput={(e) => setRoleFormName(e.currentTarget.value)}
@@ -1147,7 +1158,7 @@ export default function App() {
                 </label>
                 <button
                   onClick={() => void handleCreateRole()}
-                  class={`h-9 w-full rounded bg-[var(--ui-accent)] text-sm font-semibold text-[var(--ui-accent-text)] ${INTERACTIVE_MOTION}`}
+                  class={`h-9 w-full rounded-lg bg-white text-sm font-semibold text-zinc-950 ${INTERACTIVE_MOTION}`}
                 >
                   Create Role
                 </button>
@@ -1156,7 +1167,7 @@ export default function App() {
 
             <Show when={editingRole()}>
               {(role) => (
-                <div class="mb-2 space-y-1.5 rounded-lg border border-[var(--ui-border)] bg-[var(--ui-panel-2)] p-2">
+                <div class="mb-2 space-y-1.5 rounded-xl border border-white/[0.07] bg-white/[0.03] p-2.5">
                   <div class="flex items-center justify-between">
                     <div class="text-xs font-semibold text-[var(--ui-text)]">Edit {role().roleName}</div>
                     <button
@@ -1231,7 +1242,9 @@ export default function App() {
                           }}
                         </For>
                         <Show when={opts.length === 0}>
-                          <div class="text-[10px] text-[var(--ui-muted)] italic">No config options discovered yet. Run the role once to discover agent capabilities.</div>
+                          <div class="text-[10px] text-[var(--ui-muted)] italic">
+                            {configOptionsLoading() ? "Loading config options from agent..." : "No config options available for this agent."}
+                          </div>
                         </Show>
                       </>
                     );
@@ -1254,7 +1267,7 @@ export default function App() {
                   </label>
                   <button
                     onClick={() => void handleSaveRoleEdit()}
-                    class={`h-9 w-full rounded bg-[var(--ui-accent)] text-sm font-semibold text-[var(--ui-accent-text)] ${INTERACTIVE_MOTION}`}
+                    class={`h-9 w-full rounded-lg bg-white text-sm font-semibold text-zinc-950 ${INTERACTIVE_MOTION}`}
                   >
                     Save Role
                   </button>
@@ -1266,7 +1279,7 @@ export default function App() {
             <div class="flex-1 space-y-1 overflow-auto">
               <For each={roles()}>
                 {(role) => (
-                  <div class="group flex items-start gap-1.5 rounded-lg border border-transparent bg-[var(--ui-panel-2)] px-2 py-1.5 motion-safe:transition-colors motion-safe:duration-150 motion-safe:ease-out hover:border-[var(--ui-border)] hover:bg-[var(--ui-panel)]">
+                  <div class="group relative flex items-start gap-1.5 rounded-lg border-l-2 border-l-transparent px-2 py-1.5 motion-safe:transition-all motion-safe:duration-150 hover:border-l-white/20 hover:bg-white/[0.04]">
                     <div class="flex-1 min-w-0">
                       <div class="flex items-center gap-1.5 flex-wrap">
                         <span class="text-xs font-medium">{role.roleName}</span>
@@ -1303,16 +1316,16 @@ export default function App() {
             </div>
 
             {/* Quick actions */}
-            <div class="mt-2 flex flex-wrap gap-1 border-t border-[var(--ui-border)] pt-2">
-              <button onClick={() => void sendRaw("/workflow list")} class={`min-h-8 rounded border border-[var(--ui-border)] px-2 py-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)] ${INTERACTIVE_MOTION}`}>workflows</button>
-              <button onClick={() => void sendRaw("/context list")} class={`min-h-8 rounded border border-[var(--ui-border)] px-2 py-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)] ${INTERACTIVE_MOTION}`}>context</button>
-              <button onClick={() => void sendRaw("/session list")} class={`min-h-8 rounded border border-[var(--ui-border)] px-2 py-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)] ${INTERACTIVE_MOTION}`}>sessions</button>
+            <div class="mt-2 flex flex-wrap gap-0.5 border-t border-white/[0.05] pt-2">
+              <button onClick={() => void sendRaw("/workflow list")} class={`min-h-8 rounded-md px-2.5 py-1 text-xs text-[var(--ui-muted)] hover:text-white hover:bg-white/[0.05] motion-safe:transition-colors motion-safe:duration-150`}>workflows</button>
+              <button onClick={() => void sendRaw("/context list")} class={`min-h-8 rounded-md px-2.5 py-1 text-xs text-[var(--ui-muted)] hover:text-white hover:bg-white/[0.05] motion-safe:transition-colors motion-safe:duration-150`}>context</button>
+              <button onClick={() => void sendRaw("/session list")} class={`min-h-8 rounded-md px-2.5 py-1 text-xs text-[var(--ui-muted)] hover:text-white hover:bg-white/[0.05] motion-safe:transition-colors motion-safe:duration-150`}>sessions</button>
             </div>
           </div>
         </aside>
 
         {/* ── Chat ── */}
-        <main class="card flex h-full flex-col overflow-hidden p-0">
+        <main class="flex h-full flex-col overflow-hidden bg-[#09090b] p-0">
 
           {/* Header */}
           <div class="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--ui-border)] px-4 py-2">
@@ -1343,7 +1356,7 @@ export default function App() {
                 <div class="flex gap-1">
                   <For each={agentModes()}>{(m) => (
                     <button
-                      class={`min-h-7 rounded border px-2 py-0.5 text-xs ${INTERACTIVE_MOTION} ${currentMode() === m.id ? "border-[var(--ui-accent)] bg-[var(--ui-accent-soft)] text-[var(--ui-text)]" : "border-[var(--ui-border)] text-[var(--ui-muted)] hover:text-[var(--ui-text)]"}`}
+                      class={`min-h-7 rounded border px-2 py-0.5 text-xs ${INTERACTIVE_MOTION} ${currentMode() === m.id ? "border-white/25 bg-white/10 text-white" : "border-[var(--ui-border)] text-[var(--ui-muted)] hover:text-[var(--ui-text)]"}`}
                       onClick={() => {
                         const assistant = selectedAssistant();
                         const role = activeBackendRole();
@@ -1355,8 +1368,8 @@ export default function App() {
                   )}</For>
                 </div>
               </Show>
-              <button onClick={() => { void refreshAssistants(); void refreshRoles(); }} class={`min-h-8 rounded border border-[var(--ui-border)] bg-[var(--ui-panel-2)] px-3 py-1 text-sm hover:bg-[var(--ui-panel)] ${INTERACTIVE_MOTION}`}>
-                Refresh
+              <button onClick={() => { void refreshAssistants(); void refreshRoles(); }} class={`flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ui-muted)] hover:bg-white/[0.06] hover:text-white ${INTERACTIVE_MOTION}`} title="Refresh">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
               </button>
             </div>
           </div>
@@ -1364,30 +1377,34 @@ export default function App() {
           {/* Messages */}
           <div id="msg-list" role="log" aria-live="polite" aria-relevant="additions text" class="flex-1 overflow-auto p-3 space-y-1.5">
             <Show when={hiddenMessageCount() > 0}>
-              <div class="rounded border border-[var(--ui-border)] bg-[var(--ui-panel-2)] px-2 py-1 text-center text-xs text-[var(--ui-muted)]">
+              <div class="py-1 text-center text-xs text-[var(--ui-muted)] opacity-40">
                 {hiddenMessageCount()} older messages hidden for performance
               </div>
             </Show>
             <For each={visibleMessages()}>
               {(msg) => (
-                <div class={`rounded-lg border px-3 py-2 ${
-                  msg.role === "user"
-                    ? "ml-10 border-[var(--ui-accent)] bg-[var(--ui-accent-soft)]"
-                    : msg.role === "assistant"
-                    ? "mr-10 border-[var(--ui-border)] bg-[var(--ui-panel-2)]"
-                    : "border-[var(--ui-border)] bg-black/10 opacity-70"
-                }`}>
-                  <div class="mb-0.5 flex items-center justify-between text-xs text-[var(--ui-muted)]">
-                    <span class="font-medium">{msg.role}</span>
-                    <span>{fmt(msg.at)}</span>
-                  </div>
-                  <pre class="whitespace-pre-wrap break-words text-sm leading-relaxed">{msg.text}</pre>
-                </div>
+                <>
+                  {msg.role === "system" || msg.role === "event" ? (
+                    <div class="flex items-center gap-3 px-2 py-0.5 opacity-50">
+                      <div class="h-px flex-1 bg-white/[0.07]" />
+                      <span class="shrink-0 text-[11px] text-[var(--ui-muted)]">{msg.text}</span>
+                      <div class="h-px flex-1 bg-white/[0.07]" />
+                    </div>
+                  ) : (
+                    <div class={`rounded-2xl border border-transparent px-3 py-2 ${msg.role === "user" ? "ml-14 bg-white/[0.07]" : "mr-14 bg-transparent"}`}>
+                      <div class="mb-0.5 flex items-center justify-between text-xs text-[var(--ui-muted)]">
+                        <span class="font-medium">{msg.role}</span>
+                        <span>{fmt(msg.at)}</span>
+                      </div>
+                      <pre class="whitespace-pre-wrap break-words text-sm leading-relaxed">{msg.text}</pre>
+                    </div>
+                  )}
+                </>
               )}
             </For>
             <Show when={streamingMessage()}>
               {(streaming) => (
-                <div class="mr-10 rounded-lg border border-[var(--ui-border)] bg-[var(--ui-panel-2)] px-3 py-2">
+                <div class="mr-14 rounded-2xl border-transparent bg-transparent px-3 py-2">
                   <div class="mb-0.5 flex items-center justify-between text-xs text-[var(--ui-muted)]">
                     <span class="font-medium">assistant</span>
                     <span>{fmt(streaming().at)}</span>
@@ -1450,9 +1467,9 @@ export default function App() {
                       <span class="font-medium">{tc.title || tc.toolCallId}</span>
                       <span class="ml-auto text-[var(--ui-muted)]">{tc.status}</span>
                     </summary>
-                    <Show when={tc.content && tc.content.length > 0}>
+                    <Show when={tc.contentJson}>
                       <pre class="whitespace-pre-wrap break-words border-t border-[var(--ui-border)] px-3 py-1.5 text-xs text-[var(--ui-muted)]">
-                        {JSON.stringify(tc.content, null, 2)}
+                        {tc.contentJson}
                       </pre>
                     </Show>
                   </details>
@@ -1461,20 +1478,20 @@ export default function App() {
             </Show>
             <Show when={submitting()}>
               <div class="flex items-center gap-2 px-1 text-xs text-[var(--ui-muted)] opacity-80">
-                <span class="h-2 w-2 rounded-full bg-[var(--ui-accent)] animate-pulse" />
+                <span class="h-2 w-2 rounded-full bg-white/60 animate-pulse" />
                 <span>Agent is thinking...</span>
               </div>
             </Show>
           </div>
 
           {/* Input */}
-          <form onSubmit={handleSend} class="shrink-0 border-t border-[var(--ui-border)] p-3 flex gap-2">
-            <div class="relative flex-1">
-              <div class="flex h-10 items-center rounded-lg border border-[var(--ui-border)] bg-[var(--ui-panel-2)]">
+          <form onSubmit={handleSend} class="shrink-0 border-t border-white/[0.05] p-3">
+            <div class="relative">
+              <div class="flex items-center rounded-2xl border border-white/[0.08] bg-white/[0.03] px-3 gap-1.5 focus-within:border-white/[0.14] motion-safe:transition-colors">
                 <button
                   type="button"
                   onClick={() => setActiveRole(DEFAULT_ROLE_ALIAS)}
-                  class={`shrink-0 pl-3 pr-1.5 text-sm font-mono ${isCustomRole() ? "text-blue-300 hover:text-blue-200" : "text-[var(--ui-muted)]"}`}
+                  class={`shrink-0 py-2.5 text-sm font-mono ${isCustomRole() ? "text-blue-300 hover:text-blue-200" : "text-[var(--ui-muted)]"}`}
                   title={isCustomRole() ? "Click to return to UnionAI" : "UnionAI mode"}
                 >
                   {activeRole()} &gt;
@@ -1501,8 +1518,15 @@ export default function App() {
                     refreshInputCompletions(input(), e.currentTarget.selectionStart ?? input().length);
                   }}
                   placeholder={isCustomRole() ? `Chat with ${activeRole()}... (type / for agent commands)` : "Natural language / commands / @role @file:path"}
-                  class="h-full flex-1 bg-transparent pr-3 text-sm outline-none"
+                  class="flex-1 bg-transparent py-2.5 text-sm outline-none min-w-0"
                 />
+                <button
+                  type="submit"
+                  class={`shrink-0 flex h-7 w-7 items-center justify-center rounded-xl motion-safe:transition-all motion-safe:duration-150 ${input().trim() ? "bg-white text-zinc-950" : "bg-white/[0.12] text-white/30"} ${INTERACTIVE_MOTION}`}
+                  title={submitting() ? "Queue" : "Send"}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+                </button>
               </div>
               <Show when={slashOpen() && slashItems().length > 0}>
                 <div class="absolute bottom-12 left-0 right-0 z-30 max-h-56 overflow-auto rounded-lg border border-[var(--ui-border)] bg-[var(--ui-panel)] p-1 shadow-xl">
@@ -1549,9 +1573,6 @@ export default function App() {
                 </div>
               </Show>
             </div>
-            <button type="submit" class={`h-10 rounded-lg bg-[var(--ui-accent)] px-4 text-sm font-semibold text-[var(--ui-accent-text)] ${INTERACTIVE_MOTION}`}>
-              {submitting() ? "Queue" : "Send"}
-            </button>
           </form>
         </main>
 

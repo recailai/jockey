@@ -127,6 +127,17 @@ fn list_discovered_config_options_cmd(runtime_key: String) -> Vec<serde_json::Va
 }
 
 #[tauri::command]
+async fn prewarm_role_config_cmd(
+    state: tauri::State<'_, AppState>,
+    runtime_kind: String,
+    role_name: String,
+    team_id: Option<String>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let cwd = resolve_chat_cwd(&state, team_id.as_deref());
+    Ok(acp::prewarm_role_for_config(&runtime_kind, &role_name, &cwd).await)
+}
+
+#[tauri::command]
 async fn respond_permission(
     request_id: String,
     option_id: String,
@@ -260,7 +271,8 @@ pub fn run() {
             set_acp_config_option,
             list_discovered_config_options_cmd,
             list_available_commands_cmd,
-            respond_permission
+            respond_permission,
+            prewarm_role_config_cmd
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
