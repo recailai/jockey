@@ -86,8 +86,17 @@ Only output app commands when the user explicitly asks to perform a UnionAI acti
 }
 
 #[tauri::command]
-async fn cancel_acp_session(runtime_kind: String, role_name: String, app_session_id: Option<String>) -> Result<(), String> {
-    acp::cancel_session(&runtime_kind, &role_name, app_session_id.as_deref().unwrap_or("")).await;
+async fn cancel_acp_session(
+    runtime_kind: String,
+    role_name: String,
+    app_session_id: Option<String>,
+) -> Result<(), String> {
+    acp::cancel_session(
+        &runtime_kind,
+        &role_name,
+        app_session_id.as_deref().unwrap_or(""),
+    )
+    .await;
     Ok(())
 }
 
@@ -98,7 +107,13 @@ async fn set_acp_mode(
     app_session_id: Option<String>,
     mode_id: String,
 ) -> Result<(), String> {
-    acp::set_mode(&runtime_kind, &role_name, app_session_id.as_deref().unwrap_or(""), &mode_id).await
+    acp::set_mode(
+        &runtime_kind,
+        &role_name,
+        app_session_id.as_deref().unwrap_or(""),
+        &mode_id,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -109,7 +124,14 @@ async fn set_acp_config_option(
     config_id: String,
     value: String,
 ) -> Result<(), String> {
-    acp::set_config_option(&runtime_kind, &role_name, app_session_id.as_deref().unwrap_or(""), &config_id, &value).await
+    acp::set_config_option(
+        &runtime_kind,
+        &role_name,
+        app_session_id.as_deref().unwrap_or(""),
+        &config_id,
+        &value,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -130,15 +152,7 @@ async fn prewarm_role_config_cmd(
     team_id: Option<String>,
 ) -> Result<Vec<serde_json::Value>, String> {
     let cwd = resolve_chat_cwd(&state, team_id.as_deref());
-    let resolved_team_id = team_id.unwrap_or_default();
-    let state_inner = state.inner();
-    Ok(acp::prewarm_role_for_config(
-        &runtime_kind,
-        &role_name,
-        &cwd,
-        Some((state_inner, &resolved_team_id)),
-    )
-    .await)
+    Ok(acp::prewarm_role_for_config(&runtime_kind, &role_name, &cwd, None).await)
 }
 
 #[tauri::command]
@@ -262,7 +276,15 @@ pub fn run() {
                     .map(|(id, _)| id.clone())
                     .unwrap_or_default();
 
-                let recent_role_names: std::collections::HashSet<String> = role_sessions.keys().cloned().collect();
+                let mut recent_role_pairs: HashSet<(String, String)> = HashSet::new();
+                for key in role_sessions.keys() {
+                    if let Some((runtime, role_name)) = key.split_once(':') {
+                        let runtime_normalized = runtime.to_ascii_lowercase();
+                        if KNOWN_RUNTIME_KEYS.contains(&runtime_normalized.as_str()) {
+                            recent_role_pairs.insert((runtime_normalized, role_name.to_string()));
+                        }
+                    }
+                }
 
                 let mut priority_futs: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> = Vec::new();
 
@@ -280,7 +302,12 @@ pub fn run() {
                     if runtime_kind != "mock" && !available_runtime_keys.contains(runtime_kind) {
                         continue;
                     }
-                    if !recent_role_names.contains(role_name) {
+                    let normalized_runtime = runtime_kind::RuntimeKind::from_str(runtime_kind)
+                        .map(|k| k.runtime_key().to_string())
+                        .unwrap_or_else(|| runtime_kind.to_ascii_lowercase());
+                    let has_recent =
+                        recent_role_pairs.contains(&(normalized_runtime.clone(), role_name.clone()));
+                    if !has_recent {
                         continue;
                     }
                     let cwd = abs_cwd(&default_cwd);
@@ -288,7 +315,11 @@ pub fn run() {
                     let app_state_inner: &AppState = state_ref.inner();
                     let db_clone = app_state_inner.db.clone();
                     let ctx_clone = app_state_inner.shared_context.clone();
-                    let resume_sid = role_sessions.get(role_name).and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let session_key = format!("{}:{}", normalized_runtime, role_name);
+                    let resume_sid = role_sessions
+                        .get(&session_key)
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                     let sid_clone = app_session_id.clone();
                     let role_name_clone = role_name.clone();
                     let runtime_kind_clone = runtime_kind.clone();
@@ -315,7 +346,10 @@ pub fn run() {
                     if runtime_kind != "mock" && !available_runtime_keys.contains(&runtime_kind) {
                         continue;
                     }
-                    if recent_role_names.contains(&role_name) {
+                    let normalized_runtime = runtime_kind::RuntimeKind::from_str(&runtime_kind)
+                        .map(|k| k.runtime_key().to_string())
+                        .unwrap_or_else(|| runtime_kind.to_ascii_lowercase());
+                    if recent_role_pairs.contains(&(normalized_runtime, role_name.clone())) {
                         continue;
                     }
                     let cwd = abs_cwd(&default_cwd);
@@ -360,6 +394,7 @@ pub fn run() {
             db::app_session::update_app_session,
             db::app_session::delete_app_session,
             db::app_session::append_app_message,
+            db::app_session::cleanup_legacy_role_sessions,
             db::skill::list_app_skills,
             db::skill::upsert_app_skill,
             db::skill::delete_app_skill

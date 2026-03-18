@@ -1,16 +1,84 @@
 use crate::db::{ensure_default_team_id, get_state, with_db};
 use crate::now_ms;
+use crate::runtime_kind::RuntimeKind;
 use crate::types::*;
 use rusqlite::{params, OptionalExtension};
 use serde_json::Value;
 use tauri::State;
 use uuid::Uuid;
 
+fn canonical_runtime_key(runtime_key: &str) -> String {
+    RuntimeKind::from_str(runtime_key)
+        .map(|k| k.runtime_key().to_string())
+        .unwrap_or_else(|| runtime_key.trim().to_ascii_lowercase())
+}
+
+fn role_runtime_key(runtime_key: &str, role_name: &str) -> String {
+    format!("{}:{role_name}", canonical_runtime_key(runtime_key))
+}
+
+fn parse_role_sessions_map(raw: Option<String>) -> serde_json::Map<String, Value> {
+    raw.and_then(|v| serde_json::from_str::<serde_json::Map<String, Value>>(&v).ok())
+        .unwrap_or_default()
+}
+
+pub(crate) fn cleanup_legacy_role_session_mappings(state: &AppState) -> Result<usize, String> {
+    with_db(state, |conn| {
+        let mut stmt = conn
+            .prepare("SELECT id, role_sessions_json FROM app_sessions")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut updated = 0usize;
+        for row in rows {
+            let (session_id, raw_json) = match row {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let parsed = parse_role_sessions_map(Some(raw_json.clone()));
+            let mut cleaned = serde_json::Map::<String, Value>::new();
+            for (key, value) in parsed {
+                let Some((runtime, role_name)) = key.split_once(':') else {
+                    continue;
+                };
+                let Some(session_id_value) = value.as_str() else {
+                    continue;
+                };
+                let normalized_runtime = canonical_runtime_key(runtime);
+                if !KNOWN_RUNTIME_KEYS.contains(&normalized_runtime.as_str()) {
+                    continue;
+                }
+                cleaned.insert(
+                    format!("{normalized_runtime}:{role_name}"),
+                    Value::String(session_id_value.to_string()),
+                );
+            }
+            let cleaned_json = serde_json::to_string(&cleaned).map_err(|e| e.to_string())?;
+            if cleaned_json != raw_json {
+                conn.execute(
+                    "UPDATE app_sessions SET role_sessions_json = ?1 WHERE id = ?2",
+                    params![cleaned_json, session_id],
+                )
+                .map_err(|e| e.to_string())?;
+                updated += 1;
+            }
+        }
+        Ok(updated)
+    })
+}
+
 pub(crate) fn load_app_session_role_cli_id(
     state: &AppState,
     app_session_id: &str,
+    runtime_key: &str,
     role_name: &str,
 ) -> Option<String> {
+    if app_session_id.is_empty() {
+        return None;
+    }
     with_db(state, |conn| {
         conn.query_row(
             "SELECT role_sessions_json FROM app_sessions WHERE id = ?1",
@@ -22,9 +90,11 @@ pub(crate) fn load_app_session_role_cli_id(
     })
     .ok()
     .flatten()
-    .and_then(|json| serde_json::from_str::<serde_json::Map<String, Value>>(&json).ok())
     .and_then(|map| {
-        map.get(role_name)
+        let role_key = role_runtime_key(runtime_key, role_name);
+        let parsed = parse_role_sessions_map(Some(map));
+        parsed
+            .get(&role_key)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
     })
@@ -33,14 +103,42 @@ pub(crate) fn load_app_session_role_cli_id(
 pub(crate) fn save_app_session_role_cli_id(
     state: &AppState,
     app_session_id: &str,
+    runtime_key: &str,
     role_name: &str,
     cli_session_id: &str,
 ) -> Result<(), String> {
-    let json_path = format!("$.{role_name}");
+    if app_session_id.is_empty() {
+        return Ok(());
+    }
     with_db(state, |conn| {
+        let existing = conn
+            .query_row(
+                "SELECT role_sessions_json FROM app_sessions WHERE id = ?1",
+                params![app_session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let mut role_sessions = parse_role_sessions_map(existing);
+        let normalized_runtime = canonical_runtime_key(runtime_key);
+        role_sessions.retain(|key, _| {
+            if key == role_name {
+                return false;
+            }
+            if let Some((stored_runtime, stored_role)) = key.split_once(':') {
+                return !(stored_role == role_name
+                    && canonical_runtime_key(stored_runtime) == normalized_runtime);
+            }
+            true
+        });
+        role_sessions.insert(
+            format!("{normalized_runtime}:{role_name}"),
+            Value::String(cli_session_id.to_string()),
+        );
+        let encoded = serde_json::to_string(&role_sessions).map_err(|e| e.to_string())?;
         conn.execute(
-            "UPDATE app_sessions SET role_sessions_json = json_set(role_sessions_json, ?1, ?2) WHERE id = ?3",
-            params![json_path, cli_session_id, app_session_id],
+            "UPDATE app_sessions SET role_sessions_json = ?1 WHERE id = ?2",
+            params![encoded, app_session_id],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -59,16 +157,19 @@ pub(crate) fn list_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSes
         let sessions: Vec<(String, AppSession)> = stmt
             .query_map([], |row| {
                 let id: String = row.get(0)?;
-                Ok((id.clone(), AppSession {
-                    id,
-                    title: row.get(1)?,
-                    team_id: row.get(2)?,
-                    active_role: row.get(3)?,
-                    selected_assistant: row.get(4)?,
-                    messages: Vec::new(),
-                    created_at: row.get(5)?,
-                    last_active_at: row.get(6)?,
-                }))
+                Ok((
+                    id.clone(),
+                    AppSession {
+                        id,
+                        title: row.get(1)?,
+                        team_id: row.get(2)?,
+                        active_role: row.get(3)?,
+                        selected_assistant: row.get(4)?,
+                        messages: Vec::new(),
+                        created_at: row.get(5)?,
+                        last_active_at: row.get(6)?,
+                    },
+                ))
             })
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
@@ -202,7 +303,7 @@ pub(crate) fn update_app_session(
             )
             .map_err(|e| e.to_string())?;
         }
-        if let Some(ref assistant) = update.selected_assistant {
+        if let Some(assistant) = update.selected_assistant {
             conn.execute(
                 "UPDATE app_sessions SET selected_assistant = ?1, last_active_at = ?2 WHERE id = ?3",
                 params![assistant, now, &id],
@@ -216,10 +317,18 @@ pub(crate) fn update_app_session(
 #[tauri::command]
 pub(crate) fn delete_app_session(state: State<'_, AppState>, id: String) -> Result<(), String> {
     with_db(get_state(&state), |conn| {
-        conn.execute("DELETE FROM app_session_messages WHERE session_id = ?1", params![&id])
-            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM app_session_messages WHERE session_id = ?1",
+            params![&id],
+        )
+        .map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM app_sessions WHERE id = ?1", params![&id])
             .map_err(|e| e.to_string())?;
         Ok(())
     })
+}
+
+#[tauri::command]
+pub(crate) fn cleanup_legacy_role_sessions(state: State<'_, AppState>) -> Result<usize, String> {
+    cleanup_legacy_role_session_mappings(get_state(&state))
 }

@@ -364,9 +364,9 @@ pub async fn execute_runtime(
         }),
     );
 
-    let resume_session_id = state
-        .as_ref()
-        .and_then(|(s, app_sid)| load_app_session_role_cli_id(s, app_sid, role_name));
+    let resume_session_id = state.as_ref().and_then(|(s, app_sid)| {
+        load_app_session_role_cli_id(s, app_sid, adapter.runtime_key, role_name)
+    });
 
     let (delta_tx, mut delta_rx) = mpsc::unbounded_channel::<AcpEvent>();
     let (result_tx, mut result_rx) = oneshot::channel();
@@ -476,7 +476,13 @@ pub async fn execute_runtime(
         Ok((_output, session_id)) => {
             if let Some((s, app_sid)) = state {
                 if !session_id.is_empty() {
-                    let _ = save_app_session_role_cli_id(s, app_sid, role_name, &session_id);
+                    let _ = save_app_session_role_cli_id(
+                        s,
+                        app_sid,
+                        adapter.runtime_key,
+                        role_name,
+                        &session_id,
+                    );
                 }
             }
 
@@ -558,10 +564,11 @@ pub async fn prewarm_role(
     cwd: &str,
     state: Option<(&AppState, &str)>,
 ) {
+    let runtime_key = normalize_runtime_key(runtime_kind).unwrap_or(runtime_kind);
     let app_sid = state.as_ref().map(|(_, sid)| *sid).unwrap_or("");
     let resume_session_id = state
         .as_ref()
-        .and_then(|(s, sid)| load_app_session_role_cli_id(s, sid, role_name));
+        .and_then(|(s, sid)| load_app_session_role_cli_id(s, sid, runtime_key, role_name));
     let Some(rx) = send_prewarm(runtime_kind, role_name, cwd, app_sid, resume_session_id).await
     else {
         return;
@@ -569,7 +576,7 @@ pub async fn prewarm_role(
     if let Some((s, app_sid)) = state {
         if let Ok((_opts, sid)) = rx.await {
             if !sid.is_empty() {
-                let _ = save_app_session_role_cli_id(s, app_sid, role_name, &sid);
+                let _ = save_app_session_role_cli_id(s, app_sid, runtime_key, role_name, &sid);
             }
         }
     }
@@ -581,10 +588,11 @@ pub async fn prewarm_role_for_config(
     cwd: &str,
     state: Option<(&AppState, &str)>,
 ) -> Vec<serde_json::Value> {
+    let runtime_key = normalize_runtime_key(runtime_kind).unwrap_or(runtime_kind);
     let app_sid = state.as_ref().map(|(_, sid)| *sid).unwrap_or("");
     let resume_session_id = state
         .as_ref()
-        .and_then(|(s, sid)| load_app_session_role_cli_id(s, sid, role_name));
+        .and_then(|(s, sid)| load_app_session_role_cli_id(s, sid, runtime_key, role_name));
     let Some(rx) = send_prewarm(runtime_kind, role_name, cwd, app_sid, resume_session_id).await
     else {
         return vec![];
@@ -592,7 +600,7 @@ pub async fn prewarm_role_for_config(
     let (opts, sid) = rx.await.unwrap_or_default();
     if let Some((s, app_sid)) = state {
         if !sid.is_empty() {
-            let _ = save_app_session_role_cli_id(s, app_sid, role_name, &sid);
+            let _ = save_app_session_role_cli_id(s, app_sid, runtime_key, role_name, &sid);
         }
     }
     opts
@@ -610,14 +618,22 @@ pub async fn prewarm_role_with_session_id(
     state: &AppState,
     app_session_id: &str,
 ) {
-    let Some(rx) =
-        send_prewarm(runtime_kind, role_name, cwd, app_session_id, resume_session_id).await
+    let runtime_key = normalize_runtime_key(runtime_kind).unwrap_or(runtime_kind);
+    let Some(rx) = send_prewarm(
+        runtime_kind,
+        role_name,
+        cwd,
+        app_session_id,
+        resume_session_id,
+    )
+    .await
     else {
         return;
     };
     if let Ok((_opts, sid)) = rx.await {
         if !sid.is_empty() {
-            let _ = save_app_session_role_cli_id(state, app_session_id, role_name, &sid);
+            let _ =
+                save_app_session_role_cli_id(state, app_session_id, runtime_key, role_name, &sid);
         }
     }
 }
@@ -637,7 +653,12 @@ pub async fn cancel_session(runtime_kind: &str, role_name: &str, app_session_id:
     });
 }
 
-pub async fn set_mode(runtime_kind: &str, role_name: &str, app_session_id: &str, mode_id: &str) -> Result<(), String> {
+pub async fn set_mode(
+    runtime_kind: &str,
+    role_name: &str,
+    app_session_id: &str,
+    mode_id: &str,
+) -> Result<(), String> {
     let runtime_key =
         normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
     let (tx, rx) = oneshot::channel();

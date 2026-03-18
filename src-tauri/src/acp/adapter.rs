@@ -7,8 +7,11 @@ use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use which::which;
 
-static ADAPTER_CACHE: OnceLock<DashMap<RuntimeKind, Result<(String, Vec<String>, Vec<(String, String)>), String>>> = OnceLock::new();
-fn adapter_cache() -> &'static DashMap<RuntimeKind, Result<(String, Vec<String>, Vec<(String, String)>), String>> {
+static ADAPTER_CACHE: OnceLock<
+    DashMap<RuntimeKind, Result<(String, Vec<String>, Vec<(String, String)>), String>>,
+> = OnceLock::new();
+fn adapter_cache(
+) -> &'static DashMap<RuntimeKind, Result<(String, Vec<String>, Vec<(String, String)>), String>> {
     ADAPTER_CACHE.get_or_init(DashMap::new)
 }
 
@@ -65,14 +68,22 @@ pub(super) fn build_stdio_adapter(runtime: &str) -> Result<Option<StdioAdapterSp
     }))
 }
 
-fn resolve_adapter_for_kind(kind: RuntimeKind) -> Result<(String, Vec<String>, Vec<(String, String)>), String> {
+fn resolve_adapter_for_kind(
+    kind: RuntimeKind,
+) -> Result<(String, Vec<String>, Vec<(String, String)>), String> {
     match kind {
         RuntimeKind::ClaudeCode => resolve_candidate(
             "claude-code",
             &[
                 ("claude-agent-acp", &[][..]),
-                ("pnpm", &["dlx", "@zed-industries/claude-agent-acp@latest"][..]),
-                ("npx", &["-y", "@zed-industries/claude-agent-acp@latest"][..]),
+                (
+                    "pnpm",
+                    &["dlx", "@zed-industries/claude-agent-acp@latest"][..],
+                ),
+                (
+                    "npx",
+                    &["-y", "@zed-industries/claude-agent-acp@latest"][..],
+                ),
             ],
         ),
         RuntimeKind::GeminiCli => {
@@ -81,13 +92,21 @@ fn resolve_adapter_for_kind(kind: RuntimeKind) -> Result<(String, Vec<String>, V
                 if supports_arg_in_help(&binary, "--experimental-acp") {
                     return Ok((binary, vec!["--experimental-acp".to_string()], vec![]));
                 }
-                return Err("gemini-cli installed but unsupported: missing --experimental-acp".to_string());
+                return Err(
+                    "gemini-cli installed but unsupported: missing --experimental-acp".to_string(),
+                );
             }
             resolve_candidate(
                 "gemini-cli",
                 &[
-                    ("pnpm", &["dlx", "@google/gemini-cli@latest", "--experimental-acp"][..]),
-                    ("npx", &["-y", "@google/gemini-cli@latest", "--experimental-acp"][..]),
+                    (
+                        "pnpm",
+                        &["dlx", "@google/gemini-cli@latest", "--experimental-acp"][..],
+                    ),
+                    (
+                        "npx",
+                        &["-y", "@google/gemini-cli@latest", "--experimental-acp"][..],
+                    ),
                 ],
             )
         }

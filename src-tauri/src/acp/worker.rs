@@ -705,7 +705,14 @@ async fn handle_prewarm(
                 let (tx, _rx) = mpsc::unbounded_channel::<AcpEvent>();
                 tx
             };
-            apply_cold_start_config(&conn, &session_id, &dummy_tx, &role_mode, &role_config_options).await;
+            apply_cold_start_config(
+                &conn,
+                &session_id,
+                &dummy_tx,
+                &role_mode,
+                &role_config_options,
+            )
+            .await;
             // Install a temporary drain channel so notifications sent after session/new
             // (e.g. AvailableCommandsUpdate via setTimeout) are captured rather than dropped.
             let (drain_tx, mut drain_rx) = mpsc::unbounded_channel::<super::worker::AcpEvent>();

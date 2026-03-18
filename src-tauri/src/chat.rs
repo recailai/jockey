@@ -230,12 +230,17 @@ pub(crate) async fn assistant_chat(
     let mut attach_notes = Vec::new();
 
     {
-        let per_file_budget = attach_budget / (routed.file_refs.len() + routed.dir_refs.len()).max(1);
+        let per_file_budget =
+            attach_budget / (routed.file_refs.len() + routed.dir_refs.len()).max(1);
         let per_file_budget = per_file_budget.min(ATTACH_MAX_TOTAL_BYTES);
-        let file_futs: Vec<_> = routed.file_refs.iter()
+        let file_futs: Vec<_> = routed
+            .file_refs
+            .iter()
             .map(|r| attach_file_context(cwd.clone(), r.clone(), per_file_budget))
             .collect();
-        let dir_futs: Vec<_> = routed.dir_refs.iter()
+        let dir_futs: Vec<_> = routed
+            .dir_refs
+            .iter()
             .map(|r| attach_dir_context(cwd.clone(), r.clone(), per_file_budget))
             .collect();
         let (file_results, dir_results) = tokio::join!(
@@ -256,16 +261,27 @@ pub(crate) async fn assistant_chat(
             }
         }
     }
-    let skill_pairs: Vec<(String, String)> = load_skills_by_names(get_state(&state), &routed.skill_refs)
-        .into_iter()
-        .filter(|s| !s.content.is_empty())
-        .map(|s| (format!("skill:{}", s.name), s.content))
-        .collect();
-    let mut role_outputs: Vec<(String, String)> = Vec::new();
-
     // Extract Send-able handles once so spawn_blocking closures can own them.
     let db_pool = get_state(&state).db.clone();
     let shared_ctx = get_state(&state).shared_context.clone();
+
+    let skill_refs = routed.skill_refs.clone();
+    let skill_pool = db_pool.clone();
+    let skill_ctx = shared_ctx.clone();
+    let skill_pairs: Vec<(String, String)> = tokio::task::spawn_blocking(move || {
+        let tmp_state = AppState {
+            db: skill_pool,
+            shared_context: skill_ctx,
+        };
+        load_skills_by_names(&tmp_state, &skill_refs)
+    })
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .filter(|s| !s.content.is_empty())
+    .map(|s| (format!("skill:{}", s.name), s.content))
+    .collect();
+    let mut role_outputs: Vec<(String, String)> = Vec::new();
 
     for role_name in role_targets {
         let is_union_assistant = role_name == "UnionAIAssistant";

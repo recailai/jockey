@@ -56,9 +56,24 @@ export default function App() {
     setSessions((s) => s.id === id, produce((s) => Object.assign(s, patch)));
   };
 
+  const persistSessionPatch = (id: string, patch: Partial<AppSession>) => {
+    const update: { title?: string; activeRole?: string; selectedAssistant?: string | null } = {};
+    if (typeof patch.title === "string") update.title = patch.title;
+    if (typeof patch.activeRole === "string") update.activeRole = patch.activeRole;
+    if ("selectedAssistant" in patch) update.selectedAssistant = patch.selectedAssistant ?? null;
+    if (Object.keys(update).length === 0) return;
+    void invoke("update_app_session", { id, update }).catch(() => { });
+  };
+
   const patchActiveSession = (patch: Partial<AppSession>) => {
     const id = activeSessionId();
-    if (id) updateSession(id, patch);
+    if (!id) return;
+    if ("selectedAssistant" in patch) {
+      if (patch.selectedAssistant) window.localStorage.setItem(ASSISTANT_STORAGE_KEY, patch.selectedAssistant);
+      else window.localStorage.removeItem(ASSISTANT_STORAGE_KEY);
+    }
+    updateSession(id, patch);
+    persistSessionPatch(id, patch);
   };
 
   const [roles, setRoles] = createSignal<Role[]>([]);
@@ -269,16 +284,12 @@ export default function App() {
 
   const fetchAgentCommands = async (runtimeKey: string, roleName: string): Promise<{ runtimeKey: string; commands: Array<{ name: string; description: string; hint?: string }> }> => {
     const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
-    const candidates = normalizedRuntime === runtimeKey ? [normalizedRuntime] : [normalizedRuntime, runtimeKey];
-    for (const key of candidates) {
-      try {
-        const raw = await invoke<unknown[]>("list_available_commands_cmd", { runtimeKey: key, roleName });
-        const parsed = parseAgentCommands(raw);
-        if (parsed.length > 0) return { runtimeKey: key, commands: parsed };
-      } catch {
-      }
+    try {
+      const raw = await invoke<unknown[]>("list_available_commands_cmd", { runtimeKey: normalizedRuntime, roleName });
+      return { runtimeKey: normalizedRuntime, commands: parseAgentCommands(raw) };
+    } catch {
+      return { runtimeKey: normalizedRuntime, commands: [] };
     }
-    return { runtimeKey: normalizedRuntime, commands: [] };
   };
 
   const hydrateAgentCommandsForSession = async (
@@ -315,8 +326,6 @@ export default function App() {
 
   const setPreferredAssistant = (assistantKey: string | null) => {
     patchActiveSession({ selectedAssistant: assistantKey });
-    if (assistantKey) window.localStorage.setItem(ASSISTANT_STORAGE_KEY, assistantKey);
-    else window.localStorage.removeItem(ASSISTANT_STORAGE_KEY);
   };
 
   const refreshAssistants = async () => {
@@ -463,10 +472,7 @@ export default function App() {
     const queryLower = query.toLowerCase().replace(/^\//, "");
     const out: AppMentionItem[] = [];
     const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
-    const cmds = activeSession()?.agentCommands.get(commandCacheKey(normalizedRuntime, roleName))
-      ?? activeSession()?.agentCommands.get(commandCacheKey(runtimeKey, roleName))
-      ?? activeSession()?.agentCommands.get(roleName)
-      ?? [];
+    const cmds = activeSession()?.agentCommands.get(commandCacheKey(normalizedRuntime, roleName)) ?? [];
     for (const cmd of cmds) {
       const value = `/${cmd.name}`;
       if (queryLower && !cmd.name.toLowerCase().includes(queryLower)) continue;
@@ -891,6 +897,12 @@ export default function App() {
       s.selectedAssistant = availableAssistant;
       setSessions(sessions.length, s);
       setActiveSessionId(s.id);
+      if (availableAssistant) {
+        void invoke("update_app_session", {
+          id: created.id,
+          update: { selectedAssistant: availableAssistant },
+        }).catch(() => { });
+      }
     }).catch((e: unknown) => {
       showToast(`Failed to create session: ${String(e)}`);
       const s = makeDefaultSession("New Session");
@@ -956,7 +968,13 @@ export default function App() {
         : assistants().find((a) => a.available)?.key ?? null;
 
       sessions.forEach((s, i) => {
-        if (!s.selectedAssistant) setSessions(i, "selectedAssistant", availableAssistant);
+        if (!s.selectedAssistant && availableAssistant) {
+          setSessions(i, "selectedAssistant", availableAssistant);
+          void invoke("update_app_session", {
+            id: s.id,
+            update: { selectedAssistant: availableAssistant },
+          }).catch(() => { });
+        }
       });
 
       pushMessage("system", "Welcome to UnionAI. Agent sessions are warming up in the background.");
@@ -1049,7 +1067,8 @@ export default function App() {
                   || roles().find((r) => r.roleName === roleName)?.runtimeKind
                   || "";
                 const normalizedRuntime = runtimeKey ? normalizeRuntimeKey(runtimeKey) : "";
-                const key = normalizedRuntime ? commandCacheKey(normalizedRuntime, roleName) : roleName;
+                if (!normalizedRuntime) break;
+                const key = commandCacheKey(normalizedRuntime, roleName);
                 const aidx = sessions.findIndex((s) => s.id === sid);
                 if (aidx !== -1) setSessions(aidx, "agentCommands", (m) => {
                   const next = new Map(m);

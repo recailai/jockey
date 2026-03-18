@@ -186,7 +186,7 @@ pub(crate) struct AppSession {
 pub(crate) struct AppSessionUpdate {
     pub(crate) title: Option<String>,
     pub(crate) active_role: Option<String>,
-    pub(crate) selected_assistant: Option<String>,
+    pub(crate) selected_assistant: Option<Option<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
