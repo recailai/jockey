@@ -54,6 +54,7 @@
 - [ ] assistant prewarm 改为基于 assistant 配置而非 catalog 硬编码
 
 ### 2. Role 改进
+- [ ] 侧边栏 role list 隐藏 UnionAIAssistant 默认角色（仅在 AssistantConfigPanel 中管理，不混入用户自建 role 列表）
 - [ ] /role bind 同名已存在时报错提示，不要静默覆盖 (当前 ON CONFLICT DO UPDATE)
 - [ ] /role bind 参数补全: 缺少 model/mode 时提示可选参数
 - [ ] /role edit 支持内联编辑全部字段 (当前只有分字段 edit)
@@ -179,10 +180,28 @@
 - [ ] ConfigDrawer JSON.parse 在渲染循环中执行，角色多时交互发涩（移出渲染循环）
 - [ ] DB pool Condvar 无超时等待，极端并发下可能长尾阻塞（加 5s timeout）
 
-### 8. 遗留项
+### 8. 前端 UI 加载优化
+- [ ] 首屏骨架屏：onMount 完成前显示 skeleton placeholder，避免白屏/闪烁
+- [ ] ConfigDrawer 代码拆分：已 lazy() 但首次打开仍卡顿，预加载或 prefetch 改善
+- [ ] 消息列表虚拟滚动：长会话 500+ 条消息全量渲染导致掉帧（接入 virtual list）
+- [ ] ConfigDrawer JSON.parse 移出渲染循环：角色多时 configOptionsJson 每帧反复 parse
+- [ ] 字体/CSS 资源预加载：index.html 加 `<link rel="preload">` 减少 FOUC
+- [ ] Tauri invoke 批量化：onMount 时 refreshAssistants + refreshRoles + refreshSkills 可合并为单次 invoke 减少 IPC 往返
+- [ ] 会话恢复懒加载：list_app_sessions 只加载最近活跃 session 的消息，其余按需加载
+- [ ] 图片/图标资源：SVG inline 替代外部加载，减少请求数
+
+### 9. 遗留项
 - [ ] MCP servers JSON → Vec<McpServer> 解析并传入 execute_runtime
 - [ ] 前端 MCP servers JSON editor in role form
 - [ ] virtual list for long sessions
 - [ ] macOS 原生窗口 (titleBarStyle overlay, hiddenTitle, trafficLightPosition)
-- [ ] backgroundThrottling 调整
 - [ ] 高风险命令二次确认
+
+### 10. UI/UX 优化方案
+- [ ] 极深视觉基调: 底色采用极致深色 (`#000000` / `#030305`)，加入径向高光模糊打破平面感。
+- [ ] 次世代毛玻璃: 半透背景配合 `backdrop-blur-xl` + 极细高光描边 `border-white/[0.05]`。
+- [ ] 发光交互态: 交互热点（激活的 Agent、Submit 按钮等）使用大体积弥散阴影 (`shadow-[0_0_20px_rgba(99,102,241,0.2)]`)。
+- [ ] 字体与排版重组: 切换系统字体为 `Inter`/`SF Pro Display`，增加空间留白 (`space-y-6`) 和呼吸感。
+- [ ] 悬浮指令台: 底栏脱离底部贴边，改为居中悬浮的 Command Bar，聚焦时泛起科技微光。
+- [ ] 无界视效: 取消硬分隔线，基于投影和纵深（Elevation）建立组件层级。
+- [ ] 微动效体系: 消息体 `fadeIn` 缓冲滑动入场、工具调用点阵高亮、弹窗弹性展示。
