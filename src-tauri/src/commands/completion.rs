@@ -144,7 +144,7 @@ fn complete_path_mentions(cwd: &str, query: &str, limit: usize) -> Vec<MentionCa
 }
 
 #[tauri::command]
-pub(crate) fn complete_mentions(
+pub(crate) async fn complete_mentions(
     state: State<'_, AppState>,
     selected_team_id: Option<String>,
     query: String,
@@ -156,7 +156,9 @@ pub(crate) fn complete_mentions(
     };
     let cwd = resolve_chat_cwd(get_state(&state), Some(&team_id));
     let capped = limit.unwrap_or(10).clamp(1, 30);
-    Ok(complete_path_mentions(&cwd, &query, capped))
+    tokio::task::spawn_blocking(move || complete_path_mentions(&cwd, &query, capped))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn matches_cli_query(candidate: &str, query_lower: &str) -> bool {
@@ -231,7 +233,6 @@ fn append_dynamic_catalog_cli_templates(
             push_matching_cli_template(out, seen, query_lower, &value, "MCP server command");
         }
     }
-
 }
 
 fn append_role_cli_templates(
@@ -254,7 +255,7 @@ fn append_role_cli_templates(
             push_matching_cli_template(out, seen, query_lower, &value, "Role command");
         }
         for mode in acp::list_discovered_modes(&role.runtime_kind) {
-            let value = format!("/role edit {} mode {}", role_name, mode);
+            let value = format!("/app_role edit {} mode {}", role_name, mode);
             push_matching_cli_template(out, seen, query_lower, &value, "Role mode (ACP)");
         }
     }

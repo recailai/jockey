@@ -705,6 +705,10 @@ export default function App() {
       setSessions((sess) => sess.id === originSessionId, produce((sess) => {
         sess.messages = [...sess.messages, { id: `${now()}-err`, role: "event" as const, text: errMsg, at: now() }];
       }));
+      patchOriginSession({ submitting: false, status: "error" });
+      streamAccepting = false;
+      runNextQueued();
+      return;
     } finally {
       streamAccepting = false;
       if (runToken <= canceledRunToken) {

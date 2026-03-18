@@ -4,7 +4,7 @@ use crate::db::context::{
 };
 use crate::db::get_state;
 use crate::db::role::{load_role, load_role_runtime_kind, resolve_role_prompt_raw};
-use crate::db::skill::load_skill_by_name;
+use crate::db::skill::load_skills_by_names;
 use crate::types::*;
 use crate::{acp, build_unionai_tool_prompt, clip_text, now_ms, resolve_chat_cwd};
 use serde::{Deserialize, Serialize};
@@ -613,14 +613,11 @@ pub(crate) async fn assistant_chat(
             }
         }
     }
-    let mut skill_pairs: Vec<(String, String)> = Vec::new();
-    for skill_name in &routed.skill_refs {
-        if let Some(skill) = load_skill_by_name(get_state(&state), skill_name) {
-            if !skill.content.is_empty() {
-                skill_pairs.push((format!("skill:{}", skill.name), skill.content));
-            }
-        }
-    }
+    let skill_pairs: Vec<(String, String)> = load_skills_by_names(get_state(&state), &routed.skill_refs)
+        .into_iter()
+        .filter(|s| !s.content.is_empty())
+        .map(|s| (format!("skill:{}", s.name), s.content))
+        .collect();
     let mut role_outputs: Vec<(String, String)> = Vec::new();
 
     // Extract Send-able handles once so spawn_blocking closures can own them.

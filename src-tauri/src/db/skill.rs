@@ -86,17 +86,32 @@ pub(crate) fn delete_app_skill(state: State<'_, AppState>, id: String) -> Result
     })
 }
 
-pub(crate) fn load_skill_by_name(state: &AppState, name: &str) -> Option<AppSkill> {
+pub(crate) fn load_skills_by_names(state: &AppState, names: &[String]) -> Vec<AppSkill> {
+    if names.is_empty() {
+        return Vec::new();
+    }
     with_db(state, |conn| {
-        conn.query_row(
+        let placeholders = names
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
             "SELECT id, name, description, content, created_at, updated_at
-             FROM app_skills WHERE name = ?1",
-            params![name],
-            skill_from_row,
-        )
-        .optional()
-        .map_err(|e| e.to_string())
+             FROM app_skills WHERE name IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(names.iter()), skill_from_row)
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            if let Ok(s) = row {
+                out.push(s);
+            }
+        }
+        Ok(out)
     })
-    .ok()
-    .flatten()
+    .unwrap_or_default()
 }
