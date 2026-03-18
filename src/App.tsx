@@ -268,10 +268,24 @@ export default function App() {
     } catch { setSkills([]); }
   };
 
-  const fetchConfigOptions = async (runtimeKey: string): Promise<AcpConfigOption[]> => {
+  const fetchConfigOptions = async (runtimeKey: string, roleName?: string, teamId?: string | null): Promise<AcpConfigOption[]> => {
     try {
       const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
-      const raw = await invoke<unknown[]>("list_discovered_config_options_cmd", { runtimeKey: normalizedRuntime });
+      if (roleName) {
+        const raw = await invoke<unknown[]>("prewarm_role_config_cmd", {
+          runtimeKind: normalizedRuntime,
+          roleName,
+          teamId: teamId ?? null,
+        });
+        return raw as AcpConfigOption[];
+      }
+      const cached = await invoke<unknown[]>("list_discovered_config_options_cmd", { runtimeKey: normalizedRuntime });
+      if (cached.length > 0) return cached as AcpConfigOption[];
+      const raw = await invoke<unknown[]>("prewarm_role_config_cmd", {
+        runtimeKind: normalizedRuntime,
+        roleName: "",
+        teamId: null,
+      });
       return raw as AcpConfigOption[];
     } catch { return []; }
   };
@@ -505,7 +519,7 @@ export default function App() {
         const runtimeKey = normalizeRuntimeKey(role.runtimeKind);
         const key = commandCacheKey(runtimeKey, role.roleName);
         if ((s?.discoveredConfigOptions.length ?? 0) === 0) {
-          const opts = await fetchConfigOptions(runtimeKey);
+          const opts = await fetchConfigOptions(runtimeKey, role.roleName, role.teamId);
           if (seq !== slashReqSeq) return;
           patchActiveSession({ discoveredConfigOptions: opts });
         }
@@ -634,7 +648,7 @@ export default function App() {
           inRoleContext = true;
           const targetRole = roles().find((r) => r.roleName === target);
           if (targetRole) {
-            void fetchConfigOptions(targetRole.runtimeKind).then((opts) => patchActiveSession({ discoveredConfigOptions: opts }));
+            void fetchConfigOptions(targetRole.runtimeKind, targetRole.roleName, targetRole.teamId).then((opts) => patchActiveSession({ discoveredConfigOptions: opts }));
             fetchAndCacheAgentCommands(targetRole.runtimeKind, targetRole.roleName);
           }
           routedText = text.replace(/^@\S+\s*/, "").trim();

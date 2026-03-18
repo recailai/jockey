@@ -27,10 +27,6 @@ html, body, #root {
 
 body { background: var(--ui-bg); }
 
-:where(button, input, select, textarea):focus-visible {
-  outline: 1.5px solid rgba(255,255,255,0.3);
-  outline-offset: 1px;
-}
 
 .window-bg {
   position: relative;

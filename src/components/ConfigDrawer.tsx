@@ -16,7 +16,7 @@ type ConfigDrawerProps = {
   refreshRoles: () => Promise<void>;
   refreshSkills: () => Promise<void>;
   pushMessage: (role: AppMessage["role"], text: string) => void;
-  fetchConfigOptions: (runtimeKey: string) => Promise<AcpConfigOption[]>;
+  fetchConfigOptions: (runtimeKey: string, roleName?: string, teamId?: string | null) => Promise<AcpConfigOption[]>;
 };
 
 export default function ConfigDrawer(props: ConfigDrawerProps) {
@@ -329,7 +329,7 @@ type RolesSectionProps = {
   closeRoleEditor: () => void;
   handleCreateRole: () => Promise<void>;
   handleSaveRoleEdit: () => Promise<void>;
-  fetchConfigOptions: (runtimeKey: string) => Promise<AcpConfigOption[]>;
+  fetchConfigOptions: (runtimeKey: string, roleName?: string, teamId?: string | null) => Promise<AcpConfigOption[]>;
 };
 
 function RolesSection(props: RolesSectionProps) {
@@ -458,7 +458,7 @@ type CreateRoleFormProps = {
   createFormConfigOptions: Accessor<AcpConfigOption[]>;
   setCreateFormConfigOptions: Setter<AcpConfigOption[]>;
   handleCreateRole: () => Promise<void>;
-  fetchConfigOptions: (runtimeKey: string) => Promise<AcpConfigOption[]>;
+  fetchConfigOptions: (runtimeKey: string, roleName?: string, teamId?: string | null) => Promise<AcpConfigOption[]>;
 };
 
 function CreateRoleForm(props: CreateRoleFormProps) {

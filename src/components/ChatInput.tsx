@@ -58,16 +58,17 @@ export default function ChatInput(props: ChatInputProps) {
   let mentionListEl: HTMLDivElement | undefined;
 
   return (
-    <div class="shrink-0 px-4 py-3 bg-[#09090b] border-t border-white/[0.04]">
-      <form onSubmit={props.onSubmit} class="relative">
-        <div class="flex items-center rounded-full border border-white/[0.1] bg-white/[0.04] px-4 gap-2 focus-within:border-white/[0.18] motion-safe:transition-colors">
+    <div class="shrink-0 px-4 pb-4 pt-2 bg-[#09090b]">
+      <form onSubmit={props.onSubmit} class="relative max-w-5xl mx-auto w-full">
+        <div class="flex items-center rounded-2xl border border-white/[0.08] bg-zinc-900/60 backdrop-blur-xl px-2.5 py-1.5 gap-2 shadow-lg focus-within:border-indigo-500/40 focus-within:bg-zinc-900/80 focus-within:ring-4 focus-within:ring-indigo-500/10 focus-within:shadow-[0_0_20px_rgba(99,102,241,0.1)] motion-safe:transition-all motion-safe:duration-300">
           <button
             type="button"
             onClick={() => props.patchActiveSession({ activeRole: DEFAULT_ROLE_ALIAS })}
-            class={`shrink-0 py-2.5 text-xs font-mono ${props.isCustomRole() ? "text-blue-300 hover:text-blue-200" : "text-zinc-500"}`}
+            class={`shrink-0 flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[12.5px] font-bold tracking-wide transition-all ${props.isCustomRole() ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 shadow-[0_0_10px_rgba(99,102,241,0.1)]" : "bg-zinc-800/80 text-zinc-400 border border-white/[0.05] hover:bg-zinc-700/80 hover:text-zinc-200"}`}
             title={props.isCustomRole() ? "Click to return to UnionAI" : "UnionAI mode"}
           >
-            {props.activeSession()?.activeRole ?? DEFAULT_ROLE_ALIAS} &gt;
+            {props.activeSession()?.activeRole ?? DEFAULT_ROLE_ALIAS}
+            <svg class="opacity-40" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
           <input
             ref={(el) => { props.inputElRef(el); }}
@@ -91,14 +92,14 @@ export default function ChatInput(props: ChatInputProps) {
               props.refreshInputCompletions(props.input(), e.currentTarget.selectionStart ?? props.input().length);
             }}
             placeholder={props.isCustomRole() ? `Chat with ${props.activeSession()?.activeRole}... (type / for agent commands)` : "Natural language / commands / @role @file:path"}
-            class="flex-1 bg-transparent py-2.5 text-sm outline-none min-w-0 text-zinc-200 placeholder:text-zinc-600"
+            class="flex-1 bg-transparent py-1.5 px-1 text-[14px] outline-none min-w-0 text-zinc-100 placeholder:text-zinc-500 font-sans tracking-wide"
           />
           <button
             type="submit"
-            class={`shrink-0 flex h-7 w-7 items-center justify-center rounded-full motion-safe:transition-all motion-safe:duration-150 ${props.input().trim() ? "bg-white text-zinc-950" : "bg-white/[0.08] text-white/20"} ${INTERACTIVE_MOTION}`}
+            class={`shrink-0 flex h-9 w-9 items-center justify-center rounded-xl motion-safe:transition-all motion-safe:duration-300 ${props.input().trim() ? "bg-gradient-to-t from-indigo-600 to-indigo-500 text-white shadow-md shadow-indigo-500/25 border border-indigo-400/30 hover:shadow-indigo-500/40 hover:scale-105" : "bg-zinc-800/50 text-zinc-600 border border-transparent"} ${INTERACTIVE_MOTION}`}
             title={props.activeSession()?.submitting ? "Queue" : "Send"}
           >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class={props.input().trim() ? "drop-shadow-[0_1px_2px_rgba(0,0,0,0.3)]" : ""}><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
           </button>
         </div>
         <Show when={props.slashOpen() && props.slashItems().length > 0}>
