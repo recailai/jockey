@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { For, Show, onMount, onCleanup } from "solid-js";
+import { For, Show, createEffect, onCleanup } from "solid-js";
 import type { Accessor } from "solid-js";
 import type { AppSession, AppMessage } from "./types";
 import { INTERACTIVE_MOTION, RUNTIME_COLOR, MESSAGE_RENDER_WINDOW, fmt } from "./types";
@@ -14,15 +14,18 @@ type MessageWindowProps = {
 
 export default function MessageWindow(props: MessageWindowProps) {
   let listEl: HTMLElement | undefined;
+  let boundSessionId: string | null = null;
 
-  onMount(() => {
+  createEffect(() => {
     const id = props.activeSessionId();
-    if (id && listEl) props.onListMounted?.(id, listEl);
+    if (!listEl || !id) return;
+    if (boundSessionId && boundSessionId !== id) props.onListUnmounted?.(boundSessionId);
+    props.onListMounted?.(id, listEl);
+    boundSessionId = id;
   });
 
   onCleanup(() => {
-    const id = props.activeSessionId();
-    if (id) props.onListUnmounted?.(id);
+    if (boundSessionId) props.onListUnmounted?.(boundSessionId);
   });
 
   const visibleMessages = (): AppMessage[] => {

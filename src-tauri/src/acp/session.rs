@@ -405,6 +405,7 @@ pub async fn execute_runtime(
                         delta_count += 1;
                         let _ = app.emit("acp/delta", json!({
                             "role": role_owned,
+                            "runtimeKind": adapter.runtime_key,
                             "appSessionId": app_session_id_owned,
                             "delta": text
                         }));
@@ -414,6 +415,7 @@ pub async fn execute_runtime(
                         remember_runtime_config_options(adapter.runtime_key, options.clone());
                         let _ = app.emit("acp/stream", json!({
                             "role": role_owned,
+                            "runtimeKind": adapter.runtime_key,
                             "appSessionId": app_session_id_owned,
                             "event": serde_json::to_value(&AcpEvent::ConfigUpdate { options: options.clone() }).unwrap_or(json!({}))
                         }));
@@ -429,6 +431,7 @@ pub async fn execute_runtime(
                         remember_runtime_available_commands(adapter.runtime_key, &role_owned, commands.clone());
                         let _ = app.emit("acp/stream", json!({
                             "role": role_owned,
+                            "runtimeKind": adapter.runtime_key,
                             "appSessionId": app_session_id_owned,
                             "event": serde_json::to_value(&AcpEvent::AvailableCommands { commands: commands.clone() }).unwrap_or(json!({}))
                         }));
@@ -437,6 +440,7 @@ pub async fn execute_runtime(
                         delta_count += 1;
                         let _ = app.emit("acp/stream", json!({
                             "role": role_owned,
+                            "runtimeKind": adapter.runtime_key,
                             "appSessionId": app_session_id_owned,
                             "event": serde_json::to_value(&other).unwrap_or(json!({}))
                         }));
@@ -450,12 +454,13 @@ pub async fn execute_runtime(
                         AcpEvent::TextDelta { ref text } => {
                             full_output.push_str(text);
                             delta_count += 1;
-                            let _ = app.emit("acp/delta", json!({ "role": role_owned, "appSessionId": app_session_id_owned, "delta": text }));
+                            let _ = app.emit("acp/delta", json!({ "role": role_owned, "runtimeKind": adapter.runtime_key, "appSessionId": app_session_id_owned, "delta": text }));
                         }
                         other => {
                             delta_count += 1;
                             let _ = app.emit("acp/stream", json!({
                                 "role": role_owned,
+                                "runtimeKind": adapter.runtime_key,
                                 "appSessionId": app_session_id_owned,
                                 "event": serde_json::to_value(&other).unwrap_or(json!({}))
                             }));
