@@ -195,6 +195,7 @@
 - [ ] 前端 MCP servers JSON editor in role form
 - [ ] virtual list for long sessions
 - [ ] macOS 原生窗口 (titleBarStyle overlay, hiddenTitle, trafficLightPosition)
+- [ ] backgroundThrottling 调整
 - [ ] 高风险命令二次确认
 
 ### 10. UI/UX 优化方案
