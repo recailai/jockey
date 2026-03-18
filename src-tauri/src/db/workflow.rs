@@ -1,4 +1,4 @@
-use crate::db::{get_state, with_db};
+use crate::db::{ensure_default_team_id, get_state, with_db};
 use crate::now_ms;
 use crate::types::*;
 use rusqlite::params;
@@ -8,17 +8,16 @@ use uuid::Uuid;
 #[tauri::command]
 pub(crate) fn create_workflow(
     state: State<'_, AppState>,
-    team_id: String,
     name: String,
     steps: Vec<String>,
 ) -> Result<Workflow, String> {
     if steps.is_empty() {
         return Err("workflow steps cannot be empty".to_string());
     }
+    let team_id = ensure_default_team_id(get_state(&state))?;
     let now = now_ms();
     let workflow = Workflow {
         id: Uuid::new_v4().to_string(),
-        team_id,
         name,
         steps,
         created_at: now,
@@ -32,7 +31,7 @@ pub(crate) fn create_workflow(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 &workflow.id,
-                &workflow.team_id,
+                &team_id,
                 &workflow.name,
                 &steps_json,
                 workflow.created_at,
@@ -49,8 +48,8 @@ pub(crate) fn create_workflow(
 #[tauri::command]
 pub(crate) fn list_workflows(
     state: State<'_, AppState>,
-    team_id: String,
 ) -> Result<Vec<Workflow>, String> {
+    let team_id = ensure_default_team_id(get_state(&state))?;
     with_db(get_state(&state), |conn| {
         let mut stmt = conn
             .prepare(
@@ -64,7 +63,6 @@ pub(crate) fn list_workflows(
                 let steps = serde_json::from_str::<Vec<String>>(&steps_json).unwrap_or_default();
                 Ok(Workflow {
                     id: row.get(0)?,
-                    team_id: row.get(1)?,
                     name: row.get(2)?,
                     steps,
                     created_at: row.get(4)?,
@@ -90,7 +88,6 @@ pub(crate) fn load_workflow(state: &AppState, workflow_id: &str) -> Result<Workf
                 let steps = serde_json::from_str::<Vec<String>>(&steps_json).unwrap_or_default();
                 Ok(Workflow {
                     id: row.get(0)?,
-                    team_id: row.get(1)?,
                     name: row.get(2)?,
                     steps,
                     created_at: row.get(4)?,

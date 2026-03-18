@@ -92,7 +92,7 @@ export default function MessageWindow(props: MessageWindowProps) {
               <div class="relative h-8 w-8 shrink-0 rounded-full bg-gradient-to-b from-zinc-800 to-zinc-900 border border-zinc-700/80 flex items-center justify-center shadow-lg ring-1 ring-black/40 mt-0.5 overflow-hidden">
                 <div class="absolute inset-0 bg-indigo-500/10"></div>
                 <svg class="w-4 h-4 text-zinc-300 relative z-10 drop-shadow-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+                  <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
                 </svg>
               </div>
               <div class="flex-1 min-w-0">
@@ -131,7 +131,7 @@ export default function MessageWindow(props: MessageWindowProps) {
         {(streaming) => (
           <div class="flex gap-4 w-full max-w-[95%] mb-6">
             <div class="relative h-8 w-8 shrink-0 rounded-full bg-gradient-to-b from-zinc-800 to-zinc-900 border border-zinc-700/80 flex items-center justify-center shadow-lg ring-1 ring-black/40 mt-0.5 overflow-hidden">
-               <div class="absolute inset-0 bg-indigo-500/10"></div>
+              <div class="absolute inset-0 bg-indigo-500/10"></div>
               <span class="h-1.5 w-1.5 rounded-full bg-zinc-300 animate-pulse shadow-[0_0_8px_rgba(255,255,255,0.8)] relative z-10" />
             </div>
             <div class="flex-1 min-w-0">

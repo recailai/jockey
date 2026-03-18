@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo check:*)",
+      "WebFetch(domain:docs.rs)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:agentclientprotocol.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(cargo doc:*)",
+      "Read(//Users/sexy/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/agent-client-protocol-schema-0.11.2/src/**)"
+    ]
+  }
+}

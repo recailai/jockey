@@ -1,7 +1,7 @@
 use crate::db::context::{list_shared_context_internal, set_shared_context_internal};
 use crate::db::role::{load_role, load_role_runtime_kind};
 use crate::db::workflow::load_workflow;
-use crate::db::{get_state, load_team_workspace_path, parse_payload, with_db};
+use crate::db::{ensure_default_team_id, get_state, load_team_workspace_path, parse_payload, with_db};
 use crate::types::*;
 use crate::{acp, now_ms};
 use rusqlite::params;
@@ -55,8 +55,8 @@ pub(crate) fn update_session_status(
 #[tauri::command]
 pub(crate) fn list_sessions(
     state: State<'_, AppState>,
-    team_id: String,
 ) -> Result<Vec<Session>, String> {
+    let team_id = ensure_default_team_id(get_state(&state))?;
     with_db(get_state(&state), |conn| {
         let mut stmt = conn
             .prepare(
@@ -68,7 +68,6 @@ pub(crate) fn list_sessions(
             .query_map(params![team_id], |row| {
                 Ok(Session {
                     id: row.get(0)?,
-                    team_id: row.get(1)?,
                     workflow_id: row.get(2)?,
                     status: row.get(3)?,
                     initial_prompt: row.get(4)?,
@@ -166,21 +165,21 @@ pub(crate) fn chunk_text(input: &str, size: usize) -> Vec<String> {
 
 pub(crate) async fn run_workflow(
     app: AppHandle,
-    session: Session,
+    session_id: String,
     workflow: Workflow,
     seed_prompt: String,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let workspace_path = load_team_workspace_path(state.inner(), &session.team_id)
+    let team_id = ensure_default_team_id(state.inner())?;
+    let workspace_path = load_team_workspace_path(state.inner(), &team_id)
         .unwrap_or_else(|_| ".".to_string());
     let mut prompt = seed_prompt;
     for (step_idx, role_name) in workflow.steps.iter().enumerate() {
-        let runtime_kind = load_role_runtime_kind(state.inner(), &session.team_id, role_name)
+        let runtime_kind = load_role_runtime_kind(state.inner(), role_name)
             .unwrap_or_else(|_| "mock".to_string());
 
-        // Proactively prewarm the next step's agent so its cold-start overlaps with this step's execution.
         if let Some(next_role) = workflow.steps.get(step_idx + 1) {
-            let next_runtime = load_role_runtime_kind(state.inner(), &session.team_id, next_role)
+            let next_runtime = load_role_runtime_kind(state.inner(), next_role)
                 .unwrap_or_else(|_| "mock".to_string());
             let next_role = next_role.clone();
             let next_cwd = workspace_path.clone();
@@ -189,9 +188,8 @@ pub(crate) async fn run_workflow(
             });
         }
         let started = WorkflowStateEvent {
-            session_id: session.id.clone(),
-            team_id: session.team_id.clone(),
-            workflow_id: session.workflow_id.clone(),
+            session_id: session_id.clone(),
+            workflow_id: workflow.id.clone(),
             status: "running".to_string(),
             active_role: Some(role_name.clone()),
             message: format!("{role_name} started"),
@@ -201,18 +199,18 @@ pub(crate) async fn run_workflow(
             .map_err(|e| e.to_string())?;
         record_session_event(
             state.inner(),
-            &session.id,
+            &session_id,
             "StepStarted",
             Some(role_name),
             json!({ "message": started.message, "runtimeKind": runtime_kind }),
         )?;
 
-        let context_entries = list_shared_context_internal(state.inner(), &session.team_id)?;
+        let context_entries = list_shared_context_internal(state.inner(), &team_id)?;
         let context_pairs = context_entries
             .iter()
             .map(|entry| (entry.key.clone(), entry.value.clone()))
             .collect::<Vec<_>>();
-        let role_data = load_role(state.inner(), &session.team_id, role_name).unwrap_or(None);
+        let role_data = load_role(state.inner(), role_name).unwrap_or(None);
         let auto_approve = role_data.as_ref().map(|r| r.auto_approve).unwrap_or(true);
         let role_mode = role_data.as_ref().and_then(|r| r.mode.clone());
         let role_config: Vec<(String, String)> = role_data
@@ -237,13 +235,13 @@ pub(crate) async fn run_workflow(
             vec![],
             role_mode,
             role_config,
-            Some((state.inner(), &session.team_id)),
+            Some((state.inner(), &team_id)),
             "",
         )
         .await;
         record_session_event(
             state.inner(),
-            &session.id,
+            &session_id,
             "AdapterResult",
             Some(role_name),
             acp_result.meta.clone(),
@@ -258,9 +256,8 @@ pub(crate) async fn run_workflow(
 
         for chunk in &chunks {
             let update = SessionUpdateEvent {
-                session_id: session.id.clone(),
-                team_id: session.team_id.clone(),
-                workflow_id: session.workflow_id.clone(),
+                session_id: session_id.clone(),
+                workflow_id: workflow.id.clone(),
                 role_name: role_name.clone(),
                 delta: chunk.clone(),
                 state: "writing".to_string(),
@@ -272,7 +269,7 @@ pub(crate) async fn run_workflow(
         }
         record_session_event(
             state.inner(),
-            &session.id,
+            &session_id,
             "StepOutput",
             Some(role_name),
             json!({ "output": &output }),
@@ -281,13 +278,13 @@ pub(crate) async fn run_workflow(
         let summary = summarize_text(&output);
         set_shared_context_internal(
             state.inner(),
-            &session.team_id,
+            &team_id,
             &format!("summary.{role_name}"),
             &summary,
         )?;
         record_session_event(
             state.inner(),
-            &session.id,
+            &session_id,
             "StepCompleted",
             Some(role_name),
             json!({ "summary": summary }),
@@ -295,9 +292,8 @@ pub(crate) async fn run_workflow(
 
         prompt = format!("{}\n\n{} handoff summary: {}", prompt, role_name, summary);
         let done_update = SessionUpdateEvent {
-            session_id: session.id.clone(),
-            team_id: session.team_id.clone(),
-            workflow_id: session.workflow_id.clone(),
+            session_id: session_id.clone(),
+            workflow_id: workflow.id.clone(),
             role_name: role_name.clone(),
             delta: "".to_string(),
             state: "idle".to_string(),
@@ -308,11 +304,10 @@ pub(crate) async fn run_workflow(
             .map_err(|e| e.to_string())?;
     }
 
-    update_session_status(state.inner(), &session.id, "completed")?;
+    update_session_status(state.inner(), &session_id, "completed")?;
     let completed = WorkflowStateEvent {
-        session_id: session.id.clone(),
-        team_id: session.team_id.clone(),
-        workflow_id: session.workflow_id.clone(),
+        session_id: session_id.clone(),
+        workflow_id: workflow.id.clone(),
         status: "completed".to_string(),
         active_role: workflow.steps.last().cloned(),
         message: "workflow completed".to_string(),
@@ -322,7 +317,7 @@ pub(crate) async fn run_workflow(
         .map_err(|e| e.to_string())?;
     record_session_event(
         state.inner(),
-        &session.id,
+        &session_id,
         "WorkflowCompleted",
         workflow.steps.last().map(String::as_str),
         json!({ "message": completed.message }),
@@ -336,53 +331,52 @@ pub(crate) async fn start_workflow(
     state: State<'_, AppState>,
     input: StartWorkflowInput,
 ) -> Result<Session, String> {
+    let team_id = ensure_default_team_id(get_state(&state))?;
     let workflow = load_workflow(get_state(&state), &input.workflow_id)?;
-    if workflow.team_id != input.team_id {
-        return Err("workflow does not belong to team".to_string());
-    }
     if workflow.steps.is_empty() {
         return Err("workflow has no steps".to_string());
     }
 
-    let session = Session {
-        id: Uuid::new_v4().to_string(),
-        team_id: input.team_id,
-        workflow_id: input.workflow_id,
-        status: "running".to_string(),
-        initial_prompt: input.initial_prompt.clone(),
-        created_at: now_ms(),
-        updated_at: now_ms(),
-    };
+    let session_id = Uuid::new_v4().to_string();
+    let now = now_ms();
 
     with_db(get_state(&state), |conn| {
         conn.execute(
             "INSERT INTO sessions (id, team_id, workflow_id, status, initial_prompt, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
-                &session.id,
-                &session.team_id,
-                &session.workflow_id,
-                &session.status,
-                &session.initial_prompt,
-                session.created_at,
-                session.updated_at,
+                &session_id,
+                &team_id,
+                &input.workflow_id,
+                "running",
+                &input.initial_prompt,
+                now,
+                now,
             ],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
     })?;
 
+    let session = Session {
+        id: session_id.clone(),
+        workflow_id: input.workflow_id.clone(),
+        status: "running".to_string(),
+        initial_prompt: input.initial_prompt.clone(),
+        created_at: now,
+        updated_at: now,
+    };
+
     record_session_event(
         get_state(&state),
-        &session.id,
+        &session_id,
         "WorkflowStarted",
         None,
         json!({ "prompt": session.initial_prompt }),
     )?;
 
     let workflow_notice = WorkflowStateEvent {
-        session_id: session.id.clone(),
-        team_id: session.team_id.clone(),
+        session_id: session_id.clone(),
         workflow_id: session.workflow_id.clone(),
         status: "running".to_string(),
         active_role: workflow.steps.first().cloned(),
@@ -394,24 +388,33 @@ pub(crate) async fn start_workflow(
 
     let app_handle = app.clone();
     let workflow_copy = workflow.clone();
-    let session_copy = session.clone();
+    let session_id_copy = session_id.clone();
     let prompt_copy = input.initial_prompt;
 
     tauri::async_runtime::spawn(async move {
         let result = run_workflow(
             app_handle.clone(),
-            session_copy.clone(),
+            session_id_copy.clone(),
             workflow_copy,
             prompt_copy,
         )
         .await;
         if let Err(error) = result {
             let state = app_handle.state::<AppState>();
-            let _ = update_session_status(state.inner(), &session_copy.id, "error");
+            let _ = update_session_status(state.inner(), &session_id_copy, "error");
+            let wf_id = {
+                // Load workflow_id from DB for the error event
+                crate::db::with_db(state.inner(), |conn| {
+                    conn.query_row(
+                        "SELECT workflow_id FROM sessions WHERE id = ?1",
+                        params![&session_id_copy],
+                        |row| row.get::<_, String>(0),
+                    ).map_err(|e| e.to_string())
+                }).unwrap_or_default()
+            };
             let failed = WorkflowStateEvent {
-                session_id: session_copy.id.clone(),
-                team_id: session_copy.team_id.clone(),
-                workflow_id: session_copy.workflow_id.clone(),
+                session_id: session_id_copy.clone(),
+                workflow_id: wf_id,
                 status: "error".to_string(),
                 active_role: None,
                 message: error.clone(),
@@ -420,7 +423,7 @@ pub(crate) async fn start_workflow(
             let _ = app_handle.emit("workflow/state_changed", failed.clone());
             let _ = record_session_event(
                 state.inner(),
-                &session_copy.id,
+                &session_id_copy,
                 "WorkflowFailed",
                 None,
                 json!({ "error": failed.message }),

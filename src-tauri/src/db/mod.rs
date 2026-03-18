@@ -173,19 +173,6 @@ pub(crate) fn seed_default_dynamic_catalog(state: &AppState) -> Result<(), Strin
     Ok(())
 }
 
-pub(crate) fn team_exists(state: &AppState, team_id: &str) -> Result<bool, String> {
-    with_db(state, |conn| {
-        conn.query_row(
-            "SELECT 1 FROM teams WHERE id = ?1 LIMIT 1",
-            params![team_id],
-            |_row| Ok(()),
-        )
-        .optional()
-        .map_err(|e| e.to_string())
-        .map(|v| v.is_some())
-    })
-}
-
 pub(crate) fn ensure_default_team_id(state: &AppState) -> Result<String, String> {
     let existing = with_db(state, |conn| {
         conn.query_row(

@@ -1,9 +1,9 @@
-use crate::commands::{apply_chat_command, ensure_team_selected};
+use crate::commands::apply_chat_command;
 use crate::db::context::{
     context_scope_for_role, list_shared_context_internal, set_shared_context_internal,
 };
-use crate::db::get_state;
-use crate::db::role::{load_role, load_role_runtime_kind, resolve_role_prompt_raw};
+use crate::db::{ensure_default_team_id, get_state};
+use crate::db::role::{load_role, load_role_runtime_kind};
 use crate::db::skill::load_skills_by_names;
 use crate::fs_context::{attach_dir_context, attach_file_context};
 use crate::parser::parse_route_input;
@@ -152,7 +152,6 @@ pub(crate) async fn assistant_chat(
         json!({
             "inputSize": text.len(),
             "preview": clip_text(&text, 120),
-            "selectedTeamId": input.selected_team_id.clone(),
             "selectedAssistant": input.selected_assistant.clone()
         }),
     );
@@ -166,7 +165,6 @@ pub(crate) async fn assistant_chat(
         return Ok(AssistantChatResponse {
             ok: false,
             reply: "empty input".to_string(),
-            selected_team_id: input.selected_team_id,
             selected_assistant: input.selected_assistant,
             session_id: None,
             command_result: None,
@@ -179,7 +177,6 @@ pub(crate) async fn assistant_chat(
             app,
             state,
             text,
-            input.selected_team_id.clone(),
             input.selected_assistant.clone(),
         )
         .await?;
@@ -195,7 +192,6 @@ pub(crate) async fn assistant_chat(
         return Ok(AssistantChatResponse {
             ok: command_result.ok,
             reply: command_result.message.clone(),
-            selected_team_id: command_result.selected_team_id.clone(),
             selected_assistant: command_result.selected_assistant.clone(),
             session_id: command_result.session_id.clone(),
             command_result: Some(command_result),
@@ -222,9 +218,9 @@ pub(crate) async fn assistant_chat(
         message = "Please answer based on the attached context.".to_string();
     }
 
-    let team_id = ensure_team_selected(state.clone(), input.selected_team_id.clone())?;
+    let team_id = ensure_default_team_id(get_state(&state))?;
     let tool_prompt = build_unionai_tool_prompt();
-    let cwd = resolve_chat_cwd(get_state(&state), Some(&team_id));
+    let cwd = resolve_chat_cwd(get_state(&state));
     let mut attachment_pairs: Vec<(String, String)> = Vec::new();
     let mut attach_budget = ATTACH_MAX_TOTAL_BYTES;
     let mut attach_notes = Vec::new();
@@ -286,14 +282,13 @@ pub(crate) async fn assistant_chat(
     for role_name in role_targets {
         let is_union_assistant = role_name == "UnionAIAssistant";
 
-        // Batch all synchronous DB reads for this role into a single spawn_blocking
-        // call so the Tokio worker thread is not blocked on Mutex acquisition + SQLite I/O.
         struct RoleDbData {
             runtime: String,
             context_pairs: Vec<(String, String)>,
             auto_approve: bool,
             role_mode: Option<String>,
             role_config: Vec<(String, String)>,
+            role_system_prompt: Option<String>,
             context_log: Option<(usize, Option<String>)>,
         }
         let pool_clone = db_pool.clone();
@@ -302,7 +297,6 @@ pub(crate) async fn assistant_chat(
         let role_name_clone = role_name.clone();
         let assistant_clone = assistant.clone();
         let db_data: RoleDbData = tokio::task::spawn_blocking(move || {
-            // Build a transient AppState view backed by the cloned pool + shared_context.
             let tmp_state = AppState {
                 db: pool_clone,
                 shared_context: ctx_clone,
@@ -311,7 +305,7 @@ pub(crate) async fn assistant_chat(
             let runtime = if role_name_clone == "UnionAIAssistant" {
                 assistant_clone
             } else {
-                load_role_runtime_kind(&tmp_state, &team_id_clone, &role_name_clone)
+                load_role_runtime_kind(&tmp_state, &role_name_clone)
                     .unwrap_or(assistant_clone)
             };
 
@@ -321,10 +315,13 @@ pub(crate) async fn assistant_chat(
                 entries.into_iter().map(|e| (e.key, e.value)).collect();
 
             let mut context_log = None;
+            let role_data = load_role(&tmp_state, &role_name_clone).unwrap_or(None);
+
             if role_name_clone != "UnionAIAssistant" {
-                let role_prompt =
-                    resolve_role_prompt_raw(&tmp_state, &team_id_clone, &role_name_clone)
-                        .unwrap_or_default();
+                let role_prompt = role_data
+                    .as_ref()
+                    .map(|r| r.system_prompt.clone())
+                    .unwrap_or_default();
 
                 if !role_prompt.is_empty() {
                     context_pairs.push(("role_prompt".to_string(), role_prompt));
@@ -348,12 +345,6 @@ pub(crate) async fn assistant_chat(
                     upsert_context_pair(&mut context_pairs, "cwd", prev_cwd);
                 }
             }
-
-            let role_data = if role_name_clone != "UnionAIAssistant" {
-                load_role(&tmp_state, &team_id_clone, &role_name_clone).unwrap_or(None)
-            } else {
-                None
-            };
             let auto_approve = role_data.as_ref().map(|r| r.auto_approve).unwrap_or(true);
             let role_mode = role_data.as_ref().and_then(|r| r.mode.clone());
             let role_config: Vec<(String, String)> = role_data
@@ -370,12 +361,18 @@ pub(crate) async fn assistant_chat(
                 })
                 .unwrap_or_default();
 
+            let role_system_prompt = role_data
+                .as_ref()
+                .map(|r| r.system_prompt.clone())
+                .filter(|s| !s.is_empty());
+
             RoleDbData {
                 runtime,
                 context_pairs,
                 auto_approve,
                 role_mode,
                 role_config,
+                role_system_prompt,
                 context_log,
             }
         })
@@ -387,6 +384,7 @@ pub(crate) async fn assistant_chat(
         let auto_approve = db_data.auto_approve;
         let role_mode = db_data.role_mode;
         let role_config = db_data.role_config;
+        let role_system_prompt = db_data.role_system_prompt;
 
         if let Some((count, inherited_cwd)) = db_data.context_log {
             chat_log(
@@ -408,8 +406,6 @@ pub(crate) async fn assistant_chat(
             context_pairs.insert(0, ("cwd".to_string(), cwd.clone()));
         }
 
-        // Build the prompt directly into one pre-allocated buffer to avoid
-        // the intermediate Vec<String> + join() chain of allocations.
         let ctx_bytes: usize = context_pairs
             .iter()
             .map(|(k, v)| k.len() + v.len() + 4)
@@ -425,6 +421,10 @@ pub(crate) async fn assistant_chat(
         if is_union_assistant {
             prepared.push_str("Tools:\n");
             prepared.push_str(tool_prompt);
+            if let Some(ref sp) = role_system_prompt {
+                prepared.push_str("\n\nSystem:\n");
+                prepared.push_str(sp);
+            }
         }
         let is_slash_cmd = message.starts_with('/') && !is_union_assistant;
         if !is_slash_cmd {
@@ -548,7 +548,6 @@ pub(crate) async fn assistant_chat(
     Ok(AssistantChatResponse {
         ok: true,
         reply,
-        selected_team_id: Some(team_id),
         selected_assistant: Some(assistant),
         session_id: None,
         command_result: None,

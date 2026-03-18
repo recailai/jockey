@@ -1,4 +1,4 @@
-use crate::db::{get_state, with_db};
+use crate::db::{ensure_default_team_id, get_state, with_db};
 use crate::types::*;
 use crate::{acp, now_ms, resolve_chat_cwd};
 use rusqlite::{params, OptionalExtension};
@@ -8,7 +8,6 @@ use uuid::Uuid;
 
 pub(crate) fn upsert_role(
     state: State<'_, AppState>,
-    team_id: String,
     role_name: String,
     runtime_kind: String,
     system_prompt: String,
@@ -18,6 +17,7 @@ pub(crate) fn upsert_role(
     config_options_json: Option<String>,
     auto_approve: Option<bool>,
 ) -> Result<Role, String> {
+    let team_id = ensure_default_team_id(get_state(&state))?;
     let now = now_ms();
     let existing_id = with_db(get_state(&state), |conn| {
         conn.query_row(
@@ -29,20 +29,10 @@ pub(crate) fn upsert_role(
         .map_err(|e| e.to_string())
     })?;
 
-    let role = Role {
-        id: existing_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
-        team_id,
-        role_name,
-        runtime_kind,
-        system_prompt,
-        model,
-        mode,
-        mcp_servers_json: mcp_servers_json.unwrap_or_else(|| "[]".to_string()),
-        config_options_json: config_options_json.unwrap_or_else(|| "{}".to_string()),
-        auto_approve: auto_approve.unwrap_or(true),
-        created_at: now,
-        updated_at: now,
-    };
+    let id = existing_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let mcp = mcp_servers_json.unwrap_or_else(|| "[]".to_string());
+    let cfg = config_options_json.unwrap_or_else(|| "{}".to_string());
+    let approve = auto_approve.unwrap_or(true);
 
     with_db(get_state(&state), |conn| {
         conn.execute(
@@ -58,31 +48,42 @@ pub(crate) fn upsert_role(
                auto_approve = excluded.auto_approve,
                updated_at = excluded.updated_at",
             params![
-                &role.id,
-                &role.team_id,
-                &role.role_name,
-                &role.runtime_kind,
-                &role.system_prompt,
-                &role.model,
-                &role.mode,
-                &role.mcp_servers_json,
-                &role.config_options_json,
-                role.auto_approve,
-                role.created_at,
-                role.updated_at,
+                &id,
+                &team_id,
+                &role_name,
+                &runtime_kind,
+                &system_prompt,
+                &model,
+                &mode,
+                &mcp,
+                &cfg,
+                approve,
+                now,
+                now,
             ],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
     })?;
 
-    Ok(role)
+    Ok(Role {
+        id,
+        role_name,
+        runtime_kind,
+        system_prompt,
+        model,
+        mode,
+        mcp_servers_json: mcp,
+        config_options_json: cfg,
+        auto_approve: approve,
+        created_at: now,
+        updated_at: now,
+    })
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RoleInput {
-    pub(crate) team_id: String,
     pub(crate) role_name: String,
     pub(crate) runtime_kind: String,
     pub(crate) system_prompt: String,
@@ -100,7 +101,6 @@ pub(crate) async fn upsert_role_cmd(
 ) -> Result<Role, String> {
     let role = upsert_role(
         state.clone(),
-        input.team_id,
         input.role_name,
         input.runtime_kind,
         input.system_prompt,
@@ -112,7 +112,7 @@ pub(crate) async fn upsert_role_cmd(
     )?;
     let runtime_for_warmup = role.runtime_kind.clone();
     let role_for_warmup = role.role_name.clone();
-    let cwd_for_warmup = resolve_chat_cwd(get_state(&state), Some(&role.team_id));
+    let cwd_for_warmup = resolve_chat_cwd(get_state(&state));
     tauri::async_runtime::spawn(async move {
         acp::prewarm_role(&runtime_for_warmup, &role_for_warmup, &cwd_for_warmup, None).await;
     });
@@ -122,7 +122,6 @@ pub(crate) async fn upsert_role_cmd(
 fn role_from_row(row: &rusqlite::Row) -> rusqlite::Result<Role> {
     Ok(Role {
         id: row.get(0)?,
-        team_id: row.get(1)?,
         role_name: row.get(2)?,
         runtime_kind: row.get(3)?,
         system_prompt: row.get(4)?,
@@ -162,20 +161,16 @@ pub(crate) fn list_roles_for_team(state: &AppState, team_id: &str) -> Result<Vec
 #[tauri::command]
 pub(crate) fn list_roles(
     state: State<'_, AppState>,
-    team_id: Option<String>,
 ) -> Result<Vec<Role>, String> {
-    let active = match team_id {
-        Some(id) if crate::db::team_exists(get_state(&state), &id)? => id,
-        _ => crate::db::ensure_default_team_id(get_state(&state))?,
-    };
-    list_roles_for_team(get_state(&state), &active)
+    let team_id = ensure_default_team_id(get_state(&state))?;
+    list_roles_for_team(get_state(&state), &team_id)
 }
 
 pub(crate) fn load_role(
     state: &AppState,
-    team_id: &str,
     role_name: &str,
 ) -> Result<Option<Role>, String> {
+    let team_id = ensure_default_team_id(state)?;
     with_db(state, |conn| {
         conn.query_row(
             "SELECT id, team_id, role_name, runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, auto_approve, created_at, updated_at FROM roles WHERE team_id = ?1 AND role_name = ?2",
@@ -187,9 +182,9 @@ pub(crate) fn load_role(
 
 pub(crate) fn load_role_runtime_kind(
     state: &AppState,
-    team_id: &str,
     role_name: &str,
 ) -> Result<String, String> {
+    let team_id = ensure_default_team_id(state)?;
     with_db(state, |conn| {
         conn.query_row(
             "SELECT runtime_kind FROM roles WHERE team_id = ?1 AND role_name = ?2",
@@ -204,25 +199,23 @@ pub(crate) fn load_role_runtime_kind(
 
 pub(crate) fn resolve_role_runtime(
     state: State<'_, AppState>,
-    team_id: &str,
     role_name: &str,
 ) -> Result<String, String> {
-    load_role_runtime_kind(get_state(&state), team_id, role_name)
+    load_role_runtime_kind(get_state(&state), role_name)
 }
 
 pub(crate) fn resolve_role_prompt(
     state: State<'_, AppState>,
-    team_id: &str,
     role_name: &str,
 ) -> Result<String, String> {
-    resolve_role_prompt_raw(get_state(&state), team_id, role_name)
+    resolve_role_prompt_raw(get_state(&state), role_name)
 }
 
 pub(crate) fn resolve_role_prompt_raw(
     state: &AppState,
-    team_id: &str,
     role_name: &str,
 ) -> Result<String, String> {
+    let team_id = ensure_default_team_id(state)?;
     with_db(state, |conn| {
         conn.query_row(
             "SELECT system_prompt FROM roles WHERE team_id = ?1 AND role_name = ?2",

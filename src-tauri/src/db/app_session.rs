@@ -162,7 +162,6 @@ pub(crate) fn list_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSes
                     AppSession {
                         id,
                         title: row.get(1)?,
-                        team_id: row.get(2)?,
                         active_role: row.get(3)?,
                         selected_assistant: row.get(4)?,
                         messages: Vec::new(),
@@ -254,7 +253,6 @@ pub(crate) fn create_app_session(
     let session = AppSession {
         id: Uuid::new_v4().to_string(),
         title: title.unwrap_or_else(|| "New Session".to_string()),
-        team_id,
         active_role: "UnionAI".to_string(),
         selected_assistant: None,
         messages: Vec::new(),
@@ -268,7 +266,7 @@ pub(crate) fn create_app_session(
             params![
                 &session.id,
                 &session.title,
-                &session.team_id,
+                &team_id,
                 &session.active_role,
                 &session.selected_assistant,
                 session.created_at,

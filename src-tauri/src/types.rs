@@ -21,7 +21,6 @@ pub(crate) struct Team {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Role {
     pub(crate) id: String,
-    pub(crate) team_id: String,
     pub(crate) role_name: String,
     pub(crate) runtime_kind: String,
     pub(crate) system_prompt: String,
@@ -38,7 +37,6 @@ pub(crate) struct Role {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Workflow {
     pub(crate) id: String,
-    pub(crate) team_id: String,
     pub(crate) name: String,
     pub(crate) steps: Vec<String>,
     pub(crate) created_at: i64,
@@ -49,7 +47,6 @@ pub(crate) struct Workflow {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Session {
     pub(crate) id: String,
-    pub(crate) team_id: String,
     pub(crate) workflow_id: String,
     pub(crate) status: String,
     pub(crate) initial_prompt: String,
@@ -71,7 +68,7 @@ pub(crate) struct SessionEvent {
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ContextEntry {
-    pub(crate) team_id: String,
+    pub(crate) scope: String,
     pub(crate) key: String,
     pub(crate) value: String,
     pub(crate) updated_at: i64,
@@ -81,7 +78,6 @@ pub(crate) struct ContextEntry {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SessionUpdateEvent {
     pub(crate) session_id: String,
-    pub(crate) team_id: String,
     pub(crate) workflow_id: String,
     pub(crate) role_name: String,
     pub(crate) delta: String,
@@ -94,7 +90,6 @@ pub(crate) struct SessionUpdateEvent {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkflowStateEvent {
     pub(crate) session_id: String,
-    pub(crate) team_id: String,
     pub(crate) workflow_id: String,
     pub(crate) status: String,
     pub(crate) active_role: Option<String>,
@@ -107,7 +102,6 @@ pub(crate) struct WorkflowStateEvent {
 pub(crate) struct ChatCommandResult {
     pub(crate) ok: bool,
     pub(crate) message: String,
-    pub(crate) selected_team_id: Option<String>,
     pub(crate) selected_assistant: Option<String>,
     pub(crate) session_id: Option<String>,
     pub(crate) payload: Value,
@@ -127,7 +121,6 @@ pub(crate) struct AssistantRuntime {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AssistantChatInput {
     pub(crate) input: String,
-    pub(crate) selected_team_id: Option<String>,
     pub(crate) selected_assistant: Option<String>,
     pub(crate) app_session_id: Option<String>,
 }
@@ -137,7 +130,6 @@ pub(crate) struct AssistantChatInput {
 pub(crate) struct AssistantChatResponse {
     pub(crate) ok: bool,
     pub(crate) reply: String,
-    pub(crate) selected_team_id: Option<String>,
     pub(crate) selected_assistant: Option<String>,
     pub(crate) session_id: Option<String>,
     pub(crate) command_result: Option<ChatCommandResult>,
@@ -146,7 +138,6 @@ pub(crate) struct AssistantChatResponse {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StartWorkflowInput {
-    pub(crate) team_id: String,
     pub(crate) workflow_id: String,
     pub(crate) initial_prompt: String,
 }
@@ -173,7 +164,6 @@ pub(crate) struct MentionCandidate {
 pub(crate) struct AppSession {
     pub(crate) id: String,
     pub(crate) title: String,
-    pub(crate) team_id: String,
     pub(crate) active_role: String,
     pub(crate) selected_assistant: Option<String>,
     pub(crate) messages: Vec<serde_json::Value>,

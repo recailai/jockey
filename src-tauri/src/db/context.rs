@@ -4,8 +4,8 @@ use crate::{acp, now_ms};
 use rusqlite::{params, OptionalExtension};
 use tauri::State;
 
-pub(crate) fn shared_key(team_id: &str, key: &str) -> String {
-    format!("{team_id}:{key}")
+pub(crate) fn shared_key(scope: &str, key: &str) -> String {
+    format!("{scope}:{key}")
 }
 
 pub(crate) fn context_scope_for_role(role_name: &str) -> String {
@@ -18,25 +18,25 @@ pub(crate) fn context_scope_for_role(role_name: &str) -> String {
 
 pub(crate) fn set_shared_context_internal(
     state: &AppState,
-    team_id: &str,
+    scope: &str,
     key: &str,
     value: &str,
 ) -> Result<ContextEntry, String> {
     let now = now_ms();
     state
         .shared_context
-        .insert(shared_key(team_id, key), value.to_string());
+        .insert(shared_key(scope, key), value.to_string());
     with_db(state, |conn| {
         conn.execute(
             "INSERT INTO shared_context_snapshots (team_id, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(team_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-            params![team_id, key, value, now],
+            params![scope, key, value, now],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
     })?;
     Ok(ContextEntry {
-        team_id: team_id.to_string(),
+        scope: scope.to_string(),
         key: key.to_string(),
         value: value.to_string(),
         updated_at: now,
@@ -47,12 +47,12 @@ pub(crate) fn set_shared_context_internal(
 /// Uses `DashMap::entry` for an atomic in-place mutation, then persists the new value.
 pub(crate) fn append_shared_context_internal(
     state: &AppState,
-    team_id: &str,
+    scope: &str,
     key: &str,
     suffix: &str,
 ) -> Result<ContextEntry, String> {
     let now = now_ms();
-    let cache_key = shared_key(team_id, key);
+    let cache_key = shared_key(scope, key);
     let new_value = {
         let mut entry = state.shared_context.entry(cache_key.clone()).or_default();
         entry.push_str(suffix);
@@ -62,13 +62,13 @@ pub(crate) fn append_shared_context_internal(
         conn.execute(
             "INSERT INTO shared_context_snapshots (team_id, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(team_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-            params![team_id, key, &new_value, now],
+            params![scope, key, &new_value, now],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
     })?;
     Ok(ContextEntry {
-        team_id: team_id.to_string(),
+        scope: scope.to_string(),
         key: key.to_string(),
         value: new_value,
         updated_at: now,
@@ -94,7 +94,7 @@ pub(crate) fn clear_shared_context_internal(
 
 pub(crate) fn list_shared_context_internal(
     state: &AppState,
-    team_id: &str,
+    scope: &str,
 ) -> Result<Vec<ContextEntry>, String> {
     with_db(state, |conn| {
         let mut stmt = conn
@@ -106,9 +106,9 @@ pub(crate) fn list_shared_context_internal(
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![team_id], |row| {
+            .query_map(params![scope], |row| {
                 Ok(ContextEntry {
-                    team_id: row.get(0)?,
+                    scope: row.get(0)?,
                     key: row.get(1)?,
                     value: row.get(2)?,
                     updated_at: row.get(3)?,
@@ -127,33 +127,33 @@ pub(crate) fn list_shared_context_internal(
 #[tauri::command]
 pub(crate) fn set_shared_context(
     state: State<'_, AppState>,
-    team_id: String,
+    scope: String,
     key: String,
     value: String,
 ) -> Result<ContextEntry, String> {
-    set_shared_context_internal(get_state(&state), &team_id, &key, &value)
+    set_shared_context_internal(get_state(&state), &scope, &key, &value)
 }
 
 #[tauri::command]
 pub(crate) fn append_shared_context(
     state: State<'_, AppState>,
-    team_id: String,
+    scope: String,
     key: String,
     suffix: String,
 ) -> Result<ContextEntry, String> {
-    append_shared_context_internal(get_state(&state), &team_id, &key, &suffix)
+    append_shared_context_internal(get_state(&state), &scope, &key, &suffix)
 }
 
 #[tauri::command]
 pub(crate) fn get_shared_context(
     state: State<'_, AppState>,
-    team_id: String,
+    scope: String,
     key: String,
 ) -> Result<Option<ContextEntry>, String> {
-    let cache_key = shared_key(&team_id, &key);
+    let cache_key = shared_key(&scope, &key);
     if let Some(v) = get_state(&state).shared_context.get(&cache_key) {
         return Ok(Some(ContextEntry {
-            team_id,
+            scope,
             key,
             value: v.value().clone(),
             updated_at: now_ms(),
@@ -163,7 +163,7 @@ pub(crate) fn get_shared_context(
     let db_value = with_db(get_state(&state), |conn| {
         conn.query_row(
             "SELECT value, updated_at FROM shared_context_snapshots WHERE team_id = ?1 AND key = ?2",
-            params![&team_id, &key],
+            params![&scope, &key],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
         )
         .optional()
@@ -175,7 +175,7 @@ pub(crate) fn get_shared_context(
             .shared_context
             .insert(cache_key, value.clone());
         return Ok(Some(ContextEntry {
-            team_id,
+            scope,
             key,
             value,
             updated_at,
@@ -188,9 +188,9 @@ pub(crate) fn get_shared_context(
 #[tauri::command]
 pub(crate) fn list_shared_context(
     state: State<'_, AppState>,
-    team_id: String,
+    scope: String,
 ) -> Result<Vec<ContextEntry>, String> {
-    list_shared_context_internal(get_state(&state), &team_id)
+    list_shared_context_internal(get_state(&state), &scope)
 }
 
 pub(crate) fn sanitize_dynamic_item_name(raw: &str) -> Option<String> {

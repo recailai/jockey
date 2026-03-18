@@ -1,12 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { For, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, Suspense, createEffect, createMemo, createSignal, lazy, onCleanup, onMount } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 
 import SessionTabs from "./components/SessionTabs";
 import MessageWindow from "./components/MessageWindow";
 import ChatInput from "./components/ChatInput";
-import ConfigDrawer from "./components/ConfigDrawer";
 import type {
   Role, AppToolCall, AppPlanEntry,
   AcpStreamEvent, AcpConfigOption, AssistantRuntime,
@@ -17,6 +16,8 @@ import {
   now, DEFAULT_BACKEND_ROLE, DEFAULT_ROLE_ALIAS,
   flattenConfigValues,
 } from "./components/types";
+
+const ConfigDrawer = lazy(() => import("./components/ConfigDrawer"));
 
 const ASSISTANT_STORAGE_KEY = "unionai.defaultAssistant";
 const MAX_MESSAGES = 500;
@@ -29,7 +30,6 @@ const makeSessionId = () => `session-${Date.now()}-${++sessionIdCounter}`;
 const makeDefaultSession = (title: string): AppSession => ({
   id: makeSessionId(),
   title,
-  teamId: "",
   activeRole: DEFAULT_ROLE_ALIAS,
   selectedAssistant: null,
   messages: [],
@@ -255,11 +255,16 @@ export default function App() {
 
   const refreshRoles = async () => {
     try {
-      const rows = await invoke<Role[]>("list_roles", { teamId: null });
+      const rows = await invoke<Role[]>("list_roles");
       setRoles(rows);
       slashCliCache = null;
     } catch { setRoles([]); }
   };
+
+  createEffect(() => {
+    if (!activeSession()) return;
+    void refreshRoles();
+  });
 
   const refreshSkills = async () => {
     try {
@@ -268,14 +273,13 @@ export default function App() {
     } catch { setSkills([]); }
   };
 
-  const fetchConfigOptions = async (runtimeKey: string, roleName?: string, teamId?: string | null): Promise<AcpConfigOption[]> => {
+  const fetchConfigOptions = async (runtimeKey: string, roleName?: string): Promise<AcpConfigOption[]> => {
     try {
       const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
       if (roleName) {
         const raw = await invoke<unknown[]>("prewarm_role_config_cmd", {
           runtimeKind: normalizedRuntime,
           roleName,
-          teamId: teamId ?? null,
         });
         return raw as AcpConfigOption[];
       }
@@ -284,7 +288,6 @@ export default function App() {
       const raw = await invoke<unknown[]>("prewarm_role_config_cmd", {
         runtimeKind: normalizedRuntime,
         roleName: "",
-        teamId: null,
       });
       return raw as AcpConfigOption[];
     } catch { return []; }
@@ -310,7 +313,6 @@ export default function App() {
     sessionId: string,
     runtimeKey: string,
     roleName: string,
-    _teamId?: string | null,
   ): Promise<number> => {
     const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
     const result = await fetchAgentCommands(normalizedRuntime, roleName);
@@ -332,7 +334,7 @@ export default function App() {
       const sid = activeSessionId();
       if (!sid) return;
       const role = roles().find((r) => r.roleName === roleName);
-      await hydrateAgentCommandsForSession(sid, runtimeKey, roleName, role?.teamId ?? null);
+      await hydrateAgentCommandsForSession(sid, runtimeKey, roleName);
     })().catch((e: unknown) => {
       showToast(`Commands unavailable for ${roleName}: ${String(e)}`, "info");
     });
@@ -448,7 +450,6 @@ export default function App() {
       } else {
         try {
           const rows = await invoke<AppMentionItem[]>("complete_mentions", {
-            selectedTeamId: null,
             query: ctx.query,
             limit: 12,
           });
@@ -519,13 +520,13 @@ export default function App() {
         const runtimeKey = normalizeRuntimeKey(role.runtimeKind);
         const key = commandCacheKey(runtimeKey, role.roleName);
         if ((s?.discoveredConfigOptions.length ?? 0) === 0) {
-          const opts = await fetchConfigOptions(runtimeKey, role.roleName, role.teamId);
+          const opts = await fetchConfigOptions(runtimeKey, role.roleName);
           if (seq !== slashReqSeq) return;
           patchActiveSession({ discoveredConfigOptions: opts });
         }
         if ((s?.agentCommands.get(key) ?? []).length === 0) {
           const sid = activeSessionId();
-          if (sid) await hydrateAgentCommandsForSession(sid, runtimeKey, role.roleName, role.teamId);
+          if (sid) await hydrateAgentCommandsForSession(sid, runtimeKey, role.roleName);
         }
         const candidates = buildAgentSlashCandidates(runtimeKey, role.roleName, ctx.query);
         if (seq !== slashReqSeq) return;
@@ -648,7 +649,7 @@ export default function App() {
           inRoleContext = true;
           const targetRole = roles().find((r) => r.roleName === target);
           if (targetRole) {
-            void fetchConfigOptions(targetRole.runtimeKind, targetRole.roleName, targetRole.teamId).then((opts) => patchActiveSession({ discoveredConfigOptions: opts }));
+            void fetchConfigOptions(targetRole.runtimeKind, targetRole.roleName).then((opts) => patchActiveSession({ discoveredConfigOptions: opts }));
             fetchAndCacheAgentCommands(targetRole.runtimeKind, targetRole.roleName);
           }
           routedText = text.replace(/^@\S+\s*/, "").trim();
@@ -751,7 +752,6 @@ export default function App() {
       const res = await invoke<AssistantChatResponse>("assistant_chat", {
         input: {
           input: routedText,
-          selectedTeamId: null,
           selectedAssistant: s?.selectedAssistant ?? null,
           appSessionId: originSessionId ?? null,
         }
@@ -941,8 +941,8 @@ export default function App() {
 
   onMount(() => {
     const handlers: UnlistenFn[] = [];
-
-    void (async () => {
+    let startupRaf: number | null = null;
+    const boot = async () => {
       let loaded: AppSession[] = [];
       try {
         const raw = await invoke<Array<{ id: string; title: string; messages: AppMessage[]; activeRole?: string; selectedAssistant?: string | null }>>("list_app_sessions");
@@ -972,9 +972,11 @@ export default function App() {
       setSessions(loaded);
       setActiveSessionId(loaded[0].id);
 
-      await refreshAssistants();
-      await refreshRoles();
-      await refreshSkills();
+      await Promise.all([
+        refreshAssistants(),
+        refreshRoles(),
+        refreshSkills(),
+      ]);
 
       const preferred = window.localStorage.getItem(ASSISTANT_STORAGE_KEY);
       const availableAssistant = preferred
@@ -992,7 +994,11 @@ export default function App() {
       });
 
       pushMessage("system", "Welcome to UnionAI. Agent sessions are warming up in the background.");
-    })();
+    };
+    startupRaf = window.requestAnimationFrame(() => {
+      startupRaf = null;
+      void boot();
+    });
 
     void Promise.all([
       listen<AcpDeltaEvent & { appSessionId?: string }>("acp/delta", (ev) => {
@@ -1107,6 +1113,10 @@ export default function App() {
     window.addEventListener("keydown", handleGlobalKeyDown);
 
     onCleanup(() => {
+      if (startupRaf !== null) {
+        window.cancelAnimationFrame(startupRaf);
+        startupRaf = null;
+      }
       window.removeEventListener("keydown", handleGlobalKeyDown);
       dropStream();
       queuedInputs = [];
@@ -1173,20 +1183,24 @@ export default function App() {
         mentionDebounceTimerRef={mentionDebounceTimerRef}
       />
 
-      <ConfigDrawer
-        showDrawer={showDrawer}
-        setShowDrawer={setShowDrawer}
-        assistants={assistants}
-        roles={roles}
-        skills={skills}
-        activeSession={activeSession}
-        patchActiveSession={patchActiveSession}
-        sendRaw={sendRaw}
-        refreshRoles={refreshRoles}
-        refreshSkills={refreshSkills}
-        pushMessage={pushMessage}
-        fetchConfigOptions={fetchConfigOptions}
-      />
+      <Show when={showDrawer()}>
+        <Suspense fallback={null}>
+          <ConfigDrawer
+            showDrawer={showDrawer}
+            setShowDrawer={setShowDrawer}
+            assistants={assistants}
+            roles={roles}
+            skills={skills}
+            activeSession={activeSession}
+            patchActiveSession={patchActiveSession}
+            sendRaw={sendRaw}
+            refreshRoles={refreshRoles}
+            refreshSkills={refreshSkills}
+            pushMessage={pushMessage}
+            fetchConfigOptions={fetchConfigOptions}
+          />
+        </Suspense>
+      </Show>
 
       <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
         <For each={toasts()}>

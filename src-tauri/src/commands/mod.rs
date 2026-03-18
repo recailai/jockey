@@ -3,7 +3,7 @@ pub(crate) mod completion;
 use crate::assistant::normalize_runtime_key;
 use crate::db::context::*;
 use crate::db::role::*;
-use crate::db::{ensure_default_team_id, get_state, team_exists, with_db};
+use crate::db::{ensure_default_team_id, get_state, with_db};
 use crate::types::*;
 use crate::{acp, build_unionai_tool_prompt, now_ms, resolve_chat_cwd};
 use rusqlite::params;
@@ -12,18 +12,6 @@ use tauri::{AppHandle, Emitter, State};
 
 pub(crate) fn split_tokens(input: &str) -> Vec<&str> {
     input.split_whitespace().collect()
-}
-
-pub(crate) fn ensure_team_selected(
-    state: State<'_, AppState>,
-    selected_team_id: Option<String>,
-) -> Result<String, String> {
-    if let Some(team_id) = selected_team_id {
-        if team_exists(get_state(&state), &team_id)? {
-            return Ok(team_id);
-        }
-    }
-    ensure_default_team_id(get_state(&state))
 }
 
 pub(crate) fn enrich_command_message(base: &str, payload: &Value) -> String {
@@ -45,7 +33,6 @@ pub(crate) async fn apply_chat_command(
     app: AppHandle,
     state: State<'_, AppState>,
     input: String,
-    selected_team_id: Option<String>,
     selected_assistant: Option<String>,
 ) -> Result<ChatCommandResult, String> {
     let trimmed = input.trim();
@@ -61,13 +48,11 @@ pub(crate) async fn apply_chat_command(
     let mut result = ChatCommandResult {
         ok: true,
         message: "ok".to_string(),
-        selected_team_id: None,
         selected_assistant: selected_assistant.clone(),
         session_id: None,
         payload: json!({}),
     };
-    let active_team_id = ensure_team_selected(state.clone(), selected_team_id.clone())?;
-    result.selected_team_id = Some(active_team_id.clone());
+    let active_team_id = ensure_default_team_id(get_state(&state))?;
 
     match tokens.as_slice() {
         ["/app_help"] => {
@@ -85,7 +70,7 @@ pub(crate) async fn apply_chat_command(
                 result.message = format!("assistant selected: {}", normalized);
                 result.payload = json!({ "assistant": normalized });
                 let runtime_key = normalized.to_string();
-                let prewarm_cwd = resolve_chat_cwd(get_state(&state), Some(&active_team_id));
+                let prewarm_cwd = resolve_chat_cwd(get_state(&state));
                 tauri::async_runtime::spawn(async move {
                     acp::prewarm(&runtime_key, &prewarm_cwd).await;
                 });
@@ -129,7 +114,7 @@ pub(crate) async fn apply_chat_command(
         ["/app_model", "select", "role", role_name, model] => {
             let selected_model = sanitize_dynamic_item_name(model)
                 .ok_or_else(|| format!("invalid model name: {}", model))?;
-            let runtime = resolve_role_runtime(state.clone(), &active_team_id, role_name)?;
+            let runtime = resolve_role_runtime(state.clone(), role_name)?;
             let _ = upsert_dynamic_catalog_item(get_state(&state), "model", &selected_model)?;
             let entry = set_shared_context(
                 state.clone(),
@@ -160,7 +145,7 @@ pub(crate) async fn apply_chat_command(
                 context_scope_for_role(role_name),
                 "model".to_string(),
             )?;
-            let runtime = resolve_role_runtime(state.clone(), &active_team_id, role_name)?;
+            let runtime = resolve_role_runtime(state.clone(), role_name)?;
             result.message = format!("model fetched for role {}", role_name);
             result.payload = json!({ "entry": entry, "runtime": runtime });
         }
@@ -255,7 +240,6 @@ pub(crate) async fn apply_chat_command(
                 .unwrap_or_else(|| (*runtime_kind).to_string());
             let role = upsert_role(
                 state.clone(),
-                active_team_id.clone(),
                 (*role_name).to_string(),
                 normalized_runtime.clone(),
                 if prompt.is_empty() {
@@ -273,16 +257,15 @@ pub(crate) async fn apply_chat_command(
             result.payload = json!({ "role": role });
             let runtime_for_warmup = normalized_runtime.clone();
             let role_for_warmup = (*role_name).to_string();
-            let prewarm_cwd = resolve_chat_cwd(get_state(&state), Some(&active_team_id));
+            let prewarm_cwd = resolve_chat_cwd(get_state(&state));
             tauri::async_runtime::spawn(async move {
                 acp::prewarm_role(&runtime_for_warmup, &role_for_warmup, &prewarm_cwd, None).await;
             });
         }
         ["/app_role", "prompt", role_name, prompt @ ..] => {
-            let runtime = resolve_role_runtime(state.clone(), &active_team_id, role_name)?;
+            let runtime = resolve_role_runtime(state.clone(), role_name)?;
             let role = upsert_role(
                 state.clone(),
-                active_team_id.clone(),
                 (*role_name).to_string(),
                 runtime,
                 prompt.join(" "),
@@ -324,7 +307,7 @@ pub(crate) async fn apply_chat_command(
             result.payload = json!({ "role": role_name, "model": model_value });
         }
         ["/app_role", "edit", role_name, "mode", value @ ..] => {
-            let runtime = resolve_role_runtime(state.clone(), &active_team_id, role_name)?;
+            let runtime = resolve_role_runtime(state.clone(), role_name)?;
             let available_modes = acp::list_discovered_modes(&runtime);
             if value.is_empty() {
                 result.message = format!(
@@ -440,7 +423,6 @@ pub(crate) async fn apply_chat_command(
             })?;
             let role = upsert_role(
                 state.clone(),
-                active_team_id.clone(),
                 (*dst_name).to_string(),
                 src.0,
                 src.1,

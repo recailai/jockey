@@ -1,10 +1,10 @@
 export type Role = {
-  id: string; teamId: string; roleName: string; runtimeKind: string;
+  id: string; roleName: string; runtimeKind: string;
   systemPrompt: string; model: string | null; mode: string | null;
   mcpServersJson: string; configOptionsJson: string; autoApprove: boolean;
 };
 export type RoleUpsertInput = {
-  teamId: string; roleName: string; runtimeKind: string; systemPrompt: string;
+  roleName: string; runtimeKind: string; systemPrompt: string;
   model: string | null; mode: string | null; mcpServersJson: string; configOptionsJson: string;
   autoApprove: boolean;
 };
@@ -31,10 +31,10 @@ export type AcpConfigOption = {
   options: ConfigOptionValue[] | ConfigOptionGroup[];
 };
 export type AssistantRuntime = { key: string; label: string; binary: string; available: boolean; version: string | null };
-export type ChatCommandResult = { ok: boolean; message: string; selectedTeamId: string | null; selectedAssistant: string | null; sessionId: string | null; payload: Record<string, unknown> };
-export type AssistantChatResponse = { ok: boolean; reply: string; selectedTeamId: string | null; selectedAssistant: string | null; sessionId: string | null; commandResult: ChatCommandResult | null };
-export type SessionUpdateEvent = { sessionId: string; teamId: string; roleName: string; delta: string; done: boolean };
-export type WorkflowStateEvent = { sessionId: string; teamId: string; status: string; activeRole: string | null; message: string };
+export type ChatCommandResult = { ok: boolean; message: string; selectedAssistant: string | null; sessionId: string | null; payload: Record<string, unknown> };
+export type AssistantChatResponse = { ok: boolean; reply: string; selectedAssistant: string | null; sessionId: string | null; commandResult: ChatCommandResult | null };
+export type SessionUpdateEvent = { sessionId: string; roleName: string; delta: string; done: boolean };
+export type WorkflowStateEvent = { sessionId: string; status: string; activeRole: string | null; message: string };
 export type AcpDeltaEvent = { role: string; delta: string; appSessionId?: string };
 export type AppMessage = { id: string; role: "system" | "user" | "assistant" | "event"; text: string; at: number; roleLabel?: string; toolCalls?: AppToolCall[] };
 export type AppMentionItem = { value: string; kind: "role" | "file" | "dir" | "hint" | "command" | "skill"; detail: string };
@@ -43,7 +43,6 @@ export type AppSkill = { id: string; name: string; description: string; content:
 export type AppSession = {
   id: string;
   title: string;
-  teamId: string;
   activeRole: string;
   selectedAssistant: string | null;
   messages: AppMessage[];

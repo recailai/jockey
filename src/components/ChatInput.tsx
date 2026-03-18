@@ -68,7 +68,7 @@ export default function ChatInput(props: ChatInputProps) {
             title={props.isCustomRole() ? "Click to return to UnionAI" : "UnionAI mode"}
           >
             {props.activeSession()?.activeRole ?? DEFAULT_ROLE_ALIAS}
-            <svg class="opacity-40" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+            <svg class="opacity-40" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
           </button>
           <input
             ref={(el) => { props.inputElRef(el); }}
@@ -99,7 +99,7 @@ export default function ChatInput(props: ChatInputProps) {
             class={`shrink-0 flex h-9 w-9 items-center justify-center rounded-xl motion-safe:transition-all motion-safe:duration-300 ${props.input().trim() ? "bg-gradient-to-t from-indigo-600 to-indigo-500 text-white shadow-md shadow-indigo-500/25 border border-indigo-400/30 hover:shadow-indigo-500/40 hover:scale-105" : "bg-zinc-800/50 text-zinc-600 border border-transparent"} ${INTERACTIVE_MOTION}`}
             title={props.activeSession()?.submitting ? "Queue" : "Send"}
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class={props.input().trim() ? "drop-shadow-[0_1px_2px_rgba(0,0,0,0.3)]" : ""}><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class={props.input().trim() ? "drop-shadow-[0_1px_2px_rgba(0,0,0,0.3)]" : ""}><line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" /></svg>
           </button>
         </div>
         <Show when={props.slashOpen() && props.slashItems().length > 0}>

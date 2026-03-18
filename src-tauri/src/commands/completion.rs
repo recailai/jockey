@@ -1,7 +1,7 @@
 use crate::acp;
 use crate::db::context::{list_all_known_models, list_dynamic_catalog};
 use crate::db::role::list_roles_for_team;
-use crate::db::{ensure_default_team_id, get_state, team_exists};
+use crate::db::{ensure_default_team_id, get_state};
 use crate::fs_context::{
     is_within_workspace, relative_or_abs, resolve_attach_path, should_skip_name,
 };
@@ -148,15 +148,10 @@ fn complete_path_mentions(cwd: &str, query: &str, limit: usize) -> Vec<MentionCa
 #[tauri::command]
 pub(crate) async fn complete_mentions(
     state: State<'_, AppState>,
-    selected_team_id: Option<String>,
     query: String,
     limit: Option<usize>,
 ) -> Result<Vec<MentionCandidate>, String> {
-    let team_id = match selected_team_id {
-        Some(id) if team_exists(get_state(&state), &id).unwrap_or(false) => id,
-        _ => ensure_default_team_id(get_state(&state))?,
-    };
-    let cwd = resolve_chat_cwd(get_state(&state), Some(&team_id));
+    let cwd = resolve_chat_cwd(get_state(&state));
     let capped = limit.unwrap_or(10).clamp(1, 30);
     tokio::task::spawn_blocking(move || complete_path_mentions(&cwd, &query, capped))
         .await

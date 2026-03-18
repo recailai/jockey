@@ -53,9 +53,10 @@ pub(crate) fn abs_cwd(path: &str) -> String {
         .to_string()
 }
 
-pub(crate) fn resolve_chat_cwd(state: &AppState, team_id: Option<&str>) -> String {
-    let raw = if let Some(team) = team_id {
-        load_team_workspace_path(state, team).unwrap_or_else(|_| default_chat_cwd())
+pub(crate) fn resolve_chat_cwd(state: &AppState) -> String {
+    let team_id = ensure_default_team_id(state).ok();
+    let raw = if let Some(ref tid) = team_id {
+        load_team_workspace_path(state, tid).unwrap_or_else(|_| default_chat_cwd())
     } else {
         default_chat_cwd()
     };
@@ -149,9 +150,8 @@ async fn prewarm_role_config_cmd(
     state: tauri::State<'_, AppState>,
     runtime_kind: String,
     role_name: String,
-    team_id: Option<String>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let cwd = resolve_chat_cwd(&state, team_id.as_deref());
+    let cwd = resolve_chat_cwd(&state);
     Ok(acp::prewarm_role_for_config(&runtime_kind, &role_name, &cwd, None).await)
 }
 
@@ -227,8 +227,8 @@ pub fn run() {
                     entries
                 };
 
-                for (team_id, key, value) in existing {
-                    state.shared_context.insert(shared_key(&team_id, &key), value);
+                for (scope, key, value) in existing {
+                    state.shared_context.insert(shared_key(&scope, &key), value);
                 }
             }
 
