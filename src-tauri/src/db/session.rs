@@ -85,6 +85,18 @@ pub(crate) fn list_sessions(
     })
 }
 
+fn session_event_from_row(row: &rusqlite::Row) -> Result<SessionEvent, String> {
+    let payload_text: String = row.get(4).map_err(|e| e.to_string())?;
+    Ok(SessionEvent {
+        id: row.get(0).map_err(|e| e.to_string())?,
+        session_id: row.get(1).map_err(|e| e.to_string())?,
+        event_type: row.get(2).map_err(|e| e.to_string())?,
+        role_name: row.get(3).map_err(|e| e.to_string())?,
+        payload: parse_payload(payload_text),
+        created_at: row.get(5).map_err(|e| e.to_string())?,
+    })
+}
+
 #[tauri::command]
 pub(crate) fn list_session_events(
     state: State<'_, AppState>,
@@ -109,15 +121,7 @@ pub(crate) fn list_session_events(
                 .query(params![&session_id, c, bounded])
                 .map_err(|e| e.to_string())?;
             while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-                let payload_text: String = row.get(4).map_err(|e| e.to_string())?;
-                events.push(SessionEvent {
-                    id: row.get(0).map_err(|e| e.to_string())?,
-                    session_id: row.get(1).map_err(|e| e.to_string())?,
-                    event_type: row.get(2).map_err(|e| e.to_string())?,
-                    role_name: row.get(3).map_err(|e| e.to_string())?,
-                    payload: parse_payload(payload_text),
-                    created_at: row.get(5).map_err(|e| e.to_string())?,
-                });
+                events.push(session_event_from_row(row)?);
             }
         } else {
             let mut stmt = conn
@@ -133,15 +137,7 @@ pub(crate) fn list_session_events(
                 .query(params![&session_id, bounded])
                 .map_err(|e| e.to_string())?;
             while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-                let payload_text: String = row.get(4).map_err(|e| e.to_string())?;
-                events.push(SessionEvent {
-                    id: row.get(0).map_err(|e| e.to_string())?,
-                    session_id: row.get(1).map_err(|e| e.to_string())?,
-                    event_type: row.get(2).map_err(|e| e.to_string())?,
-                    role_name: row.get(3).map_err(|e| e.to_string())?,
-                    payload: parse_payload(payload_text),
-                    created_at: row.get(5).map_err(|e| e.to_string())?,
-                })
+                events.push(session_event_from_row(row)?);
             }
         }
         Ok(events)
@@ -154,11 +150,7 @@ pub(crate) fn summarize_text(input: &str) -> String {
     if trimmed.chars().count() <= 180 {
         return trimmed.to_string();
     }
-    let mut out = String::new();
-    for c in trimmed.chars().take(180) {
-        out.push(c);
-    }
-    out
+    trimmed.chars().take(180).collect()
 }
 
 pub(crate) fn chunk_text(input: &str, size: usize) -> Vec<String> {
@@ -246,6 +238,7 @@ pub(crate) async fn run_workflow(
             role_mode,
             role_config,
             Some((state.inner(), &session.team_id)),
+            "",
         )
         .await;
         record_session_event(

@@ -207,18 +207,8 @@ pub(crate) fn resolve_role_runtime(
     team_id: &str,
     role_name: &str,
 ) -> Result<String, String> {
-    with_db(get_state(&state), |conn| {
-        conn.query_row(
-            "SELECT runtime_kind FROM roles WHERE team_id = ?1 AND role_name = ?2",
-            params![team_id, role_name],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())
-        .map(|item| item.unwrap_or_else(|| "mock".to_string()))
-    })
+    load_role_runtime_kind(get_state(&state), team_id, role_name)
 }
-
 
 pub(crate) fn resolve_role_prompt(
     state: State<'_, AppState>,

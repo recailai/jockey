@@ -23,7 +23,11 @@ pub(crate) fn load_app_session_role_cli_id(
     .ok()
     .flatten()
     .and_then(|json| serde_json::from_str::<serde_json::Map<String, Value>>(&json).ok())
-    .and_then(|map| map.get(role_name).and_then(|v| v.as_str()).map(|s| s.to_string()))
+    .and_then(|map| {
+        map.get(role_name)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    })
 }
 
 pub(crate) fn save_app_session_role_cli_id(
@@ -32,23 +36,11 @@ pub(crate) fn save_app_session_role_cli_id(
     role_name: &str,
     cli_session_id: &str,
 ) -> Result<(), String> {
+    let json_path = format!("$.{role_name}");
     with_db(state, |conn| {
-        let existing = conn
-            .query_row(
-                "SELECT role_sessions_json FROM app_sessions WHERE id = ?1",
-                params![app_session_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        let Some(json) = existing else { return Ok(()); };
-        let mut map: serde_json::Map<String, Value> =
-            serde_json::from_str(&json).unwrap_or_default();
-        map.insert(role_name.to_string(), Value::String(cli_session_id.to_string()));
-        let updated = serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string());
         conn.execute(
-            "UPDATE app_sessions SET role_sessions_json = ?1 WHERE id = ?2",
-            params![updated, app_session_id],
+            "UPDATE app_sessions SET role_sessions_json = json_set(role_sessions_json, ?1, ?2) WHERE id = ?3",
+            params![json_path, cli_session_id, app_session_id],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -56,9 +48,7 @@ pub(crate) fn save_app_session_role_cli_id(
 }
 
 #[tauri::command]
-pub(crate) fn list_app_sessions(
-    state: State<'_, AppState>,
-) -> Result<Vec<AppSession>, String> {
+pub(crate) fn list_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSession>, String> {
     with_db(get_state(&state), |conn| {
         let mut stmt = conn
             .prepare(
@@ -167,10 +157,7 @@ pub(crate) fn update_app_session(
 }
 
 #[tauri::command]
-pub(crate) fn delete_app_session(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), String> {
+pub(crate) fn delete_app_session(state: State<'_, AppState>, id: String) -> Result<(), String> {
     with_db(get_state(&state), |conn| {
         conn.execute("DELETE FROM app_sessions WHERE id = ?1", params![&id])
             .map_err(|e| e.to_string())?;

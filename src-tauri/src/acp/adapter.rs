@@ -1,3 +1,5 @@
+use crate::runtime_kind::RuntimeKind;
+use dashmap::DashMap;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -5,7 +7,10 @@ use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use which::which;
 
-use super::worker::AgentKind;
+static ADAPTER_CACHE: OnceLock<DashMap<RuntimeKind, Result<(String, Vec<String>, Vec<(String, String)>), String>>> = OnceLock::new();
+fn adapter_cache() -> &'static DashMap<RuntimeKind, Result<(String, Vec<String>, Vec<(String, String)>), String>> {
+    ADAPTER_CACHE.get_or_init(DashMap::new)
+}
 
 static APP_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
@@ -28,7 +33,7 @@ fn app_data_adapter_bin(binary: &str) -> Option<PathBuf> {
 }
 
 pub(super) struct StdioAdapterSpec {
-    pub(super) kind: AgentKind,
+    pub(super) kind: RuntimeKind,
     pub(super) runtime_key: &'static str,
     pub(super) binary: String,
     pub(super) args: Vec<String>,
@@ -36,85 +41,65 @@ pub(super) struct StdioAdapterSpec {
 }
 
 pub(super) fn build_stdio_adapter(runtime: &str) -> Result<Option<StdioAdapterSpec>, String> {
-    match runtime {
-        "claude" | "claude-code" | "claude-acp" => {
-            let (binary, args, env) = resolve_candidate(
-                "claude-code",
-                &[
-                    ("claude-agent-acp", &[][..]),
-                    (
-                        "pnpm",
-                        &["dlx", "@zed-industries/claude-agent-acp@latest"][..],
-                    ),
-                    (
-                        "npx",
-                        &["-y", "@zed-industries/claude-agent-acp@latest"][..],
-                    ),
-                ],
-            )?;
-            Ok(Some(StdioAdapterSpec {
-                kind: AgentKind::ClaudeCode,
-                runtime_key: "claude-code",
-                binary,
-                args,
-                env,
-            }))
-        }
-        "gemini" | "gemini-cli" => {
+    let Some(kind) = RuntimeKind::from_str(runtime) else {
+        return Ok(None);
+    };
+    if kind.is_mock() {
+        return Ok(None);
+    }
+    let cached = adapter_cache().get(&kind).map(|r| r.clone());
+    let resolved = if let Some(r) = cached {
+        r
+    } else {
+        let r = resolve_adapter_for_kind(kind);
+        adapter_cache().insert(kind, r.clone());
+        r
+    };
+    let (binary, args, env) = resolved?;
+    Ok(Some(StdioAdapterSpec {
+        kind,
+        runtime_key: kind.runtime_key(),
+        binary,
+        args,
+        env,
+    }))
+}
+
+fn resolve_adapter_for_kind(kind: RuntimeKind) -> Result<(String, Vec<String>, Vec<(String, String)>), String> {
+    match kind {
+        RuntimeKind::ClaudeCode => resolve_candidate(
+            "claude-code",
+            &[
+                ("claude-agent-acp", &[][..]),
+                ("pnpm", &["dlx", "@zed-industries/claude-agent-acp@latest"][..]),
+                ("npx", &["-y", "@zed-industries/claude-agent-acp@latest"][..]),
+            ],
+        ),
+        RuntimeKind::GeminiCli => {
             if let Ok(path) = which("gemini") {
                 let binary = path.to_string_lossy().to_string();
                 if supports_arg_in_help(&binary, "--experimental-acp") {
-                    return Ok(Some(StdioAdapterSpec {
-                        kind: AgentKind::GeminiCli,
-                        runtime_key: "gemini-cli",
-                        binary,
-                        args: vec!["--experimental-acp".to_string()],
-                        env: vec![],
-                    }));
+                    return Ok((binary, vec!["--experimental-acp".to_string()], vec![]));
                 }
-                return Err(
-                    "gemini-cli installed but unsupported: missing --experimental-acp".to_string(),
-                );
+                return Err("gemini-cli installed but unsupported: missing --experimental-acp".to_string());
             }
-            let (binary, args, env) = resolve_candidate(
+            resolve_candidate(
                 "gemini-cli",
                 &[
-                    (
-                        "pnpm",
-                        &["dlx", "@google/gemini-cli@latest", "--experimental-acp"][..],
-                    ),
-                    (
-                        "npx",
-                        &["-y", "@google/gemini-cli@latest", "--experimental-acp"][..],
-                    ),
+                    ("pnpm", &["dlx", "@google/gemini-cli@latest", "--experimental-acp"][..]),
+                    ("npx", &["-y", "@google/gemini-cli@latest", "--experimental-acp"][..]),
                 ],
-            )?;
-            Ok(Some(StdioAdapterSpec {
-                kind: AgentKind::GeminiCli,
-                runtime_key: "gemini-cli",
-                binary,
-                args,
-                env,
-            }))
+            )
         }
-        "codex" | "codex-cli" | "codex-acp" => {
-            let (binary, args, env) = resolve_candidate(
-                "codex-cli",
-                &[
-                    ("codex-acp", &[][..]),
-                    ("pnpm", &["dlx", "@zed-industries/codex-acp@latest"][..]),
-                    ("npx", &["-y", "@zed-industries/codex-acp@latest"][..]),
-                ],
-            )?;
-            Ok(Some(StdioAdapterSpec {
-                kind: AgentKind::CodexCli,
-                runtime_key: "codex-cli",
-                binary,
-                args,
-                env,
-            }))
-        }
-        _ => Ok(None),
+        RuntimeKind::CodexCli => resolve_candidate(
+            "codex-cli",
+            &[
+                ("codex-acp", &[][..]),
+                ("pnpm", &["dlx", "@zed-industries/codex-acp@latest"][..]),
+                ("npx", &["-y", "@zed-industries/codex-acp@latest"][..]),
+            ],
+        ),
+        RuntimeKind::Mock => unreachable!(),
     }
 }
 
@@ -222,6 +207,9 @@ pub(super) fn now_ms() -> u128 {
 }
 
 pub(super) fn clip(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        return s.to_string();
+    }
     s.chars().take(n).collect()
 }
 

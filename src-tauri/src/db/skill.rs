@@ -5,6 +5,17 @@ use rusqlite::{params, OptionalExtension};
 use tauri::State;
 use uuid::Uuid;
 
+fn skill_from_row(row: &rusqlite::Row) -> rusqlite::Result<AppSkill> {
+    Ok(AppSkill {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        description: row.get(2)?,
+        content: row.get(3)?,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+    })
+}
+
 #[tauri::command]
 pub(crate) fn list_app_skills(state: State<'_, AppState>) -> Result<Vec<AppSkill>, String> {
     with_db(get_state(&state), |conn| {
@@ -15,16 +26,7 @@ pub(crate) fn list_app_skills(state: State<'_, AppState>) -> Result<Vec<AppSkill
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |row| {
-                Ok(AppSkill {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    description: row.get(2)?,
-                    content: row.get(3)?,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
-                })
-            })
+            .query_map([], skill_from_row)
             .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         for row in rows {
@@ -61,14 +63,7 @@ pub(crate) fn upsert_app_skill(
                description = excluded.description,
                content = excluded.content,
                updated_at = excluded.updated_at",
-            params![
-                &id,
-                &name,
-                &input.description,
-                &input.content,
-                now,
-                now,
-            ],
+            params![&id, &name, &input.description, &input.content, now, now,],
         )
         .map_err(|e| e.to_string())?;
         Ok(AppSkill {
@@ -97,16 +92,7 @@ pub(crate) fn load_skill_by_name(state: &AppState, name: &str) -> Option<AppSkil
             "SELECT id, name, description, content, created_at, updated_at
              FROM app_skills WHERE name = ?1",
             params![name],
-            |row| {
-                Ok(AppSkill {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    description: row.get(2)?,
-                    content: row.get(3)?,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
-                })
-            },
+            skill_from_row,
         )
         .optional()
         .map_err(|e| e.to_string())
