@@ -3,6 +3,8 @@ mod assistant;
 mod chat;
 mod commands;
 mod db;
+mod fs_context;
+mod parser;
 mod runtime_kind;
 mod types;
 
@@ -239,12 +241,12 @@ pub fn run() {
                 .optional()
                 .map_err(|e| e.to_string())
             }).unwrap_or(None);
-            let all_roles: Vec<(String, String, String)> = with_db(app_state, |conn| {
+            let all_roles: Vec<(String, String)> = with_db(app_state, |conn| {
                 let mut stmt = conn.prepare(
-                    "SELECT role_name, runtime_kind, '' as wp FROM roles ORDER BY updated_at DESC LIMIT ?1"
+                    "SELECT role_name, runtime_kind FROM roles ORDER BY updated_at DESC LIMIT ?1"
                 ).map_err(|e| e.to_string())?;
                 let rows = stmt.query_map(params![PREWARM_ROLE_LIMIT as i64], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 }).map_err(|e| e.to_string())?;
                 Ok(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
             }).unwrap_or_default();
@@ -274,14 +276,14 @@ pub fn run() {
                     }
                 }
 
-                for (role_name, runtime_kind, workspace_path) in &all_roles {
+                for (role_name, runtime_kind) in &all_roles {
                     if runtime_kind != "mock" && !available_runtime_keys.contains(runtime_kind) {
                         continue;
                     }
                     if !recent_role_names.contains(role_name) {
                         continue;
                     }
-                    let cwd = abs_cwd(if workspace_path.is_empty() { &default_cwd } else { workspace_path });
+                    let cwd = abs_cwd(&default_cwd);
                     let state_ref = app_handle.state::<AppState>();
                     let app_state_inner: &AppState = state_ref.inner();
                     let db_clone = app_state_inner.db.clone();
@@ -309,14 +311,14 @@ pub fn run() {
                     let _ = h.await;
                 }
 
-                for (role_name, runtime_kind, workspace_path) in all_roles {
+                for (role_name, runtime_kind) in all_roles {
                     if runtime_kind != "mock" && !available_runtime_keys.contains(&runtime_kind) {
                         continue;
                     }
                     if recent_role_names.contains(&role_name) {
                         continue;
                     }
-                    let cwd = abs_cwd(if workspace_path.is_empty() { &default_cwd } else { &workspace_path });
+                    let cwd = abs_cwd(&default_cwd);
                     let state_ref = app_handle.state::<AppState>();
                     let app_state_inner: &AppState = state_ref.inner();
                     let db_clone = app_state_inner.db.clone();
@@ -357,6 +359,7 @@ pub fn run() {
             db::app_session::create_app_session,
             db::app_session::update_app_session,
             db::app_session::delete_app_session,
+            db::app_session::append_app_message,
             db::skill::list_app_skills,
             db::skill::upsert_app_skill,
             db::skill::delete_app_skill

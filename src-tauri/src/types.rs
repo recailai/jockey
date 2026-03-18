@@ -176,7 +176,7 @@ pub(crate) struct AppSession {
     pub(crate) team_id: String,
     pub(crate) active_role: String,
     pub(crate) selected_assistant: Option<String>,
-    pub(crate) messages_json: String,
+    pub(crate) messages: Vec<serde_json::Value>,
     pub(crate) created_at: i64,
     pub(crate) last_active_at: i64,
 }
@@ -187,7 +187,6 @@ pub(crate) struct AppSessionUpdate {
     pub(crate) title: Option<String>,
     pub(crate) active_role: Option<String>,
     pub(crate) selected_assistant: Option<String>,
-    pub(crate) messages_json: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

@@ -106,7 +106,6 @@ export default function App() {
   let inputHistory: string[] = [];
   let historyIndex = -1;
   let historySavedInput = "";
-  let persistTimer: number | null = null;
   const HISTORY_MAX = 200;
 
   const [skills, setSkills] = createSignal<AppSkill[]>([]);
@@ -121,21 +120,14 @@ export default function App() {
     });
   };
 
-  const persistSessionDebounced = (sessionId: string) => {
-    if (persistTimer !== null) window.clearTimeout(persistTimer);
-    persistTimer = window.setTimeout(() => {
-      persistTimer = null;
-      const s = sessions.find((x) => x.id === sessionId);
-      if (!s) return;
-      void invoke("update_app_session", {
-        id: sessionId,
-        update: {
-          messagesJson: JSON.stringify(s.messages),
-          activeRole: s.activeRole,
-          selectedAssistant: s.selectedAssistant,
-        },
-      }).catch(() => {});
-    }, 800);
+  const persistMessage = (sessionId: string, message: AppMessage) => {
+    if (!sessionId || message.role === "event") return;
+    void invoke("append_app_message", {
+      sessionId,
+      role: message.role,
+      roleLabel: message.roleLabel ?? null,
+      content: message.text,
+    }).catch(() => {});
   };
 
   const appendMessage = (message: AppMessage) => {
@@ -148,7 +140,7 @@ export default function App() {
       msgs.push(message);
     }));
     scheduleScrollToBottom();
-    persistSessionDebounced(id);
+    persistMessage(id, message);
   };
 
   const pushMessage = (role: AppMessage["role"], text: string) => {
@@ -606,6 +598,7 @@ export default function App() {
         if (sess && sess.title === "New Session" && sess.messages.filter((m) => m.role === "user").length === 0) {
           const autoTitle = text.slice(0, 30);
           updateSession(sid, { title: autoTitle });
+          void invoke("update_app_session", { id: sid, update: { title: autoTitle } }).catch(() => {});
         }
       }
     }
@@ -638,7 +631,7 @@ export default function App() {
       setSessions((sess) => sess.id === originSessionId, produce((sess) => {
         sess.messages = [...sess.messages.slice(-MAX_MESSAGES + 1), msg];
       }));
-      persistSessionDebounced(originSessionId);
+      persistMessage(originSessionId, msg);
     };
 
     const startOriginStream = () => {
@@ -664,7 +657,7 @@ export default function App() {
         appendOriginMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, role: "assistant", text: finalReply, at: now(), roleLabel: sendRoleLabel, toolCalls: snapshotToolCalls });
       }
       resetStreamState();
-      patchOriginSession({ toolCalls: new Map(), currentPlan: null, pendingPermission: null });
+      patchOriginSession({ toolCalls: new Map(), currentPlan: null, pendingPermission: null, agentState: undefined });
     };
 
     const dropOriginStream = () => {
@@ -873,18 +866,18 @@ export default function App() {
     void (async () => {
       let loaded: AppSession[] = [];
       try {
-        const raw = await invoke<Array<{ id: string; title: string; messagesJson?: string; activeRole?: string; selectedAssistant?: string | null }>>("list_app_sessions");
+        const raw = await invoke<Array<{ id: string; title: string; messages: AppMessage[]; activeRole?: string; selectedAssistant?: string | null }>>("list_app_sessions");
         loaded = raw.map((r) => {
           const s = makeDefaultSession(r.title);
           s.id = r.id;
           if (r.activeRole) s.activeRole = r.activeRole;
           if (r.selectedAssistant !== undefined) s.selectedAssistant = r.selectedAssistant;
-          if (r.messagesJson) {
-            try { s.messages = JSON.parse(r.messagesJson) as AppMessage[]; } catch { }
-          }
+          s.messages = r.messages ?? [];
           return s;
         });
-      } catch { }
+      } catch (e) {
+        showToast(`Failed to restore sessions: ${String(e)}`);
+      }
 
       if (loaded.length === 0) {
         try {
@@ -1021,7 +1014,6 @@ export default function App() {
       if (mentionCloseTimerRef.current !== null) window.clearTimeout(mentionCloseTimerRef.current);
       if (mentionDebounceTimerRef.current !== null) window.clearTimeout(mentionDebounceTimerRef.current);
       if (sessionEventFlushTimer !== null) window.clearTimeout(sessionEventFlushTimer);
-      if (persistTimer !== null) window.clearTimeout(persistTimer);
       if (scrollRaf !== null) {
         window.cancelAnimationFrame(scrollRaf);
         scrollRaf = null;

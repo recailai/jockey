@@ -155,7 +155,31 @@
 - [ ] 短期: workflow steps 加 config (每步的 prompt template, timeout, retry)
 - [ ] 中期: DAG 执行引擎替代当前线性循环
 
-### 7. 遗留项
+### 7. 交互与 Session 体验 — 本轮已修，待验证
+
+#### 已完成
+- [x] acp/stream 协议对齐：前端改为解包 `{ role, event: { kind, ... } }`，toolCall/plan/permission/statusUpdate 现在能正常触发
+- [x] Session 串台修复：`streamOriginSessionId` 全局变量锁定发起 session，`acp/delta` 和 `acp/stream` 事件均按 `appSessionId` 路由
+- [x] ACP 连接池 key 改为 `appSessionId:runtime:role`，每个 AppSession 独立 agent session，取消/模式切换不互相影响
+- [x] 流式缓冲优化：后端去掉 30ms/128B buffer，每个 TextDelta 直接 emit；前端改为 RAF 批合并（每帧最多一次 store 写）
+- [x] 工具调用持久化：`AppMessage` 新增 `toolCalls` 字段，response 完成时 snapshot 当前 tool calls，渲染在消息内
+- [x] Session ID 对齐：`newSession` 和初始加载均 `await create_app_session` 并使用后端返回的 UUID
+- [x] Prewarm 两阶段策略：Phase 1 先热最近 AppSession 的 role（带 resume），Phase 2 异步热其余 role
+- [x] thoughtDelta 不再混入正文，改为更新 `agentState`（显示在 thinking 指示器）
+- [x] slash 补全过滤 `/app_` 判断修复（缺少前缀 `/`）
+- [x] completion.rs `/role edit` → `/app_role edit`
+
+#### 待做
+- [ ] 错误状态机：catch 后应设 `status: "error"` 而非 finally 无条件 `"done"`，支持重试 UI
+- [ ] queuedInputs / inputHistory / canceledRunToken 未按 session 隔离，多 tab 下队列语义混乱
+- [ ] session/update 和 workflow/state_changed 事件仍写入当前激活 tab，workflow 多 session 下不可信
+- [ ] selectedAssistant `null` 清空语义：后端 `update_app_session` 只在 `Some` 时更新，无法显式清空
+- [ ] complete_mentions 的 `std::fs::read_dir` 是同步调用，大目录下卡顿（改 spawn_blocking）
+- [ ] skill N+1 查询：chat.rs 逐个 skill 名查询，改为 `WHERE name IN (...)`
+- [ ] ConfigDrawer JSON.parse 在渲染循环中执行，角色多时交互发涩（移出渲染循环）
+- [ ] DB pool Condvar 无超时等待，极端并发下可能长尾阻塞（加 5s timeout）
+
+### 8. 遗留项
 - [ ] MCP servers JSON → Vec<McpServer> 解析并传入 execute_runtime
 - [ ] 前端 MCP servers JSON editor in role form
 - [ ] virtual list for long sessions

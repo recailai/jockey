@@ -1,5 +1,5 @@
 use crate::acp;
-use crate::chat::{is_within_workspace, relative_or_abs, resolve_attach_path, should_skip_name};
+use crate::fs_context::{is_within_workspace, relative_or_abs, resolve_attach_path, should_skip_name};
 use crate::db::context::{list_all_known_models, list_dynamic_catalog};
 use crate::db::role::list_roles_for_team;
 use crate::db::{ensure_default_team_id, get_state, team_exists};

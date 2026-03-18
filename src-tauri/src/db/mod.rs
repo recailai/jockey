@@ -95,12 +95,13 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           team_id TEXT NOT NULL,
           active_role TEXT NOT NULL DEFAULT 'UnionAI',
           selected_assistant TEXT,
-          messages_json TEXT NOT NULL DEFAULT '[]',
           created_at INTEGER NOT NULL,
           last_active_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_app_sessions_last_active
           ON app_sessions(last_active_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_app_sessions_team_id
+          ON app_sessions(team_id);
         CREATE TABLE IF NOT EXISTS app_skills (
           id TEXT PRIMARY KEY,
           name TEXT NOT NULL UNIQUE,
@@ -111,6 +112,16 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         );
         CREATE INDEX IF NOT EXISTS idx_app_skills_updated_at
           ON app_skills(updated_at DESC);
+        CREATE TABLE IF NOT EXISTS app_session_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL REFERENCES app_sessions(id) ON DELETE CASCADE,
+          role TEXT NOT NULL,
+          role_label TEXT,
+          content TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_app_session_messages_session_id
+          ON app_session_messages(session_id, id ASC);
         ",
     )
     .map_err(|e| e.to_string())?;
@@ -123,6 +134,8 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         "ALTER TABLE roles ADD COLUMN auto_approve INTEGER DEFAULT 1",
         "ALTER TABLE roles ADD COLUMN acp_session_id TEXT DEFAULT NULL",
         "ALTER TABLE app_sessions ADD COLUMN role_sessions_json TEXT NOT NULL DEFAULT '{}'",
+        "ALTER TABLE app_sessions DROP COLUMN messages_json",
+        "ALTER TABLE app_session_messages ADD COLUMN role_label TEXT",
     ];
     for stmt in alter_stmts {
         let _ = conn.execute(stmt, []);
@@ -142,7 +155,6 @@ pub(crate) fn with_db<T>(
     let conn = state.db.get().map_err(|e| e.to_string())?;
     f(&conn)
 }
-
 
 pub(crate) fn parse_payload(payload: String) -> Value {
     serde_json::from_str::<Value>(&payload).unwrap_or(json!({ "text": payload }))
