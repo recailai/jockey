@@ -1,92 +1,25 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import { For, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 
-type Role = {
-  id: string; teamId: string; roleName: string; runtimeKind: string;
-  systemPrompt: string; model: string | null; mode: string | null;
-  mcpServersJson: string; configOptionsJson: string; autoApprove: boolean;
-};
-type RoleUpsertInput = {
-  teamId: string; roleName: string; runtimeKind: string; systemPrompt: string;
-  model: string | null; mode: string | null; mcpServersJson: string; configOptionsJson: string;
-  autoApprove: boolean;
-};
-type AppToolCall = { toolCallId: string; title: string; kind: string; status: string; content?: unknown[]; contentJson?: string };
-type AppPlanEntry = { title?: string; status?: string; description?: string };
-type AppPermission = { requestId: string; title: string; description: string | null; options: Array<{ optionId: string; title?: string }> };
-type AcpStreamEvent = {
-  kind: string;
-  text?: string;
-  toolCallId?: string; title?: string; toolKind?: string; status?: string; content?: unknown[];
-  entries?: AppPlanEntry[];
-  requestId?: string; description?: string | null; options?: unknown[];
-  modeId?: string;
-  commands?: unknown[];
-  modes?: Array<{ id: string; title?: string }>; current?: string | null;
-};
-type ConfigOptionValue = { value: string; name: string; description?: string };
-type ConfigOptionGroup = { group: string; name: string; options: ConfigOptionValue[] };
-type AcpConfigOption = {
-  id: string; name: string; description?: string;
-  category?: string;
-  type: "select";
-  currentValue: string;
-  options: ConfigOptionValue[] | ConfigOptionGroup[];
-};
-type AssistantRuntime = { key: string; label: string; binary: string; available: boolean; version: string | null };
-type ChatCommandResult = { ok: boolean; message: string; selectedTeamId: string | null; selectedAssistant: string | null; sessionId: string | null; payload: Record<string, unknown> };
-type AssistantChatResponse = { ok: boolean; reply: string; selectedTeamId: string | null; selectedAssistant: string | null; sessionId: string | null; commandResult: ChatCommandResult | null };
-type SessionUpdateEvent = { sessionId: string; teamId: string; roleName: string; delta: string; done: boolean };
-type WorkflowStateEvent = { sessionId: string; teamId: string; status: string; activeRole: string | null; message: string };
-type AcpDeltaEvent = { role: string; delta: string };
-type AppMessage = { id: string; role: "system" | "user" | "assistant" | "event"; text: string; at: number; roleLabel?: string };
-type AppMentionItem = { value: string; kind: "role" | "file" | "dir" | "hint" | "command" | "skill"; detail: string };
-type AppSkill = { id: string; name: string; description: string; content: string; createdAt: number; updatedAt: number };
+import SessionTabs from "./components/SessionTabs";
+import MessageWindow from "./components/MessageWindow";
+import ChatInput from "./components/ChatInput";
+import ConfigDrawer from "./components/ConfigDrawer";
+import type {
+  Role, AppToolCall, AppPlanEntry,
+  AcpStreamEvent, AcpConfigOption, AssistantRuntime,
+  AssistantChatResponse, AcpDeltaEvent, SessionUpdateEvent, WorkflowStateEvent,
+  AppMessage, AppMentionItem, AppSkill, AppSession,
+} from "./components/types";
+import {
+  now, DEFAULT_BACKEND_ROLE, DEFAULT_ROLE_ALIAS,
+  flattenConfigValues,
+} from "./components/types";
 
-type AppSession = {
-  id: string;
-  title: string;
-  teamId: string;
-  activeRole: string;
-  selectedAssistant: string | null;
-  messages: AppMessage[];
-  streamingMessage: AppMessage | null;
-  toolCalls: Map<string, AppToolCall>;
-  currentPlan: AppPlanEntry[] | null;
-  pendingPermission: AppPermission | null;
-  agentModes: Array<{ id: string; title?: string }>;
-  currentMode: string | null;
-  submitting: boolean;
-  discoveredConfigOptions: AcpConfigOption[];
-  configOptionsLoading: boolean;
-  agentCommands: Map<string, Array<{ name: string; description: string; hint?: string }>>;
-  status: "idle" | "running" | "done" | "error";
-};
-
-const now = () => Date.now();
-const fmt = (ts: number) =>
-  new Date(ts).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-
-const RUNTIMES = ["gemini-cli", "claude-code", "codex-cli", "mock"];
-const RUNTIME_COLOR: Record<string, string> = {
-  "gemini-cli": "text-blue-300",
-  "claude-code": "text-orange-300",
-  "codex-cli": "text-purple-300",
-  mock: "text-zinc-400",
-};
-const INTERACTIVE_MOTION = "motion-safe:transition-colors motion-safe:transition-transform motion-safe:duration-150 motion-safe:ease-out active:scale-[0.98]";
 const ASSISTANT_STORAGE_KEY = "unionai.defaultAssistant";
-const DEFAULT_BACKEND_ROLE = "UnionAIAssistant";
-const DEFAULT_ROLE_ALIAS = "UnionAI";
 const MAX_MESSAGES = 500;
-const MESSAGE_RENDER_WINDOW = 280;
 const MENTION_DEBOUNCE_MS = 90;
 const MENTION_CACHE_LIMIT = 80;
 
@@ -117,7 +50,7 @@ export default function App() {
   const [sessions, setSessions] = createStore<AppSession[]>([]);
   const [activeSessionId, setActiveSessionId] = createSignal<string | null>(null);
 
-  const activeSession = () => sessions.find((s) => s.id === activeSessionId()) ?? null;
+  const activeSession = createMemo(() => sessions.find((s) => s.id === activeSessionId()) ?? null);
 
   const updateSession = (id: string, patch: Partial<AppSession>) => {
     setSessions((s) => s.id === id, produce((s) => Object.assign(s, patch)));
@@ -140,24 +73,34 @@ export default function App() {
   const [slashActiveIndex, setSlashActiveIndex] = createSignal(0);
   const [slashRange, setSlashRange] = createSignal<{ end: number; query: string } | null>(null);
   const [showDrawer, setShowDrawer] = createSignal(false);
-  const [renamingSessionId, setRenamingSessionId] = createSignal<string | null>(null);
-  const [renameValue, setRenameValue] = createSignal("");
+
+  type Toast = { id: number; message: string; severity?: "error" | "info" };
+  const [toasts, setToasts] = createSignal<Toast[]>([]);
+  let toastSeq = 0;
+  const showToast = (message: string, severity: Toast["severity"] = "error") => {
+    const id = ++toastSeq;
+    setToasts((ts) => [...ts, { id, message, severity }]);
+    window.setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 4000);
+  };
 
   let mentionReqSeq = 0;
   let slashReqSeq = 0;
-  let mentionCloseTimer: number | null = null;
-  let mentionDebounceTimer: number | null = null;
+  const mentionCloseTimerRef = { current: null as number | null };
+  const mentionDebounceTimerRef = { current: null as number | null };
   let mentionPathCache = new Map<string, AppMentionItem[]>();
+  let mentionPathCacheKeys: string[] = [];
+  let slashCliCache: AppMentionItem[] | null = null;
+  let slashCliCacheVersion = 0;
   let inputEl: HTMLInputElement | undefined;
-  let slashListEl: HTMLDivElement | undefined;
-  let mentionListEl: HTMLDivElement | undefined;
-  let streamBuffer = "";
-  let streamFlushRaf: number | null = null;
   let streamAccepting = false;
+  let streamOriginSessionId: string | null = null;
+  let streamBatchBuffer = "";
+  let streamBatchRaf: number | null = null;
   let runTokenSeq = 0;
   let canceledRunToken = 0;
   let queuedInputs: string[] = [];
   let scrollRaf: number | null = null;
+  const listRefMap = new Map<string, HTMLElement>();
   let pendingSessionEvents: string[] = [];
   let sessionEventFlushTimer: number | null = null;
   let inputHistory: string[] = [];
@@ -166,52 +109,14 @@ export default function App() {
   let persistTimer: number | null = null;
   const HISTORY_MAX = 200;
 
-  createEffect(() => {
-    const idx = slashActiveIndex();
-    const container = slashListEl;
-    if (!container) return;
-    const item = container.children[idx] as HTMLElement | undefined;
-    item?.scrollIntoView({ block: "nearest" });
-  });
-
-  createEffect(() => {
-    const idx = mentionActiveIndex();
-    const container = mentionListEl;
-    if (!container) return;
-    const item = container.children[idx] as HTMLElement | undefined;
-    item?.scrollIntoView({ block: "nearest" });
-  });
-
-  const [showRoleForm, setShowRoleForm] = createSignal(false);
-  const [roleFormName, setRoleFormName] = createSignal("Developer");
-  const [roleFormRuntime, setRoleFormRuntime] = createSignal("gemini-cli");
-  const [roleFormPrompt, setRoleFormPrompt] = createSignal("You are a senior developer. Implement the solution step by step.");
-  const [roleFormModel, setRoleFormModel] = createSignal("");
-  const [roleFormMode, setRoleFormMode] = createSignal("");
-  const [roleFormAutoApprove, setRoleFormAutoApprove] = createSignal(true);
-  const [editingRoleId, setEditingRoleId] = createSignal<string | null>(null);
-  const [editRolePrompt, setEditRolePrompt] = createSignal("");
-  const [editRoleModel, setEditRoleModel] = createSignal("");
-  const [editRoleMode, setEditRoleMode] = createSignal("");
-  const [editRoleAutoApprove, setEditRoleAutoApprove] = createSignal(true);
-  const [editRoleMcpServersJson, setEditRoleMcpServersJson] = createSignal("[]");
-  const [editRoleConfigOptionsJson, setEditRoleConfigOptionsJson] = createSignal("{}");
-  const [roleFormConfigSelections, setRoleFormConfigSelections] = createSignal<Record<string, string>>({});
-  const [createFormConfigOptions, setCreateFormConfigOptions] = createSignal<AcpConfigOption[]>([]);
-
   const [skills, setSkills] = createSignal<AppSkill[]>([]);
-  const [showSkillForm, setShowSkillForm] = createSignal(false);
-  const [skillFormName, setSkillFormName] = createSignal("");
-  const [skillFormDescription, setSkillFormDescription] = createSignal("");
-  const [skillFormContent, setSkillFormContent] = createSignal("");
-  const [editingSkillId, setEditingSkillId] = createSignal<string | null>(null);
 
   const scheduleScrollToBottom = () => {
     if (scrollRaf !== null) return;
     scrollRaf = window.requestAnimationFrame(() => {
       scrollRaf = null;
       const id = activeSessionId();
-      const el = id ? document.getElementById(`msg-list-${id}`) : null;
+      const el = id ? listRefMap.get(id) : null;
       if (el) el.scrollTop = el.scrollHeight;
     });
   };
@@ -250,61 +155,32 @@ export default function App() {
     appendMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, role, text, at: now() });
   };
 
-  const startStream = (roleLabel?: string) => {
-    const id = `stream-${now()}`;
-    const row: AppMessage = { id, role: "assistant", text: "", at: now(), roleLabel: roleLabel ?? activeSession()?.activeRole };
-    patchActiveSession({ streamingMessage: row, toolCalls: new Map(), currentPlan: null, pendingPermission: null });
-    scheduleScrollToBottom();
-    return row;
+  const flushStreamBatch = () => {
+    if (streamBatchBuffer) {
+      const chunk = streamBatchBuffer;
+      streamBatchBuffer = "";
+      const sid = streamOriginSessionId ?? activeSessionId();
+      if (sid) setSessions((s) => s.id === sid && !!s.streamingMessage, "streamingMessage", "text", (t) => t + chunk);
+      scheduleScrollToBottom();
+    }
+    streamBatchRaf = null;
   };
 
   const appendStream = (chunk: string) => {
     if (!chunk) return;
-    const sid = activeSessionId();
-    if (!sid) return;
-    const idx = sessions.findIndex((s) => s.id === sid);
-    if (idx === -1 || !sessions[idx].streamingMessage) return;
-    setSessions(idx, "streamingMessage", "text", (t) => t + chunk);
-    scheduleScrollToBottom();
-  };
-
-  const flushStreamBuffer = () => {
-    if (streamBuffer) {
-      appendStream(streamBuffer);
-      streamBuffer = "";
+    streamBatchBuffer += chunk;
+    if (streamBatchRaf === null) {
+      streamBatchRaf = window.requestAnimationFrame(flushStreamBatch);
     }
-  };
-
-  const scheduleStreamFlush = () => {
-    if (streamFlushRaf !== null) return;
-    streamFlushRaf = window.requestAnimationFrame(() => {
-      streamFlushRaf = null;
-      flushStreamBuffer();
-      if (streamBuffer) scheduleStreamFlush();
-    });
   };
 
   const resetStreamState = () => {
-    streamBuffer = "";
-    if (streamFlushRaf !== null) {
-      window.cancelAnimationFrame(streamFlushRaf);
-      streamFlushRaf = null;
+    if (streamBatchRaf !== null) {
+      window.cancelAnimationFrame(streamBatchRaf);
+      streamBatchRaf = null;
     }
-  };
-
-  const completeStream = (finalReply?: string, roleLabel?: string) => {
-    flushStreamBuffer();
-    const s = activeSession();
-    const row = s?.streamingMessage ?? null;
-    if (row) {
-      const text = finalReply ?? row.text;
-      appendMessage({ ...row, text, at: now() });
-      patchActiveSession({ streamingMessage: null });
-    } else if (finalReply) {
-      appendMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, role: "assistant", text: finalReply, at: now(), roleLabel });
-    }
-    resetStreamState();
-    patchActiveSession({ toolCalls: new Map(), currentPlan: null, pendingPermission: null });
+    streamBatchBuffer = "";
+    streamOriginSessionId = null;
   };
 
   const dropStream = () => {
@@ -348,27 +224,17 @@ export default function App() {
     const role = activeBackendRole();
     if (assistant) {
       try {
-        await invoke("cancel_acp_session", { runtimeKind: assistant, roleName: role });
+        await invoke("cancel_acp_session", { runtimeKind: assistant, roleName: role, appSessionId: activeSessionId() ?? "" });
       } catch { }
     }
     runNextQueued();
-  };
-
-  const visibleMessages = () => {
-    const rows = activeSession()?.messages ?? [];
-    if (rows.length <= MESSAGE_RENDER_WINDOW) return rows;
-    return rows.slice(rows.length - MESSAGE_RENDER_WINDOW);
-  };
-
-  const hiddenMessageCount = () => {
-    const count = (activeSession()?.messages.length ?? 0) - MESSAGE_RENDER_WINDOW;
-    return count > 0 ? count : 0;
   };
 
   const refreshRoles = async () => {
     try {
       const rows = await invoke<Role[]>("list_roles", { teamId: null });
       setRoles(rows);
+      slashCliCache = null;
     } catch { setRoles([]); }
   };
 
@@ -379,46 +245,11 @@ export default function App() {
     } catch { setSkills([]); }
   };
 
-  const saveSkill = async () => {
-    const name = skillFormName().trim();
-    if (!name) return;
-    try {
-      await invoke("upsert_app_skill", { input: { name, description: skillFormDescription().trim(), content: skillFormContent().trim() } });
-      setShowSkillForm(false);
-      setEditingSkillId(null);
-      setSkillFormName("");
-      setSkillFormDescription("");
-      setSkillFormContent("");
-      await refreshSkills();
-    } catch (e) { pushMessage("event", String(e)); }
-  };
-
-  const deleteSkill = async (id: string) => {
-    try {
-      await invoke("delete_app_skill", { id });
-      await refreshSkills();
-    } catch (e) { pushMessage("event", String(e)); }
-  };
-
-  const openSkillEditor = (skill: AppSkill) => {
-    setEditingSkillId(skill.id);
-    setSkillFormName(skill.name);
-    setSkillFormDescription(skill.description);
-    setSkillFormContent(skill.content);
-    setShowSkillForm(true);
-  };
-
   const fetchConfigOptions = async (runtimeKey: string): Promise<AcpConfigOption[]> => {
     try {
       const raw = await invoke<unknown[]>("list_discovered_config_options_cmd", { runtimeKey });
       return raw as AcpConfigOption[];
     } catch { return []; }
-  };
-
-  const flattenConfigValues = (opts: ConfigOptionValue[] | ConfigOptionGroup[]): ConfigOptionValue[] => {
-    if (!opts || opts.length === 0) return [];
-    if ("value" in opts[0]) return opts as ConfigOptionValue[];
-    return (opts as ConfigOptionGroup[]).flatMap((g) => g.options);
   };
 
   const parseAgentCommands = (raw: unknown[]): Array<{ name: string; description: string; hint?: string }> => {
@@ -434,7 +265,9 @@ export default function App() {
       if (!sid) return;
       const cidx = sessions.findIndex((s) => s.id === sid);
       if (cidx !== -1) setSessions(cidx, "agentCommands", produce((m: Map<string, Array<{ name: string; description: string; hint?: string }>>) => { m.set(roleName, parsed); }));
-    }).catch(() => {});
+    }).catch((e: unknown) => {
+      showToast(`Commands unavailable for ${roleName}: ${String(e)}`, "info");
+    });
   };
 
   const setPreferredAssistant = (assistantKey: string | null) => {
@@ -446,6 +279,7 @@ export default function App() {
   const refreshAssistants = async () => {
     const rows = await invoke<AssistantRuntime[]>("detect_assistants");
     setAssistants(rows);
+    slashCliCache = null;
     const preferred = window.localStorage.getItem(ASSISTANT_STORAGE_KEY);
     const current = activeSession()?.selectedAssistant ?? null;
     const currentAvailable = current ? rows.find((a) => a.key === current && a.available) : null;
@@ -456,9 +290,6 @@ export default function App() {
       setPreferredAssistant(first.key);
     }
   };
-
-  const MUTATING_CMDS = ["/app_role"];
-  const needsRefresh = (text: string) => MUTATING_CMDS.some((c) => text.startsWith(c));
 
   const closeMentionMenu = () => {
     setMentionOpen(false);
@@ -557,9 +388,10 @@ export default function App() {
           });
           if (seq !== mentionReqSeq) return;
           mentionPathCache.set(ctx.query, rows);
-          if (mentionPathCache.size > MENTION_CACHE_LIMIT) {
-            const firstKey = mentionPathCache.keys().next().value;
-            if (firstKey !== undefined) mentionPathCache.delete(firstKey);
+          mentionPathCacheKeys.push(ctx.query);
+          if (mentionPathCacheKeys.length > MENTION_CACHE_LIMIT) {
+            const evictKey = mentionPathCacheKeys.shift()!;
+            mentionPathCache.delete(evictKey);
           }
           items = [...items, ...rows];
         } catch {
@@ -613,7 +445,7 @@ export default function App() {
     setSlashRange(ctx);
     const seq = ++slashReqSeq;
 
-    if (isCustomRole() && !ctx.query.startsWith("app_")) {
+    if (isCustomRole() && !ctx.query.startsWith("/app_")) {
       const s = activeSession();
       const role = roles().find((r) => r.roleName === s?.activeRole);
       if (role) {
@@ -645,17 +477,24 @@ export default function App() {
     }
 
     try {
-      const rows = await invoke<AppMentionItem[]>("complete_cli", {
-        query: ctx.query,
-        limit: 20,
-      });
+      const version = slashCliCacheVersion;
+      const all = slashCliCache ?? await (async () => {
+        const rows = await invoke<AppMentionItem[]>("complete_cli", { query: "", limit: 200 });
+        if (slashCliCacheVersion === version) {
+          slashCliCache = rows;
+        }
+        return rows;
+      })();
       if (seq !== slashReqSeq) return;
-      const merged = rows.slice(0, 20);
-      if (merged.length === 0) {
+      const q = ctx.query.toLowerCase();
+      const filtered = q
+        ? all.filter((r) => r.value.toLowerCase().includes(q)).slice(0, 20)
+        : all.slice(0, 20);
+      if (filtered.length === 0) {
         closeSlashMenu();
         return;
       }
-      setSlashItems(merged);
+      setSlashItems(filtered);
       setSlashActiveIndex(0);
       setSlashOpen(true);
     } catch {
@@ -710,8 +549,13 @@ export default function App() {
 
   const sendRaw = async (text: string, silent = false) => {
     const runToken = ++runTokenSeq;
+    const originSessionId = activeSessionId();
     closeMentionMenu();
     closeSlashMenu();
+
+    const patchOriginSession = (patch: Partial<AppSession>) => {
+      if (originSessionId) updateSession(originSessionId, patch);
+    };
 
     const s = activeSession();
     let sendRoleLabel = s?.activeRole;
@@ -765,12 +609,12 @@ export default function App() {
         }
       }
     }
-    patchActiveSession({ submitting: true, status: "running" });
+    patchOriginSession({ submitting: true, status: "running", agentState: undefined });
 
     const isAgentCmd = isCommand && !inRoleContext && /^\/(plan|act|auto|cancel)\b/.test(text);
     if (isAgentCmd) {
       const role = activeBackendRole();
-      const assistant = activeSession()?.selectedAssistant ?? null;
+      const assistant = s?.selectedAssistant ?? null;
       const cmd = text.split(/\s+/)[0].slice(1);
       try {
         if (cmd === "cancel") {
@@ -783,16 +627,55 @@ export default function App() {
       } catch (e) {
         pushMessage("event", String(e));
       } finally {
-        patchActiveSession({ submitting: false, status: "idle" });
+        patchOriginSession({ submitting: false, status: "idle" });
         runNextQueued();
       }
       return;
     }
 
+    const appendOriginMessage = (msg: AppMessage) => {
+      if (!originSessionId) return;
+      setSessions((sess) => sess.id === originSessionId, produce((sess) => {
+        sess.messages = [...sess.messages.slice(-MAX_MESSAGES + 1), msg];
+      }));
+      persistSessionDebounced(originSessionId);
+    };
+
+    const startOriginStream = () => {
+      streamOriginSessionId = originSessionId;
+      const id = `stream-${now()}`;
+      const row: AppMessage = { id, role: "assistant", text: "", at: now(), roleLabel: sendRoleLabel };
+      patchOriginSession({ streamingMessage: row, toolCalls: new Map(), currentPlan: null, pendingPermission: null });
+      scheduleScrollToBottom();
+      return row;
+    };
+
+    const completeOriginStream = (finalReply?: string) => {
+      const sid = originSessionId;
+      if (!sid) return;
+      const sess = sessions.find((x) => x.id === sid);
+      const row = sess?.streamingMessage ?? null;
+      const snapshotToolCalls = sess && sess.toolCalls.size > 0 ? [...sess.toolCalls.values()] : undefined;
+      if (row) {
+        const text = finalReply ?? row.text;
+        appendOriginMessage({ ...row, text, at: now(), toolCalls: snapshotToolCalls });
+        patchOriginSession({ streamingMessage: null });
+      } else if (finalReply) {
+        appendOriginMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, role: "assistant", text: finalReply, at: now(), roleLabel: sendRoleLabel, toolCalls: snapshotToolCalls });
+      }
+      resetStreamState();
+      patchOriginSession({ toolCalls: new Map(), currentPlan: null, pendingPermission: null });
+    };
+
+    const dropOriginStream = () => {
+      patchOriginSession({ streamingMessage: null });
+      resetStreamState();
+    };
+
     let streamStarted = false;
-    if ((!isUnionAiCommand) && activeSession()?.selectedAssistant) {
+    if ((!isUnionAiCommand) && s?.selectedAssistant) {
       streamAccepting = true;
-      startStream(sendRoleLabel);
+      startOriginStream();
       streamStarted = true;
     }
 
@@ -801,36 +684,35 @@ export default function App() {
         input: {
           input: routedText,
           selectedTeamId: null,
-          selectedAssistant: activeSession()?.selectedAssistant ?? null,
-          appSessionId: activeSessionId() ?? null,
+          selectedAssistant: s?.selectedAssistant ?? null,
+          appSessionId: originSessionId ?? null,
         }
       });
       if (runToken <= canceledRunToken) return;
       if (res.selectedAssistant) setPreferredAssistant(res.selectedAssistant);
 
       if (streamStarted) {
-        completeStream(res.reply, sendRoleLabel);
+        completeOriginStream(res.reply);
       } else {
-        appendMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, role: "assistant", text: res.reply, at: now(), roleLabel: sendRoleLabel });
+        appendOriginMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, role: "assistant", text: res.reply, at: now(), roleLabel: sendRoleLabel });
       }
 
-      if (needsRefresh(text)) {
-        await refreshRoles();
-      }
     } catch (e) {
       if (runToken <= canceledRunToken) return;
-      if (streamStarted || activeSession()?.streamingMessage) {
-        dropStream();
-      }
-      pushMessage("event", String(e));
+      dropOriginStream();
+      const errMsg = String(e);
+      if (!errMsg.toLowerCase().includes("cancel")) showToast(errMsg);
+      setSessions((sess) => sess.id === originSessionId, produce((sess) => {
+        sess.messages = [...sess.messages, { id: `${now()}-err`, role: "event" as const, text: errMsg, at: now() }];
+      }));
     } finally {
       streamAccepting = false;
       if (runToken <= canceledRunToken) {
-        patchActiveSession({ submitting: false, status: "idle" });
+        patchOriginSession({ submitting: false, status: "idle" });
         runNextQueued();
         return;
       }
-      patchActiveSession({ submitting: false, status: "done" });
+      patchOriginSession({ submitting: false, status: "done" });
       runNextQueued();
     }
   };
@@ -864,9 +746,9 @@ export default function App() {
     const caret = el.selectionStart ?? value.length;
     setInput(value);
     historyIndex = -1;
-    if (mentionDebounceTimer !== null) window.clearTimeout(mentionDebounceTimer);
-    mentionDebounceTimer = window.setTimeout(() => {
-      mentionDebounceTimer = null;
+    if (mentionDebounceTimerRef.current !== null) window.clearTimeout(mentionDebounceTimerRef.current);
+    mentionDebounceTimerRef.current = window.setTimeout(() => {
+      mentionDebounceTimerRef.current = null;
       refreshInputCompletions(value, caret);
     }, MENTION_DEBOUNCE_MS);
   };
@@ -948,111 +830,24 @@ export default function App() {
     }
   };
 
-  const handleCreateRole = async () => {
-    const name = roleFormName().trim();
-    const runtime = roleFormRuntime() || activeSession()?.selectedAssistant || "gemini-cli";
-    const prompt = roleFormPrompt().trim();
-    if (!name) return;
-    setShowRoleForm(false);
-    await sendRaw(`/app_role bind ${name} ${runtime} ${prompt || "You are a helpful AI assistant."}`);
-    const model = roleFormModel().trim();
-    const mode = roleFormMode();
-    const autoApprove = roleFormAutoApprove();
-    if (model) await sendRaw(`/app_role edit ${name} model ${model}`, true);
-    if (mode) await sendRaw(`/app_role edit ${name} mode ${mode}`, true);
-    if (!autoApprove) await sendRaw(`/app_role edit ${name} auto-approve false`, true);
-    const cfgSelections = roleFormConfigSelections();
-    for (const [cfgId, cfgVal] of Object.entries(cfgSelections)) {
-      if (cfgVal) await sendRaw(`/app_role edit ${name} config ${cfgId} ${cfgVal}`, true);
-    }
-    setRoleFormConfigSelections({});
-    setCreateFormConfigOptions([]);
-    await refreshRoles();
-  };
-
-  const openRoleEditor = (role: Role) => {
-    setShowRoleForm(false);
-    setEditingRoleId(role.id);
-    setEditRolePrompt(role.systemPrompt ?? "");
-    setEditRoleModel(role.model ?? "");
-    setEditRoleMode(role.mode ?? "");
-    setEditRoleAutoApprove(role.autoApprove);
-    setEditRoleMcpServersJson(role.mcpServersJson || "[]");
-    setEditRoleConfigOptionsJson(role.configOptionsJson || "{}");
-    patchActiveSession({ discoveredConfigOptions: [], configOptionsLoading: true });
-    invoke<unknown[]>("prewarm_role_config_cmd", {
-      runtimeKind: role.runtimeKind,
-      roleName: role.roleName,
-      teamId: role.teamId,
-    }).then((raw) => {
-      patchActiveSession({ discoveredConfigOptions: raw as AcpConfigOption[], configOptionsLoading: false });
-    }).catch(() => patchActiveSession({ configOptionsLoading: false }));
-  };
-
-  const closeRoleEditor = () => {
-    setEditingRoleId(null);
-  };
-
-  const editingRole = () => {
-    const id = editingRoleId();
-    if (!id) return null;
-    return roles().find((role) => role.id === id) ?? null;
-  };
-
-  const handleSaveRoleEdit = async () => {
-    const role = editingRole();
-    if (!role) return;
-    let parsedMcp: unknown;
-    let parsedConfig: unknown;
-    try {
-      parsedMcp = JSON.parse(editRoleMcpServersJson().trim() || "[]");
-      if (!Array.isArray(parsedMcp)) throw new Error("MCP servers JSON must be an array");
-    } catch (e) {
-      pushMessage("event", `Invalid MCP JSON: ${String(e)}`);
-      return;
-    }
-    try {
-      parsedConfig = JSON.parse(editRoleConfigOptionsJson().trim() || "{}");
-      if (!parsedConfig || typeof parsedConfig !== "object" || Array.isArray(parsedConfig)) {
-        throw new Error("Config options JSON must be an object");
-      }
-    } catch (e) {
-      pushMessage("event", `Invalid config JSON: ${String(e)}`);
-      return;
-    }
-
-    const payload: RoleUpsertInput = {
-      teamId: role.teamId,
-      roleName: role.roleName,
-      runtimeKind: role.runtimeKind,
-      systemPrompt: editRolePrompt().trim(),
-      model: editRoleModel().trim() || null,
-      mode: editRoleMode().trim() || null,
-      mcpServersJson: JSON.stringify(parsedMcp),
-      configOptionsJson: JSON.stringify(parsedConfig),
-      autoApprove: editRoleAutoApprove(),
-    };
-
-    try {
-      await invoke<Role>("upsert_role_cmd", { input: payload });
-      closeRoleEditor();
-      await refreshRoles();
-      pushMessage("event", `role updated: ${role.roleName}`);
-    } catch (e) {
-      pushMessage("event", String(e));
-    }
-  };
-
   const newSession = () => {
-    const s = makeDefaultSession("New Session");
     const preferred = window.localStorage.getItem(ASSISTANT_STORAGE_KEY);
     const availableAssistant = preferred
       ? assistants().find((a) => a.key === preferred && a.available)?.key ?? null
       : assistants().find((a) => a.available)?.key ?? null;
-    s.selectedAssistant = availableAssistant;
-    setSessions(sessions.length, s);
-    setActiveSessionId(s.id);
-    void invoke("create_app_session", { title: s.title }).catch(() => {});
+    void invoke<{ id: string }>("create_app_session", { title: "New Session" }).then((created) => {
+      const s = makeDefaultSession("New Session");
+      s.id = created.id;
+      s.selectedAssistant = availableAssistant;
+      setSessions(sessions.length, s);
+      setActiveSessionId(s.id);
+    }).catch((e: unknown) => {
+      showToast(`Failed to create session: ${String(e)}`);
+      const s = makeDefaultSession("New Session");
+      s.selectedAssistant = availableAssistant;
+      setSessions(sessions.length, s);
+      setActiveSessionId(s.id);
+    });
   };
 
   const closeSession = (id: string) => {
@@ -1088,9 +883,14 @@ export default function App() {
       } catch { }
 
       if (loaded.length === 0) {
-        const s = makeDefaultSession("Session 1");
-        loaded = [s];
-        void invoke("create_app_session", { title: s.title }).catch(() => {});
+        try {
+          const created = await invoke<{ id: string }>("create_app_session", { title: "Session 1" });
+          const s = makeDefaultSession("Session 1");
+          s.id = created.id;
+          loaded = [s];
+        } catch {
+          loaded = [makeDefaultSession("Session 1")];
+        }
       }
 
       setSessions(loaded);
@@ -1113,18 +913,13 @@ export default function App() {
     })();
 
     void Promise.all([
-      listen<AcpDeltaEvent>("acp/delta", (ev) => {
+      listen<AcpDeltaEvent & { appSessionId?: string }>("acp/delta", (ev) => {
         if (!streamAccepting) return;
-        const sid = activeSessionId();
+        const sid = ev.payload.appSessionId || streamOriginSessionId || activeSessionId();
         if (!sid) return;
-        const s = sessions.find((x) => x.id === sid);
-        if (!s?.streamingMessage) startStream();
-        streamBuffer += ev.payload.delta;
-        if (streamBuffer.length >= 64) {
-          flushStreamBuffer();
-          return;
-        }
-        scheduleStreamFlush();
+        const sess = sessions.find((s) => s.id === sid);
+        if (!sess?.streamingMessage) return;
+        appendStream(ev.payload.delta);
       }),
       listen<SessionUpdateEvent>("session/update", (ev) => {
         if (!ev.payload.delta) return;
@@ -1135,50 +930,46 @@ export default function App() {
         const p = ev.payload;
         pushMessage("event", `[workflow] ${p.status} ${p.activeRole ?? ""} ${p.message}`);
       }),
-      listen<AcpStreamEvent>("acp/stream", (ev) => {
-        const e = ev.payload;
+      listen<{ role: string; appSessionId?: string; event: AcpStreamEvent }>("acp/stream", (ev) => {
+        const e = ev.payload.event;
+        const sid = ev.payload.appSessionId || streamOriginSessionId || activeSessionId();
+        const patchOriginOrActive = (patch: Partial<AppSession>) => { if (sid) updateSession(sid, patch); };
         switch (e.kind) {
+          case "statusUpdate":
+            if (e.text) patchOriginOrActive({ agentState: e.text });
+            break;
           case "thoughtDelta":
-            if (e.text && streamAccepting) {
-              streamBuffer += `\n> ${e.text}`;
-              scheduleStreamFlush();
-            }
+            if (e.text) patchOriginOrActive({ agentState: `Thinking: ${e.text.slice(0, 120)}` });
             break;
           case "toolCall":
-            if (e.toolCallId) {
-              const sid = activeSessionId();
-              if (sid) {
-                const tidx = sessions.findIndex((s) => s.id === sid);
-                if (tidx !== -1) setSessions(tidx, "toolCalls", produce((m: Map<string, AppToolCall>) => {
-                  m.set(e.toolCallId!, { toolCallId: e.toolCallId!, title: e.title ?? "", kind: e.toolKind ?? "unknown", status: e.status ?? "pending" });
-                }));
-              }
+            if (e.toolCallId && sid) {
+              const tidx = sessions.findIndex((s) => s.id === sid);
+              if (tidx !== -1) setSessions(tidx, "toolCalls", produce((m: Map<string, AppToolCall>) => {
+                m.set(e.toolCallId!, { toolCallId: e.toolCallId!, title: e.title ?? "", kind: e.toolKind ?? "unknown", status: e.status ?? "pending" });
+              }));
             }
             break;
           case "toolCallUpdate":
-            if (e.toolCallId) {
-              const sid = activeSessionId();
-              if (sid) {
-                const tidx = sessions.findIndex((s) => s.id === sid);
-                if (tidx !== -1) setSessions(tidx, "toolCalls", produce((m: Map<string, AppToolCall>) => {
-                  const existing = m.get(e.toolCallId!);
-                  if (existing) {
-                    const newContent = (e.content as unknown[]) ?? existing.content;
-                    const contentJson = newContent !== existing.content
-                      ? (newContent && newContent.length > 0 ? JSON.stringify(newContent, null, 2) : undefined)
-                      : existing.contentJson;
-                    m.set(e.toolCallId!, { ...existing, status: e.status ?? existing.status, title: e.title ?? existing.title, content: newContent, contentJson });
-                  }
-                }));
-              }
+            if (e.toolCallId && sid) {
+              const tidx = sessions.findIndex((s) => s.id === sid);
+              if (tidx !== -1) setSessions(tidx, "toolCalls", produce((m: Map<string, AppToolCall>) => {
+                const existing = m.get(e.toolCallId!);
+                if (existing) {
+                  const newContent = (e.content as unknown[]) ?? existing.content;
+                  const contentJson = newContent !== existing.content
+                    ? (newContent && newContent.length > 0 ? JSON.stringify(newContent, null, 2) : undefined)
+                    : existing.contentJson;
+                  m.set(e.toolCallId!, { ...existing, status: e.status ?? existing.status, title: e.title ?? existing.title, content: newContent, contentJson });
+                }
+              }));
             }
             break;
           case "plan":
-            if (e.entries) patchActiveSession({ currentPlan: e.entries as AppPlanEntry[] });
+            if (e.entries) patchOriginOrActive({ currentPlan: e.entries as AppPlanEntry[] });
             break;
           case "permissionRequest":
             if (e.requestId) {
-              patchActiveSession({
+              patchOriginOrActive({
                 pendingPermission: {
                   requestId: e.requestId,
                   title: e.title ?? "Permission Required",
@@ -1189,23 +980,19 @@ export default function App() {
             }
             break;
           case "modeUpdate":
-            if (e.modeId) patchActiveSession({ currentMode: e.modeId });
+            if (e.modeId) patchOriginOrActive({ currentMode: e.modeId });
             break;
           case "availableModes":
-            if (e.modes) patchActiveSession({ agentModes: e.modes });
-            if (e.current !== undefined) patchActiveSession({ currentMode: e.current ?? null });
+            if (e.modes) patchOriginOrActive({ agentModes: e.modes });
+            if (e.current !== undefined) patchOriginOrActive({ currentMode: e.current ?? null });
             break;
           case "availableCommands":
-            if (e.commands) {
-              const raw = ev.payload as unknown as { role?: string };
-              const roleName = raw.role;
+            if (e.commands && sid) {
+              const roleName = ev.payload.role;
               if (roleName) {
                 const parsed = parseAgentCommands(e.commands as unknown[]);
-                const sid = activeSessionId();
-                if (sid) {
-                  const aidx = sessions.findIndex((s) => s.id === sid);
-                  if (aidx !== -1) setSessions(aidx, "agentCommands", produce((m: Map<string, Array<{ name: string; description: string; hint?: string }>>) => { m.set(roleName, parsed); }));
-                }
+                const aidx = sessions.findIndex((s) => s.id === sid);
+                if (aidx !== -1) setSessions(aidx, "agentCommands", produce((m: Map<string, Array<{ name: string; description: string; hint?: string }>>) => { m.set(roleName, parsed); }));
               }
             }
             break;
@@ -1227,8 +1014,8 @@ export default function App() {
       window.removeEventListener("keydown", handleGlobalKeyDown);
       dropStream();
       queuedInputs = [];
-      if (mentionCloseTimer !== null) window.clearTimeout(mentionCloseTimer);
-      if (mentionDebounceTimer !== null) window.clearTimeout(mentionDebounceTimer);
+      if (mentionCloseTimerRef.current !== null) window.clearTimeout(mentionCloseTimerRef.current);
+      if (mentionDebounceTimerRef.current !== null) window.clearTimeout(mentionDebounceTimerRef.current);
       if (sessionEventFlushTimer !== null) window.clearTimeout(sessionEventFlushTimer);
       if (persistTimer !== null) window.clearTimeout(persistTimer);
       if (scrollRaf !== null) {
@@ -1243,753 +1030,78 @@ export default function App() {
 
   return (
     <div class="window-bg h-dvh overflow-hidden text-[var(--ui-text)] relative flex flex-col">
+      <SessionTabs
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        setActiveSessionId={setActiveSessionId}
+        activeSession={activeSession}
+        assistants={assistants}
+        patchActiveSession={patchActiveSession}
+        activeBackendRole={activeBackendRole}
+        onNewSession={newSession}
+        onCloseSession={closeSession}
+        updateSession={updateSession}
+        onRefresh={() => { void refreshAssistants(); void refreshRoles(); void refreshSkills(); }}
+        onToggleDrawer={() => setShowDrawer((v) => !v)}
+      />
 
-      {/* ── Tabs Bar ── */}
-      <div class="flex h-9 shrink-0 items-center border-b border-white/[0.06] bg-[#0d0d10] gap-1" style="padding-left: max(8px, env(titlebar-area-x, 78px)); padding-right: 8px;">
-        <For each={sessions}>
-          {(s) => (
-            <div
-              onClick={() => { if (renamingSessionId() !== s.id) setActiveSessionId(s.id); }}
-              onDblClick={() => {
-                setRenamingSessionId(s.id);
-                setRenameValue(s.title);
-              }}
-              class={`group relative flex items-center gap-1.5 rounded-md px-3 py-1 text-xs transition-colors cursor-default select-none ${
-                s.id === activeSessionId()
-                  ? "bg-white/[0.08] text-white"
-                  : "text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04]"
-              }`}
-            >
-              <Show when={s.status === "running"}>
-                <span class="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
-              </Show>
-              <Show when={s.status === "done" && s.id !== activeSessionId()}>
-                <span class="h-1.5 w-1.5 rounded-full bg-blue-500" />
-              </Show>
-              <Show when={renamingSessionId() === s.id} fallback={
-                <span class="max-w-[120px] truncate">{s.title}</span>
-              }>
-                <input
-                  class="max-w-[120px] bg-transparent outline-none border-b border-white/30 text-xs text-white"
-                  value={renameValue()}
-                  onInput={(e) => setRenameValue(e.currentTarget.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      const val = renameValue().trim();
-                      if (val) {
-                        updateSession(s.id, { title: val });
-                        void invoke("update_app_session", { id: s.id, update: { title: val } }).catch(() => {});
-                      }
-                      setRenamingSessionId(null);
-                    } else if (e.key === "Escape") {
-                      setRenamingSessionId(null);
-                    }
-                  }}
-                  onBlur={() => {
-                    const val = renameValue().trim();
-                    if (val) {
-                      updateSession(s.id, { title: val });
-                      void invoke("update_app_session", { id: s.id, update: { title: val } }).catch(() => {});
-                    }
-                    setRenamingSessionId(null);
-                  }}
-                  ref={(el) => queueMicrotask(() => el?.select())}
-                  onClick={(e) => e.stopPropagation()}
-                />
-              </Show>
-              <Show when={sessions.length > 1}>
-                <button
-                  onClick={(e) => { e.stopPropagation(); closeSession(s.id); }}
-                  class="ml-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 text-zinc-400 leading-none"
-                >×</button>
-              </Show>
+      <MessageWindow
+        activeSessionId={activeSessionId}
+        activeSession={activeSession}
+        patchActiveSession={patchActiveSession}
+        onListMounted={(id, el) => { listRefMap.set(id, el); }}
+        onListUnmounted={(id) => { listRefMap.delete(id); }}
+      />
+
+      <ChatInput
+        input={input}
+        setInput={setInput}
+        activeSession={activeSession}
+        patchActiveSession={patchActiveSession}
+        isCustomRole={isCustomRole}
+        onSubmit={handleSend}
+        onInputEvent={handleInputEvent}
+        onInputKeyDown={handleInputKeyDown}
+        refreshInputCompletions={refreshInputCompletions}
+        mentionOpen={mentionOpen}
+        mentionItems={mentionItems}
+        mentionActiveIndex={mentionActiveIndex}
+        slashOpen={slashOpen}
+        slashItems={slashItems}
+        slashActiveIndex={slashActiveIndex}
+        applyMentionCandidate={applyMentionCandidate}
+        applySlashCandidate={applySlashCandidate}
+        closeMentionMenu={closeMentionMenu}
+        closeSlashMenu={closeSlashMenu}
+        inputElRef={(el) => { inputEl = el; }}
+        mentionCloseTimerRef={mentionCloseTimerRef}
+        mentionDebounceTimerRef={mentionDebounceTimerRef}
+      />
+
+      <ConfigDrawer
+        showDrawer={showDrawer}
+        setShowDrawer={setShowDrawer}
+        assistants={assistants}
+        roles={roles}
+        skills={skills}
+        activeSession={activeSession}
+        patchActiveSession={patchActiveSession}
+        sendRaw={sendRaw}
+        refreshRoles={refreshRoles}
+        refreshSkills={refreshSkills}
+        pushMessage={pushMessage}
+        fetchConfigOptions={fetchConfigOptions}
+      />
+
+      <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+        <For each={toasts()}>
+          {(t) => (
+            <div class={`pointer-events-auto max-w-xs rounded-lg px-4 py-2 text-xs shadow-lg ${t.severity === "info" ? "bg-zinc-800 text-zinc-300" : "bg-rose-900/90 text-rose-200"}`}>
+              {t.message}
             </div>
           )}
         </For>
-        <button
-          onClick={() => newSession()}
-          class="flex h-6 w-6 items-center justify-center rounded text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.05] text-sm"
-        >+</button>
-        <div class="flex-1" />
-        <For each={assistants()}>
-          {(a) => (
-            <button
-              onClick={() => a.available && patchActiveSession({ selectedAssistant: a.key })}
-              class={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] transition-colors ${
-                activeSession()?.selectedAssistant === a.key
-                  ? "bg-white/[0.12] text-white"
-                  : "text-zinc-600 hover:text-zinc-400"
-              } ${!a.available ? "opacity-30 pointer-events-none" : ""}`}
-            >
-              <span class={`h-1.5 w-1.5 rounded-full ${a.available ? "bg-emerald-400" : "bg-rose-400"}`} />
-              {a.label}
-            </button>
-          )}
-        </For>
-        <Show when={(activeSession()?.agentModes ?? []).length > 0}>
-          <div class="flex gap-1 ml-1">
-            <For each={activeSession()?.agentModes ?? []}>
-              {(m) => (
-                <button
-                  class={`min-h-6 rounded border px-2 py-0.5 text-[10px] ${INTERACTIVE_MOTION} ${activeSession()?.currentMode === m.id ? "border-white/25 bg-white/10 text-white" : "border-white/[0.06] text-zinc-600 hover:text-zinc-300"}`}
-                  onClick={() => {
-                    const assistant = activeSession()?.selectedAssistant ?? null;
-                    const role = activeBackendRole();
-                    if (assistant) void invoke("set_acp_mode", { runtimeKind: assistant, roleName: role, modeId: m.id });
-                  }}
-                >
-                  {m.title ?? m.id}
-                </button>
-              )}
-            </For>
-          </div>
-        </Show>
-        <button
-          onClick={() => { void refreshAssistants(); void refreshRoles(); void refreshSkills(); }}
-          class={`flex h-7 w-7 items-center justify-center rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.05] ${INTERACTIVE_MOTION}`}
-          title="Refresh"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-        </button>
-        <button
-          onClick={() => setShowDrawer((v) => !v)}
-          class={`flex h-7 w-7 items-center justify-center rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.05] ${INTERACTIVE_MOTION}`}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
-          </svg>
-        </button>
       </div>
-
-      {/* ── Terminal Canvas ── */}
-      <div
-        id={`msg-list-${activeSessionId()}`}
-        role="log"
-        aria-live="polite"
-        aria-relevant="additions text"
-        class="flex-1 overflow-auto px-6 py-4 font-mono text-sm bg-[#09090b]"
-      >
-        <Show when={hiddenMessageCount() > 0}>
-          <div class="py-1 text-center text-xs text-zinc-600 opacity-40">
-            {hiddenMessageCount()} older messages hidden for performance
-          </div>
-        </Show>
-        <For each={visibleMessages()}>
-          {(msg) => {
-            if (msg.role === "user") return (
-              <div class="mt-4 mb-1">
-                <span class="text-zinc-500 select-none mr-2">&gt;</span>
-                <span class="text-zinc-200">{msg.text}</span>
-                <span class="ml-3 text-[10px] text-zinc-600">{fmt(msg.at)}</span>
-              </div>
-            );
-            if (msg.role === "system" || msg.role === "event") return (
-              <div class="flex items-center gap-3 my-1 opacity-40">
-                <div class="h-px flex-1 bg-white/[0.06]" />
-                <span class="text-[10px] text-zinc-500 shrink-0">{msg.text}</span>
-                <div class="h-px flex-1 bg-white/[0.06]" />
-              </div>
-            );
-            return (
-              <div class="mb-3">
-                <div class="flex items-center gap-2 mb-0.5">
-                  <span class={`text-[10px] font-semibold ${RUNTIME_COLOR[activeSession()?.selectedAssistant ?? ""] ?? "text-zinc-400"}`}>
-                    [{msg.roleLabel ?? "assistant"}]
-                  </span>
-                  <span class="text-[10px] text-zinc-600">{fmt(msg.at)}</span>
-                  <Show when={activeSession()?.currentMode}>
-                    <span class="rounded bg-indigo-500/20 px-1 text-[9px] text-indigo-200">{activeSession()?.currentMode}</span>
-                  </Show>
-                </div>
-                <pre class="whitespace-pre-wrap break-words text-zinc-300 leading-relaxed pl-0">{msg.text}</pre>
-              </div>
-            );
-          }}
-        </For>
-        <Show when={activeSession()?.streamingMessage}>
-          {(streaming) => (
-            <div class="mb-3">
-              <div class="flex items-center gap-2 mb-0.5">
-                <span class={`text-[10px] font-semibold ${RUNTIME_COLOR[activeSession()?.selectedAssistant ?? ""] ?? "text-zinc-400"}`}>
-                  [{activeSession()?.activeRole ?? "assistant"}]
-                </span>
-                <span class="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
-              </div>
-              <pre class="whitespace-pre-wrap break-words text-zinc-300 leading-relaxed">{streaming().text}</pre>
-            </div>
-          )}
-        </Show>
-        <Show when={activeSession()?.pendingPermission}>
-          {(perm) => (
-            <div class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 my-2">
-              <div class="mb-1 text-xs font-semibold text-amber-300">{perm().title}</div>
-              <Show when={perm().description}><p class="mb-2 text-xs text-zinc-400">{perm().description}</p></Show>
-              <div class="flex gap-2">
-                <For each={perm().options}>{(opt) => (
-                  <button
-                    class={`min-h-8 rounded border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-300 hover:bg-emerald-500/20 ${INTERACTIVE_MOTION}`}
-                    onClick={() => {
-                      void invoke("respond_permission", { requestId: perm().requestId, optionId: opt.optionId, cancelled: false });
-                      patchActiveSession({ pendingPermission: null });
-                    }}
-                  >
-                    {opt.title ?? opt.optionId}
-                  </button>
-                )}</For>
-                <button
-                  class={`min-h-8 rounded border border-rose-500/40 bg-rose-500/10 px-3 py-1 text-xs text-rose-300 hover:bg-rose-500/20 ${INTERACTIVE_MOTION}`}
-                  onClick={() => {
-                    void invoke("respond_permission", { requestId: perm().requestId, optionId: "", cancelled: true });
-                    patchActiveSession({ pendingPermission: null });
-                  }}
-                >
-                  Deny
-                </button>
-              </div>
-            </div>
-          )}
-        </Show>
-        <Show when={activeSession()?.currentPlan}>
-          {(plan) => (
-            <div class="rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 my-2">
-              <div class="mb-1 text-xs font-semibold text-zinc-400">Plan</div>
-              <ol class="list-inside list-decimal space-y-0.5 text-xs">
-                <For each={plan()}>{(entry) => (
-                  <li class="flex items-center gap-1.5">
-                    <span class={`inline-block h-1.5 w-1.5 rounded-full ${entry.status === "completed" ? "bg-emerald-400" : entry.status === "in_progress" ? "bg-amber-400 animate-pulse" : "bg-zinc-500"}`} />
-                    <span class="text-zinc-300">{entry.title ?? entry.description ?? "step"}</span>
-                  </li>
-                )}</For>
-              </ol>
-            </div>
-          )}
-        </Show>
-        <Show when={(activeSession()?.toolCalls.size ?? 0) > 0}>
-          <div class="space-y-1 my-2">
-            <For each={[...(activeSession()?.toolCalls.values() ?? [])]}>{(tc) => (
-              <details class="rounded-lg border border-zinc-700 bg-zinc-900">
-                <summary class="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs">
-                  <span class={`h-1.5 w-1.5 rounded-full ${tc.status === "success" || tc.status === "completed" ? "bg-emerald-400" : tc.status === "failure" || tc.status === "error" ? "bg-rose-400" : tc.status === "running" || tc.status === "in_progress" ? "bg-amber-400 animate-pulse" : "bg-zinc-500"}`} />
-                  <span class="font-medium text-zinc-300">{tc.title || tc.toolCallId}</span>
-                  <span class="ml-auto text-zinc-500">{tc.status}</span>
-                </summary>
-                <Show when={tc.contentJson}>
-                  <pre class="whitespace-pre-wrap break-words border-t border-zinc-700 px-3 py-1.5 text-xs text-zinc-500">
-                    {tc.contentJson}
-                  </pre>
-                </Show>
-              </details>
-            )}</For>
-          </div>
-        </Show>
-        <Show when={activeSession()?.submitting}>
-          <div class="flex items-center gap-2 px-1 text-xs text-zinc-500 opacity-80 mt-2">
-            <span class="h-2 w-2 rounded-full bg-white/60 animate-pulse" />
-            <span>Agent is thinking...</span>
-          </div>
-        </Show>
-      </div>
-
-      {/* ── Capsule Input ── */}
-      <div class="shrink-0 px-4 py-3 bg-[#09090b] border-t border-white/[0.04]">
-        <form onSubmit={handleSend} class="relative">
-          <div class="flex items-center rounded-full border border-white/[0.1] bg-white/[0.04] px-4 gap-2 focus-within:border-white/[0.18] motion-safe:transition-colors">
-            <button
-              type="button"
-              onClick={() => patchActiveSession({ activeRole: DEFAULT_ROLE_ALIAS })}
-              class={`shrink-0 py-2.5 text-xs font-mono ${isCustomRole() ? "text-blue-300 hover:text-blue-200" : "text-zinc-500"}`}
-              title={isCustomRole() ? "Click to return to UnionAI" : "UnionAI mode"}
-            >
-              {activeSession()?.activeRole ?? DEFAULT_ROLE_ALIAS} &gt;
-            </button>
-            <input
-              ref={(el) => { inputEl = el; }}
-              value={input()}
-              onInput={(e) => handleInputEvent(e.currentTarget)}
-              onClick={(e) => refreshInputCompletions(e.currentTarget.value, e.currentTarget.selectionStart ?? e.currentTarget.value.length)}
-              onKeyDown={handleInputKeyDown}
-              onBlur={() => {
-                if (mentionCloseTimer !== null) window.clearTimeout(mentionCloseTimer);
-                mentionCloseTimer = window.setTimeout(() => {
-                  closeMentionMenu();
-                  closeSlashMenu();
-                }, 120);
-              }}
-              onFocus={(e) => {
-                if (mentionCloseTimer !== null) window.clearTimeout(mentionCloseTimer);
-                if (mentionDebounceTimer !== null) {
-                  window.clearTimeout(mentionDebounceTimer);
-                  mentionDebounceTimer = null;
-                }
-                refreshInputCompletions(input(), e.currentTarget.selectionStart ?? input().length);
-              }}
-              placeholder={isCustomRole() ? `Chat with ${activeSession()?.activeRole}... (type / for agent commands)` : "Natural language / commands / @role @file:path"}
-              class="flex-1 bg-transparent py-2.5 text-sm outline-none min-w-0 text-zinc-200 placeholder:text-zinc-600"
-            />
-            <button
-              type="submit"
-              class={`shrink-0 flex h-7 w-7 items-center justify-center rounded-full motion-safe:transition-all motion-safe:duration-150 ${input().trim() ? "bg-white text-zinc-950" : "bg-white/[0.08] text-white/20"} ${INTERACTIVE_MOTION}`}
-              title={activeSession()?.submitting ? "Queue" : "Send"}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
-            </button>
-          </div>
-          <Show when={slashOpen() && slashItems().length > 0}>
-            <div ref={slashListEl} class="absolute bottom-14 left-0 right-0 z-30 max-h-56 overflow-auto rounded-lg border border-zinc-700 bg-zinc-900 p-1 shadow-xl">
-              <For each={slashItems()}>
-                {(item, i) => (
-                  <button
-                    type="button"
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      applySlashCandidate(item);
-                    }}
-                    class={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${i() === slashActiveIndex() ? "bg-white/[0.08] text-white" : "text-zinc-400 hover:bg-white/[0.04]"}`}
-                  >
-                    <span class="rounded bg-indigo-500/20 px-1 text-[10px] uppercase tracking-wide text-indigo-200">cmd</span>
-                    <span class="truncate font-mono text-xs">{item.value}</span>
-                    <span class="ml-auto truncate text-[10px] opacity-70">{item.detail}</span>
-                  </button>
-                )}
-              </For>
-            </div>
-          </Show>
-          <Show when={mentionOpen() && mentionItems().length > 0}>
-            <div ref={mentionListEl} class="absolute bottom-14 left-0 right-0 z-30 max-h-56 overflow-auto rounded-lg border border-zinc-700 bg-zinc-900 p-1 shadow-xl">
-              <For each={mentionItems()}>
-                {(item, i) => (
-                  <button
-                    type="button"
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      applyMentionCandidate(item);
-                    }}
-                    class={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${i() === mentionActiveIndex() ? "bg-white/[0.08] text-white" : "text-zinc-400 hover:bg-white/[0.04]"}`}
-                  >
-                    <span class={`rounded px-1 text-[10px] uppercase tracking-wide ${item.kind === "role" ? "bg-blue-500/20 text-blue-200" : item.kind === "dir" ? "bg-emerald-500/20 text-emerald-200" : item.kind === "file" ? "bg-amber-500/20 text-amber-200" : item.kind === "command" ? "bg-indigo-500/20 text-indigo-200" : item.kind === "skill" ? "bg-violet-500/20 text-violet-200" : "bg-zinc-500/20 text-zinc-300"}`}>
-                      {item.kind}
-                    </span>
-                    <span class="truncate font-mono text-xs">{item.value}</span>
-                    <span class="ml-auto truncate text-[10px] opacity-70">{item.detail}</span>
-                  </button>
-                )}
-              </For>
-            </div>
-          </Show>
-        </form>
-      </div>
-
-      {/* ── Config Drawer ── */}
-      <Show when={showDrawer()}>
-        <div class="absolute inset-0 z-50 flex">
-          <div class="flex-1" onClick={() => setShowDrawer(false)} />
-          <div class="w-72 bg-[#111114] border-l border-white/[0.07] flex flex-col overflow-hidden">
-            <div class="flex items-center justify-between px-4 py-3 border-b border-white/[0.06]">
-              <span class="text-xs font-semibold text-zinc-300">Config</span>
-              <button onClick={() => setShowDrawer(false)} class="text-zinc-500 hover:text-zinc-300 text-lg leading-none">×</button>
-            </div>
-            <div class="flex-1 overflow-auto p-3 space-y-4">
-
-              {/* Assistants */}
-              <div>
-                <div class="mb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Assistant</div>
-                <div class="space-y-1">
-                  <For each={assistants()}>
-                    {(a) => (
-                      <button
-                        class={`flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm ${INTERACTIVE_MOTION} ${
-                          activeSession()?.selectedAssistant === a.key
-                            ? "bg-white/[0.08] text-white"
-                            : "hover:bg-white/[0.05] text-zinc-400"
-                        } ${!a.available ? "opacity-40" : ""}`}
-                        onClick={() => a.available && patchActiveSession({ selectedAssistant: a.key })}
-                      >
-                        <span class={`h-1.5 w-1.5 shrink-0 rounded-full ${a.available ? "bg-emerald-400" : "bg-rose-400"}`} />
-                        <span class="flex-1 font-medium">{a.label}</span>
-                        <Show when={a.version}><span class="text-xs text-zinc-500">v{a.version}</span></Show>
-                      </button>
-                    )}
-                  </For>
-                </div>
-              </div>
-
-              {/* Roles */}
-              <div>
-                <div class="mb-2 flex items-center justify-between">
-                  <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Roles</span>
-                  <button
-                    onClick={() => setShowRoleForm((v) => {
-                      const next = !v;
-                      if (next) closeRoleEditor();
-                      if (next && activeSession()?.selectedAssistant) setRoleFormRuntime(activeSession()!.selectedAssistant!);
-                      return next;
-                    })}
-                    class={`min-h-7 rounded-md border border-white/[0.08] px-2 py-0.5 text-xs text-zinc-500 hover:border-white/[0.15] hover:text-zinc-200 ${INTERACTIVE_MOTION}`}
-                  >
-                    {showRoleForm() ? "cancel" : "+ role"}
-                  </button>
-                </div>
-
-                <Show when={showRoleForm()}>
-                  <div class="mb-2 space-y-1.5 rounded-xl border border-white/[0.07] bg-white/[0.03] p-2.5">
-                    <input
-                      value={roleFormName()}
-                      onInput={(e) => setRoleFormName(e.currentTarget.value)}
-                      placeholder="Role name (e.g. Developer)"
-                      class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-2.5 text-sm text-zinc-200"
-                    />
-                    <select
-                      value={roleFormRuntime()}
-                      onChange={(e) => {
-                        setRoleFormRuntime(e.currentTarget.value);
-                        setRoleFormConfigSelections({});
-                        void fetchConfigOptions(e.currentTarget.value).then(setCreateFormConfigOptions);
-                      }}
-                      class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-2.5 text-sm text-zinc-200"
-                    >
-                      <For each={RUNTIMES}>{(r) => <option value={r}>{r}</option>}</For>
-                    </select>
-                    <textarea
-                      value={roleFormPrompt()}
-                      onInput={(e) => setRoleFormPrompt(e.currentTarget.value)}
-                      rows={3}
-                      placeholder="System prompt for this role…"
-                      class="w-full resize-none rounded border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200"
-                    />
-                    <For each={createFormConfigOptions()}>
-                      {(opt) => {
-                        const values = () => flattenConfigValues(opt.options);
-                        const selected = () => roleFormConfigSelections()[opt.id] ?? "";
-                        const isModel = () => opt.category === "model" || opt.id === "model";
-                        const isMode = () => opt.category === "mode" || opt.id === "mode";
-                        return (
-                          <Show when={!isModel() && !isMode()}>
-                            <div class="flex flex-col gap-0.5">
-                              <label class="text-[10px] text-zinc-500">{opt.name}{opt.description ? ` — ${opt.description}` : ""}</label>
-                              <select
-                                value={selected()}
-                                onChange={(e) => setRoleFormConfigSelections((prev) => ({ ...prev, [opt.id]: e.currentTarget.value }))}
-                                class="h-8 w-full rounded border border-zinc-700 bg-zinc-900 px-2 text-xs text-zinc-200"
-                              >
-                                <option value="">(default: {opt.currentValue})</option>
-                                <For each={values()}>{(v) => <option value={v.value}>{v.name}{v.description ? ` — ${v.description}` : ""}</option>}</For>
-                              </select>
-                            </div>
-                          </Show>
-                        );
-                      }}
-                    </For>
-                    <Show when={createFormConfigOptions().some((o) => o.category === "model" || o.id === "model")}>
-                      {(() => {
-                        const modelOpt = () => createFormConfigOptions().find((o) => o.category === "model" || o.id === "model")!;
-                        const values = () => flattenConfigValues(modelOpt().options);
-                        return (
-                          <select
-                            value={roleFormModel()}
-                            onChange={(e) => setRoleFormModel(e.currentTarget.value)}
-                            class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-2.5 text-sm text-zinc-200"
-                          >
-                            <option value="">Model (default: {modelOpt().currentValue})</option>
-                            <For each={values()}>{(v) => <option value={v.value}>{v.name}{v.description ? ` — ${v.description}` : ""}</option>}</For>
-                          </select>
-                        );
-                      })()}
-                    </Show>
-                    <Show when={!createFormConfigOptions().some((o) => o.category === "model" || o.id === "model")}>
-                      <input
-                        value={roleFormModel()}
-                        onInput={(e) => setRoleFormModel(e.currentTarget.value)}
-                        placeholder="Model (optional)"
-                        class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-2.5 text-sm text-zinc-200"
-                      />
-                    </Show>
-                    <Show when={createFormConfigOptions().some((o) => o.category === "mode" || o.id === "mode")}>
-                      {(() => {
-                        const modeOpt = () => createFormConfigOptions().find((o) => o.category === "mode" || o.id === "mode")!;
-                        const values = () => flattenConfigValues(modeOpt().options);
-                        return (
-                          <select
-                            value={roleFormMode()}
-                            onChange={(e) => setRoleFormMode(e.currentTarget.value)}
-                            class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-2.5 text-sm text-zinc-200"
-                          >
-                            <option value="">Mode (default: {modeOpt().currentValue})</option>
-                            <For each={values()}>{(v) => <option value={v.value}>{v.name}{v.description ? ` — ${v.description}` : ""}</option>}</For>
-                          </select>
-                        );
-                      })()}
-                    </Show>
-                    <Show when={!createFormConfigOptions().some((o) => o.category === "mode" || o.id === "mode")}>
-                      <select
-                        value={roleFormMode()}
-                        onChange={(e) => setRoleFormMode(e.currentTarget.value)}
-                        class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-2.5 text-sm text-zinc-200"
-                      >
-                        <option value="">Mode (default)</option>
-                        <option value="plan">plan</option>
-                        <option value="act">act</option>
-                        <option value="auto">auto</option>
-                      </select>
-                    </Show>
-                    <label class="flex items-center gap-2 text-xs text-zinc-500">
-                      <input
-                        type="checkbox"
-                        checked={roleFormAutoApprove()}
-                        onChange={(e) => setRoleFormAutoApprove(e.currentTarget.checked)}
-                        class="rounded"
-                      />
-                      Auto-approve permissions
-                    </label>
-                    <button
-                      onClick={() => void handleCreateRole()}
-                      class={`h-9 w-full rounded-lg bg-white text-sm font-semibold text-zinc-950 ${INTERACTIVE_MOTION}`}
-                    >
-                      Create Role
-                    </button>
-                  </div>
-                </Show>
-
-                <Show when={editingRole()}>
-                  {(role) => (
-                    <div class="mb-2 space-y-1.5 rounded-xl border border-white/[0.07] bg-white/[0.03] p-2.5">
-                      <div class="flex items-center justify-between">
-                        <div class="text-xs font-semibold text-zinc-200">Edit {role().roleName}</div>
-                        <button
-                          onClick={closeRoleEditor}
-                          class={`rounded px-1.5 py-0.5 text-xs text-zinc-500 hover:text-zinc-200 ${INTERACTIVE_MOTION}`}
-                        >
-                          close
-                        </button>
-                      </div>
-                      <div class="text-[10px] text-zinc-600">provider locked: {role().runtimeKind}</div>
-                      <textarea
-                        value={editRolePrompt()}
-                        onInput={(e) => setEditRolePrompt(e.currentTarget.value)}
-                        rows={3}
-                        placeholder="System prompt"
-                        class="w-full resize-none rounded border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200"
-                      />
-                      {(() => {
-                        const opts = activeSession()?.discoveredConfigOptions ?? [];
-                        const currentCfg = (): Record<string, string> => {
-                          try { return JSON.parse(editRoleConfigOptionsJson() || "{}"); } catch { return {}; }
-                        };
-                        const updateCfg = (id: string, val: string) => {
-                          const map = { ...currentCfg() };
-                          if (val) map[id] = val; else delete map[id];
-                          setEditRoleConfigOptionsJson(JSON.stringify(map));
-                        };
-                        const modelOpt = () => opts.find((o) => o.category === "model" || o.id === "model");
-                        const modeOpt = () => opts.find((o) => o.category === "mode" || o.id === "mode");
-                        const otherOpts = () => opts.filter((o) => o.id !== "model" && o.id !== "mode" && o.category !== "model" && o.category !== "mode");
-                        return (
-                          <>
-                            <Show when={modelOpt()} fallback={
-                              <input value={editRoleModel()} onInput={(e) => setEditRoleModel(e.currentTarget.value)} placeholder="Model (optional)" class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-2.5 text-sm text-zinc-200" />
-                            }>
-                              {(mo) => {
-                                const values = () => flattenConfigValues(mo().options);
-                                return (
-                                  <select value={editRoleModel() || mo().currentValue} onChange={(e) => setEditRoleModel(e.currentTarget.value)} class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-2.5 text-sm text-zinc-200">
-                                    <option value="">Model (default: {mo().currentValue})</option>
-                                    <For each={values()}>{(v) => <option value={v.value}>{v.name}{v.description ? ` — ${v.description}` : ""}</option>}</For>
-                                  </select>
-                                );
-                              }}
-                            </Show>
-                            <Show when={modeOpt()} fallback={
-                              <input value={editRoleMode()} onInput={(e) => setEditRoleMode(e.currentTarget.value)} placeholder="Mode (optional)" class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-2.5 text-sm text-zinc-200" />
-                            }>
-                              {(mo) => {
-                                const values = () => flattenConfigValues(mo().options);
-                                return (
-                                  <select value={editRoleMode() || mo().currentValue} onChange={(e) => setEditRoleMode(e.currentTarget.value)} class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-2.5 text-sm text-zinc-200">
-                                    <option value="">Mode (default: {mo().currentValue})</option>
-                                    <For each={values()}>{(v) => <option value={v.value}>{v.name}{v.description ? ` — ${v.description}` : ""}</option>}</For>
-                                  </select>
-                                );
-                              }}
-                            </Show>
-                            <For each={otherOpts()}>
-                              {(opt) => {
-                                const values = () => flattenConfigValues(opt.options);
-                                const selected = () => currentCfg()[opt.id] ?? "";
-                                return (
-                                  <div class="flex flex-col gap-0.5">
-                                    <label class="text-[10px] text-zinc-500">{opt.name}{opt.description ? ` — ${opt.description}` : ""}</label>
-                                    <select value={selected()} onChange={(e) => updateCfg(opt.id, e.currentTarget.value)} class="h-8 w-full rounded border border-zinc-700 bg-zinc-900 px-2 text-xs text-zinc-200">
-                                      <option value="">(default: {opt.currentValue})</option>
-                                      <For each={values()}>{(v) => <option value={v.value}>{v.name}{v.description ? ` — ${v.description}` : ""}</option>}</For>
-                                    </select>
-                                  </div>
-                                );
-                              }}
-                            </For>
-                            <Show when={opts.length === 0}>
-                              <div class="text-[10px] text-zinc-600 italic">
-                                {activeSession()?.configOptionsLoading ? "Loading config options from agent..." : "No config options available for this agent."}
-                              </div>
-                            </Show>
-                          </>
-                        );
-                      })()}
-                      <textarea
-                        value={editRoleMcpServersJson()}
-                        onInput={(e) => setEditRoleMcpServersJson(e.currentTarget.value)}
-                        rows={2}
-                        placeholder='MCP servers JSON (e.g. [{"name":"..." }])'
-                        class="w-full resize-y rounded border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-xs font-mono text-zinc-300"
-                      />
-                      <label class="flex items-center gap-2 text-xs text-zinc-500">
-                        <input
-                          type="checkbox"
-                          checked={editRoleAutoApprove()}
-                          onChange={(e) => setEditRoleAutoApprove(e.currentTarget.checked)}
-                          class="rounded"
-                        />
-                        Auto-approve permissions
-                      </label>
-                      <button
-                        onClick={() => void handleSaveRoleEdit()}
-                        class={`h-9 w-full rounded-lg bg-white text-sm font-semibold text-zinc-950 ${INTERACTIVE_MOTION}`}
-                      >
-                        Save Role
-                      </button>
-                    </div>
-                  )}
-                </Show>
-
-                <div class="space-y-1">
-                  <For each={roles()}>
-                    {(role) => (
-                      <div class="group relative flex items-start gap-1.5 rounded-lg border-l-2 border-l-transparent px-2 py-1.5 motion-safe:transition-all motion-safe:duration-150 hover:border-l-white/20 hover:bg-white/[0.04]">
-                        <div class="flex-1 min-w-0">
-                          <div class="flex items-center gap-1.5 flex-wrap">
-                            <span class="text-xs font-medium text-zinc-300">{role.roleName}</span>
-                            <span class={`text-xs ${RUNTIME_COLOR[role.runtimeKind] ?? "text-zinc-500"}`}>{role.runtimeKind}</span>
-                            <Show when={role.model}><span class="rounded bg-blue-500/20 px-1 text-[9px] text-blue-200">{role.model}</span></Show>
-                            <Show when={role.mode}><span class="rounded bg-indigo-500/20 px-1 text-[9px] text-indigo-200">{role.mode}</span></Show>
-                            <Show when={!role.autoApprove}><span class="rounded bg-amber-500/20 px-1 text-[9px] text-amber-200">manual</span></Show>
-                            {(() => {
-                              try {
-                                const cfg = JSON.parse(role.configOptionsJson || "{}");
-                                const keys = Object.keys(cfg).filter((k) => k !== "model" && k !== "mode" && cfg[k]);
-                                return keys.length > 0 ? <span class="rounded bg-teal-500/20 px-1 text-[9px] text-teal-200">{keys.length} cfg</span> : null;
-                              } catch { return null; }
-                            })()}
-                          </div>
-                          <p class="truncate text-xs text-zinc-600">{role.systemPrompt}</p>
-                        </div>
-                        <div class="flex shrink-0 gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
-                          <button
-                            onClick={() => openRoleEditor(role)}
-                            class={`rounded px-1.5 py-0.5 text-xs ${editingRoleId() === role.id ? "text-blue-300" : "text-zinc-500 hover:text-zinc-200"} ${INTERACTIVE_MOTION}`}
-                          >
-                            {editingRoleId() === role.id ? "editing" : "edit"}
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </For>
-                  <Show when={roles().length === 0 && !showRoleForm()}>
-                    <p class="rounded-lg border border-dashed border-zinc-700 p-2 text-center text-xs text-zinc-600">
-                      No roles yet. Click "+ role" to add one.
-                    </p>
-                  </Show>
-                </div>
-              </div>
-
-              {/* Skills */}
-              <div>
-                <div class="mb-2 flex items-center justify-between">
-                  <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Skills</span>
-                  <button
-                    onClick={() => {
-                      setEditingSkillId(null);
-                      setSkillFormName("");
-                      setSkillFormDescription("");
-                      setSkillFormContent("");
-                      setShowSkillForm((v) => !v);
-                    }}
-                    class={`min-h-7 rounded-md border border-white/[0.08] px-2 py-0.5 text-xs text-zinc-500 hover:border-white/[0.15] hover:text-zinc-200 ${INTERACTIVE_MOTION}`}
-                  >
-                    {showSkillForm() && !editingSkillId() ? "cancel" : "+ skill"}
-                  </button>
-                </div>
-
-                <Show when={showSkillForm()}>
-                  <div class="mb-2 space-y-1.5 rounded-xl border border-white/[0.07] bg-white/[0.03] p-2.5">
-                    <input
-                      value={skillFormName()}
-                      onInput={(e) => setSkillFormName(e.currentTarget.value)}
-                      placeholder="Skill name (e.g. code-review)"
-                      class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-2.5 text-sm text-zinc-200"
-                    />
-                    <input
-                      value={skillFormDescription()}
-                      onInput={(e) => setSkillFormDescription(e.currentTarget.value)}
-                      placeholder="Short description"
-                      class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-2.5 text-sm text-zinc-200"
-                    />
-                    <textarea
-                      value={skillFormContent()}
-                      onInput={(e) => setSkillFormContent(e.currentTarget.value)}
-                      rows={4}
-                      placeholder="Skill content — prompt instructions, templates, context…"
-                      class="w-full resize-none rounded border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200"
-                    />
-                    <button
-                      onClick={saveSkill}
-                      class={`w-full rounded-lg bg-indigo-600 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 ${INTERACTIVE_MOTION}`}
-                    >
-                      {editingSkillId() ? "Save changes" : "Create skill"}
-                    </button>
-                  </div>
-                </Show>
-
-                <div class="space-y-1">
-                  <For each={skills()}>
-                    {(skill) => (
-                      <div class="group rounded-lg border border-white/[0.05] bg-white/[0.02] px-2.5 py-2">
-                        <div class="flex items-center justify-between gap-1">
-                          <span class="text-xs font-medium text-zinc-300">#{skill.name}</span>
-                          <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              onClick={() => openSkillEditor(skill)}
-                              class="rounded px-1.5 py-0.5 text-[10px] text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.06]"
-                            >edit</button>
-                            <button
-                              onClick={() => void deleteSkill(skill.id)}
-                              class="rounded px-1.5 py-0.5 text-[10px] text-rose-600 hover:text-rose-400 hover:bg-rose-500/10"
-                            >del</button>
-                          </div>
-                        </div>
-                        <Show when={skill.description}>
-                          <p class="mt-0.5 text-[10px] text-zinc-600 truncate">{skill.description}</p>
-                        </Show>
-                      </div>
-                    )}
-                  </For>
-                  <Show when={skills().length === 0 && !showSkillForm()}>
-                    <p class="rounded-lg border border-dashed border-zinc-700 p-2 text-center text-xs text-zinc-600">
-                      No skills yet. Click "+ skill" to add one.
-                    </p>
-                  </Show>
-                </div>
-              </div>
-
-              {/* Quick actions */}
-              <div class="flex flex-wrap gap-0.5 border-t border-white/[0.05] pt-3">
-                <button onClick={() => void sendRaw("/workflow list")} class="min-h-8 rounded-md px-2.5 py-1 text-xs text-zinc-500 hover:text-white hover:bg-white/[0.05] motion-safe:transition-colors motion-safe:duration-150">workflows</button>
-                <button onClick={() => void sendRaw("/context list")} class="min-h-8 rounded-md px-2.5 py-1 text-xs text-zinc-500 hover:text-white hover:bg-white/[0.05] motion-safe:transition-colors motion-safe:duration-150">context</button>
-                <button onClick={() => void sendRaw("/session list")} class="min-h-8 rounded-md px-2.5 py-1 text-xs text-zinc-500 hover:text-white hover:bg-white/[0.05] motion-safe:transition-colors motion-safe:duration-150">sessions</button>
-              </div>
-
-            </div>
-          </div>
-        </div>
-      </Show>
-
     </div>
   );
 }

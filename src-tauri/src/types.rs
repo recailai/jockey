@@ -211,8 +211,8 @@ pub(crate) struct AppSkillUpsert {
 
 pub(crate) const ATTACH_MAX_TOTAL_BYTES: usize = 160 * 1024;
 pub(crate) const ATTACH_MAX_FILE_BYTES: usize = 24 * 1024;
-pub(crate) const ATTACH_MAX_DIR_FILES: usize = 40;
-pub(crate) const ATTACH_MAX_DIR_DEPTH: usize = 6;
+pub(crate) const ATTACH_MAX_DIR_FILES: usize = 30;
+pub(crate) const ATTACH_MAX_DIR_DEPTH: usize = 3;
 pub(crate) const DEFAULT_WORKSPACE_NAME: &str = "default";
 pub(crate) const PREWARM_ROLE_LIMIT: usize = 6;
 pub(crate) const DEFAULT_MODELS: &[&str] = &[];
@@ -222,12 +222,21 @@ pub(crate) const DEFAULT_SKILLS: &[&str] = &[];
 pub(crate) const BASE_CLI_COMMANDS: &[(&str, &str)] = &[
     ("/app_help", "Show command help"),
     ("/app_assistant list", "List detected assistant runtimes"),
-    ("/app_assistant select <runtime>", "Select active assistant runtime"),
+    (
+        "/app_assistant select <runtime>",
+        "Select active assistant runtime",
+    ),
     ("/app_model list", "List configurable model catalog"),
     ("/app_model add <model>", "Add model to dynamic catalog"),
-    ("/app_model remove <model>", "Remove model from dynamic catalog"),
+    (
+        "/app_model remove <model>",
+        "Remove model from dynamic catalog",
+    ),
     ("/app_model select <model>", "Select assistant model"),
-    ("/app_model select role <role> <model>", "Select model for a specific role"),
+    (
+        "/app_model select role <role> <model>",
+        "Select model for a specific role",
+    ),
     ("/app_model get", "Get selected assistant model"),
     ("/app_model clear", "Clear selected assistant model"),
     ("/app_mcp list", "List MCP catalog and enabled entries"),
@@ -236,13 +245,28 @@ pub(crate) const BASE_CLI_COMMANDS: &[(&str, &str)] = &[
     ("/app_mcp enable <name>", "Enable MCP server"),
     ("/app_mcp disable <name>", "Disable MCP server"),
     ("/app_role list", "List roles"),
-    ("/app_role bind <role> <runtime> [prompt]", "Create or update role"),
-    ("/app_role prompt <role> <prompt>", "Update role system prompt"),
+    (
+        "/app_role bind <role> <runtime> [prompt]",
+        "Create or update role",
+    ),
+    (
+        "/app_role prompt <role> <prompt>",
+        "Update role system prompt",
+    ),
     ("/app_role delete <role>", "Delete role"),
     ("/app_role edit <role> model <model>", "Set role model"),
     ("/app_role edit <role> mode <mode>", "Set role mode"),
-    ("/app_role edit <role> auto-approve <true|false>", "Set role auto-approve"),
-    ("/app_role edit <role> mcp-add <json>", "Add MCP server to role"),
-    ("/app_role edit <role> mcp-remove <name>", "Remove MCP server from role"),
+    (
+        "/app_role edit <role> auto-approve <true|false>",
+        "Set role auto-approve",
+    ),
+    (
+        "/app_role edit <role> mcp-add <json>",
+        "Add MCP server to role",
+    ),
+    (
+        "/app_role edit <role> mcp-remove <name>",
+        "Remove MCP server from role",
+    ),
     ("/app_role copy <src> <dst>", "Duplicate role"),
 ];

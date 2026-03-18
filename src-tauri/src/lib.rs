@@ -3,6 +3,7 @@ mod assistant;
 mod chat;
 mod commands;
 mod db;
+mod runtime_kind;
 mod types;
 
 use dashmap::DashMap;
@@ -83,8 +84,8 @@ Only output app commands when the user explicitly asks to perform a UnionAI acti
 }
 
 #[tauri::command]
-async fn cancel_acp_session(runtime_kind: String, role_name: String) -> Result<(), String> {
-    acp::cancel_session(&runtime_kind, &role_name).await;
+async fn cancel_acp_session(runtime_kind: String, role_name: String, app_session_id: Option<String>) -> Result<(), String> {
+    acp::cancel_session(&runtime_kind, &role_name, app_session_id.as_deref().unwrap_or("")).await;
     Ok(())
 }
 
@@ -92,19 +93,21 @@ async fn cancel_acp_session(runtime_kind: String, role_name: String) -> Result<(
 async fn set_acp_mode(
     runtime_kind: String,
     role_name: String,
+    app_session_id: Option<String>,
     mode_id: String,
 ) -> Result<(), String> {
-    acp::set_mode(&runtime_kind, &role_name, &mode_id).await
+    acp::set_mode(&runtime_kind, &role_name, app_session_id.as_deref().unwrap_or(""), &mode_id).await
 }
 
 #[tauri::command]
 async fn set_acp_config_option(
     runtime_kind: String,
     role_name: String,
+    app_session_id: Option<String>,
     config_id: String,
     value: String,
 ) -> Result<(), String> {
-    acp::set_config_option(&runtime_kind, &role_name, &config_id, &value).await
+    acp::set_config_option(&runtime_kind, &role_name, app_session_id.as_deref().unwrap_or(""), &config_id, &value).await
 }
 
 #[tauri::command]
@@ -127,7 +130,13 @@ async fn prewarm_role_config_cmd(
     let cwd = resolve_chat_cwd(&state, team_id.as_deref());
     let resolved_team_id = team_id.unwrap_or_default();
     let state_inner = state.inner();
-    Ok(acp::prewarm_role_for_config(&runtime_kind, &role_name, &cwd, Some((state_inner, &resolved_team_id))).await)
+    Ok(acp::prewarm_role_for_config(
+        &runtime_kind,
+        &role_name,
+        &cwd,
+        Some((state_inner, &resolved_team_id)),
+    )
+    .await)
 }
 
 #[tauri::command]
@@ -242,25 +251,79 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let default_cwd = prewarm_cwd.clone();
             tauri::async_runtime::spawn(async move {
-                for (key, available) in catalog_snapshot {
-                    if available {
-                        acp::prewarm(&key, &prewarm_cwd).await;
-                    }
-                }
                 let role_sessions: serde_json::Map<String, serde_json::Value> =
                     recent_app_session.as_ref()
                         .and_then(|(_, json)| serde_json::from_str(json).ok())
                         .unwrap_or_default();
-                let app_session_id = recent_app_session.as_ref().map(|(id, _)| id.as_str()).unwrap_or("");
+                let app_session_id = recent_app_session
+                    .as_ref()
+                    .map(|(id, _)| id.clone())
+                    .unwrap_or_default();
+
+                let recent_role_names: std::collections::HashSet<String> = role_sessions.keys().cloned().collect();
+
+                let mut priority_futs: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> = Vec::new();
+
+                for (key, available) in &catalog_snapshot {
+                    if *available {
+                        let cwd = prewarm_cwd.clone();
+                        let key = key.clone();
+                        priority_futs.push(Box::pin(async move {
+                            acp::prewarm(&key, &cwd).await;
+                        }));
+                    }
+                }
+
+                for (role_name, runtime_kind, workspace_path) in &all_roles {
+                    if runtime_kind != "mock" && !available_runtime_keys.contains(runtime_kind) {
+                        continue;
+                    }
+                    if !recent_role_names.contains(role_name) {
+                        continue;
+                    }
+                    let cwd = abs_cwd(if workspace_path.is_empty() { &default_cwd } else { workspace_path });
+                    let state_ref = app_handle.state::<AppState>();
+                    let app_state_inner: &AppState = state_ref.inner();
+                    let db_clone = app_state_inner.db.clone();
+                    let ctx_clone = app_state_inner.shared_context.clone();
+                    let resume_sid = role_sessions.get(role_name).and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let sid_clone = app_session_id.clone();
+                    let role_name_clone = role_name.clone();
+                    let runtime_kind_clone = runtime_kind.clone();
+                    priority_futs.push(Box::pin(async move {
+                        let tmp = AppState { db: db_clone, shared_context: ctx_clone };
+                        acp::prewarm_role_with_session_id(&runtime_kind_clone, &role_name_clone, &cwd, resume_sid, &tmp, &sid_clone).await;
+                    }));
+                }
+
+                let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(2));
+                let mut handles = Vec::new();
+                for fut in priority_futs {
+                    let permit = sem.clone().acquire_owned().await.ok();
+                    handles.push(tokio::spawn(async move {
+                        let _permit = permit;
+                        fut.await;
+                    }));
+                }
+                for h in handles {
+                    let _ = h.await;
+                }
+
                 for (role_name, runtime_kind, workspace_path) in all_roles {
                     if runtime_kind != "mock" && !available_runtime_keys.contains(&runtime_kind) {
                         continue;
                     }
+                    if recent_role_names.contains(&role_name) {
+                        continue;
+                    }
                     let cwd = abs_cwd(if workspace_path.is_empty() { &default_cwd } else { &workspace_path });
                     let state_ref = app_handle.state::<AppState>();
-                    let app_state_inner = state_ref.inner();
-                    let resume_sid = role_sessions.get(&role_name).and_then(|v| v.as_str()).map(|s| s.to_string());
-                    acp::prewarm_role_with_session_id(&runtime_kind, &role_name, &cwd, resume_sid, app_state_inner, app_session_id).await;
+                    let app_state_inner: &AppState = state_ref.inner();
+                    let db_clone = app_state_inner.db.clone();
+                    let ctx_clone = app_state_inner.shared_context.clone();
+                    let tmp = AppState { db: db_clone, shared_context: ctx_clone };
+                    acp::prewarm_role_with_session_id(&runtime_kind, &role_name, &cwd, None, &tmp, "").await;
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 }
             });
 

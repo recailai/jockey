@@ -9,7 +9,7 @@ use crate::types::*;
 use crate::{acp, build_unionai_tool_prompt, clip_text, now_ms, resolve_chat_cwd};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fmt::Write as FmtWrite;
 use std::io::Read;
 use std::time::Instant;
@@ -22,12 +22,18 @@ const RECENT_ROLE_CHAT_TEXT_MAX: usize = 1000;
 pub(crate) fn parse_route_input(raw: &str) -> ParsedRouteInput {
     let mut out = ParsedRouteInput::default();
     let mut message_tokens = Vec::new();
+    let mut seen_skills: HashSet<String> = HashSet::new();
+    let mut seen_roles: HashSet<String> = HashSet::new();
 
     for token in raw.split_whitespace() {
         if let Some(skill_ref) = token.strip_prefix('#') {
             let name = strip_trailing_punct(skill_ref).trim();
-            if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-                if !out.skill_refs.iter().any(|s| s == name) {
+            if !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                if seen_skills.insert(name.to_string()) {
                     out.skill_refs.push(name.to_string());
                 }
                 continue;
@@ -45,11 +51,8 @@ pub(crate) fn parse_route_input(raw: &str) -> ParsedRouteInput {
 
         if let Some(role) = mention.strip_prefix("role:") {
             if let Some(clean_role) = sanitize_role_name(role) {
-                if !out
-                    .role_names
-                    .iter()
-                    .any(|n| n.eq_ignore_ascii_case(&clean_role))
-                {
+                let key = clean_role.to_ascii_lowercase();
+                if seen_roles.insert(key) {
                     out.role_names.push(clean_role);
                 }
                 continue;
@@ -95,11 +98,8 @@ pub(crate) fn parse_route_input(raw: &str) -> ParsedRouteInput {
         }
 
         if let Some(clean_role) = sanitize_role_name(mention) {
-            if !out
-                .role_names
-                .iter()
-                .any(|n| n.eq_ignore_ascii_case(&clean_role))
-            {
+            let key = clean_role.to_ascii_lowercase();
+            if seen_roles.insert(key) {
                 out.role_names.push(clean_role);
             }
             continue;
@@ -161,7 +161,23 @@ struct RecentRoleChat {
 }
 
 fn collapse_whitespace(raw: &str) -> String {
-    raw.split_whitespace().collect::<Vec<_>>().join(" ")
+    let mut out = String::with_capacity(raw.len());
+    let mut in_space = true;
+    for ch in raw.chars() {
+        if ch.is_whitespace() {
+            if !in_space {
+                out.push(' ');
+                in_space = true;
+            }
+        } else {
+            out.push(ch);
+            in_space = false;
+        }
+    }
+    if out.ends_with(' ') {
+        out.pop();
+    }
+    out
 }
 
 fn normalize_recent_chat_text(raw: &str) -> String {
@@ -284,19 +300,10 @@ pub(crate) fn relative_or_abs(path: &std::path::Path, cwd: &str) -> String {
 }
 
 pub(crate) fn should_skip_name(name: &str) -> bool {
-    matches!(
-        name,
-        ".git"
-            | ".svn"
-            | ".hg"
-            | "node_modules"
-            | "dist"
-            | "build"
-            | "target"
-            | ".idea"
-            | ".vscode"
-            | ".DS_Store"
-    )
+    if name.starts_with('.') {
+        return true;
+    }
+    matches!(name, "node_modules" | "dist" | "build" | "target")
 }
 
 fn looks_binary(bytes: &[u8]) -> bool {
@@ -578,33 +585,31 @@ pub(crate) async fn assistant_chat(
     let mut attachment_pairs: Vec<(String, String)> = Vec::new();
     let mut attach_budget = ATTACH_MAX_TOTAL_BYTES;
     let mut attach_notes = Vec::new();
-    for file_ref in routed.file_refs {
-        if attach_budget == 0 {
-            attach_notes.push("attachment budget reached; some files skipped".to_string());
-            break;
-        }
-        match attach_file_context(cwd.clone(), file_ref.clone(), attach_budget).await {
-            Ok((key, value, used)) => {
-                attachment_pairs.push((key, value));
-                attach_budget = attach_budget.saturating_sub(used);
+
+    {
+        let per_file_budget = attach_budget / (routed.file_refs.len() + routed.dir_refs.len()).max(1);
+        let per_file_budget = per_file_budget.min(ATTACH_MAX_TOTAL_BYTES);
+        let file_futs: Vec<_> = routed.file_refs.iter()
+            .map(|r| attach_file_context(cwd.clone(), r.clone(), per_file_budget))
+            .collect();
+        let dir_futs: Vec<_> = routed.dir_refs.iter()
+            .map(|r| attach_dir_context(cwd.clone(), r.clone(), per_file_budget))
+            .collect();
+        let (file_results, dir_results) = tokio::join!(
+            futures::future::join_all(file_futs),
+            futures::future::join_all(dir_futs)
+        );
+        for result in file_results.into_iter().chain(dir_results) {
+            if attach_budget == 0 {
+                attach_notes.push("attachment budget reached; some files skipped".to_string());
+                break;
             }
-            Err(e) => {
-                attach_notes.push(format!("{} ({})", e, file_ref));
-            }
-        }
-    }
-    for dir_ref in routed.dir_refs {
-        if attach_budget == 0 {
-            attach_notes.push("attachment budget reached; some directories skipped".to_string());
-            break;
-        }
-        match attach_dir_context(cwd.clone(), dir_ref.clone(), attach_budget).await {
-            Ok((key, value, used)) => {
-                attachment_pairs.push((key, value));
-                attach_budget = attach_budget.saturating_sub(used);
-            }
-            Err(e) => {
-                attach_notes.push(format!("{} ({})", e, dir_ref));
+            match result {
+                Ok((key, value, used)) => {
+                    attachment_pairs.push((key, value));
+                    attach_budget = attach_budget.saturating_sub(used);
+                }
+                Err(e) => attach_notes.push(e),
             }
         }
     }
@@ -642,7 +647,10 @@ pub(crate) async fn assistant_chat(
         let assistant_clone = assistant.clone();
         let db_data: RoleDbData = tokio::task::spawn_blocking(move || {
             // Build a transient AppState view backed by the cloned pool + shared_context.
-            let tmp_state = AppState { db: pool_clone, shared_context: ctx_clone };
+            let tmp_state = AppState {
+                db: pool_clone,
+                shared_context: ctx_clone,
+            };
 
             let runtime = if role_name_clone == "UnionAIAssistant" {
                 assistant_clone
@@ -694,7 +702,9 @@ pub(crate) async fn assistant_chat(
             let role_mode = role_data.as_ref().and_then(|r| r.mode.clone());
             let role_config: Vec<(String, String)> = role_data
                 .as_ref()
-                .and_then(|r| serde_json::from_str::<serde_json::Value>(&r.config_options_json).ok())
+                .and_then(|r| {
+                    serde_json::from_str::<serde_json::Value>(&r.config_options_json).ok()
+                })
                 .and_then(|v| {
                     v.as_object().map(|m| {
                         m.iter()
@@ -704,7 +714,14 @@ pub(crate) async fn assistant_chat(
                 })
                 .unwrap_or_default();
 
-            RoleDbData { runtime, context_pairs, auto_approve, role_mode, role_config, context_log }
+            RoleDbData {
+                runtime,
+                context_pairs,
+                auto_approve,
+                role_mode,
+                role_config,
+                context_log,
+            }
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -737,9 +754,15 @@ pub(crate) async fn assistant_chat(
 
         // Build the prompt directly into one pre-allocated buffer to avoid
         // the intermediate Vec<String> + join() chain of allocations.
-        let ctx_bytes: usize = context_pairs.iter().map(|(k, v)| k.len() + v.len() + 4).sum();
-        let estimated = if is_union_assistant { tool_prompt.len() + 10 } else { 0 }
-            + ctx_bytes
+        let ctx_bytes: usize = context_pairs
+            .iter()
+            .map(|(k, v)| k.len() + v.len() + 4)
+            .sum();
+        let estimated = if is_union_assistant {
+            tool_prompt.len() + 10
+        } else {
+            0
+        } + ctx_bytes
             + message.len()
             + 64;
         let mut prepared = String::with_capacity(estimated);
@@ -788,7 +811,12 @@ pub(crate) async fn assistant_chat(
             vec![],
             role_mode,
             role_config,
-            if app_session_id_ref.is_empty() { None } else { Some((get_state(&state), app_session_id_ref)) },
+            if app_session_id_ref.is_empty() {
+                None
+            } else {
+                Some((get_state(&state), app_session_id_ref))
+            },
+            app_session_id_ref,
         )
         .await;
         let output = llm.output.trim().to_string();
