@@ -181,6 +181,8 @@
 - [ ] DB pool Condvar 无超时等待，极端并发下可能长尾阻塞（加 5s timeout）
 
 ### 8. 前端 UI 加载优化
+- [ ] Rust 端 TextDelta 批处理：acp/session.rs emit 循环改为 50ms ticker 或积累阈值合批，减少 80-90% IPC 调用次数
+- [ ] 启动懒加载：list_app_sessions 只返回 session 元信息，切换 session 时按需加载消息（重度用户启动明显加速）
 - [ ] 首屏骨架屏：onMount 完成前显示 skeleton placeholder，避免白屏/闪烁
 - [ ] ConfigDrawer 代码拆分：已 lazy() 但首次打开仍卡顿，预加载或 prefetch 改善
 - [ ] 消息列表虚拟滚动：长会话 500+ 条消息全量渲染导致掉帧（接入 virtual list）
