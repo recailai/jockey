@@ -24,7 +24,7 @@ export default function SessionTabs(props: SessionTabsProps) {
   const [renameValue, setRenameValue] = createSignal("");
 
   return (
-    <div class="flex h-11 shrink-0 items-center border-b border-white/[0.04] bg-[#0a0a0c]/80 backdrop-blur-md gap-1.5 shadow-sm relative z-10" style="padding-left: max(12px, env(titlebar-area-x, 78px)); padding-right: 12px;">
+    <div data-tauri-drag-region class="flex h-11 shrink-0 items-center border-b border-white/[0.04] bg-[#0a0a0c]/80 backdrop-blur-md gap-1.5 shadow-sm relative z-10" style="padding-left: max(12px, env(titlebar-area-x, 78px)); padding-right: 12px;">
       <For each={props.sessions}>
         {(s) => (
           <div
@@ -33,10 +33,10 @@ export default function SessionTabs(props: SessionTabsProps) {
               setRenamingSessionId(s.id);
               setRenameValue(s.title);
             }}
-            class={`group relative flex items-center gap-2 rounded-lg px-3 py-1.5 text-[12.5px] font-medium transition-all duration-200 cursor-default select-none border ${
+            class={`group relative flex items-center gap-1.5 rounded-full px-3 py-1 text-[10.5px] font-bold tracking-wide transition-all duration-200 cursor-default select-none border shadow-sm ${
               s.id === props.activeSessionId()
-                ? "bg-white/[0.06] text-zinc-100 border-white/[0.08] shadow-sm ring-1 ring-black/20"
-                : "border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.04] hover:border-white/[0.04]"
+                ? "bg-zinc-800/80 text-zinc-200 border-white/[0.08] ring-1 ring-black/20"
+                : "bg-zinc-900/40 border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/80 hover:border-white/[0.05]"
             }`}
           >
             <Show when={s.status === "running"}>
@@ -49,7 +49,7 @@ export default function SessionTabs(props: SessionTabsProps) {
               <span class="max-w-[120px] truncate">{s.title}</span>
             }>
               <input
-                class="max-w-[120px] bg-transparent outline-none border-b border-white/40 text-[12.5px] text-white font-medium"
+                class="max-w-[120px] bg-transparent outline-none border-b border-white/40 text-[10.5px] text-white font-bold tracking-wide"
                 value={renameValue()}
                 onInput={(e) => setRenameValue(e.currentTarget.value)}
                 onKeyDown={(e) => {
@@ -94,7 +94,7 @@ export default function SessionTabs(props: SessionTabsProps) {
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
-      <div class="flex-1" />
+      <div data-tauri-drag-region class="flex-1" />
       <For each={props.assistants()}>
         {(a) => (
           <button
