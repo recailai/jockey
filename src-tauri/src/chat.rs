@@ -2,7 +2,7 @@ use crate::commands::apply_chat_command;
 use crate::db::context::{
     context_scope_for_role, list_shared_context_internal, set_shared_context_internal,
 };
-use crate::db::{ensure_default_team_id, get_state};
+use crate::db::get_state;
 use crate::db::role::{load_role, load_role_runtime_kind};
 use crate::db::skill::load_skills_by_names;
 use crate::fs_context::{attach_dir_context, attach_file_context};
@@ -16,8 +16,9 @@ use std::time::Instant;
 use tauri::{AppHandle, State};
 
 const RECENT_ROLE_CHATS_KEY: &str = "recentRoleChats";
-const RECENT_ROLE_CHATS_LIMIT: usize = 3;
-const RECENT_ROLE_CHAT_TEXT_MAX: usize = 1000;
+const RECENT_ROLE_CHATS_LIMIT: usize = 9;
+const RECENT_ROLE_TURNS_PER_ROLE: usize = 3;
+const RECENT_ROLE_CHAT_TEXT_MAX: usize = 5000;
 
 pub(crate) fn chat_log(event: &str, payload: serde_json::Value) {
     eprintln!("[unionai.chat] {} {} {}", now_ms(), event, payload);
@@ -66,8 +67,8 @@ fn normalize_recent_chat_text(raw: &str) -> String {
     clip_text(&compact, RECENT_ROLE_CHAT_TEXT_MAX)
 }
 
-fn load_recent_role_chats(state: &AppState, team_id: &str) -> Vec<RecentRoleChat> {
-    let entries = list_shared_context_internal(state, team_id).unwrap_or_default();
+fn load_recent_role_chats(state: &AppState) -> Vec<RecentRoleChat> {
+    let entries = list_shared_context_internal(state, "global").unwrap_or_default();
     entries
         .into_iter()
         .find(|entry| entry.key == RECENT_ROLE_CHATS_KEY)
@@ -77,26 +78,36 @@ fn load_recent_role_chats(state: &AppState, team_id: &str) -> Vec<RecentRoleChat
 
 fn append_recent_role_chat(
     state: &AppState,
-    team_id: &str,
     role_name: &str,
     user: &str,
     assistant: &str,
     cwd: &str,
 ) {
-    let mut chats = load_recent_role_chats(state, team_id);
-    chats.retain(|c| c.role != role_name);
+    let mut chats = load_recent_role_chats(state);
+    // Trim this role's history to keep only the most recent (TURNS_PER_ROLE - 1)
+    // entries, then append the new one — so at most TURNS_PER_ROLE per role.
+    let mut role_count = chats.iter().filter(|c| c.role == role_name).count();
+    while role_count >= RECENT_ROLE_TURNS_PER_ROLE {
+        if let Some(pos) = chats.iter().position(|c| c.role == role_name) {
+            chats.remove(pos);
+            role_count -= 1;
+        } else {
+            break;
+        }
+    }
     chats.push(RecentRoleChat {
         role: role_name.to_string(),
         user: normalize_recent_chat_text(user),
         assistant: normalize_recent_chat_text(assistant),
         cwd: cwd.to_string(),
     });
+    // Global cap across all roles.
     if chats.len() > RECENT_ROLE_CHATS_LIMIT {
         let drop_count = chats.len() - RECENT_ROLE_CHATS_LIMIT;
         chats.drain(0..drop_count);
     }
     if let Ok(payload) = serde_json::to_string(&chats) {
-        let _ = set_shared_context_internal(state, team_id, RECENT_ROLE_CHATS_KEY, &payload);
+        let _ = set_shared_context_internal(state, "global", RECENT_ROLE_CHATS_KEY, &payload);
     }
 }
 
@@ -152,7 +163,7 @@ pub(crate) async fn assistant_chat(
         json!({
             "inputSize": text.len(),
             "preview": clip_text(&text, 120),
-            "selectedAssistant": input.selected_assistant.clone()
+            "runtimeKind": input.runtime_kind.clone()
         }),
     );
     if text.is_empty() {
@@ -165,7 +176,7 @@ pub(crate) async fn assistant_chat(
         return Ok(AssistantChatResponse {
             ok: false,
             reply: "empty input".to_string(),
-            selected_assistant: input.selected_assistant,
+            runtime_kind: input.runtime_kind,
             session_id: None,
             command_result: None,
         });
@@ -177,7 +188,7 @@ pub(crate) async fn assistant_chat(
             app,
             state,
             text,
-            input.selected_assistant.clone(),
+            input.runtime_kind.clone(),
         )
         .await?;
         chat_log(
@@ -192,14 +203,14 @@ pub(crate) async fn assistant_chat(
         return Ok(AssistantChatResponse {
             ok: command_result.ok,
             reply: command_result.message.clone(),
-            selected_assistant: command_result.selected_assistant.clone(),
+            runtime_kind: command_result.runtime_kind.clone(),
             session_id: command_result.session_id.clone(),
             command_result: Some(command_result),
         });
     }
 
     let assistant = input
-        .selected_assistant
+        .runtime_kind
         .clone()
         .ok_or_else(|| "assistant not selected".to_string())?;
 
@@ -218,9 +229,8 @@ pub(crate) async fn assistant_chat(
         message = "Please answer based on the attached context.".to_string();
     }
 
-    let team_id = ensure_default_team_id(get_state(&state))?;
     let tool_prompt = build_unionai_tool_prompt();
-    let cwd = resolve_chat_cwd(get_state(&state));
+    let cwd = resolve_chat_cwd();
     let mut attachment_pairs: Vec<(String, String)> = Vec::new();
     let mut attach_budget = ATTACH_MAX_TOTAL_BYTES;
     let mut attach_notes = Vec::new();
@@ -293,7 +303,6 @@ pub(crate) async fn assistant_chat(
         }
         let pool_clone = db_pool.clone();
         let ctx_clone = shared_ctx.clone();
-        let team_id_clone = team_id.clone();
         let role_name_clone = role_name.clone();
         let assistant_clone = assistant.clone();
         let db_data: RoleDbData = tokio::task::spawn_blocking(move || {
@@ -326,7 +335,7 @@ pub(crate) async fn assistant_chat(
                 if !role_prompt.is_empty() {
                     context_pairs.push(("role_prompt".to_string(), role_prompt));
                 }
-                let recent_chats: Vec<_> = load_recent_role_chats(&tmp_state, &team_id_clone)
+                let recent_chats: Vec<_> = load_recent_role_chats(&tmp_state)
                     .into_iter()
                     .filter(|c| c.role != role_name_clone)
                     .collect();
@@ -347,7 +356,7 @@ pub(crate) async fn assistant_chat(
             }
             let auto_approve = role_data.as_ref().map(|r| r.auto_approve).unwrap_or(true);
             let role_mode = role_data.as_ref().and_then(|r| r.mode.clone());
-            let role_config: Vec<(String, String)> = role_data
+            let mut role_config: Vec<(String, String)> = role_data
                 .as_ref()
                 .and_then(|r| {
                     serde_json::from_str::<serde_json::Value>(&r.config_options_json).ok()
@@ -360,6 +369,24 @@ pub(crate) async fn assistant_chat(
                     })
                 })
                 .unwrap_or_default();
+
+            // Inject model into role_config so ACP receives it as a real
+            // SessionConfigOption, not just prompt text.
+            // Priority: roles.model > shared_context "model" key.
+            if !role_config.iter().any(|(k, _)| k == "model") {
+                let model = role_data
+                    .as_ref()
+                    .and_then(|r| r.model.clone())
+                    .or_else(|| {
+                        context_pairs
+                            .iter()
+                            .find(|(k, _)| k == "model")
+                            .map(|(_, v)| v.clone())
+                    });
+                if let Some(m) = model {
+                    role_config.push(("model".to_string(), m));
+                }
+            }
 
             let role_system_prompt = role_data
                 .as_ref()
@@ -426,7 +453,7 @@ pub(crate) async fn assistant_chat(
                 prepared.push_str(sp);
             }
         }
-        let is_slash_cmd = message.starts_with('/') && !is_union_assistant;
+        let is_slash_cmd = message.starts_with('/');
         if !is_slash_cmd {
             if !context_pairs.is_empty() {
                 if !prepared.is_empty() {
@@ -522,7 +549,6 @@ pub(crate) async fn assistant_chat(
         if !is_union_assistant {
             append_recent_role_chat(
                 get_state(&state),
-                &team_id,
                 &role_name,
                 &message,
                 &final_output,
@@ -548,7 +574,7 @@ pub(crate) async fn assistant_chat(
     Ok(AssistantChatResponse {
         ok: true,
         reply,
-        selected_assistant: Some(assistant),
+        runtime_kind: Some(assistant),
         session_id: None,
         command_result: None,
     })

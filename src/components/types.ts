@@ -31,12 +31,12 @@ export type AcpConfigOption = {
   options: ConfigOptionValue[] | ConfigOptionGroup[];
 };
 export type AssistantRuntime = { key: string; label: string; binary: string; available: boolean; version: string | null };
-export type ChatCommandResult = { ok: boolean; message: string; selectedAssistant: string | null; sessionId: string | null; payload: Record<string, unknown> };
-export type AssistantChatResponse = { ok: boolean; reply: string; selectedAssistant: string | null; sessionId: string | null; commandResult: ChatCommandResult | null };
+export type ChatCommandResult = { ok: boolean; message: string; runtimeKind: string | null; sessionId: string | null; payload: Record<string, unknown> };
+export type AssistantChatResponse = { ok: boolean; reply: string; runtimeKind: string | null; sessionId: string | null; commandResult: ChatCommandResult | null };
 export type SessionUpdateEvent = { sessionId: string; roleName: string; delta: string; done: boolean };
 export type WorkflowStateEvent = { sessionId: string; status: string; activeRole: string | null; message: string };
 export type AcpDeltaEvent = { role: string; delta: string; appSessionId?: string };
-export type AppMessage = { id: string; role: "system" | "user" | "assistant" | "event"; text: string; at: number; roleLabel?: string; toolCalls?: AppToolCall[] };
+export type AppMessage = { id: string; roleName: string; text: string; at: number; toolCalls?: AppToolCall[] };
 export type AppMentionItem = { value: string; kind: "role" | "file" | "dir" | "hint" | "command" | "skill"; detail: string };
 export type AppSkill = { id: string; name: string; description: string; content: string; createdAt: number; updatedAt: number };
 
@@ -44,7 +44,7 @@ export type AppSession = {
   id: string;
   title: string;
   activeRole: string;
-  selectedAssistant: string | null;
+  runtimeKind: string | null;
   messages: AppMessage[];
   streamingMessage: AppMessage | null;
   toolCalls: Map<string, AppToolCall>;

@@ -33,9 +33,9 @@ export default function MessageWindow(props: MessageWindowProps) {
     const sliced = rows.length <= MESSAGE_RENDER_WINDOW ? rows : rows.slice(rows.length - MESSAGE_RENDER_WINDOW);
     const deduped: (AppMessage & { count?: number })[] = [];
     for (const msg of sliced) {
-      if (msg.role === "system" || msg.role === "event") {
+      if (msg.roleName === "system" || msg.roleName === "event") {
         const last = deduped[deduped.length - 1];
-        if (last && (last.role === "system" || last.role === "event") && last.text === msg.text) {
+        if (last && (last.roleName === "system" || last.roleName === "event") && last.text === msg.text) {
           last.count = (last.count ?? 1) + 1;
           last.at = msg.at;
           continue;
@@ -67,7 +67,7 @@ export default function MessageWindow(props: MessageWindowProps) {
       </Show>
       <For each={visibleMessages()}>
         {(msg) => {
-          if (msg.role === "user") return (
+          if (msg.roleName === "user") return (
             <div class="flex flex-col items-end w-full mb-3 group/user">
               <div class="max-w-[85%] bg-gradient-to-br from-zinc-800 to-zinc-900 rounded-2xl rounded-tr-md px-4 py-2 text-[13px] text-zinc-100 shadow-lg border border-white/[0.08] ring-1 ring-black/20">
                 <div class="whitespace-pre-wrap break-words leading-relaxed font-mono">{msg.text}</div>
@@ -75,7 +75,7 @@ export default function MessageWindow(props: MessageWindowProps) {
               <div class="mt-1.5 text-[10px] text-zinc-500 mr-1 opacity-0 transition-opacity duration-300 group-hover/user:opacity-100 tracking-wide">{fmt(msg.at)}</div>
             </div>
           );
-          if (msg.role === "system" || msg.role === "event") return (
+          if (msg.roleName === "system" || msg.roleName === "event") return (
             <div class="flex justify-center my-3 relative">
               <div class="absolute inset-x-0 top-1/2 h-px bg-gradient-to-r from-transparent via-zinc-800/60 to-transparent -z-10"></div>
               <div class="max-w-[90%] px-4 py-1.5 bg-zinc-900/80 border border-zinc-700/50 rounded-full text-[11.5px] text-zinc-400 flex items-center gap-2.5 backdrop-blur-md shadow-sm">
@@ -97,8 +97,8 @@ export default function MessageWindow(props: MessageWindowProps) {
               </div>
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2.5 mb-1.5 opacity-90">
-                  <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.selectedAssistant ?? ""] ?? "text-zinc-300"}`}>
-                    {msg.roleLabel ?? "Agent"}
+                  <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.runtimeKind ?? ""] ?? "text-zinc-300"}`}>
+                    {msg.roleName}
                   </span>
                   <span class="text-[10px] text-zinc-500 font-medium">{fmt(msg.at)}</span>
                   <Show when={props.activeSession()?.currentMode}>
@@ -136,12 +136,17 @@ export default function MessageWindow(props: MessageWindowProps) {
             </div>
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2.5 mb-2">
-                <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.selectedAssistant ?? ""] ?? "text-zinc-300"}`}>
+                <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.runtimeKind ?? ""] ?? "text-zinc-300"}`}>
                   {props.activeSession()?.activeRole ?? "Agent"}
                 </span>
-                <span class="text-[10px] text-zinc-500 font-medium animate-pulse tracking-wide">thinking...</span>
+                <span class="text-[10px] text-zinc-500 font-medium animate-pulse tracking-wide">{props.activeSession()?.agentState || "thinking..."}</span>
               </div>
-              <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{streaming().text}</div>
+              <Show when={streaming().text}>
+                <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{streaming().text}</div>
+              </Show>
+              <Show when={!streaming().text && props.activeSession()?.agentState}>
+                <div class="text-[11px] text-zinc-500 italic">{props.activeSession()?.agentState}</div>
+              </Show>
             </div>
           </div>
         )}

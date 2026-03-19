@@ -1,9 +1,9 @@
 use crate::db::context::{list_shared_context_internal, set_shared_context_internal};
 use crate::db::role::{load_role, load_role_runtime_kind};
 use crate::db::workflow::load_workflow;
-use crate::db::{ensure_default_team_id, get_state, load_team_workspace_path, parse_payload, with_db};
+use crate::db::{get_state, parse_payload, with_db};
 use crate::types::*;
-use crate::{acp, now_ms};
+use crate::{acp, default_chat_cwd, now_ms};
 use rusqlite::params;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -56,23 +56,22 @@ pub(crate) fn update_session_status(
 pub(crate) fn list_sessions(
     state: State<'_, AppState>,
 ) -> Result<Vec<Session>, String> {
-    let team_id = ensure_default_team_id(get_state(&state))?;
     with_db(get_state(&state), |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, team_id, workflow_id, status, initial_prompt, created_at, updated_at
-                 FROM sessions WHERE team_id = ?1 ORDER BY created_at DESC",
+                "SELECT id, workflow_id, status, initial_prompt, created_at, updated_at
+                 FROM sessions ORDER BY created_at DESC",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![team_id], |row| {
+            .query_map([], |row| {
                 Ok(Session {
                     id: row.get(0)?,
-                    workflow_id: row.get(2)?,
-                    status: row.get(3)?,
-                    initial_prompt: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
+                    workflow_id: row.get(1)?,
+                    status: row.get(2)?,
+                    initial_prompt: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -170,9 +169,8 @@ pub(crate) async fn run_workflow(
     seed_prompt: String,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let team_id = ensure_default_team_id(state.inner())?;
-    let workspace_path = load_team_workspace_path(state.inner(), &team_id)
-        .unwrap_or_else(|_| ".".to_string());
+    let workspace_path = default_chat_cwd();
+    let context_scope = "global".to_string();
     let mut prompt = seed_prompt;
     for (step_idx, role_name) in workflow.steps.iter().enumerate() {
         let runtime_kind = load_role_runtime_kind(state.inner(), role_name)
@@ -205,7 +203,7 @@ pub(crate) async fn run_workflow(
             json!({ "message": started.message, "runtimeKind": runtime_kind }),
         )?;
 
-        let context_entries = list_shared_context_internal(state.inner(), &team_id)?;
+        let context_entries = list_shared_context_internal(state.inner(), &context_scope)?;
         let context_pairs = context_entries
             .iter()
             .map(|entry| (entry.key.clone(), entry.value.clone()))
@@ -235,7 +233,7 @@ pub(crate) async fn run_workflow(
             vec![],
             role_mode,
             role_config,
-            Some((state.inner(), &team_id)),
+            None,
             "",
         )
         .await;
@@ -278,7 +276,7 @@ pub(crate) async fn run_workflow(
         let summary = summarize_text(&output);
         set_shared_context_internal(
             state.inner(),
-            &team_id,
+            &context_scope,
             &format!("summary.{role_name}"),
             &summary,
         )?;
@@ -331,7 +329,6 @@ pub(crate) async fn start_workflow(
     state: State<'_, AppState>,
     input: StartWorkflowInput,
 ) -> Result<Session, String> {
-    let team_id = ensure_default_team_id(get_state(&state))?;
     let workflow = load_workflow(get_state(&state), &input.workflow_id)?;
     if workflow.steps.is_empty() {
         return Err("workflow has no steps".to_string());
@@ -342,11 +339,10 @@ pub(crate) async fn start_workflow(
 
     with_db(get_state(&state), |conn| {
         conn.execute(
-            "INSERT INTO sessions (id, team_id, workflow_id, status, initial_prompt, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO sessions (id, workflow_id, status, initial_prompt, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 &session_id,
-                &team_id,
                 &input.workflow_id,
                 "running",
                 &input.initial_prompt,
@@ -403,7 +399,6 @@ pub(crate) async fn start_workflow(
             let state = app_handle.state::<AppState>();
             let _ = update_session_status(state.inner(), &session_id_copy, "error");
             let wf_id = {
-                // Load workflow_id from DB for the error event
                 crate::db::with_db(state.inner(), |conn| {
                     conn.query_row(
                         "SELECT workflow_id FROM sessions WHERE id = ?1",

@@ -10,15 +10,6 @@ pub(crate) struct AppState {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Team {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) workspace_path: String,
-    pub(crate) created_at: i64,
-}
-
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct Role {
     pub(crate) id: String,
     pub(crate) role_name: String,
@@ -102,7 +93,7 @@ pub(crate) struct WorkflowStateEvent {
 pub(crate) struct ChatCommandResult {
     pub(crate) ok: bool,
     pub(crate) message: String,
-    pub(crate) selected_assistant: Option<String>,
+    pub(crate) runtime_kind: Option<String>,
     pub(crate) session_id: Option<String>,
     pub(crate) payload: Value,
 }
@@ -121,7 +112,7 @@ pub(crate) struct AssistantRuntime {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AssistantChatInput {
     pub(crate) input: String,
-    pub(crate) selected_assistant: Option<String>,
+    pub(crate) runtime_kind: Option<String>,
     pub(crate) app_session_id: Option<String>,
 }
 
@@ -130,7 +121,7 @@ pub(crate) struct AssistantChatInput {
 pub(crate) struct AssistantChatResponse {
     pub(crate) ok: bool,
     pub(crate) reply: String,
-    pub(crate) selected_assistant: Option<String>,
+    pub(crate) runtime_kind: Option<String>,
     pub(crate) session_id: Option<String>,
     pub(crate) command_result: Option<ChatCommandResult>,
 }
@@ -165,7 +156,7 @@ pub(crate) struct AppSession {
     pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) active_role: String,
-    pub(crate) selected_assistant: Option<String>,
+    pub(crate) runtime_kind: Option<String>,
     pub(crate) messages: Vec<serde_json::Value>,
     pub(crate) created_at: i64,
     pub(crate) last_active_at: i64,
@@ -176,7 +167,7 @@ pub(crate) struct AppSession {
 pub(crate) struct AppSessionUpdate {
     pub(crate) title: Option<String>,
     pub(crate) active_role: Option<String>,
-    pub(crate) selected_assistant: Option<Option<String>>,
+    pub(crate) runtime_kind: Option<Option<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -202,7 +193,6 @@ pub(crate) const ATTACH_MAX_TOTAL_BYTES: usize = 160 * 1024;
 pub(crate) const ATTACH_MAX_FILE_BYTES: usize = 24 * 1024;
 pub(crate) const ATTACH_MAX_DIR_FILES: usize = 30;
 pub(crate) const ATTACH_MAX_DIR_DEPTH: usize = 3;
-pub(crate) const DEFAULT_WORKSPACE_NAME: &str = "default";
 pub(crate) const PREWARM_ROLE_LIMIT: usize = 6;
 pub(crate) const DEFAULT_MODELS: &[&str] = &[];
 pub(crate) const KNOWN_RUNTIME_KEYS: &[&str] = &["gemini-cli", "claude-code", "codex-cli", "mock"];
@@ -258,4 +248,11 @@ pub(crate) const BASE_CLI_COMMANDS: &[(&str, &str)] = &[
         "Remove MCP server from role",
     ),
     ("/app_role copy <src> <dst>", "Duplicate role"),
+    ("/app_context list", "List all shared context entries"),
+    (
+        "/app_context list <scope>",
+        "List context entries for a scope",
+    ),
+    ("/app_session list", "List workflow sessions"),
+    ("/app_workflow list", "List workflows"),
 ];

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { Accessor, Setter } from "solid-js";
-import type { Role, RoleUpsertInput, AppSession, AssistantRuntime, AcpConfigOption, AppSkill, AppMessage } from "./types";
+import type { Role, RoleUpsertInput, AppSession, AssistantRuntime, AcpConfigOption, AppSkill } from "./types";
 import { INTERACTIVE_MOTION, RUNTIME_COLOR, RUNTIMES, flattenConfigValues } from "./types";
 
 type SelectOption = { value: string; label: string };
@@ -74,7 +74,7 @@ type ConfigDrawerProps = {
   sendRaw: (text: string, silent?: boolean) => Promise<void>;
   refreshRoles: () => Promise<void>;
   refreshSkills: () => Promise<void>;
-  pushMessage: (role: AppMessage["role"], text: string) => void;
+  pushMessage: (role: string, text: string) => void;
   fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
 };
 
@@ -132,7 +132,7 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
 
   const handleCreateRole = async () => {
     const name = roleFormName().trim();
-    const runtime = roleFormRuntime() || props.activeSession()?.selectedAssistant || "gemini-cli";
+    const runtime = roleFormRuntime() || props.activeSession()?.runtimeKind || "gemini-cli";
     const prompt = roleFormPrompt().trim();
     if (!name) return;
     const model = roleFormModel().trim();
@@ -145,7 +145,7 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
       if (cfgVal) configMap[cfgId] = cfgVal;
     }
     try {
-      await invoke<Role>("upsert_role_cmd", {
+      const saved = await invoke<Role>("upsert_role_cmd", {
         input: {
           roleName: name,
           runtimeKind: runtime,
@@ -161,8 +161,9 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
       setRoleFormConfigSelections({});
       setCreateFormConfigOptions([]);
       await props.refreshRoles();
+      props.pushMessage("event", `role created: ${saved.roleName} (${saved.runtimeKind})`);
     } catch (e) {
-      props.pushMessage("event", String(e));
+      props.pushMessage("event", `Failed to create role: ${String(e)}`);
     }
   };
 
@@ -200,12 +201,12 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
     };
 
     try {
-      await invoke<Role>("upsert_role_cmd", { input: payload });
+      const saved = await invoke<Role>("upsert_role_cmd", { input: payload });
       closeRoleEditor();
       await props.refreshRoles();
-      props.pushMessage("event", `role updated: ${role.roleName}`);
+      props.pushMessage("event", `role saved: ${saved.roleName} (${saved.runtimeKind}${saved.model ? `, model=${saved.model}` : ""}${saved.mode ? `, mode=${saved.mode}` : ""})`);
     } catch (e) {
-      props.pushMessage("event", String(e));
+      props.pushMessage("event", `Failed to save role: ${String(e)}`);
     }
   };
 
@@ -324,9 +325,9 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
             />
 
             <div class="flex flex-wrap gap-0.5 border-t border-white/[0.05] pt-3">
-              <button onClick={() => void props.sendRaw("/workflow list")} class={`min-h-8 rounded-md px-2.5 py-1 text-xs text-zinc-600 hover:text-zinc-300 hover:bg-white/[0.04] ${INTERACTIVE_MOTION}`}>workflows</button>
-              <button onClick={() => void props.sendRaw("/context list")} class={`min-h-8 rounded-md px-2.5 py-1 text-xs text-zinc-600 hover:text-zinc-300 hover:bg-white/[0.04] ${INTERACTIVE_MOTION}`}>context</button>
-              <button onClick={() => void props.sendRaw("/session list")} class={`min-h-8 rounded-md px-2.5 py-1 text-xs text-zinc-600 hover:text-zinc-300 hover:bg-white/[0.04] ${INTERACTIVE_MOTION}`}>sessions</button>
+              <button onClick={() => void props.sendRaw("/app_workflow list")} class={`min-h-8 rounded-md px-2.5 py-1 text-xs text-zinc-600 hover:text-zinc-300 hover:bg-white/[0.04] ${INTERACTIVE_MOTION}`}>workflows</button>
+              <button onClick={() => void props.sendRaw("/app_context list")} class={`min-h-8 rounded-md px-2.5 py-1 text-xs text-zinc-600 hover:text-zinc-300 hover:bg-white/[0.04] ${INTERACTIVE_MOTION}`}>context</button>
+              <button onClick={() => void props.sendRaw("/app_session list")} class={`min-h-8 rounded-md px-2.5 py-1 text-xs text-zinc-600 hover:text-zinc-300 hover:bg-white/[0.04] ${INTERACTIVE_MOTION}`}>sessions</button>
             </div>
 
           </div>
@@ -342,7 +343,7 @@ type AssistantSectionProps = {
   assistants: Accessor<AssistantRuntime[]>;
   activeSession: Accessor<AppSession | null>;
   patchActiveSession: (patch: Partial<AppSession>) => void;
-  pushMessage: (role: AppMessage["role"], text: string) => void;
+  pushMessage: (role: string, text: string) => void;
   fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
   refreshRoles: () => Promise<void>;
 };
@@ -366,11 +367,11 @@ function AssistantSection(props: AssistantSectionProps) {
           {(a) => (
             <button
               class={`flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs ${INTERACTIVE_MOTION} ${
-                props.activeSession()?.selectedAssistant === a.key
+                props.activeSession()?.runtimeKind === a.key
                   ? "bg-zinc-800/80 text-white"
                   : "hover:bg-zinc-900/60 text-zinc-400"
               } ${!a.available ? "opacity-40" : ""}`}
-              onClick={() => a.available && props.patchActiveSession({ selectedAssistant: a.key })}
+              onClick={() => a.available && props.patchActiveSession({ runtimeKind: a.key })}
             >
               <span class={`h-1.5 w-1.5 shrink-0 rounded-full ${a.available ? "bg-emerald-400" : "bg-rose-500"}`} />
               <span class="flex-1 font-medium">{a.label}</span>
@@ -394,7 +395,7 @@ function AssistantSection(props: AssistantSectionProps) {
 
 type AssistantConfigPanelProps = {
   activeSession: Accessor<AppSession | null>;
-  pushMessage: (role: AppMessage["role"], text: string) => void;
+  pushMessage: (role: string, text: string) => void;
   fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
   refreshRoles: () => Promise<void>;
   onClose: () => void;
@@ -408,7 +409,7 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
   const [configOptions, setConfigOptions] = createSignal<AcpConfigOption[]>([]);
   const [loading, setLoading] = createSignal(true);
 
-  const runtimeKind = () => props.activeSession()?.selectedAssistant ?? "claude-code";
+  const runtimeKind = () => props.activeSession()?.runtimeKind ?? "claude-code";
 
   const currentCfg = createMemo((): Record<string, string> => {
     try { return JSON.parse(configOptionsJson() || "{}"); } catch { return {}; }
@@ -446,7 +447,7 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
 
   const handleSave = async () => {
     try {
-      await invoke<Role>("upsert_role_cmd", {
+      const saved = await invoke<Role>("upsert_role_cmd", {
         input: {
           roleName: UNION_ASSISTANT_ROLE,
           runtimeKind: runtimeKind(),
@@ -459,10 +460,10 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
         } satisfies RoleUpsertInput,
       });
       await props.refreshRoles();
-      props.pushMessage("event", "assistant config saved");
+      props.pushMessage("event", `assistant config saved (${saved.runtimeKind}${saved.model ? `, model=${saved.model}` : ""}${saved.mode ? `, mode=${saved.mode}` : ""})`);
       props.onClose();
     } catch (e) {
-      props.pushMessage("event", String(e));
+      props.pushMessage("event", `Failed to save config: ${String(e)}`);
     }
   };
 
@@ -587,7 +588,7 @@ function RolesSection(props: RolesSectionProps) {
           onClick={() => props.setShowRoleForm((v) => {
             const next = !v;
             if (next) props.closeRoleEditor();
-            if (next && props.activeSession()?.selectedAssistant) props.setRoleFormRuntime(props.activeSession()!.selectedAssistant!);
+            if (next && props.activeSession()?.runtimeKind) props.setRoleFormRuntime(props.activeSession()!.runtimeKind!);
             return next;
           })}
           class={`min-h-6 rounded border border-zinc-800 px-2 py-0.5 text-[10px] text-zinc-600 hover:border-zinc-700 hover:text-zinc-300 ${INTERACTIVE_MOTION}`}
@@ -905,8 +906,8 @@ function EditRoleForm(props: EditRoleFormProps) {
           {props.activeSession()?.configOptionsLoading ? "Loading config options from agent..." : "No config options available for this agent."}
         </div>
       </Show>
-      <details class="group">
-        <summary class="text-[10px] text-zinc-600 hover:text-zinc-400 flex items-center gap-1.5 cursor-pointer select-none list-none">
+      <details class="group [&>summary]:list-none [&>summary::-webkit-details-marker]:hidden">
+        <summary class="text-[10px] text-zinc-600 hover:text-zinc-400 flex items-center gap-1.5 cursor-pointer select-none">
           <svg class="h-2.5 w-2.5 shrink-0 transition-transform group-open:rotate-90" viewBox="0 0 8 8" fill="currentColor"><path d="M2 1l4 3-4 3V1z"/></svg>
           MCP servers
         </summary>

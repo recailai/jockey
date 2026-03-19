@@ -1,7 +1,7 @@
 use crate::acp;
 use crate::db::context::{list_all_known_models, list_dynamic_catalog};
-use crate::db::role::list_roles_for_team;
-use crate::db::{ensure_default_team_id, get_state};
+use crate::db::role::list_all_roles;
+use crate::db::get_state;
 use crate::fs_context::{
     is_within_workspace, relative_or_abs, resolve_attach_path, should_skip_name,
 };
@@ -147,11 +147,11 @@ fn complete_path_mentions(cwd: &str, query: &str, limit: usize) -> Vec<MentionCa
 
 #[tauri::command]
 pub(crate) async fn complete_mentions(
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
     query: String,
     limit: Option<usize>,
 ) -> Result<Vec<MentionCandidate>, String> {
-    let cwd = resolve_chat_cwd(get_state(&state));
+    let cwd = resolve_chat_cwd();
     let capped = limit.unwrap_or(10).clamp(1, 30);
     tokio::task::spawn_blocking(move || complete_path_mentions(&cwd, &query, capped))
         .await
@@ -238,8 +238,7 @@ fn append_role_cli_templates(
     seen: &mut HashSet<String>,
     query_lower: &str,
 ) -> Result<(), String> {
-    let team_id = ensure_default_team_id(state)?;
-    let roles = list_roles_for_team(state, &team_id).unwrap_or_default();
+    let roles = list_all_roles(state).unwrap_or_default();
     for role in &roles {
         let role_name = role.role_name.clone();
         for value in [

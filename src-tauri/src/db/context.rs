@@ -28,8 +28,8 @@ pub(crate) fn set_shared_context_internal(
         .insert(shared_key(scope, key), value.to_string());
     with_db(state, |conn| {
         conn.execute(
-            "INSERT INTO shared_context_snapshots (team_id, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(team_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            "INSERT INTO shared_context_snapshots (scope, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
             params![scope, key, value, now],
         )
         .map_err(|e| e.to_string())?;
@@ -60,8 +60,8 @@ pub(crate) fn append_shared_context_internal(
     };
     with_db(state, |conn| {
         conn.execute(
-            "INSERT INTO shared_context_snapshots (team_id, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(team_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            "INSERT INTO shared_context_snapshots (scope, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
             params![scope, key, &new_value, now],
         )
         .map_err(|e| e.to_string())?;
@@ -82,7 +82,7 @@ pub(crate) fn clear_shared_context_internal(
 ) -> Result<(), String> {
     with_db(state, |conn| {
         conn.execute(
-            "DELETE FROM shared_context_snapshots WHERE team_id = ?1 AND key = ?2",
+            "DELETE FROM shared_context_snapshots WHERE scope = ?1 AND key = ?2",
             params![scope, key],
         )
         .map_err(|e| e.to_string())?;
@@ -92,6 +92,33 @@ pub(crate) fn clear_shared_context_internal(
     Ok(())
 }
 
+pub(crate) fn list_all_shared_context(state: &AppState) -> Result<Vec<ContextEntry>, String> {
+    with_db(state, |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT scope, key, value, updated_at
+                 FROM shared_context_snapshots
+                 ORDER BY scope ASC, key ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(ContextEntry {
+                    scope: row.get(0)?,
+                    key: row.get(1)?,
+                    value: row.get(2)?,
+                    updated_at: row.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut items = Vec::new();
+        for item in rows {
+            items.push(item.map_err(|e| e.to_string())?);
+        }
+        Ok(items)
+    })
+}
+
 pub(crate) fn list_shared_context_internal(
     state: &AppState,
     scope: &str,
@@ -99,9 +126,9 @@ pub(crate) fn list_shared_context_internal(
     with_db(state, |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT team_id, key, value, updated_at
+                "SELECT scope, key, value, updated_at
                  FROM shared_context_snapshots
-                 WHERE team_id = ?1
+                 WHERE scope = ?1
                  ORDER BY updated_at DESC, key ASC",
             )
             .map_err(|e| e.to_string())?;
@@ -162,7 +189,7 @@ pub(crate) fn get_shared_context(
 
     let db_value = with_db(get_state(&state), |conn| {
         conn.query_row(
-            "SELECT value, updated_at FROM shared_context_snapshots WHERE team_id = ?1 AND key = ?2",
+            "SELECT value, updated_at FROM shared_context_snapshots WHERE scope = ?1 AND key = ?2",
             params![&scope, &key],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
         )
@@ -299,8 +326,8 @@ pub(crate) fn list_enabled_feature_flags(state: &AppState, prefix: &str) -> Vec<
         .collect()
 }
 
-pub(crate) fn resolve_model_runtime(selected_assistant: Option<&str>) -> String {
-    selected_assistant
+pub(crate) fn resolve_model_runtime(runtime_kind: Option<&str>) -> String {
+    runtime_kind
         .and_then(crate::assistant::normalize_runtime_key)
         .unwrap_or("mock")
         .to_string()

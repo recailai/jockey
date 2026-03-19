@@ -8,37 +8,31 @@ pub(crate) mod workflow;
 
 pub(crate) use pool::DbPool;
 
-use crate::now_ms;
 use crate::types::*;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::Connection;
 use serde_json::{json, Value};
 use tauri::State;
-use uuid::Uuid;
 
+/// Create the full v2 schema from scratch.  No migration logic — users must
+/// delete their old DB file before upgrading.
 pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "
-        PRAGMA journal_mode = WAL;
-        PRAGMA synchronous = NORMAL;
-        CREATE TABLE IF NOT EXISTS teams (
-          id TEXT PRIMARY KEY,
-          name TEXT NOT NULL,
-          workspace_path TEXT NOT NULL,
-          created_at INTEGER NOT NULL
-        );
         CREATE TABLE IF NOT EXISTS roles (
           id TEXT PRIMARY KEY,
-          team_id TEXT NOT NULL,
-          role_name TEXT NOT NULL,
+          role_name TEXT NOT NULL UNIQUE,
           runtime_kind TEXT NOT NULL,
           system_prompt TEXT NOT NULL,
+          model TEXT,
+          mode TEXT,
+          mcp_servers_json TEXT DEFAULT '[]',
+          config_options_json TEXT DEFAULT '{}',
+          auto_approve INTEGER DEFAULT 1,
           created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL,
-          UNIQUE(team_id, role_name)
+          updated_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS workflows (
           id TEXT PRIMARY KEY,
-          team_id TEXT NOT NULL,
           name TEXT NOT NULL,
           steps_json TEXT NOT NULL,
           created_at INTEGER NOT NULL,
@@ -46,7 +40,6 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         );
         CREATE TABLE IF NOT EXISTS sessions (
           id TEXT PRIMARY KEY,
-          team_id TEXT NOT NULL,
           workflow_id TEXT NOT NULL,
           status TEXT NOT NULL,
           initial_prompt TEXT NOT NULL,
@@ -62,11 +55,11 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           created_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS shared_context_snapshots (
-          team_id TEXT NOT NULL,
+          scope TEXT NOT NULL,
           key TEXT NOT NULL,
           value TEXT NOT NULL,
           updated_at INTEGER NOT NULL,
-          PRIMARY KEY(team_id, key)
+          PRIMARY KEY(scope, key)
         );
         CREATE TABLE IF NOT EXISTS dynamic_catalog_entries (
           kind TEXT NOT NULL,
@@ -75,33 +68,21 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           updated_at INTEGER NOT NULL,
           PRIMARY KEY(kind, name)
         );
-        CREATE INDEX IF NOT EXISTS idx_roles_team_updated_at
-          ON roles(team_id, updated_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_workflows_team_updated_at
-          ON workflows(team_id, updated_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_sessions_team_created_at
-          ON sessions(team_id, created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_sessions_workflow_id
-          ON sessions(workflow_id);
-        CREATE INDEX IF NOT EXISTS idx_session_events_session_id_id
-          ON session_events(session_id, id ASC);
-        CREATE INDEX IF NOT EXISTS idx_shared_context_team_updated_at
-          ON shared_context_snapshots(team_id, updated_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_dynamic_catalog_kind_updated_at
-          ON dynamic_catalog_entries(kind, updated_at DESC);
         CREATE TABLE IF NOT EXISTS app_sessions (
           id TEXT PRIMARY KEY,
           title TEXT NOT NULL,
-          team_id TEXT NOT NULL,
           active_role TEXT NOT NULL DEFAULT 'UnionAI',
-          selected_assistant TEXT,
+          runtime_kind TEXT,
           created_at INTEGER NOT NULL,
           last_active_at INTEGER NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_app_sessions_last_active
-          ON app_sessions(last_active_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_app_sessions_team_id
-          ON app_sessions(team_id);
+        CREATE TABLE IF NOT EXISTS app_session_roles (
+          app_session_id TEXT NOT NULL REFERENCES app_sessions(id) ON DELETE CASCADE,
+          role_name TEXT NOT NULL,
+          runtime_kind TEXT NOT NULL,
+          acp_session_id TEXT,
+          PRIMARY KEY(app_session_id, role_name)
+        );
         CREATE TABLE IF NOT EXISTS app_skills (
           id TEXT PRIMARY KEY,
           name TEXT NOT NULL UNIQUE,
@@ -110,36 +91,39 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_app_skills_updated_at
-          ON app_skills(updated_at DESC);
         CREATE TABLE IF NOT EXISTS app_session_messages (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           session_id TEXT NOT NULL REFERENCES app_sessions(id) ON DELETE CASCADE,
-          role TEXT NOT NULL,
-          role_label TEXT,
+          role_name TEXT NOT NULL,
           content TEXT NOT NULL,
           created_at INTEGER NOT NULL
         );
+
+        CREATE INDEX IF NOT EXISTS idx_roles_updated_at
+          ON roles(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_workflows_updated_at
+          ON workflows(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_sessions_created_at
+          ON sessions(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_sessions_workflow_id
+          ON sessions(workflow_id);
+        CREATE INDEX IF NOT EXISTS idx_session_events_session_id_id
+          ON session_events(session_id, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_shared_context_scope_updated_at
+          ON shared_context_snapshots(scope, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_dynamic_catalog_kind_updated_at
+          ON dynamic_catalog_entries(kind, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_app_sessions_last_active
+          ON app_sessions(last_active_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_app_skills_updated_at
+          ON app_skills(updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_app_session_messages_session_id
           ON app_session_messages(session_id, id ASC);
+
+        PRAGMA user_version = 2;
         ",
     )
     .map_err(|e| e.to_string())?;
-
-    let alter_stmts = [
-        "ALTER TABLE roles ADD COLUMN model TEXT DEFAULT NULL",
-        "ALTER TABLE roles ADD COLUMN mode TEXT DEFAULT NULL",
-        "ALTER TABLE roles ADD COLUMN mcp_servers_json TEXT DEFAULT '[]'",
-        "ALTER TABLE roles ADD COLUMN config_options_json TEXT DEFAULT '{}'",
-        "ALTER TABLE roles ADD COLUMN auto_approve INTEGER DEFAULT 1",
-        "ALTER TABLE roles ADD COLUMN acp_session_id TEXT DEFAULT NULL",
-        "ALTER TABLE app_sessions ADD COLUMN role_sessions_json TEXT NOT NULL DEFAULT '{}'",
-        "ALTER TABLE app_sessions DROP COLUMN messages_json",
-        "ALTER TABLE app_session_messages ADD COLUMN role_label TEXT",
-    ];
-    for stmt in alter_stmts {
-        let _ = conn.execute(stmt, []);
-    }
 
     Ok(())
 }
@@ -171,46 +155,4 @@ pub(crate) fn seed_default_dynamic_catalog(state: &AppState) -> Result<(), Strin
         let _ = context::upsert_dynamic_catalog_item(state, "skill", skill)?;
     }
     Ok(())
-}
-
-pub(crate) fn ensure_default_team_id(state: &AppState) -> Result<String, String> {
-    let existing = with_db(state, |conn| {
-        conn.query_row(
-            "SELECT id FROM teams ORDER BY created_at DESC LIMIT 1",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())
-    })?;
-    if let Some(id) = existing {
-        return Ok(id);
-    }
-
-    let team = Team {
-        id: Uuid::new_v4().to_string(),
-        name: DEFAULT_WORKSPACE_NAME.to_string(),
-        workspace_path: ".".to_string(),
-        created_at: now_ms(),
-    };
-    with_db(state, |conn| {
-        conn.execute(
-            "INSERT INTO teams (id, name, workspace_path, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params![&team.id, &team.name, &team.workspace_path, team.created_at],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    })?;
-    Ok(team.id)
-}
-
-pub(crate) fn load_team_workspace_path(state: &AppState, team_id: &str) -> Result<String, String> {
-    with_db(state, |conn| {
-        conn.query_row(
-            "SELECT workspace_path FROM teams WHERE id = ?1",
-            params![team_id],
-            |row| row.get::<_, String>(0),
-        )
-        .map_err(|e| e.to_string())
-    })
 }

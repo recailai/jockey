@@ -3,7 +3,7 @@ pub(crate) mod completion;
 use crate::assistant::normalize_runtime_key;
 use crate::db::context::*;
 use crate::db::role::*;
-use crate::db::{ensure_default_team_id, get_state, with_db};
+use crate::db::{get_state, with_db};
 use crate::types::*;
 use crate::{acp, build_unionai_tool_prompt, now_ms, resolve_chat_cwd};
 use rusqlite::params;
@@ -33,7 +33,7 @@ pub(crate) async fn apply_chat_command(
     app: AppHandle,
     state: State<'_, AppState>,
     input: String,
-    selected_assistant: Option<String>,
+    runtime_kind: Option<String>,
 ) -> Result<ChatCommandResult, String> {
     let trimmed = input.trim();
     if !trimmed.starts_with("/app_") {
@@ -48,11 +48,10 @@ pub(crate) async fn apply_chat_command(
     let mut result = ChatCommandResult {
         ok: true,
         message: "ok".to_string(),
-        selected_assistant: selected_assistant.clone(),
+        runtime_kind: runtime_kind.clone(),
         session_id: None,
         payload: json!({}),
     };
-    let active_team_id = ensure_default_team_id(get_state(&state))?;
 
     match tokens.as_slice() {
         ["/app_help"] => {
@@ -66,11 +65,11 @@ pub(crate) async fn apply_chat_command(
         }
         ["/app_assistant", "select", runtime] => match normalize_runtime_key(runtime) {
             Some(normalized) => {
-                result.selected_assistant = Some(normalized.to_string());
+                result.runtime_kind = Some(normalized.to_string());
                 result.message = format!("assistant selected: {}", normalized);
                 result.payload = json!({ "assistant": normalized });
                 let runtime_key = normalized.to_string();
-                let prewarm_cwd = resolve_chat_cwd(get_state(&state));
+                let prewarm_cwd = resolve_chat_cwd();
                 tauri::async_runtime::spawn(async move {
                     acp::prewarm(&runtime_key, &prewarm_cwd).await;
                 });
@@ -82,7 +81,7 @@ pub(crate) async fn apply_chat_command(
             }
         },
         ["/app_model", "list"] => {
-            let runtime = resolve_model_runtime(result.selected_assistant.as_deref());
+            let runtime = resolve_model_runtime(result.runtime_kind.as_deref());
             let models = list_models_for_runtime(get_state(&state), &runtime)?;
             let selected = get_shared_context(
                 state.clone(),
@@ -128,7 +127,7 @@ pub(crate) async fn apply_chat_command(
         ["/app_model", "select", model] => {
             let selected_model = sanitize_dynamic_item_name(model)
                 .ok_or_else(|| format!("invalid model name: {}", model))?;
-            let runtime = resolve_model_runtime(result.selected_assistant.as_deref());
+            let runtime = resolve_model_runtime(result.runtime_kind.as_deref());
             let _ = upsert_dynamic_catalog_item(get_state(&state), "model", &selected_model)?;
             let entry = set_shared_context(
                 state.clone(),
@@ -155,7 +154,7 @@ pub(crate) async fn apply_chat_command(
                 "assistant:main".to_string(),
                 "model".to_string(),
             )?;
-            let runtime = resolve_model_runtime(result.selected_assistant.as_deref());
+            let runtime = resolve_model_runtime(result.runtime_kind.as_deref());
             result.message = "model fetched".to_string();
             result.payload = json!({ "entry": entry, "runtime": runtime });
         }
@@ -224,13 +223,82 @@ pub(crate) async fn apply_chat_command(
                 result.payload = json!({ "entry": entry });
             }
         }
+        ["/app_context", "list"] | ["/app_context", "list", ..] => {
+            let scope = tokens.get(2).copied().unwrap_or("");
+            let entries = if scope.is_empty() {
+                list_all_shared_context(get_state(&state))?
+            } else {
+                list_shared_context_internal(get_state(&state), scope)?
+            };
+            result.message = format!("{} context entries{}", entries.len(), if scope.is_empty() { String::new() } else { format!(" (scope: {})", scope) });
+            result.payload = json!({ "entries": entries });
+        }
+        ["/app_session", "list"] => {
+            let sessions = with_db(get_state(&state), |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, workflow_id, status, initial_prompt, created_at, updated_at
+                         FROM sessions ORDER BY created_at DESC LIMIT 50",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([], |row| {
+                        Ok(Session {
+                            id: row.get(0)?,
+                            workflow_id: row.get(1)?,
+                            status: row.get(2)?,
+                            initial_prompt: row.get(3)?,
+                            created_at: row.get(4)?,
+                            updated_at: row.get(5)?,
+                        })
+                    })
+                    .map_err(|e| e.to_string())?;
+                let mut items = Vec::new();
+                for row in rows {
+                    items.push(row.map_err(|e| e.to_string())?);
+                }
+                Ok(items)
+            })?;
+            result.message = format!("{} sessions", sessions.len());
+            result.payload = json!({ "sessions": sessions });
+        }
+        ["/app_workflow", "list"] => {
+            let workflows = with_db(get_state(&state), |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, name, steps_json, created_at, updated_at
+                         FROM workflows ORDER BY updated_at DESC",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([], |row| {
+                        let steps_json: String = row.get(2)?;
+                        let steps = serde_json::from_str::<Vec<String>>(&steps_json).unwrap_or_default();
+                        Ok(Workflow {
+                            id: row.get(0)?,
+                            name: row.get(1)?,
+                            steps,
+                            created_at: row.get(3)?,
+                            updated_at: row.get(4)?,
+                        })
+                    })
+                    .map_err(|e| e.to_string())?;
+                let mut items = Vec::new();
+                for row in rows {
+                    items.push(row.map_err(|e| e.to_string())?);
+                }
+                Ok(items)
+            })?;
+            result.message = format!("{} workflows", workflows.len());
+            result.payload = json!({ "workflows": workflows });
+        }
         ["/app_team", ..] => {
             result.ok = false;
             result.message = "workspace commands are managed automatically.".to_string();
             result.payload = json!({});
         }
         ["/app_role", "list"] => {
-            let roles = list_roles_for_team(get_state(&state), &active_team_id)?;
+            let roles = list_all_roles(get_state(&state))?;
             result.message = format!("{} roles", roles.len());
             result.payload = json!({ "roles": roles });
         }
@@ -257,7 +325,7 @@ pub(crate) async fn apply_chat_command(
             result.payload = json!({ "role": role });
             let runtime_for_warmup = normalized_runtime.clone();
             let role_for_warmup = (*role_name).to_string();
-            let prewarm_cwd = resolve_chat_cwd(get_state(&state));
+            let prewarm_cwd = resolve_chat_cwd();
             tauri::async_runtime::spawn(async move {
                 acp::prewarm_role(&runtime_for_warmup, &role_for_warmup, &prewarm_cwd, None).await;
             });
@@ -281,8 +349,8 @@ pub(crate) async fn apply_chat_command(
         ["/app_role", "delete", role_name] => {
             with_db(get_state(&state), |conn| {
                 conn.execute(
-                    "DELETE FROM roles WHERE team_id = ?1 AND role_name = ?2",
-                    params![&active_team_id, role_name],
+                    "DELETE FROM roles WHERE role_name = ?1",
+                    params![role_name],
                 )
                 .map_err(|e| e.to_string())?;
                 Ok(())
@@ -298,8 +366,8 @@ pub(crate) async fn apply_chat_command(
             };
             with_db(get_state(&state), |conn| {
                 conn.execute(
-                    "UPDATE roles SET model = ?1, updated_at = ?2 WHERE team_id = ?3 AND role_name = ?4",
-                    params![model_value, now_ms(), &active_team_id, role_name],
+                    "UPDATE roles SET model = ?1, updated_at = ?2 WHERE role_name = ?3",
+                    params![model_value, now_ms(), role_name],
                 ).map_err(|e| e.to_string())?;
                 Ok(())
             })?;
@@ -345,8 +413,8 @@ pub(crate) async fn apply_chat_command(
                 if result.ok {
                     with_db(get_state(&state), |conn| {
                         conn.execute(
-                            "UPDATE roles SET mode = ?1, updated_at = ?2 WHERE team_id = ?3 AND role_name = ?4",
-                            params![mode_value, now_ms(), &active_team_id, role_name],
+                            "UPDATE roles SET mode = ?1, updated_at = ?2 WHERE role_name = ?3",
+                            params![mode_value, now_ms(), role_name],
                         ).map_err(|e| e.to_string())?;
                         Ok(())
                     })?;
@@ -359,8 +427,8 @@ pub(crate) async fn apply_chat_command(
             let auto = *value == "true" || *value == "1" || *value == "yes";
             with_db(get_state(&state), |conn| {
                 conn.execute(
-                    "UPDATE roles SET auto_approve = ?1, updated_at = ?2 WHERE team_id = ?3 AND role_name = ?4",
-                    params![auto, now_ms(), &active_team_id, role_name],
+                    "UPDATE roles SET auto_approve = ?1, updated_at = ?2 WHERE role_name = ?3",
+                    params![auto, now_ms(), role_name],
                 ).map_err(|e| e.to_string())?;
                 Ok(())
             })?;
@@ -371,8 +439,8 @@ pub(crate) async fn apply_chat_command(
             let json_str = server_json.join(" ");
             let current = with_db(get_state(&state), |conn| {
                 conn.query_row(
-                    "SELECT mcp_servers_json FROM roles WHERE team_id = ?1 AND role_name = ?2",
-                    params![&active_team_id, role_name],
+                    "SELECT mcp_servers_json FROM roles WHERE role_name = ?1",
+                    params![role_name],
                     |row| row.get::<_, String>(0),
                 )
                 .map_err(|e| e.to_string())
@@ -383,8 +451,8 @@ pub(crate) async fn apply_chat_command(
             let updated = serde_json::to_string(&servers).map_err(|e| e.to_string())?;
             with_db(get_state(&state), |conn| {
                 conn.execute(
-                    "UPDATE roles SET mcp_servers_json = ?1, updated_at = ?2 WHERE team_id = ?3 AND role_name = ?4",
-                    params![updated, now_ms(), &active_team_id, role_name],
+                    "UPDATE roles SET mcp_servers_json = ?1, updated_at = ?2 WHERE role_name = ?3",
+                    params![updated, now_ms(), role_name],
                 ).map_err(|e| e.to_string())?;
                 Ok(())
             })?;
@@ -394,8 +462,8 @@ pub(crate) async fn apply_chat_command(
         ["/app_role", "edit", role_name, "mcp-remove", name] => {
             let current = with_db(get_state(&state), |conn| {
                 conn.query_row(
-                    "SELECT mcp_servers_json FROM roles WHERE team_id = ?1 AND role_name = ?2",
-                    params![&active_team_id, role_name],
+                    "SELECT mcp_servers_json FROM roles WHERE role_name = ?1",
+                    params![role_name],
                     |row| row.get::<_, String>(0),
                 )
                 .map_err(|e| e.to_string())
@@ -405,8 +473,8 @@ pub(crate) async fn apply_chat_command(
             let updated = serde_json::to_string(&servers).map_err(|e| e.to_string())?;
             with_db(get_state(&state), |conn| {
                 conn.execute(
-                    "UPDATE roles SET mcp_servers_json = ?1, updated_at = ?2 WHERE team_id = ?3 AND role_name = ?4",
-                    params![updated, now_ms(), &active_team_id, role_name],
+                    "UPDATE roles SET mcp_servers_json = ?1, updated_at = ?2 WHERE role_name = ?3",
+                    params![updated, now_ms(), role_name],
                 ).map_err(|e| e.to_string())?;
                 Ok(())
             })?;
@@ -416,8 +484,8 @@ pub(crate) async fn apply_chat_command(
         ["/app_role", "copy", src_name, dst_name] => {
             let src = with_db(get_state(&state), |conn| {
                 conn.query_row(
-                    "SELECT runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, auto_approve FROM roles WHERE team_id = ?1 AND role_name = ?2",
-                    params![&active_team_id, src_name],
+                    "SELECT runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, auto_approve FROM roles WHERE role_name = ?1",
+                    params![src_name],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?, row.get::<_, bool>(6)?)),
                 ).map_err(|e| e.to_string())
             })?;
