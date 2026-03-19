@@ -92,7 +92,7 @@ pub(super) enum WorkerMsg {
         args: Vec<String>,
         env: Vec<(String, String)>,
         role_name: String,
-        app_session_id: String,
+        app_session_id: Option<String>,
         prompt: String,
         context: Vec<(String, String)>,
         cwd: String,
@@ -110,7 +110,7 @@ pub(super) enum WorkerMsg {
         args: Vec<String>,
         env: Vec<(String, String)>,
         role_name: String,
-        app_session_id: String,
+        app_session_id: Option<String>,
         cwd: String,
         auto_approve: bool,
         mcp_servers: Vec<acp::McpServer>,
@@ -122,19 +122,19 @@ pub(super) enum WorkerMsg {
     Cancel {
         runtime_key: &'static str,
         role_name: String,
-        app_session_id: String,
+        app_session_id: Option<String>,
     },
     SetMode {
         runtime_key: &'static str,
         role_name: String,
-        app_session_id: String,
+        app_session_id: Option<String>,
         mode_id: String,
         result_tx: oneshot::Sender<Result<(), String>>,
     },
     SetConfigOption {
         runtime_key: &'static str,
         role_name: String,
-        app_session_id: String,
+        app_session_id: Option<String>,
         config_id: String,
         value: String,
         result_tx: oneshot::Sender<Result<(), String>>,
@@ -243,8 +243,11 @@ fn commands_key(runtime_key: &str, role_name: &str) -> String {
     format!("{runtime_key}:{role_name}")
 }
 
-fn pool_key(app_session_id: &str, runtime_key: &str, role_name: &str) -> String {
-    format!("{app_session_id}:{runtime_key}:{role_name}")
+fn pool_key(runtime_key: &str, role_name: &str, app_session_id: Option<&str>) -> String {
+    match app_session_id {
+        Some(id) => format!("{id}:{runtime_key}:{role_name}"),
+        None => format!("global:{runtime_key}:{role_name}"),
+    }
 }
 
 pub(super) struct SlotHandle {
@@ -258,8 +261,12 @@ fn slot_map() -> &'static Arc<DashMap<String, Arc<SlotHandle>>> {
     SLOT_MAP.get_or_init(|| Arc::new(DashMap::new()))
 }
 
-fn get_slot_handle(app_session_id: &str, runtime_key: &str, role_name: &str) -> Arc<SlotHandle> {
-    let key = pool_key(app_session_id, runtime_key, role_name);
+fn get_slot_handle(
+    runtime_key: &str,
+    role_name: &str,
+    app_session_id: Option<&str>,
+) -> Arc<SlotHandle> {
+    let key = pool_key(runtime_key, role_name, app_session_id);
     slot_map()
         .entry(key)
         .or_insert_with(|| {
@@ -305,7 +312,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 role_config_options,
                 resume_session_id,
             } => {
-                let slot = get_slot_handle(&app_session_id, runtime_key, &role_name);
+                let slot = get_slot_handle(runtime_key, &role_name, app_session_id.as_deref());
                 tokio::task::spawn_local(async move {
                     handle_execute(
                         slot,
@@ -314,7 +321,6 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                         args,
                         env,
                         role_name,
-                        app_session_id,
                         prompt,
                         context,
                         cwd,
@@ -344,7 +350,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 result_tx,
                 resume_session_id,
             } => {
-                let slot = get_slot_handle(&app_session_id, runtime_key, &role_name);
+                let slot = get_slot_handle(runtime_key, &role_name, app_session_id.as_deref());
                 tokio::task::spawn_local(async move {
                     handle_prewarm(
                         slot,
@@ -353,7 +359,6 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                         args,
                         env,
                         role_name,
-                        app_session_id,
                         cwd,
                         auto_approve,
                         mcp_servers,
@@ -370,7 +375,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 role_name,
                 app_session_id,
             } => {
-                let slot = get_slot_handle(&app_session_id, runtime_key, &role_name);
+                let slot = get_slot_handle(runtime_key, &role_name, app_session_id.as_deref());
                 slot.cancel_flag
                     .store(true, std::sync::atomic::Ordering::SeqCst);
                 tokio::task::spawn_local(async move {
@@ -390,7 +395,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 mode_id,
                 result_tx,
             } => {
-                let slot = get_slot_handle(&app_session_id, runtime_key, &role_name);
+                let slot = get_slot_handle(runtime_key, &role_name, app_session_id.as_deref());
                 tokio::task::spawn_local(async move {
                     let guard = slot.conn.lock().await;
                     let result = if let Some(live) = guard.as_ref() {
@@ -416,7 +421,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 value,
                 result_tx,
             } => {
-                let slot = get_slot_handle(&app_session_id, runtime_key, &role_name);
+                let slot = get_slot_handle(runtime_key, &role_name, app_session_id.as_deref());
                 tokio::task::spawn_local(async move {
                     let guard = slot.conn.lock().await;
                     let result = if let Some(live) = guard.as_ref() {
@@ -550,7 +555,6 @@ async fn handle_execute(
     args: Vec<String>,
     env: Vec<(String, String)>,
     role_name: String,
-    _app_session_id: String,
     prompt: String,
     context: Vec<(String, String)>,
     cwd: String,
@@ -657,7 +661,6 @@ async fn handle_prewarm(
     args: Vec<String>,
     env: Vec<(String, String)>,
     role_name: String,
-    _app_session_id: String,
     cwd: String,
     auto_approve: bool,
     mcp_servers: Vec<acp::McpServer>,

@@ -7,7 +7,7 @@ import SessionTabs from "./components/SessionTabs";
 import MessageWindow from "./components/MessageWindow";
 import ChatInput from "./components/ChatInput";
 import type {
-  Role, AppToolCall, AppPlanEntry,
+  Role, AppPlanEntry,
   AcpStreamEvent, AcpConfigOption, AssistantRuntime,
   AssistantChatResponse, AcpDeltaEvent, SessionUpdateEvent, WorkflowStateEvent,
   AppMessage, AppMentionItem, AppSkill, AppSession,
@@ -31,7 +31,7 @@ const makeDefaultSession = (title: string): AppSession => ({
   id: makeSessionId(),
   title,
   activeRole: DEFAULT_ROLE_ALIAS,
-  selectedAssistant: null,
+  runtimeKind: null,
   messages: [],
   streamingMessage: null,
   toolCalls: new Map(),
@@ -57,10 +57,10 @@ export default function App() {
   };
 
   const persistSessionPatch = (id: string, patch: Partial<AppSession>) => {
-    const update: { title?: string; activeRole?: string; selectedAssistant?: string | null } = {};
+    const update: { title?: string; activeRole?: string; runtimeKind?: string | null | undefined } = {};
     if (typeof patch.title === "string") update.title = patch.title;
     if (typeof patch.activeRole === "string") update.activeRole = patch.activeRole;
-    if ("selectedAssistant" in patch) update.selectedAssistant = patch.selectedAssistant ?? null;
+    if ("runtimeKind" in patch) update.runtimeKind = patch.runtimeKind ?? null;
     if (Object.keys(update).length === 0) return;
     void invoke("update_app_session", { id, update }).catch(() => { });
   };
@@ -68,8 +68,8 @@ export default function App() {
   const patchActiveSession = (patch: Partial<AppSession>) => {
     const id = activeSessionId();
     if (!id) return;
-    if ("selectedAssistant" in patch) {
-      if (patch.selectedAssistant) window.localStorage.setItem(ASSISTANT_STORAGE_KEY, patch.selectedAssistant);
+    if ("runtimeKind" in patch) {
+      if (patch.runtimeKind) window.localStorage.setItem(ASSISTANT_STORAGE_KEY, patch.runtimeKind);
       else window.localStorage.removeItem(ASSISTANT_STORAGE_KEY);
     }
     updateSession(id, patch);
@@ -152,11 +152,10 @@ export default function App() {
   });
 
   const persistMessage = (sessionId: string, message: AppMessage) => {
-    if (!sessionId || message.role === "event") return;
+    if (!sessionId || message.roleName === "event") return;
     void invoke("append_app_message", {
       sessionId,
-      role: message.role,
-      roleLabel: message.roleLabel ?? null,
+      roleName: message.roleName,
       content: message.text,
     }).catch(() => {});
   };
@@ -174,8 +173,8 @@ export default function App() {
     persistMessage(id, message);
   };
 
-  const pushMessage = (role: AppMessage["role"], text: string) => {
-    appendMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, role, text, at: now() });
+  const pushMessage = (roleName: string, text: string) => {
+    appendMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, roleName, text, at: now() });
   };
 
   const flushStreamBatch = () => {
@@ -183,7 +182,7 @@ export default function App() {
       const chunk = streamBatchBuffer;
       streamBatchBuffer = "";
       const sid = streamOriginSessionId ?? activeSessionId();
-      if (sid) setSessions((s) => s.id === sid && !!s.streamingMessage, "streamingMessage", "text", (t) => t + chunk);
+      if (sid) setSessions((s) => s.id === sid && !!s.streamingMessage, "streamingMessage", "text", (t) => (t ?? "") + chunk);
       scheduleScrollToBottom();
     }
     streamBatchRaf = null;
@@ -243,7 +242,7 @@ export default function App() {
     dropStream();
     patchActiveSession({ toolCalls: new Map(), currentPlan: null, pendingPermission: null, submitting: false, status: "idle" });
     pushMessage("event", "Cancellation requested.");
-    const assistant = activeSession()?.selectedAssistant ?? null;
+    const assistant = activeSession()?.runtimeKind ?? null;
     const role = activeBackendRole();
     if (assistant) {
       try {
@@ -333,7 +332,6 @@ export default function App() {
     void (async () => {
       const sid = activeSessionId();
       if (!sid) return;
-      const role = roles().find((r) => r.roleName === roleName);
       await hydrateAgentCommandsForSession(sid, runtimeKey, roleName);
     })().catch((e: unknown) => {
       showToast(`Commands unavailable for ${roleName}: ${String(e)}`, "info");
@@ -341,7 +339,7 @@ export default function App() {
   };
 
   const setPreferredAssistant = (assistantKey: string | null) => {
-    patchActiveSession({ selectedAssistant: assistantKey });
+    patchActiveSession({ runtimeKind: assistantKey });
   };
 
   const refreshAssistants = async () => {
@@ -349,7 +347,7 @@ export default function App() {
     setAssistants(rows);
     slashCliCache = null;
     const preferred = window.localStorage.getItem(ASSISTANT_STORAGE_KEY);
-    const current = activeSession()?.selectedAssistant ?? null;
+    const current = activeSession()?.runtimeKind ?? null;
     const currentAvailable = current ? rows.find((a) => a.key === current && a.available) : null;
     if (currentAvailable) return;
     const preferredAvailable = preferred ? rows.find((a) => a.key === preferred && a.available) : null;
@@ -620,7 +618,7 @@ export default function App() {
     };
 
     const s = activeSession();
-    let sendRoleLabel = s?.activeRole;
+    let sendRoleLabel = s?.activeRole ?? DEFAULT_ROLE_ALIAS;
     let effectiveRole = s?.activeRole ?? DEFAULT_ROLE_ALIAS;
     const isCommand = text.startsWith("/");
     let inRoleContext = effectiveRole !== DEFAULT_ROLE_ALIAS && effectiveRole !== DEFAULT_BACKEND_ROLE;
@@ -670,7 +668,7 @@ export default function App() {
       const sid = activeSessionId();
       if (sid) {
         const sess = sessions.find((x) => x.id === sid);
-        if (sess && sess.title === "New Session" && sess.messages.filter((m) => m.role === "user").length === 0) {
+        if (sess && sess.title === "New Session" && sess.messages.filter((m) => m.roleName === "user").length === 0) {
           const autoTitle = text.slice(0, 30);
           updateSession(sid, { title: autoTitle });
           void invoke("update_app_session", { id: sid, update: { title: autoTitle } }).catch(() => {});
@@ -682,14 +680,14 @@ export default function App() {
     const isAgentCmd = isCommand && !inRoleContext && /^\/(plan|act|auto|cancel)\b/.test(text);
     if (isAgentCmd) {
       const role = activeBackendRole();
-      const assistant = s?.selectedAssistant ?? null;
+      const assistant = s?.runtimeKind ?? null;
       const cmd = text.split(/\s+/)[0].slice(1);
       try {
         if (cmd === "cancel") {
-          if (assistant) await invoke("cancel_acp_session", { runtimeKind: assistant, roleName: role });
+          if (assistant) await invoke("cancel_acp_session", { runtimeKind: assistant, roleName: role, appSessionId: activeSessionId() ?? "" });
           pushMessage("event", `cancelled ${role}`);
         } else {
-          if (assistant) await invoke("set_acp_mode", { runtimeKind: assistant, roleName: role, modeId: cmd });
+          if (assistant) await invoke("set_acp_mode", { runtimeKind: assistant, roleName: role, modeId: cmd, appSessionId: activeSessionId() ?? "" });
           pushMessage("event", `${role} mode → ${cmd}`);
         }
       } catch (e) {
@@ -713,7 +711,7 @@ export default function App() {
     const startOriginStream = () => {
       streamOriginSessionId = originSessionId;
       const id = `stream-${now()}`;
-      const row: AppMessage = { id, role: "assistant", text: "", at: now(), roleLabel: sendRoleLabel };
+      const row: AppMessage = { id, roleName: sendRoleLabel, text: "", at: now() };
       patchOriginSession({ streamingMessage: row, toolCalls: new Map(), currentPlan: null, pendingPermission: null });
       scheduleScrollToBottom();
       return row;
@@ -730,7 +728,7 @@ export default function App() {
         appendOriginMessage({ ...row, text, at: now(), toolCalls: snapshotToolCalls });
         patchOriginSession({ streamingMessage: null });
       } else if (finalReply) {
-        appendOriginMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, role: "assistant", text: finalReply, at: now(), roleLabel: sendRoleLabel, toolCalls: snapshotToolCalls });
+        appendOriginMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, roleName: sendRoleLabel, text: finalReply, at: now(), toolCalls: snapshotToolCalls });
       }
       resetStreamState();
       patchOriginSession({ toolCalls: new Map(), currentPlan: null, pendingPermission: null, agentState: undefined });
@@ -742,7 +740,7 @@ export default function App() {
     };
 
     let streamStarted = false;
-    if ((!isUnionAiCommand) && s?.selectedAssistant) {
+    if ((!isUnionAiCommand) && s?.runtimeKind) {
       streamAccepting = true;
       startOriginStream();
       streamStarted = true;
@@ -752,17 +750,17 @@ export default function App() {
       const res = await invoke<AssistantChatResponse>("assistant_chat", {
         input: {
           input: routedText,
-          selectedAssistant: s?.selectedAssistant ?? null,
+          runtimeKind: s?.runtimeKind ?? null,
           appSessionId: originSessionId ?? null,
         }
       });
       if (runToken <= canceledRunToken) return;
-      if (res.selectedAssistant) setPreferredAssistant(res.selectedAssistant);
+      if (res.runtimeKind) setPreferredAssistant(res.runtimeKind);
 
       if (streamStarted) {
         completeOriginStream(res.reply);
       } else {
-        appendOriginMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, role: "assistant", text: res.reply, at: now(), roleLabel: sendRoleLabel });
+        appendOriginMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, roleName: sendRoleLabel, text: res.reply, at: now() });
       }
 
     } catch (e) {
@@ -770,7 +768,7 @@ export default function App() {
       dropOriginStream();
       const errMsg = String(e);
       if (!errMsg.toLowerCase().includes("cancel")) showToast(errMsg);
-      appendOriginMessage({ id: `${now()}-err`, role: "event", text: errMsg, at: now() });
+      appendOriginMessage({ id: `${now()}-err`, roleName: "event", text: errMsg, at: now() });
       patchOriginSession({ submitting: false, status: "error" });
       streamAccepting = false;
       runNextQueued();
@@ -797,7 +795,7 @@ export default function App() {
       pushMessage("system", `Queued (${queuedInputs.length}): ${text}`);
       return;
     }
-    if (!activeSession()?.selectedAssistant && !isCustomRole() && !text.startsWith("/app_")) {
+    if (!activeSession()?.runtimeKind && !isCustomRole() && !text.startsWith("/app_")) {
       pushMessage("system", "Select an assistant or a role first.");
       return;
     }
@@ -908,19 +906,19 @@ export default function App() {
     void invoke<{ id: string }>("create_app_session", { title: "New Session" }).then((created) => {
       const s = makeDefaultSession("New Session");
       s.id = created.id;
-      s.selectedAssistant = availableAssistant;
+      s.runtimeKind = availableAssistant;
       setSessions(sessions.length, s);
       setActiveSessionId(s.id);
       if (availableAssistant) {
         void invoke("update_app_session", {
           id: created.id,
-          update: { selectedAssistant: availableAssistant },
+          update: { runtimeKind: availableAssistant },
         }).catch(() => { });
       }
     }).catch((e: unknown) => {
       showToast(`Failed to create session: ${String(e)}`);
       const s = makeDefaultSession("New Session");
-      s.selectedAssistant = availableAssistant;
+      s.runtimeKind = availableAssistant;
       setSessions(sessions.length, s);
       setActiveSessionId(s.id);
     });
@@ -945,12 +943,12 @@ export default function App() {
     const boot = async () => {
       let loaded: AppSession[] = [];
       try {
-        const raw = await invoke<Array<{ id: string; title: string; messages: AppMessage[]; activeRole?: string; selectedAssistant?: string | null }>>("list_app_sessions");
+        const raw = await invoke<Array<{ id: string; title: string; messages: AppMessage[]; activeRole?: string; runtimeKind?: string | null }>>("list_app_sessions");
         loaded = raw.map((r) => {
           const s = makeDefaultSession(r.title);
           s.id = r.id;
           if (r.activeRole) s.activeRole = r.activeRole;
-          if (r.selectedAssistant !== undefined) s.selectedAssistant = r.selectedAssistant;
+          if (r.runtimeKind !== undefined) s.runtimeKind = r.runtimeKind;
           s.messages = r.messages ?? [];
           return s;
         });
@@ -984,11 +982,11 @@ export default function App() {
         : assistants().find((a) => a.available)?.key ?? null;
 
       sessions.forEach((s, i) => {
-        if (!s.selectedAssistant && availableAssistant) {
-          setSessions(i, "selectedAssistant", availableAssistant);
+        if (!s.runtimeKind && availableAssistant) {
+          setSessions(i, "runtimeKind", availableAssistant);
           void invoke("update_app_session", {
             id: s.id,
-            update: { selectedAssistant: availableAssistant },
+            update: { runtimeKind: availableAssistant },
           }).catch(() => { });
         }
       });

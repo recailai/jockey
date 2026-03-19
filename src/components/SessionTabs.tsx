@@ -24,7 +24,7 @@ export default function SessionTabs(props: SessionTabsProps) {
   const [renameValue, setRenameValue] = createSignal("");
 
   return (
-    <div data-tauri-drag-region class="flex h-11 shrink-0 items-center border-b border-white/[0.04] bg-[#0a0a0c]/80 backdrop-blur-md gap-1.5 shadow-sm relative z-10" style="padding-left: max(12px, env(titlebar-area-x, 78px)); padding-right: 12px;">
+    <div class="flex h-11 shrink-0 items-center border-b border-white/[0.04] bg-[#0a0a0c]/80 backdrop-blur-md gap-1.5 shadow-sm relative z-10" style="padding-left: max(12px, env(titlebar-area-x, 78px)); padding-right: 12px;">
       <For each={props.sessions}>
         {(s) => (
           <div
@@ -94,19 +94,19 @@ export default function SessionTabs(props: SessionTabsProps) {
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
-      <div data-tauri-drag-region class="flex-1" />
+      <div class="flex-1" />
       <For each={props.assistants()}>
         {(a) => (
           <button
-            onClick={() => a.available && props.patchActiveSession({ selectedAssistant: a.key })}
+            onClick={() => a.available && props.patchActiveSession({ runtimeKind: a.key })}
             class={`flex items-center gap-1.5 rounded-full px-3 py-1 text-[10.5px] font-bold tracking-wide transition-all duration-300 border shadow-sm ${
-              props.activeSession()?.selectedAssistant === a.key
+              props.activeSession()?.runtimeKind === a.key
                 ? "bg-indigo-500/15 text-indigo-200 border-indigo-500/30 ring-1 ring-indigo-500/20 drop-shadow-[0_0_8px_rgba(99,102,241,0.15)]"
                 : "bg-zinc-900/40 text-zinc-500 border-transparent hover:bg-zinc-800/80 hover:text-zinc-300 hover:border-white/[0.05]"
             } ${!a.available ? "opacity-30 pointer-events-none" : ""}`}
             title={a.label}
           >
-            <span class={`h-1.5 w-1.5 rounded-full shadow-[0_0_5px_currentColor] ${a.available ? (props.activeSession()?.selectedAssistant === a.key ? "bg-indigo-400 text-indigo-400" : "bg-emerald-500 text-emerald-500") : "bg-rose-500 text-rose-500"}`} />
+            <span class={`h-1.5 w-1.5 rounded-full shadow-[0_0_5px_currentColor] ${a.available ? (props.activeSession()?.runtimeKind === a.key ? "bg-indigo-400 text-indigo-400" : "bg-emerald-500 text-emerald-500") : "bg-rose-500 text-rose-500"}`} />
             {a.label}
           </button>
         )}
@@ -118,9 +118,9 @@ export default function SessionTabs(props: SessionTabsProps) {
               <button
                 class={`min-h-7 rounded-md border px-2.5 py-0.5 text-[10px] font-bold tracking-wider uppercase transition-all duration-200 ${INTERACTIVE_MOTION} ${props.activeSession()?.currentMode === m.id ? "border-indigo-500/40 bg-indigo-500/20 text-indigo-300 shadow-[0_0_8px_rgba(99,102,241,0.15)] ring-1 ring-indigo-500/20" : "border-white/[0.04] bg-zinc-900/40 text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/60 hover:border-white/[0.1]"}`}
                 onClick={() => {
-                  const assistant = props.activeSession()?.selectedAssistant ?? null;
+                  const assistant = props.activeSession()?.runtimeKind ?? null;
                   const role = props.activeBackendRole();
-                  if (assistant) void invoke("set_acp_mode", { runtimeKind: assistant, roleName: role, modeId: m.id });
+                  if (assistant) void invoke("set_acp_mode", { runtimeKind: assistant, roleName: role, modeId: m.id, appSessionId: props.activeSessionId() ?? "" });
                 }}
               >
                 {m.title ?? m.id}

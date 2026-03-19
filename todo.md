@@ -139,12 +139,25 @@
 - [ ] 当前问题: Session = workflow execution record，没有独立的 chat session 概念
 - [ ] Chat session: 用户与某个 role/assistant 的对话历史，持久化
 - [ ] ACP session: 底层 agent 进程的 session，由 connection pool 管理
+- [ ] AppSession cwd 配置: app_sessions 增加 `cwd` 字段；create/list/update 支持；init CLI session 默认透传为 `current_dir` + ACP `new_session/load_session` 的 cwd
+- [ ] AppSession Config 抽象: 增加可复用配置集并在 session init 透传
+  - `app_session_configs` 表: `id`, `name`, `cwd`, `runtime_kind`, `role_name`, `mcp_servers_json`, `auto_approve`, `init_mode`, `init_config_options_json`, `env_json`, `args_json`, `resume_policy`, `created_at`, `updated_at`
+  - `app_sessions.config_id` 关联配置；允许 session 覆盖局部字段（如 cwd/mode/model）
+  - create/update session 支持 `config_id` + override payload
+  - init CLI session 读取 `effectiveConfig(config + overrides)`，统一注入 prewarm/execute/cancel/mode/config 链路
+  - 前端提供 config 管理与“从 config 新建 session”
 - [ ] 需要区分:
   - ChatSession: UI 层对话，存 messages，可恢复
   - AcpSession: 传输层连接，存 session_id，warm/cold
 - [ ] ChatSession 表: id, role_name, runtime_kind, messages_json, created_at, updated_at
 - [ ] 前端: session list 可切换/恢复历史对话
 - [ ] 会话恢复: 应用重启后从 ChatSession 恢复 UI，AcpSession 重新 cold start
+- [ ] AppSession 级 init 参数:
+  - `mcp_servers_json`
+  - `auto_approve`
+  - `init_mode`
+  - `init_config_options_json` (如 model/reasoning_effort)
+  - `resume_policy` (force_new / resume_if_possible)
 
 ### 6. Workflow 设计
 - [ ] 当前问题: workflow = 固定的 role 列表 + 串行执行，太简陋

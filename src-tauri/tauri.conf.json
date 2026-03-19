@@ -22,9 +22,9 @@
         "resizable": true,
         "shadow": true,
         "decorations": true,
-        "transparent": true,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "transparent": false,
+        "titleBarStyle": "Visible",
+        "hiddenTitle": false
       }
     ],
     "security": {

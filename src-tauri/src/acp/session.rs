@@ -367,6 +367,11 @@ pub async fn execute_runtime(
     let resume_session_id = state.as_ref().and_then(|(s, app_sid)| {
         load_app_session_role_cli_id(s, app_sid, adapter.runtime_key, role_name)
     });
+    let app_session_scope = if app_session_id.trim().is_empty() {
+        None
+    } else {
+        Some(app_session_id.to_string())
+    };
 
     let (delta_tx, mut delta_rx) = mpsc::unbounded_channel::<AcpEvent>();
     let (result_tx, mut result_rx) = oneshot::channel();
@@ -377,7 +382,7 @@ pub async fn execute_runtime(
         args: adapter.args.clone(),
         env: adapter.env.clone(),
         role_name: role_name.to_string(),
-        app_session_id: app_session_id.to_string(),
+        app_session_id: app_session_scope,
         prompt: prompt.to_string(),
         context: context.to_vec(),
         cwd: cwd.to_string(),
@@ -396,13 +401,41 @@ pub async fn execute_runtime(
     let mut full_output = String::new();
     let mut delta_count = 0usize;
 
+    acp_log("execute.stream.listening", json!({
+        "runtime": adapter.runtime_key,
+        "role": role_owned,
+        "prompt": clip(prompt, 80),
+    }));
+
+    let heartbeat = tokio::time::Instant::now();
+    let mut heartbeat_count = 0u32;
+    let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+    heartbeat_interval.tick().await; // consume the immediate first tick
     let result = loop {
         tokio::select! {
+            _ = heartbeat_interval.tick() => {
+                heartbeat_count += 1;
+                acp_log("execute.heartbeat", json!({
+                    "runtime": adapter.runtime_key,
+                    "role": role_owned,
+                    "elapsedSec": heartbeat.elapsed().as_secs(),
+                    "deltaCount": delta_count,
+                    "beat": heartbeat_count,
+                }));
+                continue;
+            }
             evt = delta_rx.recv() => {
                 match evt {
                     Some(AcpEvent::TextDelta { ref text }) => {
                         full_output.push_str(text);
                         delta_count += 1;
+                        acp_log("delta.text", json!({
+                            "runtime": adapter.runtime_key,
+                            "role": role_owned,
+                            "deltaIndex": delta_count,
+                            "chunkLen": text.len(),
+                            "preview": clip(text, 60),
+                        }));
                         let _ = app.emit("acp/delta", json!({
                             "role": role_owned,
                             "runtimeKind": adapter.runtime_key,
@@ -436,13 +469,21 @@ pub async fn execute_runtime(
                             "event": serde_json::to_value(&AcpEvent::AvailableCommands { commands: commands.clone() }).unwrap_or(json!({}))
                         }));
                     }
-                    Some(other) => {
+                    Some(ref other) => {
                         delta_count += 1;
+                        let event_json = serde_json::to_value(&other).unwrap_or(json!({}));
+                        acp_log("delta.event", json!({
+                            "runtime": adapter.runtime_key,
+                            "role": role_owned,
+                            "deltaIndex": delta_count,
+                            "kind": event_json.get("kind").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                            "preview": clip(&event_json.to_string(), 120),
+                        }));
                         let _ = app.emit("acp/stream", json!({
                             "role": role_owned,
                             "runtimeKind": adapter.runtime_key,
                             "appSessionId": app_session_id_owned,
-                            "event": serde_json::to_value(&other).unwrap_or(json!({}))
+                            "event": event_json
                         }));
                     }
                     None => {}
@@ -467,7 +508,16 @@ pub async fn execute_runtime(
                         }
                     }
                 }
-                break res.unwrap_or_else(|_| Err("worker disconnected".to_string()));
+                let r = res.unwrap_or_else(|_| Err("worker disconnected".to_string()));
+                acp_log("execute.result", json!({
+                    "runtime": adapter.runtime_key,
+                    "role": role_owned,
+                    "ok": r.is_ok(),
+                    "deltaCount": delta_count,
+                    "outputSize": full_output.len(),
+                    "outputPreview": clip(&full_output, 120),
+                }));
+                break r;
             }
         }
     };
@@ -487,10 +537,17 @@ pub async fn execute_runtime(
             }
 
             let output = if full_output.is_empty() {
-                format!(
-                    "{} ACP completed for role {} with no text payload.",
-                    adapter.runtime_key, role_name
-                )
+                if prompt.starts_with('/') {
+                    format!(
+                        "Command sent to {} (role: {}). Agent processed it with {} event(s) but returned no text output.",
+                        adapter.runtime_key, role_name, delta_count
+                    )
+                } else {
+                    format!(
+                        "{} completed for role {} with no text output ({} event(s)).",
+                        adapter.runtime_key, role_name, delta_count
+                    )
+                }
             } else {
                 full_output
             };
@@ -532,8 +589,8 @@ async fn send_prewarm(
     runtime_kind: &str,
     role_name: &str,
     cwd: &str,
-    app_session_id: &str,
     resume_session_id: Option<String>,
+    app_session_id: Option<&str>,
 ) -> Option<oneshot::Receiver<(Vec<serde_json::Value>, String)>> {
     let adapter = match build_stdio_adapter(runtime_kind) {
         Ok(Some(a)) => a,
@@ -546,7 +603,9 @@ async fn send_prewarm(
         args: adapter.args,
         env: adapter.env,
         role_name: role_name.to_string(),
-        app_session_id: app_session_id.to_string(),
+        app_session_id: app_session_id
+            .filter(|id| !id.trim().is_empty())
+            .map(|id| id.to_string()),
         cwd: cwd.to_string(),
         auto_approve: true,
         mcp_servers: vec![],
@@ -565,11 +624,18 @@ pub async fn prewarm_role(
     state: Option<(&AppState, &str)>,
 ) {
     let runtime_key = normalize_runtime_key(runtime_kind).unwrap_or(runtime_kind);
-    let app_sid = state.as_ref().map(|(_, sid)| *sid).unwrap_or("");
     let resume_session_id = state
         .as_ref()
         .and_then(|(s, sid)| load_app_session_role_cli_id(s, sid, runtime_key, role_name));
-    let Some(rx) = send_prewarm(runtime_kind, role_name, cwd, app_sid, resume_session_id).await
+    let app_session_id = state.as_ref().map(|(_, sid)| *sid);
+    let Some(rx) = send_prewarm(
+        runtime_kind,
+        role_name,
+        cwd,
+        resume_session_id,
+        app_session_id,
+    )
+    .await
     else {
         return;
     };
@@ -589,11 +655,18 @@ pub async fn prewarm_role_for_config(
     state: Option<(&AppState, &str)>,
 ) -> Vec<serde_json::Value> {
     let runtime_key = normalize_runtime_key(runtime_kind).unwrap_or(runtime_kind);
-    let app_sid = state.as_ref().map(|(_, sid)| *sid).unwrap_or("");
     let resume_session_id = state
         .as_ref()
         .and_then(|(s, sid)| load_app_session_role_cli_id(s, sid, runtime_key, role_name));
-    let Some(rx) = send_prewarm(runtime_kind, role_name, cwd, app_sid, resume_session_id).await
+    let app_session_id = state.as_ref().map(|(_, sid)| *sid);
+    let Some(rx) = send_prewarm(
+        runtime_kind,
+        role_name,
+        cwd,
+        resume_session_id,
+        app_session_id,
+    )
+    .await
     else {
         return vec![];
     };
@@ -623,8 +696,8 @@ pub async fn prewarm_role_with_session_id(
         runtime_kind,
         role_name,
         cwd,
-        app_session_id,
         resume_session_id,
+        Some(app_session_id),
     )
     .await
     else {
@@ -642,22 +715,24 @@ fn normalize_runtime_key(runtime_kind: &str) -> Option<&'static str> {
     RuntimeKind::from_str(runtime_kind).map(|k| k.runtime_key())
 }
 
-pub async fn cancel_session(runtime_kind: &str, role_name: &str, app_session_id: &str) {
+pub async fn cancel_session(runtime_kind: &str, role_name: &str, app_session_id: Option<&str>) {
     let Some(runtime_key) = normalize_runtime_key(runtime_kind) else {
         return;
     };
     let _ = worker_tx().send(WorkerMsg::Cancel {
         runtime_key,
         role_name: role_name.to_string(),
-        app_session_id: app_session_id.to_string(),
+        app_session_id: app_session_id
+            .filter(|id| !id.trim().is_empty())
+            .map(|id| id.to_string()),
     });
 }
 
 pub async fn set_mode(
     runtime_kind: &str,
     role_name: &str,
-    app_session_id: &str,
     mode_id: &str,
+    app_session_id: Option<&str>,
 ) -> Result<(), String> {
     let runtime_key =
         normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
@@ -665,7 +740,9 @@ pub async fn set_mode(
     let _ = worker_tx().send(WorkerMsg::SetMode {
         runtime_key,
         role_name: role_name.to_string(),
-        app_session_id: app_session_id.to_string(),
+        app_session_id: app_session_id
+            .filter(|id| !id.trim().is_empty())
+            .map(|id| id.to_string()),
         mode_id: mode_id.to_string(),
         result_tx: tx,
     });
@@ -675,9 +752,9 @@ pub async fn set_mode(
 pub async fn set_config_option(
     runtime_kind: &str,
     role_name: &str,
-    app_session_id: &str,
     key: &str,
     value: &str,
+    app_session_id: Option<&str>,
 ) -> Result<(), String> {
     let runtime_key =
         normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
@@ -685,7 +762,9 @@ pub async fn set_config_option(
     let _ = worker_tx().send(WorkerMsg::SetConfigOption {
         runtime_key,
         role_name: role_name.to_string(),
-        app_session_id: app_session_id.to_string(),
+        app_session_id: app_session_id
+            .filter(|id| !id.trim().is_empty())
+            .map(|id| id.to_string()),
         config_id: key.to_string(),
         value: value.to_string(),
         result_tx: tx,

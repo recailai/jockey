@@ -17,10 +17,7 @@ use tauri::Manager;
 
 use assistant::assistant_catalog;
 use db::context::shared_key;
-use db::{
-    ensure_default_team_id, init_db, load_team_workspace_path, seed_default_dynamic_catalog,
-    with_db, DbPool,
-};
+use db::{init_db, seed_default_dynamic_catalog, with_db, DbPool};
 use types::*;
 
 pub(crate) fn now_ms() -> i64 {
@@ -53,14 +50,8 @@ pub(crate) fn abs_cwd(path: &str) -> String {
         .to_string()
 }
 
-pub(crate) fn resolve_chat_cwd(state: &AppState) -> String {
-    let team_id = ensure_default_team_id(state).ok();
-    let raw = if let Some(ref tid) = team_id {
-        load_team_workspace_path(state, tid).unwrap_or_else(|_| default_chat_cwd())
-    } else {
-        default_chat_cwd()
-    };
-    abs_cwd(&raw)
+pub(crate) fn resolve_chat_cwd() -> String {
+    abs_cwd(&default_chat_cwd())
 }
 
 pub(crate) fn clip_text(input: &str, max_chars: usize) -> String {
@@ -92,12 +83,7 @@ async fn cancel_acp_session(
     role_name: String,
     app_session_id: Option<String>,
 ) -> Result<(), String> {
-    acp::cancel_session(
-        &runtime_kind,
-        &role_name,
-        app_session_id.as_deref().unwrap_or(""),
-    )
-    .await;
+    acp::cancel_session(&runtime_kind, &role_name, app_session_id.as_deref()).await;
     Ok(())
 }
 
@@ -105,14 +91,14 @@ async fn cancel_acp_session(
 async fn set_acp_mode(
     runtime_kind: String,
     role_name: String,
-    app_session_id: Option<String>,
     mode_id: String,
+    app_session_id: Option<String>,
 ) -> Result<(), String> {
     acp::set_mode(
         &runtime_kind,
         &role_name,
-        app_session_id.as_deref().unwrap_or(""),
         &mode_id,
+        app_session_id.as_deref(),
     )
     .await
 }
@@ -121,16 +107,16 @@ async fn set_acp_mode(
 async fn set_acp_config_option(
     runtime_kind: String,
     role_name: String,
-    app_session_id: Option<String>,
     config_id: String,
     value: String,
+    app_session_id: Option<String>,
 ) -> Result<(), String> {
     acp::set_config_option(
         &runtime_kind,
         &role_name,
-        app_session_id.as_deref().unwrap_or(""),
         &config_id,
         &value,
+        app_session_id.as_deref(),
     )
     .await
 }
@@ -147,11 +133,10 @@ fn list_discovered_config_options_cmd(runtime_key: String) -> Vec<serde_json::Va
 
 #[tauri::command]
 async fn prewarm_role_config_cmd(
-    state: tauri::State<'_, AppState>,
     runtime_kind: String,
     role_name: String,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let cwd = resolve_chat_cwd(&state);
+    let cwd = resolve_chat_cwd();
     Ok(acp::prewarm_role_for_config(&runtime_kind, &role_name, &cwd, None).await)
 }
 
@@ -211,7 +196,7 @@ pub fn run() {
                 let existing = {
                     let guard = state.db.get().map_err(|e| std::io::Error::other(e.to_string()))?;
                     let mut stmt = guard.prepare(
-                        "SELECT team_id, key, value FROM shared_context_snapshots ORDER BY updated_at DESC",
+                        "SELECT scope, key, value FROM shared_context_snapshots ORDER BY updated_at DESC",
                     )?;
                     let rows = stmt.query_map([], |row| {
                         Ok((
@@ -235,8 +220,6 @@ pub fn run() {
             seed_default_dynamic_catalog(&state).map_err(std::io::Error::other)?;
             app.manage(state);
 
-            let app_state: &AppState = app.state::<AppState>().inner();
-            let _ = ensure_default_team_id(app_state);
             let prewarm_cwd = default_chat_cwd();
             let catalog_snapshot: Vec<(String, bool)> = assistant_catalog()
                 .iter()
@@ -246,15 +229,33 @@ pub fn run() {
                 .iter()
                 .filter_map(|(key, available)| if *available { Some(key.clone()) } else { None })
                 .collect();
-            let recent_app_session: Option<(String, String)> = with_db(app_state, |conn| {
+
+            // Load recent session's role mappings from app_session_roles
+            let app_state: &AppState = app.state::<AppState>().inner();
+            let recent_app_session_id: Option<String> = with_db(app_state, |conn| {
                 conn.query_row(
-                    "SELECT id, role_sessions_json FROM app_sessions ORDER BY last_active_at DESC LIMIT 1",
+                    "SELECT id FROM app_sessions ORDER BY last_active_at DESC LIMIT 1",
                     [],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    |row| row.get::<_, String>(0),
                 )
                 .optional()
                 .map_err(|e| e.to_string())
             }).unwrap_or(None);
+
+            let recent_role_mappings: Vec<(String, String, Option<String>)> = if let Some(ref sid) = recent_app_session_id {
+                with_db(app_state, |conn| {
+                    let mut stmt = conn.prepare(
+                        "SELECT role_name, runtime_kind, acp_session_id FROM app_session_roles WHERE app_session_id = ?1"
+                    ).map_err(|e| e.to_string())?;
+                    let rows = stmt.query_map(params![sid], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
+                    }).map_err(|e| e.to_string())?;
+                    Ok(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+                }).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
             let all_roles: Vec<(String, String)> = with_db(app_state, |conn| {
                 let mut stmt = conn.prepare(
                     "SELECT role_name, runtime_kind FROM roles ORDER BY updated_at DESC LIMIT ?1"
@@ -267,24 +268,17 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let default_cwd = prewarm_cwd.clone();
             tauri::async_runtime::spawn(async move {
-                let role_sessions: serde_json::Map<String, serde_json::Value> =
-                    recent_app_session.as_ref()
-                        .and_then(|(_, json)| serde_json::from_str(json).ok())
-                        .unwrap_or_default();
-                let app_session_id = recent_app_session
-                    .as_ref()
-                    .map(|(id, _)| id.clone())
-                    .unwrap_or_default();
-
                 let mut recent_role_pairs: HashSet<(String, String)> = HashSet::new();
-                for key in role_sessions.keys() {
-                    if let Some((runtime, role_name)) = key.split_once(':') {
-                        let runtime_normalized = runtime.to_ascii_lowercase();
-                        if KNOWN_RUNTIME_KEYS.contains(&runtime_normalized.as_str()) {
-                            recent_role_pairs.insert((runtime_normalized, role_name.to_string()));
-                        }
+                for (role_name, runtime_kind, _) in &recent_role_mappings {
+                    let normalized = runtime_kind::RuntimeKind::from_str(runtime_kind)
+                        .map(|k| k.runtime_key().to_string())
+                        .unwrap_or_else(|| runtime_kind.to_ascii_lowercase());
+                    if KNOWN_RUNTIME_KEYS.contains(&normalized.as_str()) {
+                        recent_role_pairs.insert((normalized, role_name.clone()));
                     }
                 }
+
+                let app_session_id = recent_app_session_id.clone().unwrap_or_default();
 
                 let mut priority_futs: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> = Vec::new();
 
@@ -315,11 +309,15 @@ pub fn run() {
                     let app_state_inner: &AppState = state_ref.inner();
                     let db_clone = app_state_inner.db.clone();
                     let ctx_clone = app_state_inner.shared_context.clone();
-                    let session_key = format!("{}:{}", normalized_runtime, role_name);
-                    let resume_sid = role_sessions
-                        .get(&session_key)
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
+                    let resume_sid = recent_role_mappings
+                        .iter()
+                        .find(|(rn, rk, _)| rn == role_name && {
+                            let norm = runtime_kind::RuntimeKind::from_str(rk)
+                                .map(|k| k.runtime_key().to_string())
+                                .unwrap_or_else(|| rk.to_ascii_lowercase());
+                            norm == normalized_runtime
+                        })
+                        .and_then(|(_, _, sid)| sid.clone());
                     let sid_clone = app_session_id.clone();
                     let role_name_clone = role_name.clone();
                     let runtime_kind_clone = runtime_kind.clone();
@@ -394,7 +392,6 @@ pub fn run() {
             db::app_session::update_app_session,
             db::app_session::delete_app_session,
             db::app_session::append_app_message,
-            db::app_session::cleanup_legacy_role_sessions,
             db::skill::list_app_skills,
             db::skill::upsert_app_skill,
             db::skill::delete_app_skill
