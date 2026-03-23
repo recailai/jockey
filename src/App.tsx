@@ -235,6 +235,11 @@ export default function App() {
 
   const activeBackendRole = () => isCustomRole() ? (activeSession()?.activeRole ?? DEFAULT_BACKEND_ROLE) : DEFAULT_BACKEND_ROLE;
 
+  const runtimeForRole = (roleName: string): string | null => {
+    if (!isCustomRole() || roleName === DEFAULT_BACKEND_ROLE) return activeSession()?.runtimeKind ?? null;
+    return roles().find((r) => r.roleName === roleName)?.runtimeKind ?? activeSession()?.runtimeKind ?? null;
+  };
+
   const cancelCurrentRun = async () => {
     if (!activeSession()?.submitting) return;
     canceledRunToken = Math.max(canceledRunToken, runTokenSeq);
@@ -242,11 +247,11 @@ export default function App() {
     dropStream();
     patchActiveSession({ toolCalls: new Map(), currentPlan: null, pendingPermission: null, submitting: false, status: "idle" });
     pushMessage("event", "Cancellation requested.");
-    const assistant = activeSession()?.runtimeKind ?? null;
     const role = activeBackendRole();
-    if (assistant) {
+    const runtime = runtimeForRole(role);
+    if (runtime) {
       try {
-        await invoke("cancel_acp_session", { runtimeKind: assistant, roleName: role, appSessionId: activeSessionId() ?? "" });
+        await invoke("cancel_acp_session", { runtimeKind: runtime, roleName: role, appSessionId: activeSessionId() ?? "" });
       } catch { }
     }
     runNextQueued();
@@ -680,14 +685,14 @@ export default function App() {
     const isAgentCmd = isCommand && !inRoleContext && /^\/(plan|act|auto|cancel)\b/.test(text);
     if (isAgentCmd) {
       const role = activeBackendRole();
-      const assistant = s?.runtimeKind ?? null;
+      const runtime = runtimeForRole(role);
       const cmd = text.split(/\s+/)[0].slice(1);
       try {
         if (cmd === "cancel") {
-          if (assistant) await invoke("cancel_acp_session", { runtimeKind: assistant, roleName: role, appSessionId: activeSessionId() ?? "" });
+          if (runtime) await invoke("cancel_acp_session", { runtimeKind: runtime, roleName: role, appSessionId: activeSessionId() ?? "" });
           pushMessage("event", `cancelled ${role}`);
         } else {
-          if (assistant) await invoke("set_acp_mode", { runtimeKind: assistant, roleName: role, modeId: cmd, appSessionId: activeSessionId() ?? "" });
+          if (runtime) await invoke("set_acp_mode", { runtimeKind: runtime, roleName: role, modeId: cmd, appSessionId: activeSessionId() ?? "" });
           pushMessage("event", `${role} mode → ${cmd}`);
         }
       } catch (e) {
