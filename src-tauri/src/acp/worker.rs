@@ -2,6 +2,8 @@ use agent_client_protocol::{self as acp, Agent as _};
 use dashmap::DashMap;
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
@@ -252,7 +254,19 @@ fn pool_key(runtime_key: &str, role_name: &str, app_session_id: Option<&str>) ->
 
 pub(super) struct SlotHandle {
     pub(super) conn: tokio::sync::Mutex<Option<LiveConnection>>,
-    pub(super) cancel_flag: std::sync::atomic::AtomicBool,
+}
+
+/// A lightweight handle for sending ACP cancel without holding the conn mutex.
+/// Stored in a thread-local map keyed by pool_key, only accessed on the worker
+/// thread's LocalSet — so `Rc` is fine.
+struct CancelHandle {
+    conn: Rc<acp::ClientSideConnection>,
+    session_id: acp::SessionId,
+}
+
+thread_local! {
+    static CANCEL_HANDLES: RefCell<std::collections::HashMap<String, CancelHandle>> =
+        RefCell::new(std::collections::HashMap::new());
 }
 
 static SLOT_MAP: OnceLock<Arc<DashMap<String, Arc<SlotHandle>>>> = OnceLock::new();
@@ -272,14 +286,13 @@ fn get_slot_handle(
         .or_insert_with(|| {
             Arc::new(SlotHandle {
                 conn: tokio::sync::Mutex::new(None),
-                cancel_flag: std::sync::atomic::AtomicBool::new(false),
             })
         })
         .clone()
 }
 
 pub(super) struct LiveConnection {
-    pub(super) conn: acp::ClientSideConnection,
+    pub(super) conn: Rc<acp::ClientSideConnection>,
     pub(super) session_id: acp::SessionId,
     pub(super) cwd: String,
     pub(super) delta_slot: DeltaSlot,
@@ -290,6 +303,16 @@ pub(super) struct LiveConnection {
     pub(super) _child: tokio::process::Child,
     pub(super) _io_task: tokio::task::JoinHandle<()>,
 }
+
+// SAFETY: LiveConnection is only ever created and accessed on the single-threaded
+// worker LocalSet (see `run_worker`).  The DashMap / tokio::sync::Mutex wrappers
+// require Send+Sync at the type level, but no actual cross-thread access occurs.
+// The Rc<ClientSideConnection> is the only non-Send field; it is safe because:
+// 1. cold_start() runs on the worker LocalSet and produces the Rc.
+// 2. handle_execute/handle_prewarm run on the same LocalSet.
+// 3. The DashMap is only mutated from run_worker (also on that thread).
+unsafe impl Send for LiveConnection {}
+unsafe impl Sync for LiveConnection {}
 
 async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
     while let Some(msg) = rx.recv().await {
@@ -321,6 +344,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                         args,
                         env,
                         role_name,
+                        app_session_id,
                         prompt,
                         context,
                         cwd,
@@ -375,18 +399,30 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 role_name,
                 app_session_id,
             } => {
-                let slot = get_slot_handle(runtime_key, &role_name, app_session_id.as_deref());
-                slot.cancel_flag
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                tokio::task::spawn_local(async move {
-                    let guard = slot.conn.lock().await;
-                    if let Some(live) = guard.as_ref() {
-                        let _ = live
-                            .conn
-                            .cancel(acp::CancelNotification::new(live.session_id.clone()))
-                            .await;
-                    }
+                let key = pool_key(runtime_key, &role_name, app_session_id.as_deref());
+                // Read the cancel handle from thread-local WITHOUT locking the
+                // conn mutex.  Safe because we're on the worker's LocalSet.
+                let handle = CANCEL_HANDLES.with(|m| {
+                    m.borrow().get(&key).map(|h| (h.conn.clone(), h.session_id.clone()))
                 });
+                if let Some((conn, session_id)) = handle {
+                    acp_log(
+                        "cancel.sending",
+                        json!({ "runtime": runtime_key, "role": role_name }),
+                    );
+                    // cancel() is a JSON-RPC notification — fire-and-forget.
+                    // spawn_local so run_worker loop continues immediately.
+                    tokio::task::spawn_local(async move {
+                        let _ = conn
+                            .cancel(acp::CancelNotification::new(session_id))
+                            .await;
+                    });
+                } else {
+                    acp_log(
+                        "cancel.no_active_session",
+                        json!({ "runtime": runtime_key, "role": role_name }),
+                    );
+                }
             }
             WorkerMsg::SetMode {
                 runtime_key,
@@ -555,6 +591,7 @@ async fn handle_execute(
     args: Vec<String>,
     env: Vec<(String, String)>,
     role_name: String,
+    app_session_id: Option<String>,
     prompt: String,
     context: Vec<(String, String)>,
     cwd: String,
@@ -566,8 +603,6 @@ async fn handle_execute(
     role_config_options: Vec<(String, String)>,
     resume_session_id: Option<String>,
 ) {
-    slot.cancel_flag
-        .store(false, std::sync::atomic::Ordering::SeqCst);
     let mut guard = slot.conn.lock().await;
     let resolved = resolve_cwd(&cwd);
 
@@ -620,11 +655,24 @@ async fn handle_execute(
 
     let blocks = build_prompt_blocks(prompt, &context);
 
+    // Install cancel handle so the Cancel message handler can send ACP cancel
+    // without waiting for the conn mutex (which we hold right now).
+    let cancel_key = pool_key(runtime_key, &role_name, app_session_id.as_deref());
+    CANCEL_HANDLES.with(|m| {
+        m.borrow_mut().insert(cancel_key.clone(), CancelHandle {
+            conn: conn.conn.clone(),
+            session_id: session_id.clone(),
+        });
+    });
+
     let prompt_started = Instant::now();
     let prompt_result = conn
         .conn
         .prompt(acp::PromptRequest::new(session_id.clone(), blocks))
         .await;
+
+    // Clear cancel handle — prompt is done.
+    CANCEL_HANDLES.with(|m| { m.borrow_mut().remove(&cancel_key); });
 
     if let Ok(mut slot) = conn.delta_slot.lock() {
         *slot = None;

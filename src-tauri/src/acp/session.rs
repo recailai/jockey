@@ -1,6 +1,7 @@
 use agent_client_protocol::{self as acp, Agent as _};
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::Emitter;
@@ -303,7 +304,7 @@ pub(super) async fn cold_start(
     );
 
     Ok(LiveConnection {
-        conn,
+        conn: Rc::new(conn),
         session_id,
         cwd: abs_cwd.to_string(),
         delta_slot,
