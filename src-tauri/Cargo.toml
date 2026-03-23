@@ -1,0 +1,37 @@
+[package]
+name = "unionai"
+version = "0.1.0"
+description = "UnionAI desktop orchestrator"
+authors = ["unionai"]
+edition = "2021"
+
+[lib]
+name = "unionai_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+agent-client-protocol = "0.10.2"
+async-trait = "0.1.89"
+dashmap = "6.1.0"
+futures = "0.3"
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-window-state = "2"
+tokio = { version = "1.50.0", features = ["io-util", "macros", "process", "sync", "time", "rt"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+uuid = { version = "1.18.1", features = ["v4", "serde"] }
+which = "6"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

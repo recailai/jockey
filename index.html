@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#09090b" />
+    <script>
+      (() => {
+        const key = "unionai.theme";
+        const saved = window.localStorage.getItem(key);
+        if (saved === "light" || saved === "dark") {
+          document.documentElement.setAttribute("data-theme", saved);
+        }
+        const meta = document.querySelector('meta[name="theme-color"]');
+        if (!meta) return;
+        if (saved === "light") {
+          meta.setAttribute("content", "#f8fafc");
+          return;
+        }
+        if (saved === "dark") {
+          meta.setAttribute("content", "#09090b");
+          return;
+        }
+        const prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+        meta.setAttribute("content", prefersLight ? "#f8fafc" : "#09090b");
+      })();
+    </script>
+    <style>
+      :root {
+        color-scheme: dark light;
+        --boot-bg: #09090b;
+        --boot-text: #ededed;
+      }
+      :root[data-theme="light"] {
+        --boot-bg: #f8fafc;
+        --boot-text: #0f172a;
+      }
+      :root[data-theme="dark"] {
+        --boot-bg: #09090b;
+        --boot-text: #ededed;
+      }
+      @media (prefers-color-scheme: light) {
+        :root:not([data-theme]) {
+          --boot-bg: #f8fafc;
+          --boot-text: #0f172a;
+        }
+      }
+      html, body, #root {
+        margin: 0;
+        height: 100%;
+        min-height: 100%;
+        background: var(--boot-bg);
+        color: var(--boot-text);
+      }
+    </style>
+    <title>UnionAI</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/index.tsx"></script>
+  </body>
+</html>
