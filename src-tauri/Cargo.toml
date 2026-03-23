@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "UnionAI desktop orchestrator"
 authors = ["unionai"]
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/locustbaby/unionai"
 
 [lib]
 name = "unionai_lib"

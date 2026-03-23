@@ -14,3 +14,10 @@ dist/
 /debug
 **/*.rs.bk
 *.pdb
+
+# Sensitive / local
+.env*
+.claude/settings.local.json
+*.db
+*.sqlite
+*.mov
