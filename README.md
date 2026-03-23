@@ -13,7 +13,7 @@ A high-performance, open-source Multi-Agent Collaboration Platform built with Ta
 - **Persistent Agent Memory**: Integrated cross-session memory mechanisms for dynamic, searchable history and shared context.
 ## Demo
 
-https://github.com/user-attachments/assets/a7427b74-2e4d-4081-95a2-48ae10e62abd
+https://github.com/user-attachments/assets/5c17b184-4563-47ac-a966-bb6f5c6595ce
 
 **Video Walkthrough (Subtitles & Steps):**
 1. **Querying the Assistant**: Asked the default `@UnionAIAssistant` for help and received its capability overview.
