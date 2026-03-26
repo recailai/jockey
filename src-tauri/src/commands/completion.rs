@@ -1,7 +1,6 @@
-use crate::acp;
 use crate::db::context::{list_all_known_models, list_dynamic_catalog};
-use crate::db::role::list_all_roles;
 use crate::db::get_state;
+use crate::db::role::list_all_roles;
 use crate::fs_context::{
     is_within_workspace, relative_or_abs, resolve_attach_path, should_skip_name,
 };
@@ -243,16 +242,9 @@ fn append_role_cli_templates(
         let role_name = role.role_name.clone();
         for value in [
             format!("/app_role prompt {} ", role_name),
-            format!("/app_role delete {}", role_name),
-            format!("/app_role edit {} mode", role_name),
-            format!("/app_role edit {} mode clear", role_name),
             format!("/app_model select role {} <model>", role_name),
         ] {
             push_matching_cli_template(out, seen, query_lower, &value, "Role command");
-        }
-        for mode in acp::list_discovered_modes(&role.runtime_kind) {
-            let value = format!("/app_role edit {} mode {}", role_name, mode);
-            push_matching_cli_template(out, seen, query_lower, &value, "Role mode (ACP)");
         }
     }
     Ok(())

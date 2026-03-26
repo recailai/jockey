@@ -10,7 +10,7 @@ import type {
   Role, AppPlanEntry,
   AcpStreamEvent, AcpConfigOption, AssistantRuntime,
   AssistantChatResponse, AcpDeltaEvent, SessionUpdateEvent, WorkflowStateEvent,
-  AppMessage, AppMentionItem, AppSkill, AppSession,
+  AppMessage, AppMentionItem, AppSkill, AppSession, AppToolCall,
 } from "./components/types";
 import {
   now, DEFAULT_BACKEND_ROLE, DEFAULT_ROLE_ALIAS,
@@ -19,8 +19,8 @@ import {
 
 const ConfigDrawer = lazy(() => import("./components/ConfigDrawer"));
 
-const ASSISTANT_STORAGE_KEY = "unionai.defaultAssistant";
 const MAX_MESSAGES = 500;
+const MAX_THOUGHT_CHARS = 5000;
 const MENTION_DEBOUNCE_MS = 90;
 const MENTION_CACHE_LIMIT = 80;
 
@@ -32,9 +32,11 @@ const makeDefaultSession = (title: string): AppSession => ({
   title,
   activeRole: DEFAULT_ROLE_ALIAS,
   runtimeKind: null,
+  cwd: null,
   messages: [],
   streamingMessage: null,
-  toolCalls: new Map(),
+  toolCalls: {},
+  streamSegments: [],
   currentPlan: null,
   pendingPermission: null,
   agentModes: [],
@@ -44,6 +46,8 @@ const makeDefaultSession = (title: string): AppSession => ({
   configOptionsLoading: false,
   agentCommands: new Map(),
   status: "idle",
+  thoughtText: "",
+  queuedMessages: [],
 });
 
 export default function App() {
@@ -68,10 +72,6 @@ export default function App() {
   const patchActiveSession = (patch: Partial<AppSession>) => {
     const id = activeSessionId();
     if (!id) return;
-    if ("runtimeKind" in patch) {
-      if (patch.runtimeKind) window.localStorage.setItem(ASSISTANT_STORAGE_KEY, patch.runtimeKind);
-      else window.localStorage.removeItem(ASSISTANT_STORAGE_KEY);
-    }
     updateSession(id, patch);
     persistSessionPatch(id, patch);
   };
@@ -107,13 +107,17 @@ export default function App() {
   let slashCliCache: AppMentionItem[] | null = null;
   let slashCliCacheVersion = 0;
   let inputEl: HTMLInputElement | undefined;
-  let streamAccepting = false;
-  let streamOriginSessionId: string | null = null;
-  let streamBatchBuffer = "";
+  const acceptingStreams = new Set<string>();
+  const streamBatchBuffers = new Map<string, string>();
+  const thoughtBatchBuffers = new Map<string, string>();
   let streamBatchRaf: number | null = null;
   let runTokenSeq = 0;
   let canceledRunToken = 0;
-  let queuedInputs: string[] = [];
+  const queuedInputsFor = (sid: string | null): string[] => {
+    if (!sid) return [];
+    const s = sessions.find((x) => x.id === sid);
+    return s?.queuedMessages ?? [];
+  };
   let scrollRaf: number | null = null;
   const listRefMap = new Map<string, HTMLElement>();
   let pendingSessionEvents: string[] = [];
@@ -148,6 +152,7 @@ export default function App() {
     const session = activeSession();
     void session?.messages.length;
     void session?.streamingMessage?.text.length;
+    void session?.streamSegments.length;
     scheduleScrollToBottom();
   });
 
@@ -178,36 +183,68 @@ export default function App() {
   };
 
   const flushStreamBatch = () => {
-    if (streamBatchBuffer) {
-      const chunk = streamBatchBuffer;
-      streamBatchBuffer = "";
-      const sid = streamOriginSessionId ?? activeSessionId();
-      if (sid) setSessions((s) => s.id === sid && !!s.streamingMessage, "streamingMessage", "text", (t) => (t ?? "") + chunk);
-      scheduleScrollToBottom();
+    for (const [sid, buf] of streamBatchBuffers) {
+      if (!buf) continue;
+      const chunk = buf;
+      streamBatchBuffers.set(sid, "");
+      setSessions(
+        (s) => s.id === sid && !!s.streamingMessage,
+        produce((s) => {
+          s.streamingMessage!.text = (s.streamingMessage!.text ?? "") + chunk;
+          const last = s.streamSegments[s.streamSegments.length - 1];
+          if (last && last.kind === "text") {
+            s.streamSegments[s.streamSegments.length - 1] = { kind: "text" as const, text: last.text + chunk };
+          } else {
+            s.streamSegments.push({ kind: "text" as const, text: chunk });
+          }
+        }),
+      );
     }
+    for (const [sid, buf] of thoughtBatchBuffers) {
+      if (!buf) continue;
+      const chunk = buf;
+      thoughtBatchBuffers.set(sid, "");
+      setSessions(
+        (s) => s.id === sid,
+        "thoughtText",
+        (prev) => {
+          const next = `${prev ?? ""}${chunk}`;
+          return next.length <= MAX_THOUGHT_CHARS ? next : next.slice(next.length - MAX_THOUGHT_CHARS);
+        },
+      );
+    }
+    scheduleScrollToBottom();
     streamBatchRaf = null;
   };
 
-  const appendStream = (chunk: string) => {
+  const appendStream = (sessionId: string, chunk: string) => {
     if (!chunk) return;
-    streamBatchBuffer += chunk;
+    const existing = streamBatchBuffers.get(sessionId) ?? "";
+    streamBatchBuffers.set(sessionId, existing + normalizeNewlines(chunk));
     if (streamBatchRaf === null) {
       streamBatchRaf = window.requestAnimationFrame(flushStreamBatch);
     }
   };
 
-  const resetStreamState = () => {
+  const resetStreamState = (sessionId?: string) => {
     if (streamBatchRaf !== null) {
       window.cancelAnimationFrame(streamBatchRaf);
       streamBatchRaf = null;
     }
-    streamBatchBuffer = "";
-    streamOriginSessionId = null;
+    if (sessionId) {
+      streamBatchBuffers.delete(sessionId);
+      thoughtBatchBuffers.delete(sessionId);
+      acceptingStreams.delete(sessionId);
+    } else {
+      streamBatchBuffers.clear();
+      thoughtBatchBuffers.clear();
+      acceptingStreams.clear();
+    }
   };
 
   const dropStream = () => {
     patchActiveSession({ streamingMessage: null });
-    resetStreamState();
+    resetStreamState(activeSessionId() ?? undefined);
   };
 
   const scheduleSessionEventFlush = () => {
@@ -223,8 +260,13 @@ export default function App() {
   const runNextQueued = () => {
     const s = activeSession();
     if (s?.submitting) return;
-    const next = queuedInputs.shift();
-    if (!next) return;
+    const sid = activeSessionId();
+    const queue = queuedInputsFor(sid);
+    if (queue.length === 0) return;
+    const next = queue[0];
+    if (sid) {
+      setSessions((ss) => ss.id === sid, "queuedMessages", (prev) => prev.slice(1));
+    }
     void sendRaw(next);
   };
 
@@ -241,17 +283,20 @@ export default function App() {
   };
 
   const cancelCurrentRun = async () => {
-    if (!activeSession()?.submitting) return;
+    const sid = activeSessionId();
+    const sess = sid ? sessions.find((s) => s.id === sid) : null;
+    if (!sess?.submitting || !sid) return;
     canceledRunToken = Math.max(canceledRunToken, runTokenSeq);
-    streamAccepting = false;
-    dropStream();
-    patchActiveSession({ toolCalls: new Map(), currentPlan: null, pendingPermission: null, submitting: false, status: "idle" });
+    acceptingStreams.delete(sid);
+    updateSession(sid, { streamingMessage: null });
+    resetStreamState(sid);
+    updateSession(sid, { toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, thoughtText: "", submitting: false, status: "idle", queuedMessages: [] });
     pushMessage("event", "Cancellation requested.");
     const role = activeBackendRole();
     const runtime = runtimeForRole(role);
     if (runtime) {
       try {
-        await invoke("cancel_acp_session", { runtimeKind: runtime, roleName: role, appSessionId: activeSessionId() ?? "" });
+        await invoke("cancel_acp_session", { runtimeKind: runtime, roleName: role, appSessionId: sid });
       } catch { }
     }
     runNextQueued();
@@ -279,19 +324,27 @@ export default function App() {
 
   const fetchConfigOptions = async (runtimeKey: string, roleName?: string): Promise<AcpConfigOption[]> => {
     try {
+      const sid = activeSessionId();
+      if (!sid) return [];
       const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
       if (roleName) {
         const raw = await invoke<unknown[]>("prewarm_role_config_cmd", {
           runtimeKind: normalizedRuntime,
           roleName,
+          appSessionId: sid,
         });
         return raw as AcpConfigOption[];
       }
-      const cached = await invoke<unknown[]>("list_discovered_config_options_cmd", { runtimeKey: normalizedRuntime });
+      const cached = await invoke<unknown[]>("list_discovered_config_options_cmd", {
+        runtimeKey: normalizedRuntime,
+        roleName: "UnionAIAssistant",
+        appSessionId: sid,
+      });
       if (cached.length > 0) return cached as AcpConfigOption[];
       const raw = await invoke<unknown[]>("prewarm_role_config_cmd", {
         runtimeKind: normalizedRuntime,
-        roleName: "",
+        roleName: "UnionAIAssistant",
+        appSessionId: sid,
       });
       return raw as AcpConfigOption[];
     } catch { return []; }
@@ -303,10 +356,45 @@ export default function App() {
     }));
   };
 
+  const normalizeNewlines = (input: string): string => input.replace(/\r\n?/g, "\n");
+
+  const normalizeToolLocations = (
+    raw: unknown[] | undefined,
+  ): Array<{ path: string; line?: number }> | undefined => {
+    if (!Array.isArray(raw) || raw.length === 0) return undefined;
+    const out = raw
+      .map((item) => {
+        if (!item || typeof item !== "object") return null;
+        const obj = item as Record<string, unknown>;
+        const path = typeof obj.path === "string" ? obj.path : "";
+        if (!path) return null;
+        const line = typeof obj.line === "number" ? obj.line : undefined;
+        return { path, line };
+      })
+      .filter((item): item is NonNullable<typeof item> => !!item);
+    return out.length > 0 ? out : undefined;
+  };
+
+  const appendThought = (sessionId: string, chunk: string) => {
+    const normalized = normalizeNewlines(chunk);
+    if (!normalized.trim()) return;
+    const existing = thoughtBatchBuffers.get(sessionId) ?? "";
+    thoughtBatchBuffers.set(sessionId, existing + normalized);
+    if (streamBatchRaf === null) {
+      streamBatchRaf = window.requestAnimationFrame(flushStreamBatch);
+    }
+  };
+
   const fetchAgentCommands = async (runtimeKey: string, roleName: string): Promise<{ runtimeKey: string; commands: Array<{ name: string; description: string; hint?: string }> }> => {
     const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
     try {
-      const raw = await invoke<unknown[]>("list_available_commands_cmd", { runtimeKey: normalizedRuntime, roleName });
+      const sid = activeSessionId();
+      if (!sid) return { runtimeKey: normalizedRuntime, commands: [] };
+      const raw = await invoke<unknown[]>("list_available_commands_cmd", {
+        runtimeKey: normalizedRuntime,
+        roleName,
+        appSessionId: sid,
+      });
       return { runtimeKey: normalizedRuntime, commands: parseAgentCommands(raw) };
     } catch {
       return { runtimeKey: normalizedRuntime, commands: [] };
@@ -351,12 +439,10 @@ export default function App() {
     const rows = await invoke<AssistantRuntime[]>("detect_assistants");
     setAssistants(rows);
     slashCliCache = null;
-    const preferred = window.localStorage.getItem(ASSISTANT_STORAGE_KEY);
     const current = activeSession()?.runtimeKind ?? null;
     const currentAvailable = current ? rows.find((a) => a.key === current && a.available) : null;
     if (currentAvailable) return;
-    const preferredAvailable = preferred ? rows.find((a) => a.key === preferred && a.available) : null;
-    const first = preferredAvailable ?? rows.find((a) => a.available) ?? null;
+    const first = rows.find((a) => a.available) ?? null;
     if (first) {
       setPreferredAssistant(first.key);
     }
@@ -674,13 +760,20 @@ export default function App() {
       if (sid) {
         const sess = sessions.find((x) => x.id === sid);
         if (sess && sess.title === "New Session" && sess.messages.filter((m) => m.roleName === "user").length === 0) {
-          const autoTitle = text.slice(0, 30);
+          const cleaned = text.replace(/[@#][^\s]*/g, "").replace(/^\/\S+\s*/, "").trim();
+          const words = cleaned.split(/\s+/);
+          let autoTitle = "";
+          for (const w of words) {
+            if ((autoTitle + " " + w).trim().length > 40) break;
+            autoTitle = (autoTitle + " " + w).trim();
+          }
+          if (!autoTitle) autoTitle = cleaned.slice(0, 30);
           updateSession(sid, { title: autoTitle });
           void invoke("update_app_session", { id: sid, update: { title: autoTitle } }).catch(() => {});
         }
       }
     }
-    patchOriginSession({ submitting: true, status: "running", agentState: undefined });
+    patchOriginSession({ submitting: true, status: "running", agentState: undefined, thoughtText: "" });
 
     const isAgentCmd = isCommand && !inRoleContext && /^\/(plan|act|auto|cancel)\b/.test(text);
     if (isAgentCmd) {
@@ -714,10 +807,10 @@ export default function App() {
     };
 
     const startOriginStream = () => {
-      streamOriginSessionId = originSessionId;
+      if (originSessionId) acceptingStreams.add(originSessionId);
       const id = `stream-${now()}`;
       const row: AppMessage = { id, roleName: sendRoleLabel, text: "", at: now() };
-      patchOriginSession({ streamingMessage: row, toolCalls: new Map(), currentPlan: null, pendingPermission: null });
+      patchOriginSession({ streamingMessage: row, toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, thoughtText: "" });
       scheduleScrollToBottom();
       return row;
     };
@@ -727,26 +820,41 @@ export default function App() {
       if (!sid) return;
       const sess = sessions.find((x) => x.id === sid);
       const row = sess?.streamingMessage ?? null;
-      const snapshotToolCalls = sess && sess.toolCalls.size > 0 ? [...sess.toolCalls.values()] : undefined;
-      if (row) {
-        const text = finalReply ?? row.text;
-        appendOriginMessage({ ...row, text, at: now(), toolCalls: snapshotToolCalls });
-        patchOriginSession({ streamingMessage: null });
-      } else if (finalReply) {
-        appendOriginMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, roleName: sendRoleLabel, text: finalReply, at: now(), toolCalls: snapshotToolCalls });
+      const snapshotToolCalls = sess && Object.keys(sess.toolCalls).length > 0 ? Object.values(sess.toolCalls) : undefined;
+      const snapshotSegments = sess && sess.streamSegments.length > 0 ? [...sess.streamSegments] : undefined;
+      if (snapshotSegments && finalReply) {
+        const last = snapshotSegments[snapshotSegments.length - 1];
+        if (last && last.kind === "text") {
+          snapshotSegments[snapshotSegments.length - 1] = { kind: "text", text: normalizeNewlines(finalReply) };
+        } else {
+          snapshotSegments.push({ kind: "text", text: normalizeNewlines(finalReply) });
+        }
       }
-      resetStreamState();
-      patchOriginSession({ toolCalls: new Map(), currentPlan: null, pendingPermission: null, agentState: undefined });
+      if (row) {
+        const text = normalizeNewlines(finalReply ?? row.text);
+        appendOriginMessage({ ...row, text, at: now(), toolCalls: snapshotToolCalls, segments: snapshotSegments });
+        patchOriginSession({ streamingMessage: null, thoughtText: "" });
+      } else if (finalReply) {
+        appendOriginMessage({
+          id: `${now()}-${Math.random().toString(36).slice(2)}`,
+          roleName: sendRoleLabel,
+          text: normalizeNewlines(finalReply),
+          at: now(),
+          toolCalls: snapshotToolCalls,
+          segments: snapshotSegments,
+        });
+      }
+      resetStreamState(sid);
+      patchOriginSession({ toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, agentState: undefined, thoughtText: "" });
     };
 
     const dropOriginStream = () => {
-      patchOriginSession({ streamingMessage: null });
-      resetStreamState();
+      patchOriginSession({ streamingMessage: null, thoughtText: "" });
+      resetStreamState(originSessionId ?? undefined);
     };
 
     let streamStarted = false;
     if ((!isUnionAiCommand) && s?.runtimeKind) {
-      streamAccepting = true;
       startOriginStream();
       streamStarted = true;
     }
@@ -761,6 +869,7 @@ export default function App() {
       });
       if (runToken <= canceledRunToken) return;
       if (res.runtimeKind) setPreferredAssistant(res.runtimeKind);
+      if (text.startsWith("/app_role")) void refreshRoles();
 
       if (streamStarted) {
         completeOriginStream(res.reply);
@@ -775,11 +884,11 @@ export default function App() {
       if (!errMsg.toLowerCase().includes("cancel")) showToast(errMsg);
       appendOriginMessage({ id: `${now()}-err`, roleName: "event", text: errMsg, at: now() });
       patchOriginSession({ submitting: false, status: "error" });
-      streamAccepting = false;
+      if (originSessionId) acceptingStreams.delete(originSessionId);
       runNextQueued();
       return;
     } finally {
-      streamAccepting = false;
+      if (originSessionId) acceptingStreams.delete(originSessionId);
       if (runToken <= canceledRunToken) {
         patchOriginSession({ submitting: false, status: "idle" });
         runNextQueued();
@@ -795,9 +904,12 @@ export default function App() {
     const text = input().trim();
     if (!text) return;
     if (activeSession()?.submitting) {
-      queuedInputs.push(text);
       setInput("");
-      pushMessage("system", `Queued (${queuedInputs.length}): ${text}`);
+      const sid = activeSessionId();
+      if (sid) {
+        setSessions((s) => s.id === sid, "queuedMessages", (prev) => [...prev, text]);
+        scheduleScrollToBottom();
+      }
       return;
     }
     if (!activeSession()?.runtimeKind && !isCustomRole() && !text.startsWith("/app_")) {
@@ -904,10 +1016,7 @@ export default function App() {
   };
 
   const newSession = () => {
-    const preferred = window.localStorage.getItem(ASSISTANT_STORAGE_KEY);
-    const availableAssistant = preferred
-      ? assistants().find((a) => a.key === preferred && a.available)?.key ?? null
-      : assistants().find((a) => a.available)?.key ?? null;
+    const availableAssistant = assistants().find((a) => a.available)?.key ?? null;
     void invoke<{ id: string }>("create_app_session", { title: "New Session" }).then((created) => {
       const s = makeDefaultSession("New Session");
       s.id = created.id;
@@ -930,6 +1039,9 @@ export default function App() {
   };
 
   const closeSession = (id: string) => {
+    streamBatchBuffers.delete(id);
+    thoughtBatchBuffers.delete(id);
+    acceptingStreams.delete(id);
     const remaining = sessions.filter((s) => s.id !== id);
     if (remaining.length === 0) { void invoke("delete_app_session", { id }).catch(() => {}); return; }
     setSessions(remaining);
@@ -948,12 +1060,13 @@ export default function App() {
     const boot = async () => {
       let loaded: AppSession[] = [];
       try {
-        const raw = await invoke<Array<{ id: string; title: string; messages: AppMessage[]; activeRole?: string; runtimeKind?: string | null }>>("list_app_sessions");
+        const raw = await invoke<Array<{ id: string; title: string; messages: AppMessage[]; activeRole?: string; runtimeKind?: string | null; cwd?: string | null }>>("list_app_sessions");
         loaded = raw.map((r) => {
           const s = makeDefaultSession(r.title);
           s.id = r.id;
           if (r.activeRole) s.activeRole = r.activeRole;
           if (r.runtimeKind !== undefined) s.runtimeKind = r.runtimeKind;
+          if (r.cwd !== undefined) s.cwd = r.cwd ?? null;
           s.messages = r.messages ?? [];
           return s;
         });
@@ -981,10 +1094,7 @@ export default function App() {
         refreshSkills(),
       ]);
 
-      const preferred = window.localStorage.getItem(ASSISTANT_STORAGE_KEY);
-      const availableAssistant = preferred
-        ? assistants().find((a) => a.key === preferred && a.available)?.key ?? null
-        : assistants().find((a) => a.available)?.key ?? null;
+      const availableAssistant = assistants().find((a) => a.available)?.key ?? null;
 
       sessions.forEach((s, i) => {
         if (!s.runtimeKind && availableAssistant) {
@@ -1005,12 +1115,11 @@ export default function App() {
 
     void Promise.all([
       listen<AcpDeltaEvent & { appSessionId?: string }>("acp/delta", (ev) => {
-        if (!streamAccepting) return;
-        const sid = ev.payload.appSessionId || streamOriginSessionId || activeSessionId();
-        if (!sid) return;
+        const sid = ev.payload.appSessionId;
+        if (!sid || !acceptingStreams.has(sid)) return;
         const sess = sessions.find((s) => s.id === sid);
         if (!sess?.streamingMessage) return;
-        appendStream(ev.payload.delta);
+        appendStream(sid, ev.payload.delta);
       }),
       listen<SessionUpdateEvent>("session/update", (ev) => {
         if (!ev.payload.delta) return;
@@ -1023,48 +1132,106 @@ export default function App() {
       }),
       listen<{ role: string; runtimeKind?: string; appSessionId?: string; event: AcpStreamEvent }>("acp/stream", (ev) => {
         const e = ev.payload.event;
-        const sid = ev.payload.appSessionId || streamOriginSessionId || activeSessionId();
-        const patchOriginOrActive = (patch: Partial<AppSession>) => { if (sid) updateSession(sid, patch); };
+        const sid = ev.payload.appSessionId;
+        if (!sid) return;
+        const patchSession = (patch: Partial<AppSession>) => updateSession(sid, patch);
         switch (e.kind) {
           case "statusUpdate":
-            if (e.text) patchOriginOrActive({ agentState: e.text });
+            if (e.text) patchSession({ agentState: e.text });
             break;
           case "thoughtDelta":
-            if (e.text) patchOriginOrActive({ agentState: `Thinking: ${e.text.slice(0, 120)}` });
+            if (e.text) {
+              patchSession({ agentState: `Thinking: ${e.text.slice(0, 120)}` });
+              if (sid) appendThought(sid, e.text);
+            }
             break;
           case "toolCall":
-            if (e.toolCallId && sid) {
-              const tidx = sessions.findIndex((s) => s.id === sid);
-              if (tidx !== -1) setSessions(tidx, "toolCalls", (m) => {
-                const next = new Map(m);
-                next.set(e.toolCallId!, { toolCallId: e.toolCallId!, title: e.title ?? "", kind: e.toolKind ?? "unknown", status: e.status ?? "pending" });
-                return next;
-              });
+            if (e.toolCallId) {
+              const content = Array.isArray(e.content) ? e.content : undefined;
+              const locations = normalizeToolLocations(e.locations as unknown[] | undefined);
+              const tc: AppToolCall = {
+                toolCallId: e.toolCallId!,
+                title: e.title ?? "",
+                kind: e.toolKind ?? "unknown",
+                status: e.status ?? "pending",
+                content,
+                contentJson: content && content.length > 0 ? JSON.stringify(content, null, 2) : undefined,
+                locations,
+                rawInput: e.rawInput,
+                rawOutput: e.rawOutput,
+                rawInputJson: e.rawInput !== undefined ? JSON.stringify(e.rawInput, null, 2) : undefined,
+                rawOutputJson: e.rawOutput !== undefined ? JSON.stringify(e.rawOutput, null, 2) : undefined,
+              };
+              setSessions((s) => s.id === sid, produce((s) => {
+                s.toolCalls[e.toolCallId!] = tc;
+                const existing = s.streamSegments.findIndex(seg => seg.kind === "tool" && seg.tc.toolCallId === e.toolCallId);
+                if (existing >= 0) {
+                  s.streamSegments[existing] = { kind: "tool" as const, tc };
+                } else {
+                  s.streamSegments.push({ kind: "tool" as const, tc });
+                }
+              }));
+              patchSession({ agentState: `${e.toolKind ?? "tool"}: ${e.title ?? e.toolCallId}` });
+              scheduleScrollToBottom();
             }
             break;
           case "toolCallUpdate":
-            if (e.toolCallId && sid) {
-              const tidx = sessions.findIndex((s) => s.id === sid);
-              if (tidx !== -1) setSessions(tidx, "toolCalls", (m) => {
-                const next = new Map(m);
-                const existing = m.get(e.toolCallId!);
-                if (existing) {
-                  const newContent = (e.content as unknown[]) ?? existing.content;
-                  const contentJson = newContent !== existing.content
-                    ? (newContent && newContent.length > 0 ? JSON.stringify(newContent, null, 2) : undefined)
-                    : existing.contentJson;
-                  next.set(e.toolCallId!, { ...existing, status: e.status ?? existing.status, title: e.title ?? existing.title, content: newContent, contentJson });
+            if (e.toolCallId) {
+              setSessions((s) => s.id === sid, produce((s) => {
+                const isNew = !s.toolCalls[e.toolCallId!];
+                const existing = s.toolCalls[e.toolCallId!] ?? {
+                  toolCallId: e.toolCallId!,
+                  title: e.title ?? "",
+                  kind: e.toolKind ?? "unknown",
+                  status: "pending",
+                };
+                const newContent = Array.isArray(e.content) ? e.content : existing.content;
+                const newLocations = normalizeToolLocations(e.locations as unknown[] | undefined) ?? existing.locations;
+                const contentJson = newContent !== existing.content
+                  ? (newContent && newContent.length > 0 ? JSON.stringify(newContent, null, 2) : undefined)
+                  : existing.contentJson;
+                const newRawInput = e.rawInput !== undefined ? e.rawInput : existing.rawInput;
+                const newRawOutput = e.rawOutput !== undefined ? e.rawOutput : existing.rawOutput;
+                const updated: AppToolCall = {
+                  ...existing,
+                  kind: e.toolKind ?? existing.kind,
+                  status: e.status ?? existing.status,
+                  title: e.title ?? existing.title,
+                  content: newContent,
+                  contentJson,
+                  locations: newLocations,
+                  rawInput: newRawInput,
+                  rawOutput: newRawOutput,
+                  rawInputJson: e.rawInput !== undefined ? JSON.stringify(newRawInput, null, 2) : existing.rawInputJson,
+                  rawOutputJson: e.rawOutput !== undefined ? JSON.stringify(newRawOutput, null, 2) : existing.rawOutputJson,
+                };
+                s.toolCalls[e.toolCallId!] = updated;
+                if (isNew) {
+                  s.streamSegments.push({ kind: "tool", tc: updated });
+                } else {
+                  for (let i = s.streamSegments.length - 1; i >= 0; i--) {
+                    const seg = s.streamSegments[i];
+                    if (seg.kind === "tool" && seg.tc.toolCallId === e.toolCallId) {
+                      s.streamSegments[i] = { kind: "tool", tc: updated };
+                      break;
+                    }
+                  }
                 }
-                return next;
-              });
+              }));
+              if (e.status || e.title) {
+                patchSession({
+                  agentState: `${e.toolKind ?? "tool"} ${e.status ?? "updated"}: ${e.title ?? e.toolCallId}`,
+                });
+              }
+              scheduleScrollToBottom();
             }
             break;
           case "plan":
-            if (e.entries) patchOriginOrActive({ currentPlan: e.entries as AppPlanEntry[] });
+            if (e.entries) patchSession({ currentPlan: e.entries as AppPlanEntry[] });
             break;
           case "permissionRequest":
             if (e.requestId) {
-              patchOriginOrActive({
+              patchSession({
                 pendingPermission: {
                   requestId: e.requestId,
                   title: e.title ?? "Permission Required",
@@ -1075,14 +1242,14 @@ export default function App() {
             }
             break;
           case "modeUpdate":
-            if (e.modeId) patchOriginOrActive({ currentMode: e.modeId });
+            if (e.modeId) patchSession({ currentMode: e.modeId });
             break;
           case "availableModes":
-            if (e.modes) patchOriginOrActive({ agentModes: e.modes });
-            if (e.current !== undefined) patchOriginOrActive({ currentMode: e.current ?? null });
+            if (e.modes) patchSession({ agentModes: e.modes });
+            if (e.current !== undefined) patchSession({ currentMode: e.current ?? null });
             break;
           case "availableCommands":
-            if (e.commands && sid) {
+            if (e.commands) {
               const roleName = ev.payload.role;
               if (roleName) {
                 const parsed = parseAgentCommands(e.commands as unknown[]);
@@ -1092,12 +1259,11 @@ export default function App() {
                 const normalizedRuntime = runtimeKey ? normalizeRuntimeKey(runtimeKey) : "";
                 if (!normalizedRuntime) break;
                 const key = commandCacheKey(normalizedRuntime, roleName);
-                const aidx = sessions.findIndex((s) => s.id === sid);
-                if (aidx !== -1) setSessions(aidx, "agentCommands", (m) => {
-                  const next = new Map(m);
+                setSessions((s) => s.id === sid, produce((s) => {
+                  const next = new Map(s.agentCommands);
                   next.set(key, parsed);
-                  return next;
-                });
+                  s.agentCommands = next;
+                }));
               }
             }
             break;
@@ -1122,7 +1288,6 @@ export default function App() {
       }
       window.removeEventListener("keydown", handleGlobalKeyDown);
       dropStream();
-      queuedInputs = [];
       if (mentionCloseTimerRef.current !== null) window.clearTimeout(mentionCloseTimerRef.current);
       if (mentionDebounceTimerRef.current !== null) window.clearTimeout(mentionDebounceTimerRef.current);
       if (sessionEventFlushTimer !== null) window.clearTimeout(sessionEventFlushTimer);
@@ -1143,7 +1308,6 @@ export default function App() {
         activeSessionId={activeSessionId}
         setActiveSessionId={setActiveSessionId}
         activeSession={activeSession}
-        assistants={assistants}
         patchActiveSession={patchActiveSession}
         activeBackendRole={activeBackendRole}
         onNewSession={newSession}

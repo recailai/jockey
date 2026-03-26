@@ -8,13 +8,28 @@ export type RoleUpsertInput = {
   model: string | null; mode: string | null; mcpServersJson: string; configOptionsJson: string;
   autoApprove: boolean;
 };
-export type AppToolCall = { toolCallId: string; title: string; kind: string; status: string; content?: unknown[]; contentJson?: string };
-export type AppPlanEntry = { title?: string; status?: string; description?: string };
+export type AppToolCall = {
+  toolCallId: string;
+  title: string;
+  kind: string;
+  status: string;
+  content?: unknown[];
+  contentJson?: string;
+  locations?: Array<{ path: string; line?: number }>;
+  rawInput?: unknown;
+  rawOutput?: unknown;
+  rawInputJson?: string;
+  rawOutputJson?: string;
+};
+export type AppPlanEntry = { content?: string; title?: string; status?: string; description?: string; priority?: string };
 export type AppPermission = { requestId: string; title: string; description: string | null; options: Array<{ optionId: string; title?: string }> };
 export type AcpStreamEvent = {
   kind: string;
   text?: string;
   toolCallId?: string; title?: string; toolKind?: string; status?: string; content?: unknown[];
+  locations?: Array<{ path: string; line?: number }>;
+  rawInput?: unknown;
+  rawOutput?: unknown;
   entries?: AppPlanEntry[];
   requestId?: string; description?: string | null; options?: unknown[];
   modeId?: string;
@@ -36,7 +51,8 @@ export type AssistantChatResponse = { ok: boolean; reply: string; runtimeKind: s
 export type SessionUpdateEvent = { sessionId: string; roleName: string; delta: string; done: boolean };
 export type WorkflowStateEvent = { sessionId: string; status: string; activeRole: string | null; message: string };
 export type AcpDeltaEvent = { role: string; delta: string; appSessionId?: string };
-export type AppMessage = { id: string; roleName: string; text: string; at: number; toolCalls?: AppToolCall[] };
+export type AppSegment = { kind: "text"; text: string } | { kind: "tool"; tc: AppToolCall };
+export type AppMessage = { id: string; roleName: string; text: string; at: number; toolCalls?: AppToolCall[]; segments?: AppSegment[] };
 export type AppMentionItem = { value: string; kind: "role" | "file" | "dir" | "hint" | "command" | "skill"; detail: string };
 export type AppSkill = { id: string; name: string; description: string; content: string; createdAt: number; updatedAt: number };
 
@@ -45,9 +61,11 @@ export type AppSession = {
   title: string;
   activeRole: string;
   runtimeKind: string | null;
+  cwd: string | null;
   messages: AppMessage[];
   streamingMessage: AppMessage | null;
-  toolCalls: Map<string, AppToolCall>;
+  toolCalls: Record<string, AppToolCall>;
+  streamSegments: AppSegment[];
   currentPlan: AppPlanEntry[] | null;
   pendingPermission: AppPermission | null;
   agentModes: Array<{ id: string; title?: string }>;
@@ -58,6 +76,8 @@ export type AppSession = {
   agentCommands: Map<string, Array<{ name: string; description: string; hint?: string }>>;
   status: "idle" | "running" | "done" | "error";
   agentState?: string;
+  thoughtText?: string;
+  queuedMessages: string[];
 };
 
 export const RUNTIMES = ["gemini-cli", "claude-code", "codex-cli", "mock"];

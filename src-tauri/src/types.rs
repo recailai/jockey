@@ -157,6 +157,7 @@ pub(crate) struct AppSession {
     pub(crate) title: String,
     pub(crate) active_role: String,
     pub(crate) runtime_kind: Option<String>,
+    pub(crate) cwd: Option<String>,
     pub(crate) messages: Vec<serde_json::Value>,
     pub(crate) created_at: i64,
     pub(crate) last_active_at: i64,
@@ -193,13 +194,14 @@ pub(crate) const ATTACH_MAX_TOTAL_BYTES: usize = 160 * 1024;
 pub(crate) const ATTACH_MAX_FILE_BYTES: usize = 24 * 1024;
 pub(crate) const ATTACH_MAX_DIR_FILES: usize = 30;
 pub(crate) const ATTACH_MAX_DIR_DEPTH: usize = 3;
-pub(crate) const PREWARM_ROLE_LIMIT: usize = 6;
 pub(crate) const DEFAULT_MODELS: &[&str] = &[];
 pub(crate) const KNOWN_RUNTIME_KEYS: &[&str] = &["gemini-cli", "claude-code", "codex-cli", "mock"];
 pub(crate) const DEFAULT_MCP_SERVERS: &[&str] = &[];
 pub(crate) const DEFAULT_SKILLS: &[&str] = &[];
 pub(crate) const BASE_CLI_COMMANDS: &[(&str, &str)] = &[
     ("/app_help", "Show command help"),
+    ("/app_cd", "Show current working directory"),
+    ("/app_cd <path>", "Change working directory for all agents"),
     ("/app_assistant list", "List detected assistant runtimes"),
     (
         "/app_assistant select <runtime>",
@@ -232,22 +234,6 @@ pub(crate) const BASE_CLI_COMMANDS: &[(&str, &str)] = &[
         "/app_role prompt <role> <prompt>",
         "Update role system prompt",
     ),
-    ("/app_role delete <role>", "Delete role"),
-    ("/app_role edit <role> model <model>", "Set role model"),
-    ("/app_role edit <role> mode <mode>", "Set role mode"),
-    (
-        "/app_role edit <role> auto-approve <true|false>",
-        "Set role auto-approve",
-    ),
-    (
-        "/app_role edit <role> mcp-add <json>",
-        "Add MCP server to role",
-    ),
-    (
-        "/app_role edit <role> mcp-remove <name>",
-        "Remove MCP server from role",
-    ),
-    ("/app_role copy <src> <dst>", "Duplicate role"),
     ("/app_context list", "List all shared context entries"),
     (
         "/app_context list <scope>",

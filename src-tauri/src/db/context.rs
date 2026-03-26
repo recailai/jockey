@@ -1,19 +1,10 @@
-use crate::db::{get_state, with_db};
+use crate::db::with_db;
 use crate::types::*;
 use crate::{acp, now_ms};
 use rusqlite::{params, OptionalExtension};
-use tauri::State;
 
 pub(crate) fn shared_key(scope: &str, key: &str) -> String {
     format!("{scope}:{key}")
-}
-
-pub(crate) fn context_scope_for_role(role_name: &str) -> String {
-    if role_name == "UnionAIAssistant" {
-        "assistant:main".to_string()
-    } else {
-        format!("role:{role_name}")
-    }
 }
 
 pub(crate) fn set_shared_context_internal(
@@ -43,38 +34,6 @@ pub(crate) fn set_shared_context_internal(
     })
 }
 
-/// Append `suffix` to an existing context value without a read-then-write round-trip.
-/// Uses `DashMap::entry` for an atomic in-place mutation, then persists the new value.
-pub(crate) fn append_shared_context_internal(
-    state: &AppState,
-    scope: &str,
-    key: &str,
-    suffix: &str,
-) -> Result<ContextEntry, String> {
-    let now = now_ms();
-    let cache_key = shared_key(scope, key);
-    let new_value = {
-        let mut entry = state.shared_context.entry(cache_key.clone()).or_default();
-        entry.push_str(suffix);
-        entry.clone()
-    };
-    with_db(state, |conn| {
-        conn.execute(
-            "INSERT INTO shared_context_snapshots (scope, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-            params![scope, key, &new_value, now],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    })?;
-    Ok(ContextEntry {
-        scope: scope.to_string(),
-        key: key.to_string(),
-        value: new_value,
-        updated_at: now,
-    })
-}
-
 pub(crate) fn clear_shared_context_internal(
     state: &AppState,
     scope: &str,
@@ -90,33 +49,6 @@ pub(crate) fn clear_shared_context_internal(
     })?;
     state.shared_context.remove(&shared_key(scope, key));
     Ok(())
-}
-
-pub(crate) fn list_all_shared_context(state: &AppState) -> Result<Vec<ContextEntry>, String> {
-    with_db(state, |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT scope, key, value, updated_at
-                 FROM shared_context_snapshots
-                 ORDER BY scope ASC, key ASC",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(ContextEntry {
-                    scope: row.get(0)?,
-                    key: row.get(1)?,
-                    value: row.get(2)?,
-                    updated_at: row.get(3)?,
-                })
-            })
-            .map_err(|e| e.to_string())?;
-        let mut items = Vec::new();
-        for item in rows {
-            items.push(item.map_err(|e| e.to_string())?);
-        }
-        Ok(items)
-    })
 }
 
 pub(crate) fn list_shared_context_internal(
@@ -149,75 +81,6 @@ pub(crate) fn list_shared_context_internal(
         }
         Ok(items)
     })
-}
-
-#[tauri::command]
-pub(crate) fn set_shared_context(
-    state: State<'_, AppState>,
-    scope: String,
-    key: String,
-    value: String,
-) -> Result<ContextEntry, String> {
-    set_shared_context_internal(get_state(&state), &scope, &key, &value)
-}
-
-#[tauri::command]
-pub(crate) fn append_shared_context(
-    state: State<'_, AppState>,
-    scope: String,
-    key: String,
-    suffix: String,
-) -> Result<ContextEntry, String> {
-    append_shared_context_internal(get_state(&state), &scope, &key, &suffix)
-}
-
-#[tauri::command]
-pub(crate) fn get_shared_context(
-    state: State<'_, AppState>,
-    scope: String,
-    key: String,
-) -> Result<Option<ContextEntry>, String> {
-    let cache_key = shared_key(&scope, &key);
-    if let Some(v) = get_state(&state).shared_context.get(&cache_key) {
-        return Ok(Some(ContextEntry {
-            scope,
-            key,
-            value: v.value().clone(),
-            updated_at: now_ms(),
-        }));
-    }
-
-    let db_value = with_db(get_state(&state), |conn| {
-        conn.query_row(
-            "SELECT value, updated_at FROM shared_context_snapshots WHERE scope = ?1 AND key = ?2",
-            params![&scope, &key],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-        )
-        .optional()
-        .map_err(|e| e.to_string())
-    })?;
-
-    if let Some((value, updated_at)) = db_value {
-        get_state(&state)
-            .shared_context
-            .insert(cache_key, value.clone());
-        return Ok(Some(ContextEntry {
-            scope,
-            key,
-            value,
-            updated_at,
-        }));
-    }
-
-    Ok(None)
-}
-
-#[tauri::command]
-pub(crate) fn list_shared_context(
-    state: State<'_, AppState>,
-    scope: String,
-) -> Result<Vec<ContextEntry>, String> {
-    list_shared_context_internal(get_state(&state), &scope)
 }
 
 pub(crate) fn sanitize_dynamic_item_name(raw: &str) -> Option<String> {
@@ -313,8 +176,8 @@ pub(crate) fn dynamic_catalog_contains(
     })
 }
 
-pub(crate) fn list_enabled_feature_flags(state: &AppState, prefix: &str) -> Vec<String> {
-    list_shared_context_internal(state, "assistant:main")
+pub(crate) fn list_enabled_feature_flags(state: &AppState, scope: &str, prefix: &str) -> Vec<String> {
+    list_shared_context_internal(state, scope)
         .unwrap_or_default()
         .into_iter()
         .filter_map(|entry| {

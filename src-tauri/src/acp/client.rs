@@ -1,9 +1,21 @@
 use agent_client_protocol::{self as acp};
 use dashmap::DashMap;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::OnceLock;
 
 use super::worker::{permission_requests, AcpEvent, DeltaSlot};
+
+const RAW_PAYLOAD_LIMIT: usize = 64 * 1024;
+
+fn cap_raw(v: Option<Value>) -> Option<Value> {
+    let v = v?;
+    let s = v.to_string();
+    if s.len() <= RAW_PAYLOAD_LIMIT {
+        Some(v)
+    } else {
+        Some(json!(format!("[truncated {} bytes]", s.len())))
+    }
+}
 
 struct TerminalHandle {
     child: tokio::sync::Mutex<tokio::process::Child>,
@@ -14,6 +26,28 @@ struct TerminalHandle {
 static TERMINAL_HANDLES: OnceLock<DashMap<String, TerminalHandle>> = OnceLock::new();
 fn terminal_handles() -> &'static DashMap<String, TerminalHandle> {
     TERMINAL_HANDLES.get_or_init(DashMap::new)
+}
+
+pub(super) async fn shutdown_terminals() {
+    let ids: Vec<String> = terminal_handles()
+        .iter()
+        .map(|entry| entry.key().clone())
+        .collect();
+    for id in ids {
+        if let Some((_, handle)) = terminal_handles().remove(&id) {
+            match tokio::time::timeout(std::time::Duration::from_millis(500), handle.child.lock())
+                .await
+            {
+                Ok(mut child) => {
+                    let _ = child.kill().await;
+                    let _ =
+                        tokio::time::timeout(std::time::Duration::from_millis(500), child.wait())
+                            .await;
+                }
+                Err(_) => {}
+            }
+        }
+    }
 }
 
 pub(super) struct UnionAiClient {
@@ -51,7 +85,7 @@ impl acp::Client for UnionAiClient {
         };
         if let Ok(guard) = self.delta_slot.lock() {
             if let Some(tx) = guard.as_ref() {
-                let _ = tx.send(event);
+                let _ = tx.try_send(event);
             }
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -99,9 +133,36 @@ impl acp::Client for UnionAiClient {
                 status: serde_json::to_value(&tc.status)
                     .and_then(|v| Ok(v.as_str().unwrap_or("pending").to_string()))
                     .unwrap_or_else(|_| "pending".to_string()),
+                content: if tc.content.is_empty() {
+                    None
+                } else {
+                    Some(
+                        tc.content
+                            .iter()
+                            .map(|c| serde_json::to_value(c).unwrap_or(json!({})))
+                            .collect(),
+                    )
+                },
+                locations: if tc.locations.is_empty() {
+                    None
+                } else {
+                    Some(
+                        tc.locations
+                            .iter()
+                            .map(|loc| serde_json::to_value(loc).unwrap_or(json!({})))
+                            .collect(),
+                    )
+                },
+                raw_input: cap_raw(tc.raw_input.clone()),
+                raw_output: cap_raw(tc.raw_output.clone()),
             },
             acp::SessionUpdate::ToolCallUpdate(tcu) => AcpEvent::ToolCallUpdate {
                 tool_call_id: tcu.tool_call_id.to_string(),
+                tool_kind: tcu.fields.kind.map(|k| {
+                    serde_json::to_value(&k)
+                        .and_then(|v| Ok(v.as_str().unwrap_or("").to_string()))
+                        .unwrap_or_default()
+                }),
                 status: tcu.fields.status.map(|s| {
                     serde_json::to_value(&s)
                         .and_then(|v| Ok(v.as_str().unwrap_or("").to_string()))
@@ -114,6 +175,14 @@ impl acp::Client for UnionAiClient {
                         .map(|b| serde_json::to_value(b).unwrap_or(json!({})))
                         .collect()
                 }),
+                locations: tcu.fields.locations.as_ref().map(|items| {
+                    items
+                        .iter()
+                        .map(|loc| serde_json::to_value(loc).unwrap_or(json!({})))
+                        .collect()
+                }),
+                raw_input: cap_raw(tcu.fields.raw_input.clone()),
+                raw_output: cap_raw(tcu.fields.raw_output.clone()),
             },
             acp::SessionUpdate::Plan(plan) => AcpEvent::Plan {
                 entries: plan
@@ -149,7 +218,7 @@ impl acp::Client for UnionAiClient {
         };
         if let Ok(guard) = self.delta_slot.lock() {
             if let Some(tx) = guard.as_ref() {
-                let _ = tx.send(event);
+                let _ = tx.try_send(event);
             }
         }
         Ok(())

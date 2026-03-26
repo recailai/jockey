@@ -38,13 +38,23 @@
 - [ ] MCP-over-ACP tool injection for cross-role queries (long-term)
 
 ### Performance
-- [ ] Batch TextDelta emissions to reduce IPC overhead
+
+#### Backend (Rust)
+- [ ] P2: Batch Tauri event emissions — collect events per frame/interval instead of per-delta `app.emit()` (session.rs:449-497)
+- [ ] P2: Add TTL / cleanup for `PERMISSION_REQUESTS` DashMap — abandoned entries leak (worker.rs:83-95)
+- [ ] P2: Replace app_session loading subquery with JOIN (app_session.rs:120)
+- [ ] P3: Cache `pool_key()` / `commands_key()` to avoid repeated `format!()` allocation (worker.rs:269-275)
+- [x] P0: Hoist `load_recent_role_chats` out of role loop — N+1 query (chat.rs:289-348)
+- [x] P1: Eliminate double serialization — use `#[derive(Serialize)]` payload structs for `app.emit()` (session.rs)
+- [x] P1: Bound delta channel — `mpsc::channel(512)` replaces `unbounded_channel` (worker.rs, client.rs, session.rs)
+
+#### Frontend (SolidJS)
+- [ ] P2: Index `toolCallId → segmentIndex` for O(1) `toolCallUpdate` lookup (App.tsx:1183)
 - [ ] Virtual scrolling for long message lists
 - [ ] Skeleton loading screen on startup
 - [ ] Lazy-load and code-split configuration drawer
 - [ ] Batch initial Tauri invoke calls on mount
 - [ ] Move synchronous directory reads to background threads
-- [ ] Optimize repeated JSON parsing in render loops
 - [ ] Preload fonts and CSS to reduce flash of unstyled content
 
 ### Desktop Polish

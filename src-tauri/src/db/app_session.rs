@@ -1,23 +1,15 @@
 use crate::db::{get_state, with_db};
-use crate::now_ms;
+use crate::{default_chat_cwd, now_ms};
 use crate::types::*;
 use rusqlite::{params, OptionalExtension};
 use tauri::State;
 use uuid::Uuid;
 
-pub(crate) fn load_app_session_role_cli_id(
-    state: &AppState,
-    app_session_id: &str,
-    runtime_key: &str,
-    role_name: &str,
-) -> Option<String> {
-    if app_session_id.is_empty() {
-        return None;
-    }
+pub(crate) fn get_app_session_cwd(state: &AppState, session_id: &str) -> Option<String> {
     with_db(state, |conn| {
         conn.query_row(
-            "SELECT acp_session_id FROM app_session_roles WHERE app_session_id = ?1 AND role_name = ?2 AND runtime_kind = ?3",
-            params![app_session_id, role_name, runtime_key],
+            "SELECT cwd FROM app_sessions WHERE id = ?1",
+            params![session_id],
             |row| row.get::<_, Option<String>>(0),
         )
         .optional()
@@ -28,24 +20,16 @@ pub(crate) fn load_app_session_role_cli_id(
     .flatten()
 }
 
-pub(crate) fn save_app_session_role_cli_id(
+pub(crate) fn set_app_session_cwd(
     state: &AppState,
-    app_session_id: &str,
-    runtime_key: &str,
-    role_name: &str,
-    cli_session_id: &str,
+    session_id: &str,
+    cwd: &str,
 ) -> Result<(), String> {
-    if app_session_id.is_empty() {
-        return Ok(());
-    }
+    let now = crate::now_ms();
     with_db(state, |conn| {
         conn.execute(
-            "INSERT INTO app_session_roles (app_session_id, role_name, runtime_kind, acp_session_id)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(app_session_id, role_name) DO UPDATE SET
-               runtime_kind = excluded.runtime_kind,
-               acp_session_id = excluded.acp_session_id",
-            params![app_session_id, role_name, runtime_key, cli_session_id],
+            "UPDATE app_sessions SET cwd = ?1, last_active_at = ?2 WHERE id = ?3",
+            params![cwd, now, session_id],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -57,7 +41,7 @@ pub(crate) fn list_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSes
     with_db(get_state(&state), |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, title, active_role, runtime_kind, created_at, last_active_at
+                "SELECT id, title, active_role, runtime_kind, cwd, created_at, last_active_at
                  FROM app_sessions ORDER BY last_active_at DESC LIMIT 50",
             )
             .map_err(|e| e.to_string())?;
@@ -71,9 +55,10 @@ pub(crate) fn list_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSes
                         title: row.get(1)?,
                         active_role: row.get(2)?,
                         runtime_kind: row.get(3)?,
+                        cwd: row.get(4)?,
                         messages: Vec::new(),
-                        created_at: row.get(4)?,
-                        last_active_at: row.get(5)?,
+                        created_at: row.get(5)?,
+                        last_active_at: row.get(6)?,
                     },
                 ))
             })
@@ -156,19 +141,21 @@ pub(crate) fn create_app_session(
         title: title.unwrap_or_else(|| "New Session".to_string()),
         active_role: "UnionAI".to_string(),
         runtime_kind: None,
+        cwd: Some(default_chat_cwd()),
         messages: Vec::new(),
         created_at: now,
         last_active_at: now,
     };
     with_db(get_state(&state), |conn| {
         conn.execute(
-            "INSERT INTO app_sessions (id, title, active_role, runtime_kind, created_at, last_active_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO app_sessions (id, title, active_role, runtime_kind, cwd, created_at, last_active_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 &session.id,
                 &session.title,
                 &session.active_role,
                 &session.runtime_kind,
+                &session.cwd,
                 session.created_at,
                 session.last_active_at,
             ],
