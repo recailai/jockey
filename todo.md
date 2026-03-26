@@ -37,6 +37,19 @@
 - [ ] MCP servers editor in role configuration form
 - [ ] MCP-over-ACP tool injection for cross-role queries (long-term)
 
+### Capability Registry
+- [ ] `mcp_registries` + `skill_registries` tables — multi-source subscription model, each with endpoint/kind/auth/sync_mode/priority
+- [ ] `remote_mcp_servers` + `remote_skills` tables — local cache keyed by registry_id
+- [ ] `capability_sync.rs` — HTTP/file pull for registry endpoints, upsert cache on sync
+- [ ] `role_capability_bindings` table — replace `roles.mcp_servers_json` raw JSON with structured bindings (cap_kind, cap_id, override_json)
+- [ ] `session_runtime.rs` — assemble `mcp_servers` + skill context_pairs from bindings instead of inline JSON
+- [ ] Startup auto-sync for all enabled registries
+- [ ] Settings UI: Registry list (MCP + Skill), add/remove/refresh per registry
+- [ ] Role editor: replace MCP JSON textarea with catalog picker (shows merged view from all registries, annotated by source)
+- [ ] Conflict display: same-name entries from different registries shown separately, user picks which binding to use
+- [ ] `role_capability_bindings.enabled` field — bind without activating (default on/off per role)
+- [ ] `app_session_role_cap_overrides` table — session-level add/disable delta over role defaults; final inject set = role bindings + session.added - session.disabled
+
 ### Performance
 
 #### Backend (Rust)
