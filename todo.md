@@ -70,8 +70,15 @@
 - [ ] Move synchronous directory reads to background threads
 - [ ] Preload fonts and CSS to reduce flash of unstyled content
 
+### Theme & Window Chrome
+- [ ] `titleBarStyle: "Overlay"` + `hiddenTitle: true` — 消除 title bar 与页面色差断层，融入页面背景
+- [ ] 确定色彩方向：冷调蓝紫 (`#08080f` bg + `#7c6af5` accent) / 暖黑琥珀 / 玻璃态三选一
+- [ ] 统一 CSS token：`--ui-accent` 引入彩色，替换当前纯白 accent
+- [ ] 前端 `padding-top: env(titlebar-area-height, 28px)` 适配 Overlay 按钮区域
+- [ ] Light mode 配套更新 accent 色（当前 light mode 无彩色 accent）
+- [ ] 系统 dark/light 自动跟随 + 手动切换开关放入 Settings
+
 ### Desktop Polish
-- [ ] Native macOS window chrome (traffic light positioning, hidden title bar)
 - [ ] Background throttling configuration
 - [ ] Confirmation prompts for high-risk commands
 
