@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { For, Index, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { Accessor } from "solid-js";
 import { SolidMarkdown } from "solid-markdown";
@@ -11,6 +12,7 @@ type MessageWindowProps = {
   activeSessionId: Accessor<string | null>;
   activeSession: Accessor<AppSession | null>;
   patchActiveSession: (patch: Partial<AppSession>) => void;
+  onResetAgentContext?: () => void;
   onListMounted?: (id: string, el: HTMLElement) => void;
   onListUnmounted?: (id: string) => void;
 };
@@ -58,6 +60,20 @@ export default function MessageWindow(props: MessageWindowProps) {
     return count > 0 ? count : 0;
   };
 
+  function handleContainerClick(e: MouseEvent) {
+    const a = (e.target as HTMLElement).closest("a");
+    if (!a) return;
+    const href = a.getAttribute("href");
+    if (!href || !href.startsWith("http")) return;
+    e.preventDefault();
+    openUrl(href);
+  }
+
+  function handleResetContextMenu(e: MouseEvent) {
+    e.preventDefault();
+    props.onResetAgentContext?.();
+  }
+
   return (
     <div
       ref={listEl}
@@ -66,6 +82,7 @@ export default function MessageWindow(props: MessageWindowProps) {
       aria-live="polite"
       aria-relevant="additions text"
       class="flex-1 overflow-auto px-4 py-4 space-y-4 bg-[#09090b] bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(120,119,198,0.08),rgba(255,255,255,0))]"
+      onClick={handleContainerClick}
     >
       <Show when={hiddenMessageCount() > 0}>
         <div class="py-1 text-center text-xs text-zinc-600 opacity-40">
@@ -97,12 +114,17 @@ export default function MessageWindow(props: MessageWindowProps) {
           );
           return (
             <div class="flex gap-4 w-full max-w-[95%] mb-6 group/agent">
-              <div class="relative h-8 w-8 shrink-0 rounded-full bg-gradient-to-b from-zinc-800 to-zinc-900 border border-zinc-700/80 flex items-center justify-center shadow-lg ring-1 ring-black/40 mt-0.5 overflow-hidden">
+              <button
+                type="button"
+                onContextMenu={handleResetContextMenu}
+                class="relative h-8 w-8 shrink-0 rounded-full bg-gradient-to-b from-zinc-800 to-zinc-900 border border-zinc-700/80 hover:border-indigo-400/60 hover:bg-zinc-800 transition-colors flex items-center justify-center shadow-lg ring-1 ring-black/40 mt-0.5 overflow-hidden cursor-pointer"
+                title="Right-click to reset current agent CLI context"
+              >
                 <div class="absolute inset-0 bg-indigo-500/10"></div>
                 <svg class="w-4 h-4 text-zinc-300 relative z-10 drop-shadow-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
                 </svg>
-              </div>
+              </button>
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2.5 mb-1.5 opacity-90">
                   <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.runtimeKind ?? ""] ?? "text-zinc-300"}`}>
@@ -126,10 +148,15 @@ export default function MessageWindow(props: MessageWindowProps) {
       <Show when={props.activeSession()?.streamingMessage}>
         {(streaming) => (
           <div class="flex gap-4 w-full max-w-[95%] mb-6">
-            <div class="relative h-8 w-8 shrink-0 rounded-full bg-gradient-to-b from-zinc-800 to-zinc-900 border border-zinc-700/80 flex items-center justify-center shadow-lg ring-1 ring-black/40 mt-0.5 overflow-hidden">
+            <button
+              type="button"
+              onContextMenu={handleResetContextMenu}
+              class="relative h-8 w-8 shrink-0 rounded-full bg-gradient-to-b from-zinc-800 to-zinc-900 border border-zinc-700/80 hover:border-indigo-400/60 hover:bg-zinc-800 transition-colors flex items-center justify-center shadow-lg ring-1 ring-black/40 mt-0.5 overflow-hidden cursor-pointer"
+              title="Right-click to reset current agent CLI context"
+            >
               <div class="absolute inset-0 bg-indigo-500/10"></div>
               <span class="h-1.5 w-1.5 rounded-full bg-zinc-300 animate-pulse shadow-[0_0_8px_rgba(255,255,255,0.8)] relative z-10" />
-            </div>
+            </button>
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2.5 mb-2">
                 <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.runtimeKind ?? ""] ?? "text-zinc-300"}`}>
@@ -241,7 +268,7 @@ function StreamSegmentList(props: { segments: AppSegment[] }) {
   return (
     <Index each={groups()}>{(g) => (
       g().kind === "text"
-        ? <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{g().text}</div>
+        ? <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{(g() as { kind: "text"; text: string }).text}</div>
         : <ToolCallGroup tools={(g() as { kind: "tools"; tools: AppToolCall[] }).tools} streaming={true} />
     )}</Index>
   );
