@@ -185,7 +185,7 @@ pub(crate) async fn assistant_chat(
     if text.starts_with("/app_") {
         let route_started = Instant::now();
         let command_result =
-            apply_chat_command(app, state, text, input.runtime_kind.clone()).await?;
+            apply_chat_command(app, state, text, input.runtime_kind.clone(), input.app_session_id.clone()).await?;
         chat_log(
             "route.command",
             json!({
@@ -225,7 +225,9 @@ pub(crate) async fn assistant_chat(
     }
 
     let tool_prompt = build_unionai_tool_prompt();
-    let cwd = resolve_chat_cwd();
+    let cwd = input.app_session_id.as_deref()
+        .and_then(|sid| crate::db::app_session::get_app_session_cwd(crate::db::get_state(&state), sid))
+        .unwrap_or_else(resolve_chat_cwd);
     let mut attachment_pairs: Vec<(String, String)> = Vec::new();
     let mut attach_budget = ATTACH_MAX_TOTAL_BYTES;
     let mut attach_notes = Vec::new();

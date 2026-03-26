@@ -1,9 +1,40 @@
 use crate::db::{get_state, with_db};
-use crate::now_ms;
+use crate::{default_chat_cwd, now_ms};
 use crate::types::*;
 use rusqlite::{params, OptionalExtension};
 use tauri::State;
 use uuid::Uuid;
+
+pub(crate) fn get_app_session_cwd(state: &AppState, session_id: &str) -> Option<String> {
+    with_db(state, |conn| {
+        conn.query_row(
+            "SELECT cwd FROM app_sessions WHERE id = ?1",
+            params![session_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    })
+    .ok()
+    .flatten()
+    .flatten()
+}
+
+pub(crate) fn set_app_session_cwd(
+    state: &AppState,
+    session_id: &str,
+    cwd: &str,
+) -> Result<(), String> {
+    let now = crate::now_ms();
+    with_db(state, |conn| {
+        conn.execute(
+            "UPDATE app_sessions SET cwd = ?1, last_active_at = ?2 WHERE id = ?3",
+            params![cwd, now, session_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
 
 pub(crate) fn load_app_session_role_cli_id(
     state: &AppState,
@@ -57,7 +88,7 @@ pub(crate) fn list_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSes
     with_db(get_state(&state), |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, title, active_role, runtime_kind, created_at, last_active_at
+                "SELECT id, title, active_role, runtime_kind, cwd, created_at, last_active_at
                  FROM app_sessions ORDER BY last_active_at DESC LIMIT 50",
             )
             .map_err(|e| e.to_string())?;
@@ -71,9 +102,10 @@ pub(crate) fn list_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSes
                         title: row.get(1)?,
                         active_role: row.get(2)?,
                         runtime_kind: row.get(3)?,
+                        cwd: row.get(4)?,
                         messages: Vec::new(),
-                        created_at: row.get(4)?,
-                        last_active_at: row.get(5)?,
+                        created_at: row.get(5)?,
+                        last_active_at: row.get(6)?,
                     },
                 ))
             })
@@ -156,19 +188,21 @@ pub(crate) fn create_app_session(
         title: title.unwrap_or_else(|| "New Session".to_string()),
         active_role: "UnionAI".to_string(),
         runtime_kind: None,
+        cwd: Some(default_chat_cwd()),
         messages: Vec::new(),
         created_at: now,
         last_active_at: now,
     };
     with_db(get_state(&state), |conn| {
         conn.execute(
-            "INSERT INTO app_sessions (id, title, active_role, runtime_kind, created_at, last_active_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO app_sessions (id, title, active_role, runtime_kind, cwd, created_at, last_active_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 &session.id,
                 &session.title,
                 &session.active_role,
                 &session.runtime_kind,
+                &session.cwd,
                 session.created_at,
                 session.last_active_at,
             ],

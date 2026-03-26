@@ -1,7 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import { For, Show, createEffect, onCleanup } from "solid-js";
+import { For, Index, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { Accessor } from "solid-js";
-import type { AppSession, AppMessage, AppToolCall } from "./types";
+import { SolidMarkdown } from "solid-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
+import type { AppSession, AppMessage, AppToolCall, AppSegment } from "./types";
 import { INTERACTIVE_MOTION, RUNTIME_COLOR, MESSAGE_RENDER_WINDOW, fmt } from "./types";
 
 type MessageWindowProps = {
@@ -11,6 +14,9 @@ type MessageWindowProps = {
   onListMounted?: (id: string, el: HTMLElement) => void;
   onListUnmounted?: (id: string) => void;
 };
+
+const remarkPlugins = [remarkGfm];
+const rehypePlugins = [rehypeHighlight];
 
 export default function MessageWindow(props: MessageWindowProps) {
   let listEl: HTMLDivElement | undefined;
@@ -28,23 +34,24 @@ export default function MessageWindow(props: MessageWindowProps) {
     if (boundSessionId) props.onListUnmounted?.(boundSessionId);
   });
 
-  const visibleMessages = (): (AppMessage & { count?: number })[] => {
+  type VisibleMsg = { msg: AppMessage; count: number; latestAt: number };
+  const visibleMessages = createMemo<VisibleMsg[]>(() => {
     const rows = props.activeSession()?.messages ?? [];
     const sliced = rows.length <= MESSAGE_RENDER_WINDOW ? rows : rows.slice(rows.length - MESSAGE_RENDER_WINDOW);
-    const deduped: (AppMessage & { count?: number })[] = [];
+    const deduped: VisibleMsg[] = [];
     for (const msg of sliced) {
       if (msg.roleName === "system" || msg.roleName === "event") {
         const last = deduped[deduped.length - 1];
-        if (last && (last.roleName === "system" || last.roleName === "event") && last.text === msg.text) {
-          last.count = (last.count ?? 1) + 1;
-          last.at = msg.at;
+        if (last && (last.msg.roleName === "system" || last.msg.roleName === "event") && last.msg.text === msg.text) {
+          last.count++;
+          last.latestAt = msg.at;
           continue;
         }
       }
-      deduped.push({ ...msg, count: 1 });
+      deduped.push({ msg, count: 1, latestAt: msg.at });
     }
     return deduped;
-  };
+  });
 
   const hiddenMessageCount = (): number => {
     const count = (props.activeSession()?.messages.length ?? 0) - MESSAGE_RENDER_WINDOW;
@@ -66,7 +73,8 @@ export default function MessageWindow(props: MessageWindowProps) {
         </div>
       </Show>
       <For each={visibleMessages()}>
-        {(msg) => {
+        {(item) => {
+          const msg = item.msg;
           if (msg.roleName === "user") return (
             <div class="flex flex-col items-end w-full mb-3 group/user">
               <div class="max-w-[85%] bg-gradient-to-br from-zinc-800 to-zinc-900 rounded-2xl rounded-tr-md px-4 py-2 text-[13px] text-zinc-100 shadow-lg border border-white/[0.08] ring-1 ring-black/20">
@@ -81,8 +89,8 @@ export default function MessageWindow(props: MessageWindowProps) {
               <div class="max-w-[90%] px-4 py-1.5 bg-zinc-900/80 border border-zinc-700/50 rounded-full text-[11.5px] text-zinc-400 flex items-center gap-2.5 backdrop-blur-md shadow-sm">
                 <span class="opacity-70 text-indigo-400 mt-[1px] font-serif">✧</span>
                 <span class="whitespace-pre-wrap break-words tracking-wide">{msg.text}</span>
-                <Show when={(msg.count ?? 1) > 1}>
-                  <span class="bg-indigo-500/15 border border-indigo-500/20 text-indigo-300 font-mono rounded-full px-1.5 py-0.5 text-[9px] min-w-[20px] text-center">{msg.count}</span>
+                <Show when={item.count > 1}>
+                  <span class="bg-indigo-500/15 border border-indigo-500/20 text-indigo-300 font-mono rounded-full px-1.5 py-0.5 text-[9px] min-w-[20px] text-center">{item.count}</span>
                 </Show>
               </div>
             </div>
@@ -106,13 +114,9 @@ export default function MessageWindow(props: MessageWindowProps) {
                   </Show>
                 </div>
                 <Show when={msg.segments && msg.segments.length > 0} fallback={
-                  <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{msg.text}</div>
+                  <div class="md-prose"><SolidMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} children={msg.text} /></div>
                 }>
-                  <For each={msg.segments}>{(seg) => (
-                    seg.kind === "text"
-                      ? <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{seg.text}</div>
-                      : <ToolCallItem tc={seg.tc} />
-                  )}</For>
+                  <SegmentList segments={msg.segments!} />
                 </Show>
               </div>
             </div>
@@ -143,11 +147,7 @@ export default function MessageWindow(props: MessageWindowProps) {
                   </Show>
                 </>
               }>
-                <For each={props.activeSession()?.streamSegments ?? []}>{(seg) => (
-                  seg.kind === "text"
-                    ? <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{seg.text}</div>
-                    : <ToolCallItem tc={seg.tc} />
-                )}</For>
+                <StreamSegmentList segments={props.activeSession()?.streamSegments ?? []} />
               </Show>
               <Show when={props.activeSession()?.thoughtText}>
                 <div class="mt-2 rounded-md border border-zinc-700/60 bg-zinc-900/50 px-2.5 py-2 text-[11px] text-zinc-400 leading-relaxed font-mono whitespace-pre-wrap break-words">
@@ -170,7 +170,7 @@ export default function MessageWindow(props: MessageWindowProps) {
               <For each={plan()}>{(entry) => (
                 <li class="flex items-center gap-1.5">
                   <span class={`inline-block h-1.5 w-1.5 rounded-full ${entry.status === "completed" ? "bg-emerald-400" : entry.status === "in_progress" ? "bg-amber-400 animate-pulse" : "bg-zinc-500"}`} />
-                  <span class="text-zinc-300">{entry.title ?? entry.description ?? "step"}</span>
+                  <span class="text-zinc-300">{entry.content ?? entry.title ?? entry.description ?? "step"}</span>
                 </li>
               )}</For>
             </ol>
@@ -183,6 +183,124 @@ export default function MessageWindow(props: MessageWindowProps) {
           <span>{props.activeSession()?.agentState || "Agent is thinking..."}</span>
         </div>
       </Show>
+      <Show when={(props.activeSession()?.queuedMessages ?? []).length > 0}>
+        <div class="mt-3 rounded-lg border border-zinc-700/40 bg-zinc-900/30 backdrop-blur-sm overflow-hidden">
+          <div class="flex items-center gap-2 px-3 py-1.5 border-b border-zinc-700/30">
+            <span class="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse" />
+            <span class="text-[10px] text-zinc-400 font-medium uppercase tracking-wider">Queued</span>
+            <span class="ml-auto text-[9px] text-zinc-500 font-mono bg-zinc-800/60 px-1.5 py-0.5 rounded-md">{props.activeSession()!.queuedMessages.length}</span>
+          </div>
+          <div class="px-2 py-1.5 space-y-1">
+            <For each={props.activeSession()!.queuedMessages}>{(text, i) => (
+              <div class="flex items-start gap-2 px-2 py-1 rounded-md hover:bg-zinc-800/30 transition-colors">
+                <span class="text-[9px] text-zinc-500 font-mono mt-0.5 shrink-0 w-4 text-right">{i() + 1}</span>
+                <span class="text-[11px] text-zinc-300 font-mono break-all leading-relaxed">{text}</span>
+              </div>
+            )}</For>
+          </div>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
+function collectToolGroups(segments: AppSegment[]): Array<{ kind: "text"; text: string } | { kind: "tools"; tools: AppToolCall[] }> {
+  const result: Array<{ kind: "text"; text: string } | { kind: "tools"; tools: AppToolCall[] }> = [];
+  for (const seg of segments) {
+    if (seg.kind === "text") {
+      result.push(seg);
+    } else {
+      const last = result[result.length - 1];
+      if (last && last.kind === "tools") {
+        last.tools.push(seg.tc);
+      } else {
+        result.push({ kind: "tools", tools: [seg.tc] });
+      }
+    }
+  }
+  return result;
+}
+
+function SegmentList(props: { segments: AppSegment[] }) {
+  const groups = createMemo(() => collectToolGroups(props.segments));
+  return (
+    <For each={groups()}>{(g) => (
+      g.kind === "text"
+        ? <div class="md-prose"><SolidMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} children={g.text} /></div>
+        : <ToolCallGroup tools={g.tools} streaming={false} />
+    )}</For>
+  );
+}
+
+function StreamSegmentList(props: { segments: AppSegment[] }) {
+  const groups = () => collectToolGroups(props.segments);
+  return (
+    <Index each={groups()}>{(g) => (
+      g().kind === "text"
+        ? <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{g().text}</div>
+        : <ToolCallGroup tools={(g() as { kind: "tools"; tools: AppToolCall[] }).tools} streaming={true} />
+    )}</Index>
+  );
+}
+
+function tcStatusDot(status: string): string {
+  if (status === "success" || status === "completed") return "bg-emerald-400 shadow-emerald-400/40";
+  if (status === "failure" || status === "error") return "bg-rose-400 shadow-rose-400/40";
+  return "bg-amber-400 animate-pulse shadow-amber-400/40";
+}
+
+function ToolCallGroup(props: { tools: AppToolCall[]; streaming: boolean }) {
+  const [expanded, setExpanded] = createSignal(false);
+
+  const count = () => props.tools.length;
+  const lastTool = () => props.tools[props.tools.length - 1];
+  const statusCounts = createMemo(() => {
+    let success = 0, error = 0;
+    for (const t of props.tools) {
+      if (t.status === "success" || t.status === "completed") success++;
+      else if (t.status === "failure" || t.status === "error") error++;
+    }
+    return { success, error, pending: props.tools.length - success - error };
+  });
+
+  return (
+    <div class="rounded-xl border border-white/[0.05] bg-zinc-900/40 backdrop-blur-md overflow-hidden shadow-sm my-1.5">
+      <button
+        class="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-[11.5px] text-zinc-300 select-none hover:bg-zinc-900/60 transition-colors"
+        onClick={() => setExpanded(v => !v)}
+      >
+        <span class={`h-2 w-2 shrink-0 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)] ${tcStatusDot(lastTool()?.status ?? "pending")}`} />
+        <span class="text-zinc-200 font-mono tracking-tight font-medium">{lastTool()?.title || "tool calls"}</span>
+        <span class="flex items-center gap-1.5 ml-auto">
+          <Show when={statusCounts().success > 0}>
+            <span class="flex items-center gap-0.5 text-[9px] text-emerald-400">
+              <span class="h-1.5 w-1.5 rounded-full bg-emerald-400 inline-block" />
+              {statusCounts().success}
+            </span>
+          </Show>
+          <Show when={statusCounts().error > 0}>
+            <span class="flex items-center gap-0.5 text-[9px] text-rose-400">
+              <span class="h-1.5 w-1.5 rounded-full bg-rose-400 inline-block" />
+              {statusCounts().error}
+            </span>
+          </Show>
+          <Show when={statusCounts().pending > 0}>
+            <span class="flex items-center gap-0.5 text-[9px] text-amber-400">
+              <span class="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse inline-block" />
+              {statusCounts().pending}
+            </span>
+          </Show>
+          <span class="text-[9px] text-zinc-500 font-bold tracking-widest uppercase bg-zinc-800/50 px-1.5 py-0.5 rounded-md ml-1">{count()} calls</span>
+          <svg class={`w-3 h-3 text-zinc-500 transition-transform duration-150 ${expanded() ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+        </span>
+      </button>
+      <Show when={expanded()}>
+        <div class="border-t border-white/[0.05] px-2 py-1.5 space-y-1">
+          <For each={props.tools}>{(tc) => (
+            <ToolCallItem tc={tc} />
+          )}</For>
+        </div>
+      </Show>
     </div>
   );
 }
@@ -190,28 +308,28 @@ export default function MessageWindow(props: MessageWindowProps) {
 function ToolCallItem(props: { tc: AppToolCall }) {
   const tc = () => props.tc;
   return (
-    <details class="group/tc rounded-xl border border-white/[0.05] bg-zinc-900/40 backdrop-blur-md overflow-hidden shadow-sm transition-all duration-200 hover:bg-zinc-900/60 hover:border-white/[0.1] my-1.5">
-      <summary class="flex cursor-pointer items-center gap-2.5 px-3 py-2.5 text-[11.5px] text-zinc-300 select-none">
-        <span class={`h-2 w-2 shrink-0 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)] ${tc().status === "success" || tc().status === "completed" ? "bg-emerald-400 shadow-emerald-400/40" : tc().status === "failure" || tc().status === "error" ? "bg-rose-400 shadow-rose-400/40" : "bg-amber-400 animate-pulse shadow-amber-400/40"}`} />
-        <span class="text-zinc-200 font-mono tracking-tight font-medium group-hover/tc:text-white transition-colors">{tc().title || tc().toolCallId}</span>
-        <span class="ml-auto text-[9px] text-zinc-500 uppercase tracking-widest font-bold bg-zinc-800/50 px-1.5 py-0.5 rounded-md">{tc().kind}</span>
+    <details class="group/tc rounded-lg border border-white/[0.04] bg-zinc-900/30 overflow-hidden transition-all duration-200 hover:bg-zinc-900/50 hover:border-white/[0.08]">
+      <summary class="flex cursor-pointer items-center gap-2 px-2.5 py-1.5 text-[11px] text-zinc-300 select-none">
+        <span class={`h-1.5 w-1.5 shrink-0 rounded-full shadow-[0_0_6px_rgba(0,0,0,0.4)] ${tcStatusDot(tc().status)}`} />
+        <span class="text-zinc-200 font-mono tracking-tight font-medium group-hover/tc:text-white transition-colors truncate">{tc().title || tc().toolCallId}</span>
+        <span class="ml-auto text-[9px] text-zinc-500 uppercase tracking-widest font-bold bg-zinc-800/50 px-1.5 py-0.5 rounded-md shrink-0">{tc().kind}</span>
       </summary>
       <Show when={tc().contentJson}>
-        <pre class="whitespace-pre-wrap break-words border-t border-white/[0.05] px-3.5 py-3 text-[11.5px] font-mono text-zinc-400 bg-black/20">{tc().contentJson}</pre>
+        <pre class="whitespace-pre-wrap break-words border-t border-white/[0.05] px-3 py-2.5 text-[11px] font-mono text-zinc-400 bg-black/20">{tc().contentJson}</pre>
       </Show>
       <Show when={tc().locations && tc().locations!.length > 0}>
-        <div class="border-t border-white/[0.05] px-3.5 py-2.5 text-[11px] text-zinc-400 bg-black/10">
-          <div class="mb-1 uppercase tracking-wider text-[9px] text-zinc-500">Files</div>
+        <div class="border-t border-white/[0.05] px-3 py-2 text-[10.5px] text-zinc-400 bg-black/10">
+          <div class="mb-0.5 uppercase tracking-wider text-[9px] text-zinc-500">Files</div>
           <For each={tc().locations}>{(loc) => (
             <div class="font-mono break-all">{loc.path}{loc.line ? `:${loc.line}` : ""}</div>
           )}</For>
         </div>
       </Show>
-      <Show when={tc().rawInput !== undefined}>
-        <pre class="whitespace-pre-wrap break-words border-t border-white/[0.05] px-3.5 py-3 text-[11px] font-mono text-zinc-500 bg-black/10">{JSON.stringify(tc().rawInput, null, 2)}</pre>
+      <Show when={tc().rawInputJson}>
+        <pre class="whitespace-pre-wrap break-words border-t border-white/[0.05] px-3 py-2.5 text-[10.5px] font-mono text-zinc-500 bg-black/10">{tc().rawInputJson}</pre>
       </Show>
-      <Show when={tc().rawOutput !== undefined}>
-        <pre class="whitespace-pre-wrap break-words border-t border-white/[0.05] px-3.5 py-3 text-[11px] font-mono text-zinc-500 bg-black/10">{JSON.stringify(tc().rawOutput, null, 2)}</pre>
+      <Show when={tc().rawOutputJson}>
+        <pre class="whitespace-pre-wrap break-words border-t border-white/[0.05] px-3 py-2.5 text-[10.5px] font-mono text-zinc-500 bg-black/10">{tc().rawOutputJson}</pre>
       </Show>
     </details>
   );

@@ -18,8 +18,10 @@ export type AppToolCall = {
   locations?: Array<{ path: string; line?: number }>;
   rawInput?: unknown;
   rawOutput?: unknown;
+  rawInputJson?: string;
+  rawOutputJson?: string;
 };
-export type AppPlanEntry = { title?: string; status?: string; description?: string };
+export type AppPlanEntry = { content?: string; title?: string; status?: string; description?: string; priority?: string };
 export type AppPermission = { requestId: string; title: string; description: string | null; options: Array<{ optionId: string; title?: string }> };
 export type AcpStreamEvent = {
   kind: string;
@@ -59,6 +61,7 @@ export type AppSession = {
   title: string;
   activeRole: string;
   runtimeKind: string | null;
+  cwd: string | null;
   messages: AppMessage[];
   streamingMessage: AppMessage | null;
   toolCalls: Record<string, AppToolCall>;
@@ -74,6 +77,7 @@ export type AppSession = {
   status: "idle" | "running" | "done" | "error";
   agentState?: string;
   thoughtText?: string;
+  queuedMessages: string[];
 };
 
 export const RUNTIMES = ["gemini-cli", "claude-code", "codex-cli", "mock"];

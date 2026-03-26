@@ -73,6 +73,7 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           title TEXT NOT NULL,
           active_role TEXT NOT NULL DEFAULT 'UnionAI',
           runtime_kind TEXT,
+          cwd TEXT,
           created_at INTEGER NOT NULL,
           last_active_at INTEGER NOT NULL
         );
@@ -120,10 +121,12 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_app_session_messages_session_id
           ON app_session_messages(session_id, id ASC);
 
-        PRAGMA user_version = 2;
+        PRAGMA user_version = 3;
         ",
     )
     .map_err(|e| e.to_string())?;
+
+    let _ = conn.execute("ALTER TABLE app_sessions ADD COLUMN cwd TEXT", []);
 
     Ok(())
 }

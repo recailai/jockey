@@ -33,6 +33,7 @@ const makeDefaultSession = (title: string): AppSession => ({
   title,
   activeRole: DEFAULT_ROLE_ALIAS,
   runtimeKind: null,
+  cwd: null,
   messages: [],
   streamingMessage: null,
   toolCalls: {},
@@ -47,6 +48,7 @@ const makeDefaultSession = (title: string): AppSession => ({
   agentCommands: new Map(),
   status: "idle",
   thoughtText: "",
+  queuedMessages: [],
 });
 
 export default function App() {
@@ -115,7 +117,11 @@ export default function App() {
   let streamBatchRaf: number | null = null;
   let runTokenSeq = 0;
   let canceledRunToken = 0;
-  let queuedInputs: string[] = [];
+  const queuedInputsFor = (sid: string | null): string[] => {
+    if (!sid) return [];
+    const s = sessions.find((x) => x.id === sid);
+    return s?.queuedMessages ?? [];
+  };
   let scrollRaf: number | null = null;
   const listRefMap = new Map<string, HTMLElement>();
   let pendingSessionEvents: string[] = [];
@@ -150,6 +156,7 @@ export default function App() {
     const session = activeSession();
     void session?.messages.length;
     void session?.streamingMessage?.text.length;
+    void session?.streamSegments.length;
     scheduleScrollToBottom();
   });
 
@@ -242,8 +249,13 @@ export default function App() {
   const runNextQueued = () => {
     const s = activeSession();
     if (s?.submitting) return;
-    const next = queuedInputs.shift();
-    if (!next) return;
+    const sid = activeSessionId();
+    const queue = queuedInputsFor(sid);
+    if (queue.length === 0) return;
+    const next = queue[0];
+    if (sid) {
+      setSessions((ss) => ss.id === sid, "queuedMessages", (prev) => prev.slice(1));
+    }
     void sendRaw(next);
   };
 
@@ -267,7 +279,7 @@ export default function App() {
     acceptingStreams.delete(sid);
     updateSession(sid, { streamingMessage: null });
     resetStreamState(sid);
-    updateSession(sid, { toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, thoughtText: "", submitting: false, status: "idle" });
+    updateSession(sid, { toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, thoughtText: "", submitting: false, status: "idle", queuedMessages: [] });
     pushMessage("event", "Cancellation requested.");
     const role = activeBackendRole();
     const runtime = runtimeForRole(role);
@@ -730,7 +742,14 @@ export default function App() {
       if (sid) {
         const sess = sessions.find((x) => x.id === sid);
         if (sess && sess.title === "New Session" && sess.messages.filter((m) => m.roleName === "user").length === 0) {
-          const autoTitle = text.slice(0, 30);
+          const cleaned = text.replace(/[@#][^\s]*/g, "").replace(/^\/\S+\s*/, "").trim();
+          const words = cleaned.split(/\s+/);
+          let autoTitle = "";
+          for (const w of words) {
+            if ((autoTitle + " " + w).trim().length > 40) break;
+            autoTitle = (autoTitle + " " + w).trim();
+          }
+          if (!autoTitle) autoTitle = cleaned.slice(0, 30);
           updateSession(sid, { title: autoTitle });
           void invoke("update_app_session", { id: sid, update: { title: autoTitle } }).catch(() => {});
         }
@@ -866,9 +885,12 @@ export default function App() {
     const text = input().trim();
     if (!text) return;
     if (activeSession()?.submitting) {
-      queuedInputs.push(text);
       setInput("");
-      pushMessage("system", `Queued (${queuedInputs.length}): ${text}`);
+      const sid = activeSessionId();
+      if (sid) {
+        setSessions((s) => s.id === sid, "queuedMessages", (prev) => [...prev, text]);
+        scheduleScrollToBottom();
+      }
       return;
     }
     if (!activeSession()?.runtimeKind && !isCustomRole() && !text.startsWith("/app_")) {
@@ -1019,12 +1041,13 @@ export default function App() {
     const boot = async () => {
       let loaded: AppSession[] = [];
       try {
-        const raw = await invoke<Array<{ id: string; title: string; messages: AppMessage[]; activeRole?: string; runtimeKind?: string | null }>>("list_app_sessions");
+        const raw = await invoke<Array<{ id: string; title: string; messages: AppMessage[]; activeRole?: string; runtimeKind?: string | null; cwd?: string | null }>>("list_app_sessions");
         loaded = raw.map((r) => {
           const s = makeDefaultSession(r.title);
           s.id = r.id;
           if (r.activeRole) s.activeRole = r.activeRole;
           if (r.runtimeKind !== undefined) s.runtimeKind = r.runtimeKind;
+          if (r.cwd !== undefined) s.cwd = r.cwd ?? null;
           s.messages = r.messages ?? [];
           return s;
         });
@@ -1120,12 +1143,15 @@ export default function App() {
                 locations,
                 rawInput: e.rawInput,
                 rawOutput: e.rawOutput,
+                rawInputJson: e.rawInput !== undefined ? JSON.stringify(e.rawInput, null, 2) : undefined,
+                rawOutputJson: e.rawOutput !== undefined ? JSON.stringify(e.rawOutput, null, 2) : undefined,
               };
               setSessions((s) => s.id === sid, produce((s) => {
                 s.toolCalls[e.toolCallId!] = tc;
                 s.streamSegments.push({ kind: "tool" as const, tc });
               }));
               patchSession({ agentState: `${e.toolKind ?? "tool"}: ${e.title ?? e.toolCallId}` });
+              scheduleScrollToBottom();
             }
             break;
           case "toolCallUpdate":
@@ -1138,6 +1164,8 @@ export default function App() {
                 const contentJson = newContent !== existing.content
                   ? (newContent && newContent.length > 0 ? JSON.stringify(newContent, null, 2) : undefined)
                   : existing.contentJson;
+                const newRawInput = e.rawInput !== undefined ? e.rawInput : existing.rawInput;
+                const newRawOutput = e.rawOutput !== undefined ? e.rawOutput : existing.rawOutput;
                 const updated: AppToolCall = {
                   ...existing,
                   kind: e.toolKind ?? existing.kind,
@@ -1146,8 +1174,10 @@ export default function App() {
                   content: newContent,
                   contentJson,
                   locations: newLocations,
-                  rawInput: e.rawInput !== undefined ? e.rawInput : existing.rawInput,
-                  rawOutput: e.rawOutput !== undefined ? e.rawOutput : existing.rawOutput,
+                  rawInput: newRawInput,
+                  rawOutput: newRawOutput,
+                  rawInputJson: e.rawInput !== undefined ? JSON.stringify(newRawInput, null, 2) : existing.rawInputJson,
+                  rawOutputJson: e.rawOutput !== undefined ? JSON.stringify(newRawOutput, null, 2) : existing.rawOutputJson,
                 };
                 s.toolCalls[e.toolCallId!] = updated;
                 for (let i = s.streamSegments.length - 1; i >= 0; i--) {
@@ -1163,6 +1193,7 @@ export default function App() {
                   agentState: `${e.toolKind ?? "tool"} ${e.status ?? "updated"}: ${e.title ?? e.toolCallId}`,
                 });
               }
+              scheduleScrollToBottom();
             }
             break;
           case "plan":
@@ -1227,7 +1258,6 @@ export default function App() {
       }
       window.removeEventListener("keydown", handleGlobalKeyDown);
       dropStream();
-      queuedInputs = [];
       if (mentionCloseTimerRef.current !== null) window.clearTimeout(mentionCloseTimerRef.current);
       if (mentionDebounceTimerRef.current !== null) window.clearTimeout(mentionDebounceTimerRef.current);
       if (sessionEventFlushTimer !== null) window.clearTimeout(sessionEventFlushTimer);

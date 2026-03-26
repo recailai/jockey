@@ -40,10 +40,13 @@ export default function SessionTabs(props: SessionTabsProps) {
             }`}
           >
             <Show when={s.status === "running"}>
-              <span class="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
+              <span class="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse shadow-[0_0_6px_rgba(96,165,250,0.6)]" />
+            </Show>
+            <Show when={s.status === "error"}>
+              <span class="h-1.5 w-1.5 rounded-full bg-rose-400 shadow-[0_0_6px_rgba(251,113,133,0.6)]" />
             </Show>
             <Show when={s.status === "done" && s.id !== props.activeSessionId()}>
-              <span class="h-1.5 w-1.5 rounded-full bg-blue-500" />
+              <span class="h-1.5 w-1.5 rounded-full bg-emerald-500" />
             </Show>
             <Show when={renamingSessionId() === s.id} fallback={
               <span class="max-w-[120px] truncate">{s.title}</span>
@@ -106,7 +109,13 @@ export default function SessionTabs(props: SessionTabsProps) {
             } ${!a.available ? "opacity-30 pointer-events-none" : ""}`}
             title={a.label}
           >
-            <span class={`h-1.5 w-1.5 rounded-full shadow-[0_0_5px_currentColor] ${a.available ? (props.activeSession()?.runtimeKind === a.key ? "bg-indigo-400 text-indigo-400" : "bg-emerald-500 text-emerald-500") : "bg-rose-500 text-rose-500"}`} />
+            <span class={`h-1.5 w-1.5 rounded-full shadow-[0_0_5px_currentColor] ${
+              !a.available ? "bg-rose-500 text-rose-500"
+              : props.activeSession()?.runtimeKind === a.key && props.activeSession()?.status === "error" ? "bg-rose-400 text-rose-400"
+              : props.activeSession()?.runtimeKind === a.key && props.activeSession()?.status === "running" ? "bg-blue-400 text-blue-400 animate-pulse"
+              : props.activeSession()?.runtimeKind === a.key ? "bg-indigo-400 text-indigo-400"
+              : "bg-emerald-500 text-emerald-500"
+            }`} />
             {a.label}
           </button>
         )}

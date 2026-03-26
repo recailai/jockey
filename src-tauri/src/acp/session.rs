@@ -11,9 +11,9 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use super::adapter::{acp_log, build_stdio_adapter, clip, friendly_error_message};
 use super::client::UnionAiClient;
 use super::worker::{
-    remember_runtime_available_commands, remember_runtime_config_options, remember_runtime_models,
-    remember_runtime_modes, worker_tx, AcpEvent, AcpPromptResult, DeltaSlot, LiveConnection,
-    RuntimeKind, WorkerMsg,
+    register_child_pid, remember_runtime_available_commands, remember_runtime_config_options,
+    remember_runtime_models, remember_runtime_modes, worker_tx, AcpEvent, AcpPromptResult,
+    DeltaSlot, LiveConnection, RuntimeKind, WorkerMsg,
 };
 use crate::db::app_session::{load_app_session_role_cli_id, save_app_session_role_cli_id};
 use crate::types::AppState;
@@ -100,12 +100,16 @@ pub(super) async fn cold_start(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
+        .kill_on_drop(true)
+        .process_group(0);
     for (k, v) in env_pairs {
         cmd.env(k, v);
     }
 
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    if let Some(pid) = child.id() {
+        register_child_pid(pid);
+    }
     let stdin = child.stdin.take().ok_or("stdin unavailable")?;
     let stdout = child.stdout.take().ok_or("stdout unavailable")?;
 
@@ -310,6 +314,7 @@ pub(super) async fn cold_start(
         delta_slot,
         available_modes,
         current_mode,
+        child_pid: child.id(),
         _child: child,
         _io_task: io_handle,
     })

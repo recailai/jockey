@@ -157,6 +157,7 @@ pub(crate) struct AppSession {
     pub(crate) title: String,
     pub(crate) active_role: String,
     pub(crate) runtime_kind: Option<String>,
+    pub(crate) cwd: Option<String>,
     pub(crate) messages: Vec<serde_json::Value>,
     pub(crate) created_at: i64,
     pub(crate) last_active_at: i64,
@@ -200,6 +201,8 @@ pub(crate) const DEFAULT_MCP_SERVERS: &[&str] = &[];
 pub(crate) const DEFAULT_SKILLS: &[&str] = &[];
 pub(crate) const BASE_CLI_COMMANDS: &[(&str, &str)] = &[
     ("/app_help", "Show command help"),
+    ("/app_cd", "Show current working directory"),
+    ("/app_cd <path>", "Change working directory for all agents"),
     ("/app_assistant list", "List detected assistant runtimes"),
     (
         "/app_assistant select <runtime>",

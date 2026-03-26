@@ -34,6 +34,7 @@ pub(crate) async fn apply_chat_command(
     state: State<'_, AppState>,
     input: String,
     runtime_kind: Option<String>,
+    app_session_id: Option<String>,
 ) -> Result<ChatCommandResult, String> {
     let trimmed = input.trim();
     if !trimmed.starts_with("/app_") {
@@ -57,6 +58,27 @@ pub(crate) async fn apply_chat_command(
         ["/app_help"] => {
             result.message = "command list".to_string();
             result.payload = json!({ "help": build_unionai_tool_prompt() });
+        }
+        ["/app_cd"] => {
+            let cwd = if let Some(ref sid) = app_session_id {
+                crate::db::app_session::get_app_session_cwd(get_state(&state), sid)
+                    .unwrap_or_else(|| resolve_chat_cwd())
+            } else {
+                resolve_chat_cwd()
+            };
+            result.message = format!("cwd: {}", cwd);
+            result.payload = json!({ "cwd": cwd });
+        }
+        ["/app_cd", path] => {
+            let resolved = crate::abs_cwd(path);
+            if !std::path::Path::new(&resolved).is_dir() {
+                return Err(format!("not a directory: {}", resolved));
+            }
+            if let Some(ref sid) = app_session_id {
+                crate::db::app_session::set_app_session_cwd(get_state(&state), sid, &resolved)?;
+            }
+            result.message = format!("cwd changed: {}", resolved);
+            result.payload = json!({ "cwd": resolved });
         }
         ["/app_assistant", "list"] => {
             let assistants = crate::assistant::assistant_catalog();

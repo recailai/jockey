@@ -1,5 +1,5 @@
 use agent_client_protocol::{self as acp, Agent as _};
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::cell::RefCell;
@@ -297,6 +297,19 @@ fn slot_map() -> &'static Arc<DashMap<String, Arc<SlotHandle>>> {
     SLOT_MAP.get_or_init(|| Arc::new(DashMap::new()))
 }
 
+static CHILD_PIDS: OnceLock<DashSet<u32>> = OnceLock::new();
+fn child_pids() -> &'static DashSet<u32> {
+    CHILD_PIDS.get_or_init(DashSet::new)
+}
+
+pub(super) fn register_child_pid(pid: u32) {
+    child_pids().insert(pid);
+}
+
+pub(super) fn unregister_child_pid(pid: u32) {
+    child_pids().remove(&pid);
+}
+
 fn get_slot_handle(
     runtime_key: &str,
     role_name: &str,
@@ -322,8 +335,17 @@ pub(super) struct LiveConnection {
     pub(super) available_modes: Vec<Value>,
     #[allow(dead_code)]
     pub(super) current_mode: Option<String>,
+    pub(super) child_pid: Option<u32>,
     pub(super) _child: tokio::process::Child,
     pub(super) _io_task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for LiveConnection {
+    fn drop(&mut self) {
+        if let Some(pid) = self.child_pid {
+            unregister_child_pid(pid);
+        }
+    }
 }
 
 // SAFETY: LiveConnection is only ever created and accessed on the single-threaded
@@ -382,9 +404,18 @@ async fn shutdown_worker_state() {
         }
     }
     shutdown_terminals().await;
+
+    let remaining_pids: Vec<u32> = child_pids().iter().map(|r| *r).collect();
+    for pid in &remaining_pids {
+        unsafe {
+            libc::kill(-(*pid as i32), libc::SIGKILL);
+        }
+        child_pids().remove(pid);
+    }
+
     acp_log(
         "shutdown.complete",
-        json!({ "slots": slots.len(), "dropped": dropped, "timedOut": timed_out }),
+        json!({ "slots": slots.len(), "dropped": dropped, "timedOut": timed_out, "forceKilled": remaining_pids.len() }),
     );
 }
 
