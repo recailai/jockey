@@ -87,6 +87,25 @@ async fn cancel_acp_session(
 }
 
 #[tauri::command]
+async fn reset_acp_session(
+    state: State<'_, AppState>,
+    runtime_kind: String,
+    role_name: String,
+    app_session_id: String,
+) -> Result<(), String> {
+    if app_session_id.trim().is_empty() {
+        return Err("app session id required".to_string());
+    }
+    acp::reset_session(&runtime_kind, &role_name, Some(app_session_id.as_str())).await?;
+    crate::db::app_session_role::clear_app_session_role_cli_id(
+        get_state(&state),
+        &app_session_id,
+        &role_name,
+    )?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn set_acp_mode(
     runtime_kind: String,
     role_name: String,
@@ -342,6 +361,7 @@ pub fn run() {
             assistant::detect_assistants,
             chat::assistant_chat,
             cancel_acp_session,
+            reset_acp_session,
             set_acp_mode,
             set_acp_config_option,
             list_discovered_config_options_cmd,

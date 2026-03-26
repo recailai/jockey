@@ -125,3 +125,23 @@ pub(crate) fn save_app_session_role_cli_id(
         Ok(())
     })
 }
+
+pub(crate) fn clear_app_session_role_cli_id(
+    state: &AppState,
+    app_session_id: &str,
+    role_name: &str,
+) -> Result<(), String> {
+    if app_session_id.trim().is_empty() {
+        return Err("app session id required".to_string());
+    }
+    with_db(state, |conn| {
+        conn.execute(
+            "UPDATE app_session_roles
+             SET acp_session_id = NULL
+             WHERE app_session_id = ?1 AND role_name = ?2",
+            params![app_session_id, role_name],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
