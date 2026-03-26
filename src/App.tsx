@@ -1081,6 +1081,7 @@ export default function App() {
             if (e.toolCallId && sid) {
               const tidx = sessions.findIndex((s) => s.id === sid);
               if (tidx !== -1) setSessions(tidx, "toolCalls", (m) => {
+
                 const content = Array.isArray(e.content) ? e.content : undefined;
                 const locations = normalizeToolLocations(e.locations as unknown[] | undefined);
                 return {

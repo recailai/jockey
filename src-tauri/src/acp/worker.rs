@@ -9,6 +9,7 @@ use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
 
 use super::adapter::{acp_log, resolve_cwd};
+use super::client::shutdown_terminals;
 use super::session::cold_start;
 pub use crate::runtime_kind::RuntimeKind;
 
@@ -21,7 +22,7 @@ pub struct AcpPromptResult {
 }
 
 #[derive(Clone, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AcpEvent {
     TextDelta {
         text: String,
@@ -34,12 +35,20 @@ pub enum AcpEvent {
         title: String,
         tool_kind: String,
         status: String,
+        content: Option<Vec<Value>>,
+        locations: Option<Vec<Value>>,
+        raw_input: Option<Value>,
+        raw_output: Option<Value>,
     },
     ToolCallUpdate {
         tool_call_id: String,
+        tool_kind: Option<String>,
         status: Option<String>,
         title: Option<String>,
         content: Option<Vec<Value>>,
+        locations: Option<Vec<Value>>,
+        raw_input: Option<Value>,
+        raw_output: Option<Value>,
     },
     Plan {
         entries: Vec<Value>,
@@ -141,6 +150,9 @@ pub(super) enum WorkerMsg {
         value: String,
         result_tx: oneshot::Sender<Result<(), String>>,
     },
+    Shutdown {
+        done_tx: oneshot::Sender<()>,
+    },
 }
 
 static WORKER_TX: OnceLock<mpsc::UnboundedSender<WorkerMsg>> = OnceLock::new();
@@ -162,6 +174,19 @@ pub(super) fn worker_tx() -> &'static mpsc::UnboundedSender<WorkerMsg> {
         });
         tx
     })
+}
+
+pub async fn shutdown() {
+    let Some(tx) = WORKER_TX.get() else {
+        shutdown_terminals().await;
+        return;
+    };
+    let (done_tx, done_rx) = oneshot::channel();
+    if tx.send(WorkerMsg::Shutdown { done_tx }).is_err() {
+        shutdown_terminals().await;
+        return;
+    }
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), done_rx).await;
 }
 
 fn runtime_models() -> &'static DashMap<String, Vec<String>> {
@@ -314,6 +339,58 @@ pub(super) struct LiveConnection {
 unsafe impl Send for LiveConnection {}
 unsafe impl Sync for LiveConnection {}
 
+async fn shutdown_worker_state() {
+    let cancel_handles = CANCEL_HANDLES.with(|m| {
+        let mut map = m.borrow_mut();
+        let items = map
+            .iter()
+            .map(|(k, h)| (k.clone(), h.conn.clone(), h.session_id.clone()))
+            .collect::<Vec<_>>();
+        map.clear();
+        items
+    });
+    for (_key, conn, session_id) in cancel_handles {
+        let _ = conn.cancel(acp::CancelNotification::new(session_id)).await;
+    }
+
+    let slots: Vec<(String, Arc<SlotHandle>)> = slot_map()
+        .iter()
+        .map(|entry| (entry.key().clone(), entry.value().clone()))
+        .collect();
+    let mut dropped = 0usize;
+    let mut timed_out = 0usize;
+    for (_key, slot) in &slots {
+        match tokio::time::timeout(std::time::Duration::from_millis(1200), slot.conn.lock()).await {
+            Ok(mut guard) => {
+                *guard = None;
+                dropped += 1;
+            }
+            Err(_) => {
+                timed_out += 1;
+            }
+        }
+    }
+    slot_map().clear();
+    runtime_models().clear();
+    runtime_modes().clear();
+    runtime_config_options().clear();
+    runtime_available_commands().clear();
+    let request_ids: Vec<String> = permission_requests()
+        .iter()
+        .map(|entry| entry.key().clone())
+        .collect();
+    for request_id in request_ids {
+        if let Some((_, tx)) = permission_requests().remove(&request_id) {
+            let _ = tx.send(acp::RequestPermissionOutcome::Cancelled);
+        }
+    }
+    shutdown_terminals().await;
+    acp_log(
+        "shutdown.complete",
+        json!({ "slots": slots.len(), "dropped": dropped, "timedOut": timed_out }),
+    );
+}
+
 async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
     while let Some(msg) = rx.recv().await {
         match msg {
@@ -403,7 +480,9 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 // Read the cancel handle from thread-local WITHOUT locking the
                 // conn mutex.  Safe because we're on the worker's LocalSet.
                 let handle = CANCEL_HANDLES.with(|m| {
-                    m.borrow().get(&key).map(|h| (h.conn.clone(), h.session_id.clone()))
+                    m.borrow()
+                        .get(&key)
+                        .map(|h| (h.conn.clone(), h.session_id.clone()))
                 });
                 if let Some((conn, session_id)) = handle {
                     acp_log(
@@ -413,9 +492,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                     // cancel() is a JSON-RPC notification — fire-and-forget.
                     // spawn_local so run_worker loop continues immediately.
                     tokio::task::spawn_local(async move {
-                        let _ = conn
-                            .cancel(acp::CancelNotification::new(session_id))
-                            .await;
+                        let _ = conn.cancel(acp::CancelNotification::new(session_id)).await;
                     });
                 } else {
                     acp_log(
@@ -475,6 +552,12 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                     };
                     let _ = result_tx.send(result);
                 });
+            }
+            WorkerMsg::Shutdown { done_tx } => {
+                acp_log("shutdown.start", json!({}));
+                shutdown_worker_state().await;
+                let _ = done_tx.send(());
+                break;
             }
         }
     }
@@ -659,10 +742,13 @@ async fn handle_execute(
     // without waiting for the conn mutex (which we hold right now).
     let cancel_key = pool_key(runtime_key, &role_name, app_session_id.as_deref());
     CANCEL_HANDLES.with(|m| {
-        m.borrow_mut().insert(cancel_key.clone(), CancelHandle {
-            conn: conn.conn.clone(),
-            session_id: session_id.clone(),
-        });
+        m.borrow_mut().insert(
+            cancel_key.clone(),
+            CancelHandle {
+                conn: conn.conn.clone(),
+                session_id: session_id.clone(),
+            },
+        );
     });
 
     let prompt_started = Instant::now();
@@ -672,7 +758,9 @@ async fn handle_execute(
         .await;
 
     // Clear cancel handle — prompt is done.
-    CANCEL_HANDLES.with(|m| { m.borrow_mut().remove(&cancel_key); });
+    CANCEL_HANDLES.with(|m| {
+        m.borrow_mut().remove(&cancel_key);
+    });
 
     if let Ok(mut slot) = conn.delta_slot.lock() {
         *slot = None;
