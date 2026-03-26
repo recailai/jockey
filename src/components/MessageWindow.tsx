@@ -105,8 +105,9 @@ export default function MessageWindow(props: MessageWindowProps) {
                     <span class="rounded-md bg-indigo-500/15 border border-indigo-500/30 px-2 py-0.5 text-[9px] font-semibold text-indigo-300 uppercase tracking-wider">{props.activeSession()?.currentMode}</span>
                   </Show>
                 </div>
+                <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{msg.text}</div>
                 <Show when={msg.toolCalls && msg.toolCalls.length > 0}>
-                  <div class="space-y-2 mb-3">
+                  <div class="space-y-2 mt-3">
                     <For each={msg.toolCalls}>{(tc) => (
                       <details class="group/tc rounded-xl border border-white/[0.05] bg-zinc-900/40 backdrop-blur-md overflow-hidden shadow-sm transition-all duration-200 hover:bg-zinc-900/60 hover:border-white/[0.1]">
                         <summary class="flex cursor-pointer items-center gap-2.5 px-3 py-2.5 text-[11.5px] text-zinc-300 select-none">
@@ -135,7 +136,6 @@ export default function MessageWindow(props: MessageWindowProps) {
                     )}</For>
                   </div>
                 </Show>
-                <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{msg.text}</div>
               </div>
             </div>
           );
@@ -155,8 +155,11 @@ export default function MessageWindow(props: MessageWindowProps) {
                 </span>
                 <span class="text-[10px] text-zinc-500 font-medium animate-pulse tracking-wide">{props.activeSession()?.agentState || "thinking..."}</span>
               </div>
+              <Show when={streaming().text}>
+                <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{streaming().text}</div>
+              </Show>
               <Show when={Object.keys(props.activeSession()?.toolCalls ?? {}).length > 0}>
-                <div class="space-y-2 mb-3">
+                <div class="space-y-2 mt-3">
                   <For each={Object.values(props.activeSession()?.toolCalls ?? {})}>{(tc) => (
                     <details class="group/tc rounded-xl border border-white/[0.05] bg-zinc-900/40 backdrop-blur-md overflow-hidden shadow-sm transition-all duration-200 hover:bg-zinc-900/60 hover:border-white/[0.1]">
                       <summary class="flex cursor-pointer items-center gap-2.5 px-3 py-2.5 text-[11.5px] text-zinc-300 select-none">
@@ -178,9 +181,6 @@ export default function MessageWindow(props: MessageWindowProps) {
                     </details>
                   )}</For>
                 </div>
-              </Show>
-              <Show when={streaming().text}>
-                <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{streaming().text}</div>
               </Show>
               <Show when={props.activeSession()?.thoughtText}>
                 <div class="mt-2 rounded-md border border-zinc-700/60 bg-zinc-900/50 px-2.5 py-2 text-[11px] text-zinc-400 leading-relaxed font-mono whitespace-pre-wrap break-words">
