@@ -1,7 +1,7 @@
 use crate::acp;
 use crate::db::context::{list_all_known_models, list_dynamic_catalog};
-use crate::db::role::list_all_roles;
 use crate::db::get_state;
+use crate::db::role::list_all_roles;
 use crate::fs_context::{
     is_within_workspace, relative_or_abs, resolve_attach_path, should_skip_name,
 };

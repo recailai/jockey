@@ -369,13 +369,15 @@ pub async fn execute_runtime(
         load_app_session_role_cli_id(s, app_sid, adapter.runtime_key, role_name)
     });
     let app_session_scope = if app_session_id.trim().is_empty() {
-        None
+        uuid::Uuid::new_v4().to_string()
     } else {
-        Some(app_session_id.to_string())
+        app_session_id.to_string()
     };
 
     let (delta_tx, mut delta_rx) = mpsc::unbounded_channel::<AcpEvent>();
     let (result_tx, mut result_rx) = oneshot::channel();
+
+    let app_session_id_owned = app_session_scope.clone();
 
     let _ = worker_tx().send(WorkerMsg::Execute {
         runtime_key: adapter.runtime_key,
@@ -398,15 +400,17 @@ pub async fn execute_runtime(
 
     let app = app.clone();
     let role_owned = role_name.to_string();
-    let app_session_id_owned = app_session_id.to_string();
     let mut full_output = String::new();
     let mut delta_count = 0usize;
 
-    acp_log("execute.stream.listening", json!({
-        "runtime": adapter.runtime_key,
-        "role": role_owned,
-        "prompt": clip(prompt, 80),
-    }));
+    acp_log(
+        "execute.stream.listening",
+        json!({
+            "runtime": adapter.runtime_key,
+            "role": role_owned,
+            "prompt": clip(prompt, 80),
+        }),
+    );
 
     let heartbeat = tokio::time::Instant::now();
     let mut heartbeat_count = 0u32;
@@ -597,6 +601,10 @@ async fn send_prewarm(
         Ok(Some(a)) => a,
         _ => return None,
     };
+    let resolved_session_id = match app_session_id.filter(|id| !id.trim().is_empty()) {
+        Some(id) => id.to_string(),
+        None => uuid::Uuid::new_v4().to_string(),
+    };
     let (tx, rx) = oneshot::channel();
     let _ = worker_tx().send(WorkerMsg::Prewarm {
         runtime_key: adapter.runtime_key,
@@ -604,9 +612,7 @@ async fn send_prewarm(
         args: adapter.args,
         env: adapter.env,
         role_name: role_name.to_string(),
-        app_session_id: app_session_id
-            .filter(|id| !id.trim().is_empty())
-            .map(|id| id.to_string()),
+        app_session_id: resolved_session_id,
         cwd: cwd.to_string(),
         auto_approve: true,
         mcp_servers: vec![],
@@ -720,12 +726,14 @@ pub async fn cancel_session(runtime_kind: &str, role_name: &str, app_session_id:
     let Some(runtime_key) = normalize_runtime_key(runtime_kind) else {
         return;
     };
+    let resolved_session_id = match app_session_id.filter(|id| !id.trim().is_empty()) {
+        Some(id) => id.to_string(),
+        None => uuid::Uuid::new_v4().to_string(),
+    };
     let _ = worker_tx().send(WorkerMsg::Cancel {
         runtime_key,
         role_name: role_name.to_string(),
-        app_session_id: app_session_id
-            .filter(|id| !id.trim().is_empty())
-            .map(|id| id.to_string()),
+        app_session_id: resolved_session_id,
     });
 }
 
@@ -737,13 +745,15 @@ pub async fn set_mode(
 ) -> Result<(), String> {
     let runtime_key =
         normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
+    let resolved_session_id = match app_session_id.filter(|id| !id.trim().is_empty()) {
+        Some(id) => id.to_string(),
+        None => uuid::Uuid::new_v4().to_string(),
+    };
     let (tx, rx) = oneshot::channel();
     let _ = worker_tx().send(WorkerMsg::SetMode {
         runtime_key,
         role_name: role_name.to_string(),
-        app_session_id: app_session_id
-            .filter(|id| !id.trim().is_empty())
-            .map(|id| id.to_string()),
+        app_session_id: resolved_session_id,
         mode_id: mode_id.to_string(),
         result_tx: tx,
     });
@@ -759,13 +769,15 @@ pub async fn set_config_option(
 ) -> Result<(), String> {
     let runtime_key =
         normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
+    let resolved_session_id = match app_session_id.filter(|id| !id.trim().is_empty()) {
+        Some(id) => id.to_string(),
+        None => uuid::Uuid::new_v4().to_string(),
+    };
     let (tx, rx) = oneshot::channel();
     let _ = worker_tx().send(WorkerMsg::SetConfigOption {
         runtime_key,
         role_name: role_name.to_string(),
-        app_session_id: app_session_id
-            .filter(|id| !id.trim().is_empty())
-            .map(|id| id.to_string()),
+        app_session_id: resolved_session_id,
         config_id: key.to_string(),
         value: value.to_string(),
         result_tx: tx,

@@ -230,7 +230,15 @@ pub(crate) async fn apply_chat_command(
             } else {
                 list_shared_context_internal(get_state(&state), scope)?
             };
-            result.message = format!("{} context entries{}", entries.len(), if scope.is_empty() { String::new() } else { format!(" (scope: {})", scope) });
+            result.message = format!(
+                "{} context entries{}",
+                entries.len(),
+                if scope.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (scope: {})", scope)
+                }
+            );
             result.payload = json!({ "entries": entries });
         }
         ["/app_session", "list"] => {
@@ -273,7 +281,8 @@ pub(crate) async fn apply_chat_command(
                 let rows = stmt
                     .query_map([], |row| {
                         let steps_json: String = row.get(2)?;
-                        let steps = serde_json::from_str::<Vec<String>>(&steps_json).unwrap_or_default();
+                        let steps =
+                            serde_json::from_str::<Vec<String>>(&steps_json).unwrap_or_default();
                         Ok(Workflow {
                             id: row.get(0)?,
                             name: row.get(1)?,
@@ -348,11 +357,8 @@ pub(crate) async fn apply_chat_command(
         }
         ["/app_role", "delete", role_name] => {
             with_db(get_state(&state), |conn| {
-                conn.execute(
-                    "DELETE FROM roles WHERE role_name = ?1",
-                    params![role_name],
-                )
-                .map_err(|e| e.to_string())?;
+                conn.execute("DELETE FROM roles WHERE role_name = ?1", params![role_name])
+                    .map_err(|e| e.to_string())?;
                 Ok(())
             })?;
             result.message = format!("role deleted: {}", role_name);
@@ -368,7 +374,8 @@ pub(crate) async fn apply_chat_command(
                 conn.execute(
                     "UPDATE roles SET model = ?1, updated_at = ?2 WHERE role_name = ?3",
                     params![model_value, now_ms(), role_name],
-                ).map_err(|e| e.to_string())?;
+                )
+                .map_err(|e| e.to_string())?;
                 Ok(())
             })?;
             result.message = format!("role {} model updated", role_name);
@@ -415,7 +422,8 @@ pub(crate) async fn apply_chat_command(
                         conn.execute(
                             "UPDATE roles SET mode = ?1, updated_at = ?2 WHERE role_name = ?3",
                             params![mode_value, now_ms(), role_name],
-                        ).map_err(|e| e.to_string())?;
+                        )
+                        .map_err(|e| e.to_string())?;
                         Ok(())
                     })?;
                     result.message = format!("role {} mode updated", role_name);
@@ -429,7 +437,8 @@ pub(crate) async fn apply_chat_command(
                 conn.execute(
                     "UPDATE roles SET auto_approve = ?1, updated_at = ?2 WHERE role_name = ?3",
                     params![auto, now_ms(), role_name],
-                ).map_err(|e| e.to_string())?;
+                )
+                .map_err(|e| e.to_string())?;
                 Ok(())
             })?;
             result.message = format!("role {} auto-approve: {}", role_name, auto);
@@ -453,7 +462,8 @@ pub(crate) async fn apply_chat_command(
                 conn.execute(
                     "UPDATE roles SET mcp_servers_json = ?1, updated_at = ?2 WHERE role_name = ?3",
                     params![updated, now_ms(), role_name],
-                ).map_err(|e| e.to_string())?;
+                )
+                .map_err(|e| e.to_string())?;
                 Ok(())
             })?;
             result.message = format!("role {} mcp server added", role_name);
@@ -475,7 +485,8 @@ pub(crate) async fn apply_chat_command(
                 conn.execute(
                     "UPDATE roles SET mcp_servers_json = ?1, updated_at = ?2 WHERE role_name = ?3",
                     params![updated, now_ms(), role_name],
-                ).map_err(|e| e.to_string())?;
+                )
+                .map_err(|e| e.to_string())?;
                 Ok(())
             })?;
             result.message = format!("role {} mcp server removed: {}", role_name, name);

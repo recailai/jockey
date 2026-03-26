@@ -10,7 +10,7 @@ import type {
   Role, AppPlanEntry,
   AcpStreamEvent, AcpConfigOption, AssistantRuntime,
   AssistantChatResponse, AcpDeltaEvent, SessionUpdateEvent, WorkflowStateEvent,
-  AppMessage, AppMentionItem, AppSkill, AppSession, AppSegment, AppToolCall,
+  AppMessage, AppMentionItem, AppSkill, AppSession, AppToolCall,
 } from "./components/types";
 import {
   now, DEFAULT_BACKEND_ROLE, DEFAULT_ROLE_ALIAS,
@@ -110,9 +110,8 @@ export default function App() {
   let slashCliCache: AppMentionItem[] | null = null;
   let slashCliCacheVersion = 0;
   let inputEl: HTMLInputElement | undefined;
-  let streamAccepting = false;
-  let streamOriginSessionId: string | null = null;
-  let streamBatchBuffer = "";
+  const acceptingStreams = new Set<string>();
+  const streamBatchBuffers = new Map<string, string>();
   let streamBatchRaf: number | null = null;
   let runTokenSeq = 0;
   let canceledRunToken = 0;
@@ -181,50 +180,53 @@ export default function App() {
   };
 
   const flushStreamBatch = () => {
-    if (streamBatchBuffer) {
-      const chunk = streamBatchBuffer;
-      streamBatchBuffer = "";
-      const sid = streamOriginSessionId ?? activeSessionId();
-      if (sid) {
-        const tidx = sessions.findIndex((s) => s.id === sid);
-        if (tidx !== -1) {
-          setSessions(tidx, "streamingMessage", "text", (t) => (t ?? "") + chunk);
-          setSessions(tidx, "streamSegments", (segs): AppSegment[] => {
-            const last = segs[segs.length - 1];
-            if (last && last.kind === "text") {
-              const updated = [...segs];
-              updated[updated.length - 1] = { kind: "text" as const, text: last.text + chunk };
-              return updated;
-            }
-            return [...segs, { kind: "text" as const, text: chunk }];
-          });
-        }
-      }
-      scheduleScrollToBottom();
+    for (const [sid, buf] of streamBatchBuffers) {
+      if (!buf) continue;
+      const chunk = buf;
+      streamBatchBuffers.set(sid, "");
+      setSessions(
+        (s) => s.id === sid && !!s.streamingMessage,
+        produce((s) => {
+          s.streamingMessage!.text = (s.streamingMessage!.text ?? "") + chunk;
+          const last = s.streamSegments[s.streamSegments.length - 1];
+          if (last && last.kind === "text") {
+            s.streamSegments[s.streamSegments.length - 1] = { kind: "text" as const, text: last.text + chunk };
+          } else {
+            s.streamSegments.push({ kind: "text" as const, text: chunk });
+          }
+        }),
+      );
     }
+    scheduleScrollToBottom();
     streamBatchRaf = null;
   };
 
-  const appendStream = (chunk: string) => {
+  const appendStream = (sessionId: string, chunk: string) => {
     if (!chunk) return;
-    streamBatchBuffer += normalizeNewlines(chunk);
+    const existing = streamBatchBuffers.get(sessionId) ?? "";
+    streamBatchBuffers.set(sessionId, existing + normalizeNewlines(chunk));
     if (streamBatchRaf === null) {
       streamBatchRaf = window.requestAnimationFrame(flushStreamBatch);
     }
   };
 
-  const resetStreamState = () => {
+  const resetStreamState = (sessionId?: string) => {
     if (streamBatchRaf !== null) {
       window.cancelAnimationFrame(streamBatchRaf);
       streamBatchRaf = null;
     }
-    streamBatchBuffer = "";
-    streamOriginSessionId = null;
+    if (sessionId) {
+      streamBatchBuffers.delete(sessionId);
+      acceptingStreams.delete(sessionId);
+    } else {
+      streamBatchBuffers.clear();
+      acceptingStreams.clear();
+    }
   };
 
   const dropStream = () => {
     patchActiveSession({ streamingMessage: null });
-    resetStreamState();
+    resetStreamState(activeSessionId() ?? undefined);
   };
 
   const scheduleSessionEventFlush = () => {
@@ -258,17 +260,20 @@ export default function App() {
   };
 
   const cancelCurrentRun = async () => {
-    if (!activeSession()?.submitting) return;
+    const sid = activeSessionId();
+    const sess = sid ? sessions.find((s) => s.id === sid) : null;
+    if (!sess?.submitting || !sid) return;
     canceledRunToken = Math.max(canceledRunToken, runTokenSeq);
-    streamAccepting = false;
-    dropStream();
-    patchActiveSession({ toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, thoughtText: "", submitting: false, status: "idle" });
+    acceptingStreams.delete(sid);
+    updateSession(sid, { streamingMessage: null });
+    resetStreamState(sid);
+    updateSession(sid, { toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, thoughtText: "", submitting: false, status: "idle" });
     pushMessage("event", "Cancellation requested.");
     const role = activeBackendRole();
     const runtime = runtimeForRole(role);
     if (runtime) {
       try {
-        await invoke("cancel_acp_session", { runtimeKind: runtime, roleName: role, appSessionId: activeSessionId() ?? "" });
+        await invoke("cancel_acp_session", { runtimeKind: runtime, roleName: role, appSessionId: sid });
       } catch { }
     }
     runNextQueued();
@@ -765,7 +770,7 @@ export default function App() {
     };
 
     const startOriginStream = () => {
-      streamOriginSessionId = originSessionId;
+      if (originSessionId) acceptingStreams.add(originSessionId);
       const id = `stream-${now()}`;
       const row: AppMessage = { id, roleName: sendRoleLabel, text: "", at: now() };
       patchOriginSession({ streamingMessage: row, toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, thoughtText: "" });
@@ -802,18 +807,17 @@ export default function App() {
           segments: snapshotSegments,
         });
       }
-      resetStreamState();
+      resetStreamState(sid);
       patchOriginSession({ toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, agentState: undefined, thoughtText: "" });
     };
 
     const dropOriginStream = () => {
       patchOriginSession({ streamingMessage: null, thoughtText: "" });
-      resetStreamState();
+      resetStreamState(originSessionId ?? undefined);
     };
 
     let streamStarted = false;
     if ((!isUnionAiCommand) && s?.runtimeKind) {
-      streamAccepting = true;
       startOriginStream();
       streamStarted = true;
     }
@@ -842,11 +846,11 @@ export default function App() {
       if (!errMsg.toLowerCase().includes("cancel")) showToast(errMsg);
       appendOriginMessage({ id: `${now()}-err`, roleName: "event", text: errMsg, at: now() });
       patchOriginSession({ submitting: false, status: "error" });
-      streamAccepting = false;
+      if (originSessionId) acceptingStreams.delete(originSessionId);
       runNextQueued();
       return;
     } finally {
-      streamAccepting = false;
+      if (originSessionId) acceptingStreams.delete(originSessionId);
       if (runToken <= canceledRunToken) {
         patchOriginSession({ submitting: false, status: "idle" });
         runNextQueued();
@@ -1072,12 +1076,11 @@ export default function App() {
 
     void Promise.all([
       listen<AcpDeltaEvent & { appSessionId?: string }>("acp/delta", (ev) => {
-        if (!streamAccepting) return;
-        const sid = ev.payload.appSessionId || streamOriginSessionId || activeSessionId();
-        if (!sid) return;
+        const sid = ev.payload.appSessionId;
+        if (!sid || !acceptingStreams.has(sid)) return;
         const sess = sessions.find((s) => s.id === sid);
         if (!sess?.streamingMessage) return;
-        appendStream(ev.payload.delta);
+        appendStream(sid, ev.payload.delta);
       }),
       listen<SessionUpdateEvent>("session/update", (ev) => {
         if (!ev.payload.delta) return;
@@ -1090,112 +1093,84 @@ export default function App() {
       }),
       listen<{ role: string; runtimeKind?: string; appSessionId?: string; event: AcpStreamEvent }>("acp/stream", (ev) => {
         const e = ev.payload.event;
-        const sid = ev.payload.appSessionId || streamOriginSessionId || activeSessionId();
-        const patchOriginOrActive = (patch: Partial<AppSession>) => { if (sid) updateSession(sid, patch); };
+        const sid = ev.payload.appSessionId;
+        if (!sid) return;
+        const patchSession = (patch: Partial<AppSession>) => updateSession(sid, patch);
         switch (e.kind) {
           case "statusUpdate":
-            if (e.text) patchOriginOrActive({ agentState: e.text });
+            if (e.text) patchSession({ agentState: e.text });
             break;
           case "thoughtDelta":
             if (e.text) {
-              patchOriginOrActive({ agentState: `Thinking: ${e.text.slice(0, 120)}` });
+              patchSession({ agentState: `Thinking: ${e.text.slice(0, 120)}` });
               if (sid) appendThought(sid, e.text);
             }
             break;
           case "toolCall":
-            if (e.toolCallId && sid) {
-              const tidx = sessions.findIndex((s) => s.id === sid);
-              if (tidx !== -1) {
-                const content = Array.isArray(e.content) ? e.content : undefined;
-                const locations = normalizeToolLocations(e.locations as unknown[] | undefined);
-                const tc: AppToolCall = {
-                  toolCallId: e.toolCallId!,
-                  title: e.title ?? "",
-                  kind: e.toolKind ?? "unknown",
-                  status: e.status ?? "pending",
-                  content,
-                  contentJson: content && content.length > 0 ? JSON.stringify(content, null, 2) : undefined,
-                  locations,
-                  rawInput: e.rawInput,
-                  rawOutput: e.rawOutput,
-                };
-                setSessions(tidx, "toolCalls", (m) => ({ ...m, [e.toolCallId!]: tc }));
-                setSessions(tidx, "streamSegments", (segs) => [...segs, { kind: "tool" as const, tc }]);
-              }
-              patchOriginOrActive({ agentState: `${e.toolKind ?? "tool"}: ${e.title ?? e.toolCallId}` });
+            if (e.toolCallId) {
+              const content = Array.isArray(e.content) ? e.content : undefined;
+              const locations = normalizeToolLocations(e.locations as unknown[] | undefined);
+              const tc: AppToolCall = {
+                toolCallId: e.toolCallId!,
+                title: e.title ?? "",
+                kind: e.toolKind ?? "unknown",
+                status: e.status ?? "pending",
+                content,
+                contentJson: content && content.length > 0 ? JSON.stringify(content, null, 2) : undefined,
+                locations,
+                rawInput: e.rawInput,
+                rawOutput: e.rawOutput,
+              };
+              setSessions((s) => s.id === sid, produce((s) => {
+                s.toolCalls[e.toolCallId!] = tc;
+                s.streamSegments.push({ kind: "tool" as const, tc });
+              }));
+              patchSession({ agentState: `${e.toolKind ?? "tool"}: ${e.title ?? e.toolCallId}` });
             }
             break;
           case "toolCallUpdate":
-            if (e.toolCallId && sid) {
-              const tidx = sessions.findIndex((s) => s.id === sid);
-              if (tidx !== -1) {
-                setSessions(tidx, "toolCalls", (m) => {
-                  const existing = m[e.toolCallId!];
-                  if (!existing) return m;
-                  const newContent = Array.isArray(e.content) ? e.content : existing.content;
-                  const newLocations = normalizeToolLocations(e.locations as unknown[] | undefined) ?? existing.locations;
-                  const contentJson = newContent !== existing.content
-                    ? (newContent && newContent.length > 0 ? JSON.stringify(newContent, null, 2) : undefined)
-                    : existing.contentJson;
-                  return {
-                    ...m,
-                    [e.toolCallId!]: {
-                      ...existing,
-                      kind: e.toolKind ?? existing.kind,
-                      status: e.status ?? existing.status,
-                      title: e.title ?? existing.title,
-                      content: newContent,
-                      contentJson,
-                      locations: newLocations,
-                      rawInput: e.rawInput !== undefined ? e.rawInput : existing.rawInput,
-                      rawOutput: e.rawOutput !== undefined ? e.rawOutput : existing.rawOutput,
-                    },
-                  };
-                });
-                setSessions(tidx, "streamSegments", (segs) => {
-                  const updated = [...segs];
-                  for (let i = updated.length - 1; i >= 0; i--) {
-                    const seg = updated[i];
-                    if (seg.kind === "tool" && seg.tc.toolCallId === e.toolCallId) {
-                      const existing = seg.tc;
-                      const newContent = Array.isArray(e.content) ? e.content : existing.content;
-                      const newLocations = normalizeToolLocations(e.locations as unknown[] | undefined) ?? existing.locations;
-                      const contentJson = newContent !== existing.content
-                        ? (newContent && newContent.length > 0 ? JSON.stringify(newContent, null, 2) : undefined)
-                        : existing.contentJson;
-                      updated[i] = {
-                        kind: "tool",
-                        tc: {
-                          ...existing,
-                          kind: e.toolKind ?? existing.kind,
-                          status: e.status ?? existing.status,
-                          title: e.title ?? existing.title,
-                          content: newContent,
-                          contentJson,
-                          locations: newLocations,
-                          rawInput: e.rawInput !== undefined ? e.rawInput : existing.rawInput,
-                          rawOutput: e.rawOutput !== undefined ? e.rawOutput : existing.rawOutput,
-                        },
-                      };
-                      break;
-                    }
+            if (e.toolCallId) {
+              setSessions((s) => s.id === sid, produce((s) => {
+                const existing = s.toolCalls[e.toolCallId!];
+                if (!existing) return;
+                const newContent = Array.isArray(e.content) ? e.content : existing.content;
+                const newLocations = normalizeToolLocations(e.locations as unknown[] | undefined) ?? existing.locations;
+                const contentJson = newContent !== existing.content
+                  ? (newContent && newContent.length > 0 ? JSON.stringify(newContent, null, 2) : undefined)
+                  : existing.contentJson;
+                const updated: AppToolCall = {
+                  ...existing,
+                  kind: e.toolKind ?? existing.kind,
+                  status: e.status ?? existing.status,
+                  title: e.title ?? existing.title,
+                  content: newContent,
+                  contentJson,
+                  locations: newLocations,
+                  rawInput: e.rawInput !== undefined ? e.rawInput : existing.rawInput,
+                  rawOutput: e.rawOutput !== undefined ? e.rawOutput : existing.rawOutput,
+                };
+                s.toolCalls[e.toolCallId!] = updated;
+                for (let i = s.streamSegments.length - 1; i >= 0; i--) {
+                  const seg = s.streamSegments[i];
+                  if (seg.kind === "tool" && seg.tc.toolCallId === e.toolCallId) {
+                    s.streamSegments[i] = { kind: "tool", tc: updated };
+                    break;
                   }
-                  return updated;
-                });
-              }
+                }
+              }));
               if (e.status || e.title) {
-                patchOriginOrActive({
+                patchSession({
                   agentState: `${e.toolKind ?? "tool"} ${e.status ?? "updated"}: ${e.title ?? e.toolCallId}`,
                 });
               }
             }
             break;
           case "plan":
-            if (e.entries) patchOriginOrActive({ currentPlan: e.entries as AppPlanEntry[] });
+            if (e.entries) patchSession({ currentPlan: e.entries as AppPlanEntry[] });
             break;
           case "permissionRequest":
             if (e.requestId) {
-              patchOriginOrActive({
+              patchSession({
                 pendingPermission: {
                   requestId: e.requestId,
                   title: e.title ?? "Permission Required",
@@ -1206,14 +1181,14 @@ export default function App() {
             }
             break;
           case "modeUpdate":
-            if (e.modeId) patchOriginOrActive({ currentMode: e.modeId });
+            if (e.modeId) patchSession({ currentMode: e.modeId });
             break;
           case "availableModes":
-            if (e.modes) patchOriginOrActive({ agentModes: e.modes });
-            if (e.current !== undefined) patchOriginOrActive({ currentMode: e.current ?? null });
+            if (e.modes) patchSession({ agentModes: e.modes });
+            if (e.current !== undefined) patchSession({ currentMode: e.current ?? null });
             break;
           case "availableCommands":
-            if (e.commands && sid) {
+            if (e.commands) {
               const roleName = ev.payload.role;
               if (roleName) {
                 const parsed = parseAgentCommands(e.commands as unknown[]);
@@ -1223,12 +1198,11 @@ export default function App() {
                 const normalizedRuntime = runtimeKey ? normalizeRuntimeKey(runtimeKey) : "";
                 if (!normalizedRuntime) break;
                 const key = commandCacheKey(normalizedRuntime, roleName);
-                const aidx = sessions.findIndex((s) => s.id === sid);
-                if (aidx !== -1) setSessions(aidx, "agentCommands", (m) => {
-                  const next = new Map(m);
+                setSessions((s) => s.id === sid, produce((s) => {
+                  const next = new Map(s.agentCommands);
                   next.set(key, parsed);
-                  return next;
-                });
+                  s.agentCommands = next;
+                }));
               }
             }
             break;

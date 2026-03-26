@@ -157,16 +157,11 @@ pub(crate) fn list_all_roles(state: &AppState) -> Result<Vec<Role>, String> {
 }
 
 #[tauri::command]
-pub(crate) fn list_roles(
-    state: State<'_, AppState>,
-) -> Result<Vec<Role>, String> {
+pub(crate) fn list_roles(state: State<'_, AppState>) -> Result<Vec<Role>, String> {
     list_all_roles(get_state(&state))
 }
 
-pub(crate) fn load_role(
-    state: &AppState,
-    role_name: &str,
-) -> Result<Option<Role>, String> {
+pub(crate) fn load_role(state: &AppState, role_name: &str) -> Result<Option<Role>, String> {
     with_db(state, |conn| {
         conn.query_row(
             "SELECT id, role_name, runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, auto_approve, created_at, updated_at FROM roles WHERE role_name = ?1",
@@ -176,10 +171,7 @@ pub(crate) fn load_role(
     })
 }
 
-pub(crate) fn load_role_runtime_kind(
-    state: &AppState,
-    role_name: &str,
-) -> Result<String, String> {
+pub(crate) fn load_role_runtime_kind(state: &AppState, role_name: &str) -> Result<String, String> {
     with_db(state, |conn| {
         conn.query_row(
             "SELECT runtime_kind FROM roles WHERE role_name = ?1",
@@ -206,10 +198,7 @@ pub(crate) fn resolve_role_prompt(
     resolve_role_prompt_raw(get_state(&state), role_name)
 }
 
-pub(crate) fn resolve_role_prompt_raw(
-    state: &AppState,
-    role_name: &str,
-) -> Result<String, String> {
+pub(crate) fn resolve_role_prompt_raw(state: &AppState, role_name: &str) -> Result<String, String> {
     with_db(state, |conn| {
         conn.query_row(
             "SELECT system_prompt FROM roles WHERE role_name = ?1",

@@ -44,9 +44,7 @@ pub(crate) fn create_workflow(
 }
 
 #[tauri::command]
-pub(crate) fn list_workflows(
-    state: State<'_, AppState>,
-) -> Result<Vec<Workflow>, String> {
+pub(crate) fn list_workflows(state: State<'_, AppState>) -> Result<Vec<Workflow>, String> {
     with_db(get_state(&state), |conn| {
         let mut stmt = conn
             .prepare(

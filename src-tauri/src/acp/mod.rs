@@ -10,5 +10,5 @@ pub use session::{
 };
 pub use worker::{
     list_available_commands, list_discovered_config_options, list_discovered_models,
-    list_discovered_modes, respond_to_permission,
+    list_discovered_modes, respond_to_permission, shutdown,
 };

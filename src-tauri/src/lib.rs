@@ -171,7 +171,7 @@ pub fn run() {
         }
         std::env::set_var("PATH", new_path);
     }
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| -> Result<(), Box<dyn std::error::Error>> {
             let app_dir = app.path().app_local_data_dir()?;
@@ -396,6 +396,21 @@ pub fn run() {
             db::skill::upsert_app_skill,
             db::skill::delete_app_skill
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+    let mut did_shutdown = false;
+    app.run(move |_app_handle, event| {
+        if did_shutdown {
+            return;
+        }
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
+            did_shutdown = true;
+            tauri::async_runtime::block_on(async {
+                acp::shutdown().await;
+            });
+        }
+    });
 }

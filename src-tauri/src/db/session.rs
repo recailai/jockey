@@ -53,9 +53,7 @@ pub(crate) fn update_session_status(
 }
 
 #[tauri::command]
-pub(crate) fn list_sessions(
-    state: State<'_, AppState>,
-) -> Result<Vec<Session>, String> {
+pub(crate) fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>, String> {
     with_db(get_state(&state), |conn| {
         let mut stmt = conn
             .prepare(
@@ -173,8 +171,8 @@ pub(crate) async fn run_workflow(
     let context_scope = "global".to_string();
     let mut prompt = seed_prompt;
     for (step_idx, role_name) in workflow.steps.iter().enumerate() {
-        let runtime_kind = load_role_runtime_kind(state.inner(), role_name)
-            .unwrap_or_else(|_| "mock".to_string());
+        let runtime_kind =
+            load_role_runtime_kind(state.inner(), role_name).unwrap_or_else(|_| "mock".to_string());
 
         if let Some(next_role) = workflow.steps.get(step_idx + 1) {
             let next_runtime = load_role_runtime_kind(state.inner(), next_role)
@@ -404,8 +402,10 @@ pub(crate) async fn start_workflow(
                         "SELECT workflow_id FROM sessions WHERE id = ?1",
                         params![&session_id_copy],
                         |row| row.get::<_, String>(0),
-                    ).map_err(|e| e.to_string())
-                }).unwrap_or_default()
+                    )
+                    .map_err(|e| e.to_string())
+                })
+                .unwrap_or_default()
             };
             let failed = WorkflowStateEvent {
                 session_id: session_id_copy.clone(),

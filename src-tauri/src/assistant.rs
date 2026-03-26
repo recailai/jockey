@@ -8,7 +8,10 @@ pub(crate) fn detect_binary_version(binary: &str) -> Option<String> {
     match Command::new(binary).arg("--version").output() {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout);
-            text.lines().next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+            text.lines()
+                .next()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
         }
         _ => None,
     }

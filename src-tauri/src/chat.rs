@@ -184,13 +184,8 @@ pub(crate) async fn assistant_chat(
 
     if text.starts_with("/app_") {
         let route_started = Instant::now();
-        let command_result = apply_chat_command(
-            app,
-            state,
-            text,
-            input.runtime_kind.clone(),
-        )
-        .await?;
+        let command_result =
+            apply_chat_command(app, state, text, input.runtime_kind.clone()).await?;
         chat_log(
             "route.command",
             json!({
@@ -314,8 +309,7 @@ pub(crate) async fn assistant_chat(
             let runtime = if role_name_clone == "UnionAIAssistant" {
                 assistant_clone
             } else {
-                load_role_runtime_kind(&tmp_state, &role_name_clone)
-                    .unwrap_or(assistant_clone)
+                load_role_runtime_kind(&tmp_state, &role_name_clone).unwrap_or(assistant_clone)
             };
 
             let scope = context_scope_for_role(&role_name_clone);
@@ -547,13 +541,7 @@ pub(crate) async fn assistant_chat(
             }
         }
         if !is_union_assistant {
-            append_recent_role_chat(
-                get_state(&state),
-                &role_name,
-                &message,
-                &final_output,
-                &cwd,
-            );
+            append_recent_role_chat(get_state(&state), &role_name, &message, &final_output, &cwd);
         }
         role_outputs.push((role_name.clone(), final_output));
     }
