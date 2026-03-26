@@ -17,22 +17,22 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2",
+    "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-dialog": "^2.6.0",
-    "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-opener": "^2.5.3",
     "highlight.js": "^11.11.1",
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1",
-    "solid-js": "^1.9.9",
+    "solid-js": "^1.9.12",
     "solid-markdown": "^2.1.1"
   },
   "devDependencies": {
-    "@tailwindcss/oxide-darwin-arm64": "4.2.1",
-    "@tailwindcss/vite": "^4.1.15",
-    "@tauri-apps/cli": "^2",
-    "tailwindcss": "^4.1.15",
+    "@tailwindcss/oxide-darwin-arm64": "^4.2.2",
+    "@tailwindcss/vite": "^4.2.2",
+    "@tauri-apps/cli": "^2.10.1",
+    "tailwindcss": "^4.2.2",
     "typescript": "~5.9.3",
-    "vite": "^7.1.11",
-    "vite-plugin-solid": "^2.11.10"
+    "vite": "^7.3.1",
+    "vite-plugin-solid": "^2.11.11"
   }
 }

@@ -18,6 +18,7 @@ import {
 } from "./components/types";
 
 const ConfigDrawer = lazy(() => import("./components/ConfigDrawer"));
+const ManagementPanel = lazy(() => import("./components/ManagementPanel"));
 
 const MAX_MESSAGES = 500;
 const MAX_THOUGHT_CHARS = 5000;
@@ -88,6 +89,8 @@ export default function App() {
   const [slashActiveIndex, setSlashActiveIndex] = createSignal(0);
   const [slashRange, setSlashRange] = createSignal<{ end: number; query: string } | null>(null);
   const [showDrawer, setShowDrawer] = createSignal(false);
+  const [showManagement, setShowManagement] = createSignal(false);
+  const [managementInitialTab, setManagementInitialTab] = createSignal<"sessions" | "workflows" | "roles" | "mcp" | "skills">("sessions");
 
   type Toast = { id: number; message: string; severity?: "error" | "info" };
   const [toasts, setToasts] = createSignal<Toast[]>([]);
@@ -1336,6 +1339,10 @@ export default function App() {
         e.preventDefault();
         setShowDrawer((v) => !v);
       }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "m") {
+        e.preventDefault();
+        setShowManagement((v) => !v);
+      }
     };
     window.addEventListener("keydown", handleGlobalKeyDown);
 
@@ -1376,6 +1383,7 @@ export default function App() {
         updateSession={updateSession}
         onRefresh={() => { void refreshAssistants(); void refreshRoles(); void refreshSkills(); }}
         onToggleDrawer={() => setShowDrawer((v) => !v)}
+        onToggleManagement={() => setShowManagement((v) => !v)}
       />
 
       <MessageWindow
@@ -1427,6 +1435,29 @@ export default function App() {
             refreshSkills={refreshSkills}
             pushMessage={pushMessage}
             fetchConfigOptions={fetchConfigOptions}
+            onOpenManagement={(tab) => {
+              setManagementInitialTab(tab ?? "sessions");
+              setShowManagement(true);
+            }}
+          />
+        </Suspense>
+      </Show>
+
+      <Show when={showManagement()}>
+        <Suspense fallback={null}>
+          <ManagementPanel
+            show={showManagement}
+            onClose={() => setShowManagement(false)}
+            initialTab={managementInitialTab()}
+            activeSessions={sessions}
+            skills={skills}
+            roles={roles}
+            refreshSkills={refreshSkills}
+            activeSession={activeSession}
+            patchActiveSession={patchActiveSession}
+            refreshRoles={refreshRoles}
+            fetchConfigOptions={fetchConfigOptions}
+            pushMessage={pushMessage}
           />
         </Suspense>
       </Show>
