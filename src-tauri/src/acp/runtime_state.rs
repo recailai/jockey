@@ -30,6 +30,12 @@ pub(super) fn clear_all() {
     runtime_available_commands().clear();
 }
 
+pub(super) fn clear_session(app_session_id: &str, runtime_key: &str, role_name: &str) {
+    let key = session_runtime_key(app_session_id, runtime_key, role_name);
+    runtime_config_options().remove(&key);
+    runtime_available_commands().remove(&key);
+}
+
 pub(super) fn remember_runtime_models(runtime_key: &str, mut models: Vec<String>) {
     if models.is_empty() {
         return;

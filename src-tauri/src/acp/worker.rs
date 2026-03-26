@@ -11,7 +11,8 @@ use tokio::sync::{mpsc, oneshot};
 use super::adapter::{acp_log, resolve_cwd};
 use super::client::shutdown_terminals;
 use super::runtime_state::{
-    clear_all as clear_runtime_state, list_discovered_config_options,
+    clear_all as clear_runtime_state, clear_session as clear_session_runtime_state,
+    list_discovered_config_options,
     remember_runtime_available_commands,
 };
 use super::session::cold_start;
@@ -139,6 +140,12 @@ pub(super) enum WorkerMsg {
         runtime_key: &'static str,
         role_name: String,
         app_session_id: String,
+    },
+    Reset {
+        runtime_key: &'static str,
+        role_name: String,
+        app_session_id: String,
+        result_tx: oneshot::Sender<Result<(), String>>,
     },
     SetMode {
         runtime_key: &'static str,
@@ -335,6 +342,34 @@ async fn shutdown_worker_state() {
     );
 }
 
+async fn reset_worker_session(
+    runtime_key: &'static str,
+    role_name: &str,
+    app_session_id: &str,
+) -> Result<(), String> {
+    let key = pool_key(app_session_id, runtime_key, role_name);
+    let handle = CANCEL_HANDLES.with(|m| m.borrow_mut().remove(&key));
+    if let Some(h) = handle {
+        let _ = h
+            .conn
+            .cancel(acp::CancelNotification::new(h.session_id))
+            .await;
+    }
+
+    if let Some((_, slot)) = slot_map().remove(&key) {
+        let mut guard = tokio::time::timeout(
+            std::time::Duration::from_millis(1200),
+            slot.conn.lock(),
+        )
+        .await
+        .map_err(|_| "timeout resetting active ACP session".to_string())?;
+        *guard = None;
+    }
+
+    clear_session_runtime_state(app_session_id, runtime_key, role_name);
+    Ok(())
+}
+
 async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
     while let Some(msg) = rx.recv().await {
         match msg {
@@ -445,6 +480,18 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                         json!({ "runtime": runtime_key, "role": role_name }),
                     );
                 }
+            }
+            WorkerMsg::Reset {
+                runtime_key,
+                role_name,
+                app_session_id,
+                result_tx,
+            } => {
+                tokio::task::spawn_local(async move {
+                    let result =
+                        reset_worker_session(runtime_key, &role_name, &app_session_id).await;
+                    let _ = result_tx.send(result);
+                });
             }
             WorkerMsg::SetMode {
                 runtime_key,

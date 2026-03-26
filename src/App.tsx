@@ -165,17 +165,21 @@ export default function App() {
     }).catch(() => {});
   };
 
-  const appendMessage = (message: AppMessage) => {
-    const id = activeSessionId();
-    if (!id) return;
-    const idx = sessions.findIndex((s) => s.id === id);
+  const appendMessageToSession = (sessionId: string, message: AppMessage) => {
+    const idx = sessions.findIndex((s) => s.id === sessionId);
     if (idx === -1) return;
     setSessions(idx, "messages", produce((msgs: AppMessage[]) => {
       if (msgs.length >= MAX_MESSAGES) msgs.splice(0, msgs.length - MAX_MESSAGES + 1);
       msgs.push(message);
     }));
     scheduleScrollToBottom();
-    persistMessage(id, message);
+    persistMessage(sessionId, message);
+  };
+
+  const appendMessage = (message: AppMessage) => {
+    const id = activeSessionId();
+    if (!id) return;
+    appendMessageToSession(id, message);
   };
 
   const pushMessage = (roleName: string, text: string) => {
@@ -282,14 +286,50 @@ export default function App() {
     return roles().find((r) => r.roleName === roleName)?.runtimeKind ?? activeSession()?.runtimeKind ?? null;
   };
 
+  const resetActiveAgentContext = async () => {
+    const sid = activeSessionId();
+    const role = activeBackendRole();
+    const runtime = runtimeForRole(role);
+    if (!sid || !runtime) {
+      showToast("No active agent context to reset.", "info");
+      return;
+    }
+    if (activeSession()?.submitting) {
+      showToast("Stop current run before resetting context.", "info");
+      return;
+    }
+    try {
+      await invoke("reset_acp_session", { runtimeKind: runtime, roleName: role, appSessionId: sid });
+      const cacheKey = commandCacheKey(normalizeRuntimeKey(runtime), role);
+      setSessions((s) => s.id === sid, produce((s) => {
+        const next = new Map(s.agentCommands);
+        next.delete(cacheKey);
+        s.agentCommands = next;
+      }));
+      updateSession(sid, {
+        discoveredConfigOptions: [],
+        toolCalls: {},
+        streamSegments: [],
+        currentPlan: null,
+        pendingPermission: null,
+        thoughtText: "",
+        agentState: undefined,
+        currentMode: null,
+        agentModes: [],
+      });
+      pushMessage("event", `[${role}] CLI context reset.`);
+    } catch (e) {
+      showToast(`Failed to reset ${role} context: ${String(e)}`);
+    }
+  };
+
   const cancelCurrentRun = async () => {
     const sid = activeSessionId();
     const sess = sid ? sessions.find((s) => s.id === sid) : null;
     if (!sess?.submitting || !sid) return;
     canceledRunToken = Math.max(canceledRunToken, runTokenSeq);
     acceptingStreams.delete(sid);
-    updateSession(sid, { streamingMessage: null });
-    resetStreamState(sid);
+    finalizeSessionStream(sid, activeBackendRole());
     updateSession(sid, { toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, thoughtText: "", submitting: false, status: "idle", queuedMessages: [] });
     pushMessage("event", "Cancellation requested.");
     const role = activeBackendRole();
@@ -383,6 +423,54 @@ export default function App() {
     if (streamBatchRaf === null) {
       streamBatchRaf = window.requestAnimationFrame(flushStreamBatch);
     }
+  };
+
+  const finalizeSessionStream = (sessionId: string, fallbackRoleName: string, finalReply?: string) => {
+    flushStreamBatch();
+    const sess = sessions.find((x) => x.id === sessionId);
+    const row = sess?.streamingMessage ?? null;
+    const snapshotToolCalls = sess && Object.keys(sess.toolCalls).length > 0 ? Object.values(sess.toolCalls) : undefined;
+    const snapshotSegments = sess && sess.streamSegments.length > 0 ? [...sess.streamSegments] : undefined;
+    if (snapshotSegments && finalReply) {
+      const last = snapshotSegments[snapshotSegments.length - 1];
+      if (last && last.kind === "text") {
+        snapshotSegments[snapshotSegments.length - 1] = { kind: "text", text: normalizeNewlines(finalReply) };
+      } else {
+        snapshotSegments.push({ kind: "text", text: normalizeNewlines(finalReply) });
+      }
+    }
+    if (row) {
+      const text = normalizeNewlines(finalReply ?? row.text);
+      const shouldAppend = !!text.trim() || !!snapshotToolCalls?.length || !!snapshotSegments?.length;
+      if (shouldAppend) {
+        appendMessageToSession(sessionId, {
+          ...row,
+          text,
+          at: now(),
+          toolCalls: snapshotToolCalls,
+          segments: snapshotSegments,
+        });
+      }
+      updateSession(sessionId, { streamingMessage: null, thoughtText: "" });
+    } else if (finalReply && finalReply.trim()) {
+      appendMessageToSession(sessionId, {
+        id: `${now()}-${Math.random().toString(36).slice(2)}`,
+        roleName: fallbackRoleName,
+        text: normalizeNewlines(finalReply),
+        at: now(),
+        toolCalls: snapshotToolCalls,
+        segments: snapshotSegments,
+      });
+    }
+    resetStreamState(sessionId);
+    updateSession(sessionId, {
+      toolCalls: {},
+      streamSegments: [],
+      currentPlan: null,
+      pendingPermission: null,
+      agentState: undefined,
+      thoughtText: "",
+    });
   };
 
   const fetchAgentCommands = async (runtimeKey: string, roleName: string): Promise<{ runtimeKey: string; commands: Array<{ name: string; description: string; hint?: string }> }> => {
@@ -604,27 +692,28 @@ export default function App() {
 
     if (isCustomRole() && !ctx.query.startsWith("/app_")) {
       const s = activeSession();
-      const role = roles().find((r) => r.roleName === s?.activeRole);
-      if (role) {
-        const runtimeKey = normalizeRuntimeKey(role.runtimeKind);
-        const key = commandCacheKey(runtimeKey, role.roleName);
-        if ((s?.discoveredConfigOptions.length ?? 0) === 0) {
-          const opts = await fetchConfigOptions(runtimeKey, role.roleName);
-          if (seq !== slashReqSeq) return;
-          patchActiveSession({ discoveredConfigOptions: opts });
-        }
-        if ((s?.agentCommands.get(key) ?? []).length === 0) {
-          const sid = activeSessionId();
-          if (sid) await hydrateAgentCommandsForSession(sid, runtimeKey, role.roleName);
-        }
-        const candidates = buildAgentSlashCandidates(runtimeKey, role.roleName, ctx.query);
+      const roleName = s?.activeRole;
+      if (!roleName) { closeSlashMenu(); return; }
+      const runtimeRaw = roles().find((r) => r.roleName === roleName)?.runtimeKind ?? s?.runtimeKind ?? "";
+      const runtimeKey = normalizeRuntimeKey(runtimeRaw);
+      if (!runtimeKey) { closeSlashMenu(); return; }
+      const key = commandCacheKey(runtimeKey, roleName);
+      if ((s?.discoveredConfigOptions.length ?? 0) === 0) {
+        const opts = await fetchConfigOptions(runtimeKey, roleName);
         if (seq !== slashReqSeq) return;
-        if (candidates.length === 0) { closeSlashMenu(); return; }
-        setSlashItems(candidates);
-        setSlashActiveIndex(0);
-        setSlashOpen(true);
-        return;
+        patchActiveSession({ discoveredConfigOptions: opts });
       }
+      if ((s?.agentCommands.get(key) ?? []).length === 0) {
+        const sid = activeSessionId();
+        if (sid) await hydrateAgentCommandsForSession(sid, runtimeKey, roleName);
+      }
+      const candidates = buildAgentSlashCandidates(runtimeKey, roleName, ctx.query);
+      if (seq !== slashReqSeq) return;
+      if (candidates.length === 0) { closeSlashMenu(); return; }
+      setSlashItems(candidates);
+      setSlashActiveIndex(0);
+      setSlashOpen(true);
+      return;
     }
 
     try {
@@ -799,11 +888,7 @@ export default function App() {
 
     const appendOriginMessage = (msg: AppMessage) => {
       if (!originSessionId) return;
-      setSessions((sess) => sess.id === originSessionId, produce((sess) => {
-        sess.messages = [...sess.messages.slice(-MAX_MESSAGES + 1), msg];
-      }));
-      scheduleScrollToBottom();
-      persistMessage(originSessionId, msg);
+      appendMessageToSession(originSessionId, msg);
     };
 
     const startOriginStream = () => {
@@ -818,34 +903,7 @@ export default function App() {
     const completeOriginStream = (finalReply?: string) => {
       const sid = originSessionId;
       if (!sid) return;
-      const sess = sessions.find((x) => x.id === sid);
-      const row = sess?.streamingMessage ?? null;
-      const snapshotToolCalls = sess && Object.keys(sess.toolCalls).length > 0 ? Object.values(sess.toolCalls) : undefined;
-      const snapshotSegments = sess && sess.streamSegments.length > 0 ? [...sess.streamSegments] : undefined;
-      if (snapshotSegments && finalReply) {
-        const last = snapshotSegments[snapshotSegments.length - 1];
-        if (last && last.kind === "text") {
-          snapshotSegments[snapshotSegments.length - 1] = { kind: "text", text: normalizeNewlines(finalReply) };
-        } else {
-          snapshotSegments.push({ kind: "text", text: normalizeNewlines(finalReply) });
-        }
-      }
-      if (row) {
-        const text = normalizeNewlines(finalReply ?? row.text);
-        appendOriginMessage({ ...row, text, at: now(), toolCalls: snapshotToolCalls, segments: snapshotSegments });
-        patchOriginSession({ streamingMessage: null, thoughtText: "" });
-      } else if (finalReply) {
-        appendOriginMessage({
-          id: `${now()}-${Math.random().toString(36).slice(2)}`,
-          roleName: sendRoleLabel,
-          text: normalizeNewlines(finalReply),
-          at: now(),
-          toolCalls: snapshotToolCalls,
-          segments: snapshotSegments,
-        });
-      }
-      resetStreamState(sid);
-      patchOriginSession({ toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, agentState: undefined, thoughtText: "" });
+      finalizeSessionStream(sid, sendRoleLabel, finalReply);
     };
 
     const dropOriginStream = () => {
@@ -1302,7 +1360,10 @@ export default function App() {
   });
 
   return (
-    <div class="window-bg h-dvh overflow-hidden text-[var(--ui-text)] relative flex flex-col">
+    <div
+      class="window-bg h-dvh overflow-hidden text-[var(--ui-text)] relative flex flex-col"
+      onContextMenu={(e) => e.preventDefault()}
+    >
       <SessionTabs
         sessions={sessions}
         activeSessionId={activeSessionId}
@@ -1321,6 +1382,7 @@ export default function App() {
         activeSessionId={activeSessionId}
         activeSession={activeSession}
         patchActiveSession={patchActiveSession}
+        onResetAgentContext={resetActiveAgentContext}
         onListMounted={(id, el) => { listRefMap.set(id, el); scheduleScrollToBottom(); }}
         onListUnmounted={(id) => { listRefMap.delete(id); }}
       />

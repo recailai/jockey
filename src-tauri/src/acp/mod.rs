@@ -11,5 +11,6 @@ pub use runtime_state::{
 pub use session::{
     cancel_session, execute_runtime, prewarm_role, prewarm_role_for_config,
     prewarm_role_with_session_id, set_config_option, set_mode,
+    reset_session,
 };
 pub use worker::{respond_to_permission, shutdown};
