@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { For, Show, createEffect, onCleanup } from "solid-js";
 import type { Accessor } from "solid-js";
-import type { AppSession, AppMessage } from "./types";
+import type { AppSession, AppMessage, AppToolCall } from "./types";
 import { INTERACTIVE_MOTION, RUNTIME_COLOR, MESSAGE_RENDER_WINDOW, fmt } from "./types";
 
 type MessageWindowProps = {
@@ -105,36 +105,14 @@ export default function MessageWindow(props: MessageWindowProps) {
                     <span class="rounded-md bg-indigo-500/15 border border-indigo-500/30 px-2 py-0.5 text-[9px] font-semibold text-indigo-300 uppercase tracking-wider">{props.activeSession()?.currentMode}</span>
                   </Show>
                 </div>
-                <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{msg.text}</div>
-                <Show when={msg.toolCalls && msg.toolCalls.length > 0}>
-                  <div class="space-y-2 mt-3">
-                    <For each={msg.toolCalls}>{(tc) => (
-                      <details class="group/tc rounded-xl border border-white/[0.05] bg-zinc-900/40 backdrop-blur-md overflow-hidden shadow-sm transition-all duration-200 hover:bg-zinc-900/60 hover:border-white/[0.1]">
-                        <summary class="flex cursor-pointer items-center gap-2.5 px-3 py-2.5 text-[11.5px] text-zinc-300 select-none">
-                          <span class={`h-2 w-2 shrink-0 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)] ${tc.status === "success" || tc.status === "completed" ? "bg-emerald-400 shadow-emerald-400/40" : tc.status === "failure" || tc.status === "error" ? "bg-rose-400 shadow-rose-400/40" : "bg-amber-400 animate-pulse shadow-amber-400/40"}`} />
-                          <span class="text-zinc-200 font-mono tracking-tight font-medium group-hover/tc:text-white transition-colors">{tc.title || tc.toolCallId}</span>
-                          <span class="ml-auto text-[9px] text-zinc-500 uppercase tracking-widest font-bold bg-zinc-800/50 px-1.5 py-0.5 rounded-md">{tc.kind}</span>
-                        </summary>
-                        <Show when={tc.contentJson}>
-                          <pre class="whitespace-pre-wrap break-words border-t border-white/[0.05] px-3.5 py-3 text-[11.5px] font-mono text-zinc-400 bg-black/20">{tc.contentJson}</pre>
-                        </Show>
-                        <Show when={tc.locations && tc.locations.length > 0}>
-                          <div class="border-t border-white/[0.05] px-3.5 py-2.5 text-[11px] text-zinc-400 bg-black/10">
-                            <div class="mb-1 uppercase tracking-wider text-[9px] text-zinc-500">Files</div>
-                            <For each={tc.locations}>{(loc) => (
-                              <div class="font-mono break-all">{loc.path}{loc.line ? `:${loc.line}` : ""}</div>
-                            )}</For>
-                          </div>
-                        </Show>
-                        <Show when={tc.rawInput !== undefined}>
-                          <pre class="whitespace-pre-wrap break-words border-t border-white/[0.05] px-3.5 py-3 text-[11px] font-mono text-zinc-500 bg-black/10">{JSON.stringify(tc.rawInput, null, 2)}</pre>
-                        </Show>
-                        <Show when={tc.rawOutput !== undefined}>
-                          <pre class="whitespace-pre-wrap break-words border-t border-white/[0.05] px-3.5 py-3 text-[11px] font-mono text-zinc-500 bg-black/10">{JSON.stringify(tc.rawOutput, null, 2)}</pre>
-                        </Show>
-                      </details>
-                    )}</For>
-                  </div>
+                <Show when={msg.segments && msg.segments.length > 0} fallback={
+                  <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{msg.text}</div>
+                }>
+                  <For each={msg.segments}>{(seg) => (
+                    seg.kind === "text"
+                      ? <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{seg.text}</div>
+                      : <ToolCallItem tc={seg.tc} />
+                  )}</For>
                 </Show>
               </div>
             </div>
@@ -155,40 +133,26 @@ export default function MessageWindow(props: MessageWindowProps) {
                 </span>
                 <span class="text-[10px] text-zinc-500 font-medium animate-pulse tracking-wide">{props.activeSession()?.agentState || "thinking..."}</span>
               </div>
-              <Show when={streaming().text}>
-                <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{streaming().text}</div>
-              </Show>
-              <Show when={Object.keys(props.activeSession()?.toolCalls ?? {}).length > 0}>
-                <div class="space-y-2 mt-3">
-                  <For each={Object.values(props.activeSession()?.toolCalls ?? {})}>{(tc) => (
-                    <details class="group/tc rounded-xl border border-white/[0.05] bg-zinc-900/40 backdrop-blur-md overflow-hidden shadow-sm transition-all duration-200 hover:bg-zinc-900/60 hover:border-white/[0.1]">
-                      <summary class="flex cursor-pointer items-center gap-2.5 px-3 py-2.5 text-[11.5px] text-zinc-300 select-none">
-                        <span class={`h-2 w-2 shrink-0 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)] ${tc.status === "success" || tc.status === "completed" ? "bg-emerald-400 shadow-emerald-400/40" : tc.status === "failure" || tc.status === "error" ? "bg-rose-400 shadow-rose-400/40" : "bg-amber-400 animate-pulse shadow-amber-400/40"}`} />
-                        <span class="text-zinc-200 font-mono tracking-tight font-medium group-hover/tc:text-white transition-colors">{tc.title || tc.toolCallId}</span>
-                        <span class="ml-auto text-[9px] text-zinc-500 uppercase tracking-widest font-bold bg-zinc-800/50 px-1.5 py-0.5 rounded-md">{tc.kind}</span>
-                      </summary>
-                      <Show when={tc.contentJson}>
-                        <pre class="whitespace-pre-wrap break-words border-t border-white/[0.05] px-3.5 py-3 text-[11.5px] font-mono text-zinc-400 bg-black/20">{tc.contentJson}</pre>
-                      </Show>
-                      <Show when={tc.locations && tc.locations.length > 0}>
-                        <div class="border-t border-white/[0.05] px-3.5 py-2.5 text-[11px] text-zinc-400 bg-black/10">
-                          <div class="mb-1 uppercase tracking-wider text-[9px] text-zinc-500">Files</div>
-                          <For each={tc.locations}>{(loc) => (
-                            <div class="font-mono break-all">{loc.path}{loc.line ? `:${loc.line}` : ""}</div>
-                          )}</For>
-                        </div>
-                      </Show>
-                    </details>
-                  )}</For>
-                </div>
+              <Show when={(props.activeSession()?.streamSegments ?? []).length > 0} fallback={
+                <>
+                  <Show when={streaming().text}>
+                    <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{streaming().text}</div>
+                  </Show>
+                  <Show when={!streaming().text && props.activeSession()?.agentState}>
+                    <div class="text-[11px] text-zinc-500 italic">{props.activeSession()?.agentState}</div>
+                  </Show>
+                </>
+              }>
+                <For each={props.activeSession()?.streamSegments ?? []}>{(seg) => (
+                  seg.kind === "text"
+                    ? <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{seg.text}</div>
+                    : <ToolCallItem tc={seg.tc} />
+                )}</For>
               </Show>
               <Show when={props.activeSession()?.thoughtText}>
                 <div class="mt-2 rounded-md border border-zinc-700/60 bg-zinc-900/50 px-2.5 py-2 text-[11px] text-zinc-400 leading-relaxed font-mono whitespace-pre-wrap break-words">
                   {props.activeSession()?.thoughtText}
                 </div>
-              </Show>
-              <Show when={!streaming().text && props.activeSession()?.agentState}>
-                <div class="text-[11px] text-zinc-500 italic">{props.activeSession()?.agentState}</div>
               </Show>
             </div>
           </div>
@@ -213,31 +177,6 @@ export default function MessageWindow(props: MessageWindowProps) {
           </div>
         )}
       </Show>
-      <Show when={Object.keys(props.activeSession()?.toolCalls ?? {}).length > 0}>
-        <div class="space-y-1 my-2">
-          <For each={Object.values(props.activeSession()?.toolCalls ?? {})}>{(tc) => (
-            <details class="rounded-lg border border-zinc-700 bg-zinc-900">
-              <summary class="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs">
-                <span class={`h-1.5 w-1.5 rounded-full ${tc.status === "success" || tc.status === "completed" ? "bg-emerald-400" : tc.status === "failure" || tc.status === "error" ? "bg-rose-400" : tc.status === "running" || tc.status === "in_progress" ? "bg-amber-400 animate-pulse" : "bg-zinc-500"}`} />
-                <span class="font-medium text-zinc-300">{tc.title || tc.toolCallId}</span>
-                <span class="ml-auto text-zinc-500">{tc.status}</span>
-              </summary>
-              <Show when={tc.contentJson}>
-                <pre class="whitespace-pre-wrap break-words border-t border-zinc-700 px-3 py-1.5 text-xs text-zinc-500">
-                  {tc.contentJson}
-                </pre>
-              </Show>
-              <Show when={tc.locations && tc.locations.length > 0}>
-                <div class="border-t border-zinc-700 px-3 py-1.5 text-[11px] text-zinc-500">
-                  <For each={tc.locations}>{(loc) => (
-                    <div class="font-mono break-all">{loc.path}{loc.line ? `:${loc.line}` : ""}</div>
-                  )}</For>
-                </div>
-              </Show>
-            </details>
-          )}</For>
-        </div>
-      </Show>
       <Show when={props.activeSession()?.submitting}>
         <div class="flex items-center gap-2 px-1 text-xs text-zinc-500 opacity-80 mt-2">
           <span class="h-2 w-2 rounded-full bg-white/60 animate-pulse" />
@@ -245,6 +184,36 @@ export default function MessageWindow(props: MessageWindowProps) {
         </div>
       </Show>
     </div>
+  );
+}
+
+function ToolCallItem(props: { tc: AppToolCall }) {
+  const tc = () => props.tc;
+  return (
+    <details class="group/tc rounded-xl border border-white/[0.05] bg-zinc-900/40 backdrop-blur-md overflow-hidden shadow-sm transition-all duration-200 hover:bg-zinc-900/60 hover:border-white/[0.1] my-1.5">
+      <summary class="flex cursor-pointer items-center gap-2.5 px-3 py-2.5 text-[11.5px] text-zinc-300 select-none">
+        <span class={`h-2 w-2 shrink-0 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)] ${tc().status === "success" || tc().status === "completed" ? "bg-emerald-400 shadow-emerald-400/40" : tc().status === "failure" || tc().status === "error" ? "bg-rose-400 shadow-rose-400/40" : "bg-amber-400 animate-pulse shadow-amber-400/40"}`} />
+        <span class="text-zinc-200 font-mono tracking-tight font-medium group-hover/tc:text-white transition-colors">{tc().title || tc().toolCallId}</span>
+        <span class="ml-auto text-[9px] text-zinc-500 uppercase tracking-widest font-bold bg-zinc-800/50 px-1.5 py-0.5 rounded-md">{tc().kind}</span>
+      </summary>
+      <Show when={tc().contentJson}>
+        <pre class="whitespace-pre-wrap break-words border-t border-white/[0.05] px-3.5 py-3 text-[11.5px] font-mono text-zinc-400 bg-black/20">{tc().contentJson}</pre>
+      </Show>
+      <Show when={tc().locations && tc().locations!.length > 0}>
+        <div class="border-t border-white/[0.05] px-3.5 py-2.5 text-[11px] text-zinc-400 bg-black/10">
+          <div class="mb-1 uppercase tracking-wider text-[9px] text-zinc-500">Files</div>
+          <For each={tc().locations}>{(loc) => (
+            <div class="font-mono break-all">{loc.path}{loc.line ? `:${loc.line}` : ""}</div>
+          )}</For>
+        </div>
+      </Show>
+      <Show when={tc().rawInput !== undefined}>
+        <pre class="whitespace-pre-wrap break-words border-t border-white/[0.05] px-3.5 py-3 text-[11px] font-mono text-zinc-500 bg-black/10">{JSON.stringify(tc().rawInput, null, 2)}</pre>
+      </Show>
+      <Show when={tc().rawOutput !== undefined}>
+        <pre class="whitespace-pre-wrap break-words border-t border-white/[0.05] px-3.5 py-3 text-[11px] font-mono text-zinc-500 bg-black/10">{JSON.stringify(tc().rawOutput, null, 2)}</pre>
+      </Show>
+    </details>
   );
 }
 

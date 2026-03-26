@@ -49,7 +49,8 @@ export type AssistantChatResponse = { ok: boolean; reply: string; runtimeKind: s
 export type SessionUpdateEvent = { sessionId: string; roleName: string; delta: string; done: boolean };
 export type WorkflowStateEvent = { sessionId: string; status: string; activeRole: string | null; message: string };
 export type AcpDeltaEvent = { role: string; delta: string; appSessionId?: string };
-export type AppMessage = { id: string; roleName: string; text: string; at: number; toolCalls?: AppToolCall[] };
+export type AppSegment = { kind: "text"; text: string } | { kind: "tool"; tc: AppToolCall };
+export type AppMessage = { id: string; roleName: string; text: string; at: number; toolCalls?: AppToolCall[]; segments?: AppSegment[] };
 export type AppMentionItem = { value: string; kind: "role" | "file" | "dir" | "hint" | "command" | "skill"; detail: string };
 export type AppSkill = { id: string; name: string; description: string; content: string; createdAt: number; updatedAt: number };
 
@@ -61,6 +62,7 @@ export type AppSession = {
   messages: AppMessage[];
   streamingMessage: AppMessage | null;
   toolCalls: Record<string, AppToolCall>;
+  streamSegments: AppSegment[];
   currentPlan: AppPlanEntry[] | null;
   pendingPermission: AppPermission | null;
   agentModes: Array<{ id: string; title?: string }>;

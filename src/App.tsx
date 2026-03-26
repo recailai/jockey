@@ -10,7 +10,7 @@ import type {
   Role, AppPlanEntry,
   AcpStreamEvent, AcpConfigOption, AssistantRuntime,
   AssistantChatResponse, AcpDeltaEvent, SessionUpdateEvent, WorkflowStateEvent,
-  AppMessage, AppMentionItem, AppSkill, AppSession,
+  AppMessage, AppMentionItem, AppSkill, AppSession, AppSegment, AppToolCall,
 } from "./components/types";
 import {
   now, DEFAULT_BACKEND_ROLE, DEFAULT_ROLE_ALIAS,
@@ -36,6 +36,7 @@ const makeDefaultSession = (title: string): AppSession => ({
   messages: [],
   streamingMessage: null,
   toolCalls: {},
+  streamSegments: [],
   currentPlan: null,
   pendingPermission: null,
   agentModes: [],
@@ -184,7 +185,21 @@ export default function App() {
       const chunk = streamBatchBuffer;
       streamBatchBuffer = "";
       const sid = streamOriginSessionId ?? activeSessionId();
-      if (sid) setSessions((s) => s.id === sid && !!s.streamingMessage, "streamingMessage", "text", (t) => (t ?? "") + chunk);
+      if (sid) {
+        const tidx = sessions.findIndex((s) => s.id === sid);
+        if (tidx !== -1) {
+          setSessions(tidx, "streamingMessage", "text", (t) => (t ?? "") + chunk);
+          setSessions(tidx, "streamSegments", (segs): AppSegment[] => {
+            const last = segs[segs.length - 1];
+            if (last && last.kind === "text") {
+              const updated = [...segs];
+              updated[updated.length - 1] = { kind: "text" as const, text: last.text + chunk };
+              return updated;
+            }
+            return [...segs, { kind: "text" as const, text: chunk }];
+          });
+        }
+      }
       scheduleScrollToBottom();
     }
     streamBatchRaf = null;
@@ -247,7 +262,7 @@ export default function App() {
     canceledRunToken = Math.max(canceledRunToken, runTokenSeq);
     streamAccepting = false;
     dropStream();
-    patchActiveSession({ toolCalls: {}, currentPlan: null, pendingPermission: null, thoughtText: "", submitting: false, status: "idle" });
+    patchActiveSession({ toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, thoughtText: "", submitting: false, status: "idle" });
     pushMessage("event", "Cancellation requested.");
     const role = activeBackendRole();
     const runtime = runtimeForRole(role);
@@ -320,7 +335,7 @@ export default function App() {
         const line = typeof obj.line === "number" ? obj.line : undefined;
         return { path, line };
       })
-      .filter((item): item is { path: string; line?: number } => !!item);
+      .filter((item): item is NonNullable<typeof item> => !!item);
     return out.length > 0 ? out : undefined;
   };
 
@@ -753,7 +768,7 @@ export default function App() {
       streamOriginSessionId = originSessionId;
       const id = `stream-${now()}`;
       const row: AppMessage = { id, roleName: sendRoleLabel, text: "", at: now() };
-      patchOriginSession({ streamingMessage: row, toolCalls: {}, currentPlan: null, pendingPermission: null, thoughtText: "" });
+      patchOriginSession({ streamingMessage: row, toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, thoughtText: "" });
       scheduleScrollToBottom();
       return row;
     };
@@ -764,9 +779,18 @@ export default function App() {
       const sess = sessions.find((x) => x.id === sid);
       const row = sess?.streamingMessage ?? null;
       const snapshotToolCalls = sess && Object.keys(sess.toolCalls).length > 0 ? Object.values(sess.toolCalls) : undefined;
+      const snapshotSegments = sess && sess.streamSegments.length > 0 ? [...sess.streamSegments] : undefined;
+      if (snapshotSegments && finalReply) {
+        const last = snapshotSegments[snapshotSegments.length - 1];
+        if (last && last.kind === "text") {
+          snapshotSegments[snapshotSegments.length - 1] = { kind: "text", text: normalizeNewlines(finalReply) };
+        } else {
+          snapshotSegments.push({ kind: "text", text: normalizeNewlines(finalReply) });
+        }
+      }
       if (row) {
         const text = normalizeNewlines(finalReply ?? row.text);
-        appendOriginMessage({ ...row, text, at: now(), toolCalls: snapshotToolCalls });
+        appendOriginMessage({ ...row, text, at: now(), toolCalls: snapshotToolCalls, segments: snapshotSegments });
         patchOriginSession({ streamingMessage: null, thoughtText: "" });
       } else if (finalReply) {
         appendOriginMessage({
@@ -775,10 +799,11 @@ export default function App() {
           text: normalizeNewlines(finalReply),
           at: now(),
           toolCalls: snapshotToolCalls,
+          segments: snapshotSegments,
         });
       }
       resetStreamState();
-      patchOriginSession({ toolCalls: {}, currentPlan: null, pendingPermission: null, agentState: undefined, thoughtText: "" });
+      patchOriginSession({ toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, agentState: undefined, thoughtText: "" });
     };
 
     const dropOriginStream = () => {
@@ -1080,54 +1105,84 @@ export default function App() {
           case "toolCall":
             if (e.toolCallId && sid) {
               const tidx = sessions.findIndex((s) => s.id === sid);
-              if (tidx !== -1) setSessions(tidx, "toolCalls", (m) => {
-
+              if (tidx !== -1) {
                 const content = Array.isArray(e.content) ? e.content : undefined;
                 const locations = normalizeToolLocations(e.locations as unknown[] | undefined);
-                return {
-                  ...m,
-                  [e.toolCallId!]: {
-                    toolCallId: e.toolCallId!,
-                    title: e.title ?? "",
-                    kind: e.toolKind ?? "unknown",
-                    status: e.status ?? "pending",
-                    content,
-                    contentJson: content && content.length > 0 ? JSON.stringify(content, null, 2) : undefined,
-                    locations,
-                    rawInput: e.rawInput,
-                    rawOutput: e.rawOutput,
-                  },
+                const tc: AppToolCall = {
+                  toolCallId: e.toolCallId!,
+                  title: e.title ?? "",
+                  kind: e.toolKind ?? "unknown",
+                  status: e.status ?? "pending",
+                  content,
+                  contentJson: content && content.length > 0 ? JSON.stringify(content, null, 2) : undefined,
+                  locations,
+                  rawInput: e.rawInput,
+                  rawOutput: e.rawOutput,
                 };
-              });
+                setSessions(tidx, "toolCalls", (m) => ({ ...m, [e.toolCallId!]: tc }));
+                setSessions(tidx, "streamSegments", (segs) => [...segs, { kind: "tool" as const, tc }]);
+              }
               patchOriginOrActive({ agentState: `${e.toolKind ?? "tool"}: ${e.title ?? e.toolCallId}` });
             }
             break;
           case "toolCallUpdate":
             if (e.toolCallId && sid) {
               const tidx = sessions.findIndex((s) => s.id === sid);
-              if (tidx !== -1) setSessions(tidx, "toolCalls", (m) => {
-                const existing = m[e.toolCallId!];
-                if (!existing) return m;
-                const newContent = Array.isArray(e.content) ? e.content : existing.content;
-                const newLocations = normalizeToolLocations(e.locations as unknown[] | undefined) ?? existing.locations;
-                const contentJson = newContent !== existing.content
-                  ? (newContent && newContent.length > 0 ? JSON.stringify(newContent, null, 2) : undefined)
-                  : existing.contentJson;
-                return {
-                  ...m,
-                  [e.toolCallId!]: {
-                    ...existing,
-                    kind: e.toolKind ?? existing.kind,
-                    status: e.status ?? existing.status,
-                    title: e.title ?? existing.title,
-                    content: newContent,
-                    contentJson,
-                    locations: newLocations,
-                    rawInput: e.rawInput !== undefined ? e.rawInput : existing.rawInput,
-                    rawOutput: e.rawOutput !== undefined ? e.rawOutput : existing.rawOutput,
-                  },
-                };
-              });
+              if (tidx !== -1) {
+                setSessions(tidx, "toolCalls", (m) => {
+                  const existing = m[e.toolCallId!];
+                  if (!existing) return m;
+                  const newContent = Array.isArray(e.content) ? e.content : existing.content;
+                  const newLocations = normalizeToolLocations(e.locations as unknown[] | undefined) ?? existing.locations;
+                  const contentJson = newContent !== existing.content
+                    ? (newContent && newContent.length > 0 ? JSON.stringify(newContent, null, 2) : undefined)
+                    : existing.contentJson;
+                  return {
+                    ...m,
+                    [e.toolCallId!]: {
+                      ...existing,
+                      kind: e.toolKind ?? existing.kind,
+                      status: e.status ?? existing.status,
+                      title: e.title ?? existing.title,
+                      content: newContent,
+                      contentJson,
+                      locations: newLocations,
+                      rawInput: e.rawInput !== undefined ? e.rawInput : existing.rawInput,
+                      rawOutput: e.rawOutput !== undefined ? e.rawOutput : existing.rawOutput,
+                    },
+                  };
+                });
+                setSessions(tidx, "streamSegments", (segs) => {
+                  const updated = [...segs];
+                  for (let i = updated.length - 1; i >= 0; i--) {
+                    const seg = updated[i];
+                    if (seg.kind === "tool" && seg.tc.toolCallId === e.toolCallId) {
+                      const existing = seg.tc;
+                      const newContent = Array.isArray(e.content) ? e.content : existing.content;
+                      const newLocations = normalizeToolLocations(e.locations as unknown[] | undefined) ?? existing.locations;
+                      const contentJson = newContent !== existing.content
+                        ? (newContent && newContent.length > 0 ? JSON.stringify(newContent, null, 2) : undefined)
+                        : existing.contentJson;
+                      updated[i] = {
+                        kind: "tool",
+                        tc: {
+                          ...existing,
+                          kind: e.toolKind ?? existing.kind,
+                          status: e.status ?? existing.status,
+                          title: e.title ?? existing.title,
+                          content: newContent,
+                          contentJson,
+                          locations: newLocations,
+                          rawInput: e.rawInput !== undefined ? e.rawInput : existing.rawInput,
+                          rawOutput: e.rawOutput !== undefined ? e.rawOutput : existing.rawOutput,
+                        },
+                      };
+                      break;
+                    }
+                  }
+                  return updated;
+                });
+              }
               if (e.status || e.title) {
                 patchOriginOrActive({
                   agentState: `${e.toolKind ?? "tool"} ${e.status ?? "updated"}: ${e.title ?? e.toolCallId}`,
