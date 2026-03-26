@@ -80,7 +80,7 @@ export default function MessageWindow(props: MessageWindowProps) {
               <div class="absolute inset-x-0 top-1/2 h-px bg-gradient-to-r from-transparent via-zinc-800/60 to-transparent -z-10"></div>
               <div class="max-w-[90%] px-4 py-1.5 bg-zinc-900/80 border border-zinc-700/50 rounded-full text-[11.5px] text-zinc-400 flex items-center gap-2.5 backdrop-blur-md shadow-sm">
                 <span class="opacity-70 text-indigo-400 mt-[1px] font-serif">✧</span>
-                <span class="truncate tracking-wide">{msg.text}</span>
+                <span class="whitespace-pre-wrap break-words tracking-wide">{msg.text}</span>
                 <Show when={(msg.count ?? 1) > 1}>
                   <span class="bg-indigo-500/15 border border-indigo-500/20 text-indigo-300 font-mono rounded-full px-1.5 py-0.5 text-[9px] min-w-[20px] text-center">{msg.count}</span>
                 </Show>
@@ -117,6 +117,20 @@ export default function MessageWindow(props: MessageWindowProps) {
                         <Show when={tc.contentJson}>
                           <pre class="whitespace-pre-wrap break-words border-t border-white/[0.05] px-3.5 py-3 text-[11.5px] font-mono text-zinc-400 bg-black/20">{tc.contentJson}</pre>
                         </Show>
+                        <Show when={tc.locations && tc.locations.length > 0}>
+                          <div class="border-t border-white/[0.05] px-3.5 py-2.5 text-[11px] text-zinc-400 bg-black/10">
+                            <div class="mb-1 uppercase tracking-wider text-[9px] text-zinc-500">Files</div>
+                            <For each={tc.locations}>{(loc) => (
+                              <div class="font-mono break-all">{loc.path}{loc.line ? `:${loc.line}` : ""}</div>
+                            )}</For>
+                          </div>
+                        </Show>
+                        <Show when={tc.rawInput !== undefined}>
+                          <pre class="whitespace-pre-wrap break-words border-t border-white/[0.05] px-3.5 py-3 text-[11px] font-mono text-zinc-500 bg-black/10">{JSON.stringify(tc.rawInput, null, 2)}</pre>
+                        </Show>
+                        <Show when={tc.rawOutput !== undefined}>
+                          <pre class="whitespace-pre-wrap break-words border-t border-white/[0.05] px-3.5 py-3 text-[11px] font-mono text-zinc-500 bg-black/10">{JSON.stringify(tc.rawOutput, null, 2)}</pre>
+                        </Show>
                       </details>
                     )}</For>
                   </div>
@@ -144,6 +158,11 @@ export default function MessageWindow(props: MessageWindowProps) {
               <Show when={streaming().text}>
                 <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{streaming().text}</div>
               </Show>
+              <Show when={props.activeSession()?.thoughtText}>
+                <div class="mt-2 rounded-md border border-zinc-700/60 bg-zinc-900/50 px-2.5 py-2 text-[11px] text-zinc-400 leading-relaxed font-mono whitespace-pre-wrap break-words">
+                  {props.activeSession()?.thoughtText}
+                </div>
+              </Show>
               <Show when={!streaming().text && props.activeSession()?.agentState}>
                 <div class="text-[11px] text-zinc-500 italic">{props.activeSession()?.agentState}</div>
               </Show>
@@ -170,9 +189,9 @@ export default function MessageWindow(props: MessageWindowProps) {
           </div>
         )}
       </Show>
-      <Show when={(props.activeSession()?.toolCalls.size ?? 0) > 0}>
+      <Show when={Object.keys(props.activeSession()?.toolCalls ?? {}).length > 0}>
         <div class="space-y-1 my-2">
-          <For each={[...(props.activeSession()?.toolCalls.values() ?? [])]}>{(tc) => (
+          <For each={Object.values(props.activeSession()?.toolCalls ?? {})}>{(tc) => (
             <details class="rounded-lg border border-zinc-700 bg-zinc-900">
               <summary class="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs">
                 <span class={`h-1.5 w-1.5 rounded-full ${tc.status === "success" || tc.status === "completed" ? "bg-emerald-400" : tc.status === "failure" || tc.status === "error" ? "bg-rose-400" : tc.status === "running" || tc.status === "in_progress" ? "bg-amber-400 animate-pulse" : "bg-zinc-500"}`} />
@@ -183,6 +202,13 @@ export default function MessageWindow(props: MessageWindowProps) {
                 <pre class="whitespace-pre-wrap break-words border-t border-zinc-700 px-3 py-1.5 text-xs text-zinc-500">
                   {tc.contentJson}
                 </pre>
+              </Show>
+              <Show when={tc.locations && tc.locations.length > 0}>
+                <div class="border-t border-zinc-700 px-3 py-1.5 text-[11px] text-zinc-500">
+                  <For each={tc.locations}>{(loc) => (
+                    <div class="font-mono break-all">{loc.path}{loc.line ? `:${loc.line}` : ""}</div>
+                  )}</For>
+                </div>
               </Show>
             </details>
           )}</For>

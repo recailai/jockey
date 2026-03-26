@@ -21,6 +21,7 @@ const ConfigDrawer = lazy(() => import("./components/ConfigDrawer"));
 
 const ASSISTANT_STORAGE_KEY = "unionai.defaultAssistant";
 const MAX_MESSAGES = 500;
+const MAX_THOUGHT_CHARS = 5000;
 const MENTION_DEBOUNCE_MS = 90;
 const MENTION_CACHE_LIMIT = 80;
 
@@ -34,7 +35,7 @@ const makeDefaultSession = (title: string): AppSession => ({
   runtimeKind: null,
   messages: [],
   streamingMessage: null,
-  toolCalls: new Map(),
+  toolCalls: {},
   currentPlan: null,
   pendingPermission: null,
   agentModes: [],
@@ -44,6 +45,7 @@ const makeDefaultSession = (title: string): AppSession => ({
   configOptionsLoading: false,
   agentCommands: new Map(),
   status: "idle",
+  thoughtText: "",
 });
 
 export default function App() {
@@ -190,7 +192,7 @@ export default function App() {
 
   const appendStream = (chunk: string) => {
     if (!chunk) return;
-    streamBatchBuffer += chunk;
+    streamBatchBuffer += normalizeNewlines(chunk);
     if (streamBatchRaf === null) {
       streamBatchRaf = window.requestAnimationFrame(flushStreamBatch);
     }
@@ -245,7 +247,7 @@ export default function App() {
     canceledRunToken = Math.max(canceledRunToken, runTokenSeq);
     streamAccepting = false;
     dropStream();
-    patchActiveSession({ toolCalls: new Map(), currentPlan: null, pendingPermission: null, submitting: false, status: "idle" });
+    patchActiveSession({ toolCalls: {}, currentPlan: null, pendingPermission: null, thoughtText: "", submitting: false, status: "idle" });
     pushMessage("event", "Cancellation requested.");
     const role = activeBackendRole();
     const runtime = runtimeForRole(role);
@@ -301,6 +303,40 @@ export default function App() {
     return (raw as Array<{ name: string; description?: string; input?: { hint?: string } }>).map((c) => ({
       name: c.name, description: c.description ?? "", hint: c.input?.hint,
     }));
+  };
+
+  const normalizeNewlines = (input: string): string => input.replace(/\r\n?/g, "\n");
+
+  const normalizeToolLocations = (
+    raw: unknown[] | undefined,
+  ): Array<{ path: string; line?: number }> | undefined => {
+    if (!Array.isArray(raw) || raw.length === 0) return undefined;
+    const out = raw
+      .map((item) => {
+        if (!item || typeof item !== "object") return null;
+        const obj = item as Record<string, unknown>;
+        const path = typeof obj.path === "string" ? obj.path : "";
+        if (!path) return null;
+        const line = typeof obj.line === "number" ? obj.line : undefined;
+        return { path, line };
+      })
+      .filter((item): item is { path: string; line?: number } => !!item);
+    return out.length > 0 ? out : undefined;
+  };
+
+  const appendThought = (sessionId: string, chunk: string) => {
+    const normalized = normalizeNewlines(chunk);
+    if (!normalized.trim()) return;
+    setSessions(
+      (s) => s.id === sessionId,
+      "thoughtText",
+      (prev) => {
+        const next = `${prev ?? ""}${normalized}`;
+        return next.length <= MAX_THOUGHT_CHARS
+          ? next
+          : next.slice(next.length - MAX_THOUGHT_CHARS);
+      },
+    );
   };
 
   const fetchAgentCommands = async (runtimeKey: string, roleName: string): Promise<{ runtimeKey: string; commands: Array<{ name: string; description: string; hint?: string }> }> => {
@@ -680,7 +716,7 @@ export default function App() {
         }
       }
     }
-    patchOriginSession({ submitting: true, status: "running", agentState: undefined });
+    patchOriginSession({ submitting: true, status: "running", agentState: undefined, thoughtText: "" });
 
     const isAgentCmd = isCommand && !inRoleContext && /^\/(plan|act|auto|cancel)\b/.test(text);
     if (isAgentCmd) {
@@ -717,7 +753,7 @@ export default function App() {
       streamOriginSessionId = originSessionId;
       const id = `stream-${now()}`;
       const row: AppMessage = { id, roleName: sendRoleLabel, text: "", at: now() };
-      patchOriginSession({ streamingMessage: row, toolCalls: new Map(), currentPlan: null, pendingPermission: null });
+      patchOriginSession({ streamingMessage: row, toolCalls: {}, currentPlan: null, pendingPermission: null, thoughtText: "" });
       scheduleScrollToBottom();
       return row;
     };
@@ -727,20 +763,26 @@ export default function App() {
       if (!sid) return;
       const sess = sessions.find((x) => x.id === sid);
       const row = sess?.streamingMessage ?? null;
-      const snapshotToolCalls = sess && sess.toolCalls.size > 0 ? [...sess.toolCalls.values()] : undefined;
+      const snapshotToolCalls = sess && Object.keys(sess.toolCalls).length > 0 ? Object.values(sess.toolCalls) : undefined;
       if (row) {
-        const text = finalReply ?? row.text;
+        const text = normalizeNewlines(finalReply ?? row.text);
         appendOriginMessage({ ...row, text, at: now(), toolCalls: snapshotToolCalls });
-        patchOriginSession({ streamingMessage: null });
+        patchOriginSession({ streamingMessage: null, thoughtText: "" });
       } else if (finalReply) {
-        appendOriginMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, roleName: sendRoleLabel, text: finalReply, at: now(), toolCalls: snapshotToolCalls });
+        appendOriginMessage({
+          id: `${now()}-${Math.random().toString(36).slice(2)}`,
+          roleName: sendRoleLabel,
+          text: normalizeNewlines(finalReply),
+          at: now(),
+          toolCalls: snapshotToolCalls,
+        });
       }
       resetStreamState();
-      patchOriginSession({ toolCalls: new Map(), currentPlan: null, pendingPermission: null, agentState: undefined });
+      patchOriginSession({ toolCalls: {}, currentPlan: null, pendingPermission: null, agentState: undefined, thoughtText: "" });
     };
 
     const dropOriginStream = () => {
-      patchOriginSession({ streamingMessage: null });
+      patchOriginSession({ streamingMessage: null, thoughtText: "" });
       resetStreamState();
     };
 
@@ -1030,33 +1072,66 @@ export default function App() {
             if (e.text) patchOriginOrActive({ agentState: e.text });
             break;
           case "thoughtDelta":
-            if (e.text) patchOriginOrActive({ agentState: `Thinking: ${e.text.slice(0, 120)}` });
+            if (e.text) {
+              patchOriginOrActive({ agentState: `Thinking: ${e.text.slice(0, 120)}` });
+              if (sid) appendThought(sid, e.text);
+            }
             break;
           case "toolCall":
             if (e.toolCallId && sid) {
               const tidx = sessions.findIndex((s) => s.id === sid);
               if (tidx !== -1) setSessions(tidx, "toolCalls", (m) => {
-                const next = new Map(m);
-                next.set(e.toolCallId!, { toolCallId: e.toolCallId!, title: e.title ?? "", kind: e.toolKind ?? "unknown", status: e.status ?? "pending" });
-                return next;
+                const content = Array.isArray(e.content) ? e.content : undefined;
+                const locations = normalizeToolLocations(e.locations as unknown[] | undefined);
+                return {
+                  ...m,
+                  [e.toolCallId!]: {
+                    toolCallId: e.toolCallId!,
+                    title: e.title ?? "",
+                    kind: e.toolKind ?? "unknown",
+                    status: e.status ?? "pending",
+                    content,
+                    contentJson: content && content.length > 0 ? JSON.stringify(content, null, 2) : undefined,
+                    locations,
+                    rawInput: e.rawInput,
+                    rawOutput: e.rawOutput,
+                  },
+                };
               });
+              patchOriginOrActive({ agentState: `${e.toolKind ?? "tool"}: ${e.title ?? e.toolCallId}` });
             }
             break;
           case "toolCallUpdate":
             if (e.toolCallId && sid) {
               const tidx = sessions.findIndex((s) => s.id === sid);
               if (tidx !== -1) setSessions(tidx, "toolCalls", (m) => {
-                const next = new Map(m);
-                const existing = m.get(e.toolCallId!);
-                if (existing) {
-                  const newContent = (e.content as unknown[]) ?? existing.content;
-                  const contentJson = newContent !== existing.content
-                    ? (newContent && newContent.length > 0 ? JSON.stringify(newContent, null, 2) : undefined)
-                    : existing.contentJson;
-                  next.set(e.toolCallId!, { ...existing, status: e.status ?? existing.status, title: e.title ?? existing.title, content: newContent, contentJson });
-                }
-                return next;
+                const existing = m[e.toolCallId!];
+                if (!existing) return m;
+                const newContent = Array.isArray(e.content) ? e.content : existing.content;
+                const newLocations = normalizeToolLocations(e.locations as unknown[] | undefined) ?? existing.locations;
+                const contentJson = newContent !== existing.content
+                  ? (newContent && newContent.length > 0 ? JSON.stringify(newContent, null, 2) : undefined)
+                  : existing.contentJson;
+                return {
+                  ...m,
+                  [e.toolCallId!]: {
+                    ...existing,
+                    kind: e.toolKind ?? existing.kind,
+                    status: e.status ?? existing.status,
+                    title: e.title ?? existing.title,
+                    content: newContent,
+                    contentJson,
+                    locations: newLocations,
+                    rawInput: e.rawInput !== undefined ? e.rawInput : existing.rawInput,
+                    rawOutput: e.rawOutput !== undefined ? e.rawOutput : existing.rawOutput,
+                  },
+                };
               });
+              if (e.status || e.title) {
+                patchOriginOrActive({
+                  agentState: `${e.toolKind ?? "tool"} ${e.status ?? "updated"}: ${e.title ?? e.toolCallId}`,
+                });
+              }
             }
             break;
           case "plan":

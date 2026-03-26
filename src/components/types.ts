@@ -8,13 +8,26 @@ export type RoleUpsertInput = {
   model: string | null; mode: string | null; mcpServersJson: string; configOptionsJson: string;
   autoApprove: boolean;
 };
-export type AppToolCall = { toolCallId: string; title: string; kind: string; status: string; content?: unknown[]; contentJson?: string };
+export type AppToolCall = {
+  toolCallId: string;
+  title: string;
+  kind: string;
+  status: string;
+  content?: unknown[];
+  contentJson?: string;
+  locations?: Array<{ path: string; line?: number }>;
+  rawInput?: unknown;
+  rawOutput?: unknown;
+};
 export type AppPlanEntry = { title?: string; status?: string; description?: string };
 export type AppPermission = { requestId: string; title: string; description: string | null; options: Array<{ optionId: string; title?: string }> };
 export type AcpStreamEvent = {
   kind: string;
   text?: string;
   toolCallId?: string; title?: string; toolKind?: string; status?: string; content?: unknown[];
+  locations?: Array<{ path: string; line?: number }>;
+  rawInput?: unknown;
+  rawOutput?: unknown;
   entries?: AppPlanEntry[];
   requestId?: string; description?: string | null; options?: unknown[];
   modeId?: string;
@@ -47,7 +60,7 @@ export type AppSession = {
   runtimeKind: string | null;
   messages: AppMessage[];
   streamingMessage: AppMessage | null;
-  toolCalls: Map<string, AppToolCall>;
+  toolCalls: Record<string, AppToolCall>;
   currentPlan: AppPlanEntry[] | null;
   pendingPermission: AppPermission | null;
   agentModes: Array<{ id: string; title?: string }>;
@@ -58,6 +71,7 @@ export type AppSession = {
   agentCommands: Map<string, Array<{ name: string; description: string; hint?: string }>>;
   status: "idle" | "running" | "done" | "error";
   agentState?: string;
+  thoughtText?: string;
 };
 
 export const RUNTIMES = ["gemini-cli", "claude-code", "codex-cli", "mock"];
