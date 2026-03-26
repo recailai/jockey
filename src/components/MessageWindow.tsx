@@ -135,7 +135,11 @@ export default function MessageWindow(props: MessageWindowProps) {
                 <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.runtimeKind ?? ""] ?? "text-zinc-300"}`}>
                   {props.activeSession()?.activeRole ?? "Agent"}
                 </span>
-                <span class="text-[10px] text-zinc-500 font-medium animate-pulse tracking-wide">{props.activeSession()?.agentState || "thinking..."}</span>
+                <span class="text-[10px] text-zinc-500 font-medium animate-pulse tracking-wide">
+                  {(props.activeSession()?.streamSegments ?? []).length > 0
+                    ? "streaming"
+                    : (props.activeSession()?.agentState || "thinking...")}
+                </span>
               </div>
               <Show when={(props.activeSession()?.streamSegments ?? []).length > 0} fallback={
                 <>
@@ -233,7 +237,7 @@ function SegmentList(props: { segments: AppSegment[] }) {
 }
 
 function StreamSegmentList(props: { segments: AppSegment[] }) {
-  const groups = () => collectToolGroups(props.segments);
+  const groups = createMemo(() => collectToolGroups(props.segments));
   return (
     <Index each={groups()}>{(g) => (
       g().kind === "text"

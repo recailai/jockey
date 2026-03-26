@@ -13,11 +13,11 @@ use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::Manager;
+use tauri::{Manager, State};
 
 use assistant::assistant_catalog;
 use db::context::shared_key;
-use db::{init_db, seed_default_dynamic_catalog, with_db, DbPool};
+use db::{get_state, init_db, seed_default_dynamic_catalog, with_db, DbPool};
 use types::*;
 
 pub(crate) fn now_ms() -> i64 {
@@ -71,8 +71,7 @@ App commands (prefix /app_) control UnionAI itself. Suggest them on their own li
   /app_model list | /app_model add <model> | /app_model remove <model>\n\
   /app_model select <model> | /app_model select role <name> <model> | /app_model get | /app_model clear\n\
   /app_mcp list | /app_mcp add <name> | /app_mcp remove <name> | /app_mcp enable <name> | /app_mcp disable <name>\n\
-  /app_role list | /app_role bind <role> <runtime> [prompt] | /app_role prompt <role> <prompt> | /app_role delete <role>\n\
-  /app_role edit <role> mode <mode> | /app_role edit <role> model <model> | /app_role copy <src> <dst>\n\
+  /app_role list | /app_role bind <role> <runtime> [prompt] | /app_role prompt <role> <prompt>\n\
 Workspace selection is managed by the app automatically.\n\
 Only output app commands when the user explicitly asks to perform a UnionAI action."
 }
@@ -122,22 +121,48 @@ async fn set_acp_config_option(
 }
 
 #[tauri::command]
-fn list_available_commands_cmd(runtime_key: String, role_name: String) -> Vec<serde_json::Value> {
-    acp::list_available_commands(&runtime_key, &role_name)
+fn list_available_commands_cmd(
+    runtime_key: String,
+    role_name: String,
+    app_session_id: String,
+) -> Vec<serde_json::Value> {
+    if app_session_id.trim().is_empty() {
+        return vec![];
+    }
+    acp::list_available_commands(&app_session_id, &runtime_key, &role_name)
 }
 
 #[tauri::command]
-fn list_discovered_config_options_cmd(runtime_key: String) -> Vec<serde_json::Value> {
-    acp::list_discovered_config_options(&runtime_key)
+fn list_discovered_config_options_cmd(
+    runtime_key: String,
+    role_name: String,
+    app_session_id: String,
+) -> Vec<serde_json::Value> {
+    if app_session_id.trim().is_empty() {
+        return vec![];
+    }
+    acp::list_discovered_config_options(&app_session_id, &runtime_key, &role_name)
 }
 
 #[tauri::command]
 async fn prewarm_role_config_cmd(
+    state: State<'_, AppState>,
     runtime_kind: String,
     role_name: String,
+    app_session_id: String,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let cwd = resolve_chat_cwd();
-    Ok(acp::prewarm_role_for_config(&runtime_kind, &role_name, &cwd, None).await)
+    if app_session_id.trim().is_empty() {
+        return Err("app session id required".to_string());
+    }
+    let cwd = crate::db::app_session::get_app_session_cwd(get_state(&state), &app_session_id)
+        .unwrap_or_else(resolve_chat_cwd);
+    Ok(acp::prewarm_role_for_config(
+        &runtime_kind,
+        &role_name,
+        &cwd,
+        Some((get_state(&state), &app_session_id)),
+    )
+    .await)
 }
 
 #[tauri::command]
@@ -220,7 +245,6 @@ pub fn run() {
             seed_default_dynamic_catalog(&state).map_err(std::io::Error::other)?;
             app.manage(state);
 
-            let prewarm_cwd = default_chat_cwd();
             let catalog_snapshot: Vec<(String, bool)> = assistant_catalog()
                 .iter()
                 .map(|a| (a.key.clone(), a.available))
@@ -256,74 +280,34 @@ pub fn run() {
                 Vec::new()
             };
 
-            let all_roles: Vec<(String, String)> = with_db(app_state, |conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT role_name, runtime_kind FROM roles ORDER BY updated_at DESC LIMIT ?1"
-                ).map_err(|e| e.to_string())?;
-                let rows = stmt.query_map(params![PREWARM_ROLE_LIMIT as i64], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                }).map_err(|e| e.to_string())?;
-                Ok(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
-            }).unwrap_or_default();
             let app_handle = app.handle().clone();
-            let default_cwd = prewarm_cwd.clone();
             tauri::async_runtime::spawn(async move {
-                let mut recent_role_pairs: HashSet<(String, String)> = HashSet::new();
-                for (role_name, runtime_kind, _) in &recent_role_mappings {
-                    let normalized = runtime_kind::RuntimeKind::from_str(runtime_kind)
-                        .map(|k| k.runtime_key().to_string())
-                        .unwrap_or_else(|| runtime_kind.to_ascii_lowercase());
-                    if KNOWN_RUNTIME_KEYS.contains(&normalized.as_str()) {
-                        recent_role_pairs.insert((normalized, role_name.clone()));
-                    }
-                }
-
-                let app_session_id = recent_app_session_id.clone().unwrap_or_default();
-
                 let mut priority_futs: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> = Vec::new();
+                let app_session_id = match recent_app_session_id.clone() {
+                    Some(sid) => sid,
+                    None => return,
+                };
 
-                for (key, available) in &catalog_snapshot {
-                    if *available {
-                        let cwd = prewarm_cwd.clone();
-                        let key = key.clone();
-                        priority_futs.push(Box::pin(async move {
-                            acp::prewarm(&key, &cwd).await;
-                        }));
-                    }
-                }
-
-                for (role_name, runtime_kind) in &all_roles {
+                for (role_name, runtime_kind, resume_sid) in &recent_role_mappings {
                     if runtime_kind != "mock" && !available_runtime_keys.contains(runtime_kind) {
                         continue;
                     }
-                    let normalized_runtime = runtime_kind::RuntimeKind::from_str(runtime_kind)
-                        .map(|k| k.runtime_key().to_string())
-                        .unwrap_or_else(|| runtime_kind.to_ascii_lowercase());
-                    let has_recent =
-                        recent_role_pairs.contains(&(normalized_runtime.clone(), role_name.clone()));
-                    if !has_recent {
-                        continue;
-                    }
-                    let cwd = abs_cwd(&default_cwd);
+                    let cwd = {
+                        let state_ref = app_handle.state::<AppState>();
+                        crate::db::app_session::get_app_session_cwd(state_ref.inner(), &app_session_id)
+                            .unwrap_or_else(default_chat_cwd)
+                    };
                     let state_ref = app_handle.state::<AppState>();
                     let app_state_inner: &AppState = state_ref.inner();
                     let db_clone = app_state_inner.db.clone();
                     let ctx_clone = app_state_inner.shared_context.clone();
-                    let resume_sid = recent_role_mappings
-                        .iter()
-                        .find(|(rn, rk, _)| rn == role_name && {
-                            let norm = runtime_kind::RuntimeKind::from_str(rk)
-                                .map(|k| k.runtime_key().to_string())
-                                .unwrap_or_else(|| rk.to_ascii_lowercase());
-                            norm == normalized_runtime
-                        })
-                        .and_then(|(_, _, sid)| sid.clone());
                     let sid_clone = app_session_id.clone();
                     let role_name_clone = role_name.clone();
                     let runtime_kind_clone = runtime_kind.clone();
+                    let resume_sid_clone = resume_sid.clone();
                     priority_futs.push(Box::pin(async move {
                         let tmp = AppState { db: db_clone, shared_context: ctx_clone };
-                        acp::prewarm_role_with_session_id(&runtime_kind_clone, &role_name_clone, &cwd, resume_sid, &tmp, &sid_clone).await;
+                        acp::prewarm_role_with_session_id(&runtime_kind_clone, &role_name_clone, &cwd, resume_sid_clone, &tmp, &sid_clone).await;
                     }));
                 }
 
@@ -339,41 +323,18 @@ pub fn run() {
                 for h in handles {
                     let _ = h.await;
                 }
-
-                for (role_name, runtime_kind) in all_roles {
-                    if runtime_kind != "mock" && !available_runtime_keys.contains(&runtime_kind) {
-                        continue;
-                    }
-                    let normalized_runtime = runtime_kind::RuntimeKind::from_str(&runtime_kind)
-                        .map(|k| k.runtime_key().to_string())
-                        .unwrap_or_else(|| runtime_kind.to_ascii_lowercase());
-                    if recent_role_pairs.contains(&(normalized_runtime, role_name.clone())) {
-                        continue;
-                    }
-                    let cwd = abs_cwd(&default_cwd);
-                    let state_ref = app_handle.state::<AppState>();
-                    let app_state_inner: &AppState = state_ref.inner();
-                    let db_clone = app_state_inner.db.clone();
-                    let ctx_clone = app_state_inner.shared_context.clone();
-                    let tmp = AppState { db: db_clone, shared_context: ctx_clone };
-                    acp::prewarm_role_with_session_id(&runtime_kind, &role_name, &cwd, None, &tmp, "").await;
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                }
             });
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             db::role::upsert_role_cmd,
+            db::role::delete_role_cmd,
             db::role::list_roles,
             db::workflow::create_workflow,
             db::workflow::list_workflows,
             db::session::list_sessions,
             db::session::list_session_events,
-            db::context::set_shared_context,
-            db::context::append_shared_context,
-            db::context::get_shared_context,
-            db::context::list_shared_context,
             db::session::start_workflow,
             commands::completion::complete_mentions,
             commands::completion::complete_cli,

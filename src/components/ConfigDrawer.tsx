@@ -121,10 +121,12 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
     setEditRoleAutoApprove(role.autoApprove);
     setEditRoleMcpServersJson(role.mcpServersJson || "[]");
     setEditRoleConfigOptionsJson(role.configOptionsJson || "{}");
+    const appSessionId = props.activeSession()?.id ?? "";
     props.patchActiveSession({ discoveredConfigOptions: [], configOptionsLoading: true });
     invoke<unknown[]>("prewarm_role_config_cmd", {
       runtimeKind: role.runtimeKind,
       roleName: role.roleName,
+      appSessionId,
     }).then((raw) => {
       props.patchActiveSession({ discoveredConfigOptions: raw as AcpConfigOption[], configOptionsLoading: false });
     }).catch(() => props.patchActiveSession({ configOptionsLoading: false }));
@@ -164,6 +166,16 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
       props.pushMessage("event", `role created: ${saved.roleName} (${saved.runtimeKind})`);
     } catch (e) {
       props.pushMessage("event", `Failed to create role: ${String(e)}`);
+    }
+  };
+
+  const handleDeleteRole = async (roleName: string) => {
+    try {
+      await invoke("delete_role_cmd", { roleName });
+      if (editingRole()?.roleName === roleName) closeRoleEditor();
+      await props.refreshRoles();
+    } catch (e) {
+      props.pushMessage("event", `Failed to delete role: ${String(e)}`);
     }
   };
 
@@ -304,6 +316,7 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
               closeRoleEditor={closeRoleEditor}
               handleCreateRole={handleCreateRole}
               handleSaveRoleEdit={handleSaveRoleEdit}
+              handleDeleteRole={handleDeleteRole}
               fetchConfigOptions={props.fetchConfigOptions}
             />
 
@@ -574,6 +587,7 @@ type RolesSectionProps = {
   closeRoleEditor: () => void;
   handleCreateRole: () => Promise<void>;
   handleSaveRoleEdit: () => Promise<void>;
+  handleDeleteRole: (roleName: string) => Promise<void>;
   fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
 };
 
@@ -654,10 +668,13 @@ function RolesSection(props: RolesSectionProps) {
             });
             const runtimeColor = () => RUNTIME_COLOR[role.runtimeKind] ?? "text-zinc-500";
             return (
-              <div class="group relative flex items-start gap-2 rounded-lg px-2.5 py-2 motion-safe:transition-all motion-safe:duration-150 hover:bg-zinc-900/60">
-                <div class="flex-1 min-w-0">
+              <div class="group relative flex items-start gap-2 rounded-lg px-2 py-2 motion-safe:transition-all motion-safe:duration-150 hover:bg-zinc-900/60">
+                <button
+                  onClick={() => props.openRoleEditor(role)}
+                  class={`flex-1 min-w-0 text-left ${INTERACTIVE_MOTION}`}
+                >
                   <div class="flex items-center gap-1.5 flex-wrap">
-                    <span class="text-xs font-semibold text-zinc-200">{role.roleName}</span>
+                    <span class={`text-xs font-semibold ${props.editingRoleId() === role.id ? "text-blue-300" : "text-zinc-200"}`}>{role.roleName}</span>
                     <span class={`rounded-full px-1.5 py-px text-[9px] font-medium bg-zinc-800 ${runtimeColor()}`}>{role.runtimeKind}</span>
                     <Show when={role.model}><span class="rounded-full bg-blue-500/15 px-1.5 text-[9px] font-medium text-blue-300">{role.model}</span></Show>
                     <Show when={role.mode}><span class="rounded-full bg-indigo-500/15 px-1.5 text-[9px] font-medium text-indigo-300">{role.mode}</span></Show>
@@ -665,13 +682,14 @@ function RolesSection(props: RolesSectionProps) {
                     <Show when={cfgKeyCount() > 0}><span class="rounded-full bg-teal-500/15 px-1.5 text-[9px] font-medium text-teal-300">{cfgKeyCount()} cfg</span></Show>
                   </div>
                   <p class="mt-0.5 truncate text-[10px] text-zinc-600">{role.systemPrompt}</p>
-                </div>
-                <div class="flex shrink-0 gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 motion-safe:transition-opacity motion-safe:duration-150">
+                </button>
+                <div class="flex shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 motion-safe:transition-opacity motion-safe:duration-150">
                   <button
-                    onClick={() => props.openRoleEditor(role)}
-                    class={`rounded px-1.5 py-0.5 text-[10px] ${props.editingRoleId() === role.id ? "text-blue-400" : "text-zinc-500 hover:text-zinc-200"} ${INTERACTIVE_MOTION}`}
+                    onClick={() => void props.handleDeleteRole(role.roleName)}
+                    class={`flex h-6 w-6 items-center justify-center rounded text-zinc-600 hover:text-rose-400 hover:bg-rose-500/10 ${INTERACTIVE_MOTION}`}
+                    title="Delete role"
                   >
-                    {props.editingRoleId() === role.id ? "editing" : "edit"}
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                   </button>
                 </div>
               </div>

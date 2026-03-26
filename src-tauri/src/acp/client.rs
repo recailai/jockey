@@ -1,9 +1,21 @@
 use agent_client_protocol::{self as acp};
 use dashmap::DashMap;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::OnceLock;
 
 use super::worker::{permission_requests, AcpEvent, DeltaSlot};
+
+const RAW_PAYLOAD_LIMIT: usize = 64 * 1024;
+
+fn cap_raw(v: Option<Value>) -> Option<Value> {
+    let v = v?;
+    let s = v.to_string();
+    if s.len() <= RAW_PAYLOAD_LIMIT {
+        Some(v)
+    } else {
+        Some(json!(format!("[truncated {} bytes]", s.len())))
+    }
+}
 
 struct TerminalHandle {
     child: tokio::sync::Mutex<tokio::process::Child>,
@@ -73,7 +85,7 @@ impl acp::Client for UnionAiClient {
         };
         if let Ok(guard) = self.delta_slot.lock() {
             if let Some(tx) = guard.as_ref() {
-                let _ = tx.send(event);
+                let _ = tx.try_send(event);
             }
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -141,8 +153,8 @@ impl acp::Client for UnionAiClient {
                             .collect(),
                     )
                 },
-                raw_input: tc.raw_input.clone(),
-                raw_output: tc.raw_output.clone(),
+                raw_input: cap_raw(tc.raw_input.clone()),
+                raw_output: cap_raw(tc.raw_output.clone()),
             },
             acp::SessionUpdate::ToolCallUpdate(tcu) => AcpEvent::ToolCallUpdate {
                 tool_call_id: tcu.tool_call_id.to_string(),
@@ -169,8 +181,8 @@ impl acp::Client for UnionAiClient {
                         .map(|loc| serde_json::to_value(loc).unwrap_or(json!({})))
                         .collect()
                 }),
-                raw_input: tcu.fields.raw_input.clone(),
-                raw_output: tcu.fields.raw_output.clone(),
+                raw_input: cap_raw(tcu.fields.raw_input.clone()),
+                raw_output: cap_raw(tcu.fields.raw_output.clone()),
             },
             acp::SessionUpdate::Plan(plan) => AcpEvent::Plan {
                 entries: plan
@@ -206,7 +218,7 @@ impl acp::Client for UnionAiClient {
         };
         if let Ok(guard) = self.delta_slot.lock() {
             if let Some(tx) = guard.as_ref() {
-                let _ = tx.send(event);
+                let _ = tx.try_send(event);
             }
         }
         Ok(())

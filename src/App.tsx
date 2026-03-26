@@ -19,7 +19,6 @@ import {
 
 const ConfigDrawer = lazy(() => import("./components/ConfigDrawer"));
 
-const ASSISTANT_STORAGE_KEY = "unionai.defaultAssistant";
 const MAX_MESSAGES = 500;
 const MAX_THOUGHT_CHARS = 5000;
 const MENTION_DEBOUNCE_MS = 90;
@@ -73,10 +72,6 @@ export default function App() {
   const patchActiveSession = (patch: Partial<AppSession>) => {
     const id = activeSessionId();
     if (!id) return;
-    if ("runtimeKind" in patch) {
-      if (patch.runtimeKind) window.localStorage.setItem(ASSISTANT_STORAGE_KEY, patch.runtimeKind);
-      else window.localStorage.removeItem(ASSISTANT_STORAGE_KEY);
-    }
     updateSession(id, patch);
     persistSessionPatch(id, patch);
   };
@@ -114,6 +109,7 @@ export default function App() {
   let inputEl: HTMLInputElement | undefined;
   const acceptingStreams = new Set<string>();
   const streamBatchBuffers = new Map<string, string>();
+  const thoughtBatchBuffers = new Map<string, string>();
   let streamBatchRaf: number | null = null;
   let runTokenSeq = 0;
   let canceledRunToken = 0;
@@ -204,6 +200,19 @@ export default function App() {
         }),
       );
     }
+    for (const [sid, buf] of thoughtBatchBuffers) {
+      if (!buf) continue;
+      const chunk = buf;
+      thoughtBatchBuffers.set(sid, "");
+      setSessions(
+        (s) => s.id === sid,
+        "thoughtText",
+        (prev) => {
+          const next = `${prev ?? ""}${chunk}`;
+          return next.length <= MAX_THOUGHT_CHARS ? next : next.slice(next.length - MAX_THOUGHT_CHARS);
+        },
+      );
+    }
     scheduleScrollToBottom();
     streamBatchRaf = null;
   };
@@ -224,9 +233,11 @@ export default function App() {
     }
     if (sessionId) {
       streamBatchBuffers.delete(sessionId);
+      thoughtBatchBuffers.delete(sessionId);
       acceptingStreams.delete(sessionId);
     } else {
       streamBatchBuffers.clear();
+      thoughtBatchBuffers.clear();
       acceptingStreams.clear();
     }
   };
@@ -313,19 +324,27 @@ export default function App() {
 
   const fetchConfigOptions = async (runtimeKey: string, roleName?: string): Promise<AcpConfigOption[]> => {
     try {
+      const sid = activeSessionId();
+      if (!sid) return [];
       const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
       if (roleName) {
         const raw = await invoke<unknown[]>("prewarm_role_config_cmd", {
           runtimeKind: normalizedRuntime,
           roleName,
+          appSessionId: sid,
         });
         return raw as AcpConfigOption[];
       }
-      const cached = await invoke<unknown[]>("list_discovered_config_options_cmd", { runtimeKey: normalizedRuntime });
+      const cached = await invoke<unknown[]>("list_discovered_config_options_cmd", {
+        runtimeKey: normalizedRuntime,
+        roleName: "UnionAIAssistant",
+        appSessionId: sid,
+      });
       if (cached.length > 0) return cached as AcpConfigOption[];
       const raw = await invoke<unknown[]>("prewarm_role_config_cmd", {
         runtimeKind: normalizedRuntime,
-        roleName: "",
+        roleName: "UnionAIAssistant",
+        appSessionId: sid,
       });
       return raw as AcpConfigOption[];
     } catch { return []; }
@@ -359,22 +378,23 @@ export default function App() {
   const appendThought = (sessionId: string, chunk: string) => {
     const normalized = normalizeNewlines(chunk);
     if (!normalized.trim()) return;
-    setSessions(
-      (s) => s.id === sessionId,
-      "thoughtText",
-      (prev) => {
-        const next = `${prev ?? ""}${normalized}`;
-        return next.length <= MAX_THOUGHT_CHARS
-          ? next
-          : next.slice(next.length - MAX_THOUGHT_CHARS);
-      },
-    );
+    const existing = thoughtBatchBuffers.get(sessionId) ?? "";
+    thoughtBatchBuffers.set(sessionId, existing + normalized);
+    if (streamBatchRaf === null) {
+      streamBatchRaf = window.requestAnimationFrame(flushStreamBatch);
+    }
   };
 
   const fetchAgentCommands = async (runtimeKey: string, roleName: string): Promise<{ runtimeKey: string; commands: Array<{ name: string; description: string; hint?: string }> }> => {
     const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
     try {
-      const raw = await invoke<unknown[]>("list_available_commands_cmd", { runtimeKey: normalizedRuntime, roleName });
+      const sid = activeSessionId();
+      if (!sid) return { runtimeKey: normalizedRuntime, commands: [] };
+      const raw = await invoke<unknown[]>("list_available_commands_cmd", {
+        runtimeKey: normalizedRuntime,
+        roleName,
+        appSessionId: sid,
+      });
       return { runtimeKey: normalizedRuntime, commands: parseAgentCommands(raw) };
     } catch {
       return { runtimeKey: normalizedRuntime, commands: [] };
@@ -419,12 +439,10 @@ export default function App() {
     const rows = await invoke<AssistantRuntime[]>("detect_assistants");
     setAssistants(rows);
     slashCliCache = null;
-    const preferred = window.localStorage.getItem(ASSISTANT_STORAGE_KEY);
     const current = activeSession()?.runtimeKind ?? null;
     const currentAvailable = current ? rows.find((a) => a.key === current && a.available) : null;
     if (currentAvailable) return;
-    const preferredAvailable = preferred ? rows.find((a) => a.key === preferred && a.available) : null;
-    const first = preferredAvailable ?? rows.find((a) => a.available) ?? null;
+    const first = rows.find((a) => a.available) ?? null;
     if (first) {
       setPreferredAssistant(first.key);
     }
@@ -851,6 +869,7 @@ export default function App() {
       });
       if (runToken <= canceledRunToken) return;
       if (res.runtimeKind) setPreferredAssistant(res.runtimeKind);
+      if (text.startsWith("/app_role")) void refreshRoles();
 
       if (streamStarted) {
         completeOriginStream(res.reply);
@@ -997,10 +1016,7 @@ export default function App() {
   };
 
   const newSession = () => {
-    const preferred = window.localStorage.getItem(ASSISTANT_STORAGE_KEY);
-    const availableAssistant = preferred
-      ? assistants().find((a) => a.key === preferred && a.available)?.key ?? null
-      : assistants().find((a) => a.available)?.key ?? null;
+    const availableAssistant = assistants().find((a) => a.available)?.key ?? null;
     void invoke<{ id: string }>("create_app_session", { title: "New Session" }).then((created) => {
       const s = makeDefaultSession("New Session");
       s.id = created.id;
@@ -1023,6 +1039,9 @@ export default function App() {
   };
 
   const closeSession = (id: string) => {
+    streamBatchBuffers.delete(id);
+    thoughtBatchBuffers.delete(id);
+    acceptingStreams.delete(id);
     const remaining = sessions.filter((s) => s.id !== id);
     if (remaining.length === 0) { void invoke("delete_app_session", { id }).catch(() => {}); return; }
     setSessions(remaining);
@@ -1075,10 +1094,7 @@ export default function App() {
         refreshSkills(),
       ]);
 
-      const preferred = window.localStorage.getItem(ASSISTANT_STORAGE_KEY);
-      const availableAssistant = preferred
-        ? assistants().find((a) => a.key === preferred && a.available)?.key ?? null
-        : assistants().find((a) => a.available)?.key ?? null;
+      const availableAssistant = assistants().find((a) => a.available)?.key ?? null;
 
       sessions.forEach((s, i) => {
         if (!s.runtimeKind && availableAssistant) {
@@ -1148,7 +1164,12 @@ export default function App() {
               };
               setSessions((s) => s.id === sid, produce((s) => {
                 s.toolCalls[e.toolCallId!] = tc;
-                s.streamSegments.push({ kind: "tool" as const, tc });
+                const existing = s.streamSegments.findIndex(seg => seg.kind === "tool" && seg.tc.toolCallId === e.toolCallId);
+                if (existing >= 0) {
+                  s.streamSegments[existing] = { kind: "tool" as const, tc };
+                } else {
+                  s.streamSegments.push({ kind: "tool" as const, tc });
+                }
               }));
               patchSession({ agentState: `${e.toolKind ?? "tool"}: ${e.title ?? e.toolCallId}` });
               scheduleScrollToBottom();
@@ -1157,8 +1178,13 @@ export default function App() {
           case "toolCallUpdate":
             if (e.toolCallId) {
               setSessions((s) => s.id === sid, produce((s) => {
-                const existing = s.toolCalls[e.toolCallId!];
-                if (!existing) return;
+                const isNew = !s.toolCalls[e.toolCallId!];
+                const existing = s.toolCalls[e.toolCallId!] ?? {
+                  toolCallId: e.toolCallId!,
+                  title: e.title ?? "",
+                  kind: e.toolKind ?? "unknown",
+                  status: "pending",
+                };
                 const newContent = Array.isArray(e.content) ? e.content : existing.content;
                 const newLocations = normalizeToolLocations(e.locations as unknown[] | undefined) ?? existing.locations;
                 const contentJson = newContent !== existing.content
@@ -1180,11 +1206,15 @@ export default function App() {
                   rawOutputJson: e.rawOutput !== undefined ? JSON.stringify(newRawOutput, null, 2) : existing.rawOutputJson,
                 };
                 s.toolCalls[e.toolCallId!] = updated;
-                for (let i = s.streamSegments.length - 1; i >= 0; i--) {
-                  const seg = s.streamSegments[i];
-                  if (seg.kind === "tool" && seg.tc.toolCallId === e.toolCallId) {
-                    s.streamSegments[i] = { kind: "tool", tc: updated };
-                    break;
+                if (isNew) {
+                  s.streamSegments.push({ kind: "tool", tc: updated });
+                } else {
+                  for (let i = s.streamSegments.length - 1; i >= 0; i--) {
+                    const seg = s.streamSegments[i];
+                    if (seg.kind === "tool" && seg.tc.toolCallId === e.toolCallId) {
+                      s.streamSegments[i] = { kind: "tool", tc: updated };
+                      break;
+                    }
                   }
                 }
               }));
@@ -1278,7 +1308,6 @@ export default function App() {
         activeSessionId={activeSessionId}
         setActiveSessionId={setActiveSessionId}
         activeSession={activeSession}
-        assistants={assistants}
         patchActiveSession={patchActiveSession}
         activeBackendRole={activeBackendRole}
         onNewSession={newSession}

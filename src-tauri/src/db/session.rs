@@ -168,7 +168,7 @@ pub(crate) async fn run_workflow(
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let workspace_path = default_chat_cwd();
-    let context_scope = "global".to_string();
+    let context_scope = format!("workflow:{session_id}");
     let mut prompt = seed_prompt;
     for (step_idx, role_name) in workflow.steps.iter().enumerate() {
         let runtime_kind =

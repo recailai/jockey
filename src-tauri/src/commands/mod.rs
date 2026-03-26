@@ -1,12 +1,18 @@
 pub(crate) mod completion;
+mod role_templates;
 
 use crate::assistant::normalize_runtime_key;
+use crate::db::app_session_role::{
+    load_app_session_role_state, save_app_session_role_model_override,
+};
 use crate::db::context::*;
-use crate::db::role::*;
+use crate::db::role::resolve_role_runtime;
+use crate::db::session_context::{
+    app_session_role_scope, app_session_scope, list_shared_context_prefix_internal,
+};
 use crate::db::{get_state, with_db};
 use crate::types::*;
-use crate::{acp, build_unionai_tool_prompt, now_ms, resolve_chat_cwd};
-use rusqlite::params;
+use crate::{build_unionai_tool_prompt, now_ms, resolve_chat_cwd};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
 
@@ -26,6 +32,12 @@ pub(crate) fn enrich_command_message(base: &str, payload: &Value) -> String {
     }
     let detail = serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string());
     format!("{base}\n{detail}")
+}
+
+fn required_app_session_id(app_session_id: Option<&str>) -> Result<&str, String> {
+    app_session_id
+        .filter(|sid| !sid.trim().is_empty())
+        .ok_or_else(|| "app session id required".to_string())
 }
 
 #[tauri::command]
@@ -53,6 +65,17 @@ pub(crate) async fn apply_chat_command(
         session_id: None,
         payload: json!({}),
     };
+
+    let app_session_id_ref = app_session_id.as_deref().filter(|s| !s.trim().is_empty());
+    let assistant_scope =
+        app_session_id_ref.map(|sid| app_session_role_scope(sid, "UnionAIAssistant"));
+
+    if role_templates::handle_role_template_command(state.clone(), &tokens, &mut result)? {
+        result.message = enrich_command_message(&result.message, &result.payload);
+        app.emit("command/applied", result.clone())
+            .map_err(|e| e.to_string())?;
+        return Ok(result);
+    }
 
     match tokens.as_slice() {
         ["/app_help"] => {
@@ -90,11 +113,6 @@ pub(crate) async fn apply_chat_command(
                 result.runtime_kind = Some(normalized.to_string());
                 result.message = format!("assistant selected: {}", normalized);
                 result.payload = json!({ "assistant": normalized });
-                let runtime_key = normalized.to_string();
-                let prewarm_cwd = resolve_chat_cwd();
-                tauri::async_runtime::spawn(async move {
-                    acp::prewarm(&runtime_key, &prewarm_cwd).await;
-                });
             }
             None => {
                 result.ok = false;
@@ -105,11 +123,15 @@ pub(crate) async fn apply_chat_command(
         ["/app_model", "list"] => {
             let runtime = resolve_model_runtime(result.runtime_kind.as_deref());
             let models = list_models_for_runtime(get_state(&state), &runtime)?;
-            let selected = get_shared_context(
-                state.clone(),
-                "assistant:main".to_string(),
-                "model".to_string(),
-            )?;
+            let selected = app_session_id_ref
+                .and_then(|sid| load_app_session_role_state(get_state(&state), sid, "UnionAIAssistant").ok().flatten())
+                .and_then(|row| row.model_override)
+                .map(|value| ContextEntry {
+                    scope: app_session_role_scope(app_session_id_ref.unwrap(), "UnionAIAssistant"),
+                    key: "model".to_string(),
+                    value,
+                    updated_at: now_ms(),
+                });
             result.message = format!("{} models for runtime {}", models.len(), runtime);
             result.payload = json!({
                 "runtime": runtime,
@@ -133,67 +155,105 @@ pub(crate) async fn apply_chat_command(
             result.payload = json!({ "model": model, "removed": removed });
         }
         ["/app_model", "select", "role", role_name, model] => {
+            let sid = required_app_session_id(app_session_id_ref)?;
             let selected_model = sanitize_dynamic_item_name(model)
                 .ok_or_else(|| format!("invalid model name: {}", model))?;
             let runtime = resolve_role_runtime(state.clone(), role_name)?;
             let _ = upsert_dynamic_catalog_item(get_state(&state), "model", &selected_model)?;
-            let entry = set_shared_context(
-                state.clone(),
-                context_scope_for_role(role_name),
-                "model".to_string(),
-                selected_model,
+            save_app_session_role_model_override(
+                get_state(&state),
+                sid,
+                role_name,
+                &runtime,
+                Some(&selected_model),
             )?;
+            let entry = ContextEntry {
+                scope: app_session_role_scope(sid, role_name),
+                key: "model".to_string(),
+                value: selected_model,
+                updated_at: now_ms(),
+            };
             result.message = format!("model selected for role {}: {}", role_name, entry.value);
             result.payload = json!({ "entry": entry, "runtime": runtime });
         }
         ["/app_model", "select", model] => {
+            let sid = required_app_session_id(app_session_id_ref)?;
             let selected_model = sanitize_dynamic_item_name(model)
                 .ok_or_else(|| format!("invalid model name: {}", model))?;
             let runtime = resolve_model_runtime(result.runtime_kind.as_deref());
             let _ = upsert_dynamic_catalog_item(get_state(&state), "model", &selected_model)?;
-            let entry = set_shared_context(
-                state.clone(),
-                "assistant:main".to_string(),
-                "model".to_string(),
-                selected_model,
+            save_app_session_role_model_override(
+                get_state(&state),
+                sid,
+                "UnionAIAssistant",
+                &runtime,
+                Some(&selected_model),
             )?;
+            let entry = ContextEntry {
+                scope: app_session_role_scope(sid, "UnionAIAssistant"),
+                key: "model".to_string(),
+                value: selected_model,
+                updated_at: now_ms(),
+            };
             result.message = format!("model selected: {}", entry.value);
             result.payload = json!({ "entry": entry, "runtime": runtime });
         }
         ["/app_model", "get", "role", role_name] => {
-            let entry = get_shared_context(
-                state.clone(),
-                context_scope_for_role(role_name),
-                "model".to_string(),
-            )?;
+            let sid = required_app_session_id(app_session_id_ref)?;
+            let entry = load_app_session_role_state(get_state(&state), sid, role_name)?
+                .and_then(|row| {
+                    row.model_override.map(|value| ContextEntry {
+                        scope: app_session_role_scope(sid, role_name),
+                        key: "model".to_string(),
+                        value,
+                        updated_at: now_ms(),
+                    })
+                });
             let runtime = resolve_role_runtime(state.clone(), role_name)?;
             result.message = format!("model fetched for role {}", role_name);
             result.payload = json!({ "entry": entry, "runtime": runtime });
         }
         ["/app_model", "get"] => {
-            let entry = get_shared_context(
-                state.clone(),
-                "assistant:main".to_string(),
-                "model".to_string(),
-            )?;
+            let sid = required_app_session_id(app_session_id_ref)?;
+            let entry = load_app_session_role_state(get_state(&state), sid, "UnionAIAssistant")?
+                .and_then(|row| {
+                    row.model_override.map(|value| ContextEntry {
+                        scope: app_session_role_scope(sid, "UnionAIAssistant"),
+                        key: "model".to_string(),
+                        value,
+                        updated_at: now_ms(),
+                    })
+                });
             let runtime = resolve_model_runtime(result.runtime_kind.as_deref());
             result.message = "model fetched".to_string();
             result.payload = json!({ "entry": entry, "runtime": runtime });
         }
         ["/app_model", "clear", "role", role_name] => {
-            let scope = context_scope_for_role(role_name);
-            clear_shared_context_internal(get_state(&state), &scope, "model")?;
+            let sid = required_app_session_id(app_session_id_ref)?;
+            let runtime = resolve_role_runtime(state.clone(), role_name)?;
+            save_app_session_role_model_override(get_state(&state), sid, role_name, &runtime, None)?;
             result.message = format!("model cleared for role {}", role_name);
             result.payload = json!({ "role": role_name });
         }
         ["/app_model", "clear"] => {
-            clear_shared_context_internal(get_state(&state), "assistant:main", "model")?;
+            let sid = required_app_session_id(app_session_id_ref)?;
+            let runtime = resolve_model_runtime(result.runtime_kind.as_deref());
+            save_app_session_role_model_override(
+                get_state(&state),
+                sid,
+                "UnionAIAssistant",
+                &runtime,
+                None,
+            )?;
             result.message = "model cleared".to_string();
             result.payload = json!({});
         }
         ["/app_mcp", "list"] => {
+            let scope = assistant_scope
+                .clone()
+                .ok_or_else(|| "app session id required".to_string())?;
             let catalog = list_dynamic_catalog(get_state(&state), "mcp")?;
-            let enabled = list_enabled_feature_flags(get_state(&state), "mcp:");
+            let enabled = list_enabled_feature_flags(get_state(&state), &scope, "mcp:");
             result.message = format!("{} MCP servers enabled", enabled.len());
             result.payload = json!({ "catalog": catalog, "enabled": enabled });
         }
@@ -203,13 +263,16 @@ pub(crate) async fn apply_chat_command(
             result.payload = json!({ "server": name });
         }
         ["/app_mcp", "remove", server] => {
+            let scope = assistant_scope
+                .clone()
+                .ok_or_else(|| "app session id required".to_string())?;
             let name = sanitize_dynamic_item_name(server)
                 .ok_or_else(|| format!("invalid mcp server name: {}", server))?;
             let removed = remove_dynamic_catalog_item(get_state(&state), "mcp", &name)?;
             if removed {
                 clear_shared_context_internal(
                     get_state(&state),
-                    "assistant:main",
+                    &scope,
                     &format!("mcp:{name}"),
                 )?;
             }
@@ -222,6 +285,9 @@ pub(crate) async fn apply_chat_command(
             result.payload = json!({ "server": name, "removed": removed });
         }
         ["/app_mcp", mode, server] if *mode == "enable" || *mode == "disable" => {
+            let scope = assistant_scope
+                .clone()
+                .ok_or_else(|| "app session id required".to_string())?;
             let name = sanitize_dynamic_item_name(server)
                 .ok_or_else(|| format!("invalid mcp server name: {}", server))?;
             if !dynamic_catalog_contains(get_state(&state), "mcp", &name)? {
@@ -235,21 +301,26 @@ pub(crate) async fn apply_chat_command(
                 } else {
                     "disabled"
                 };
-                let entry = set_shared_context(
-                    state.clone(),
-                    "assistant:main".to_string(),
-                    format!("mcp:{name}"),
-                    value.to_string(),
+                let entry = set_shared_context_internal(
+                    get_state(&state),
+                    &scope,
+                    &format!("mcp:{name}"),
+                    value,
                 )?;
                 result.message = format!("mcp {}: {}", mode, name);
                 result.payload = json!({ "entry": entry });
             }
         }
         ["/app_context", "list"] | ["/app_context", "list", ..] => {
+            let sid = required_app_session_id(app_session_id_ref)?;
+            let prefix = app_session_scope(sid);
             let scope = tokens.get(2).copied().unwrap_or("");
             let entries = if scope.is_empty() {
-                list_all_shared_context(get_state(&state))?
+                list_shared_context_prefix_internal(get_state(&state), &prefix)?
             } else {
+                if !scope.starts_with(&prefix) {
+                    return Err(format!("scope must stay within {}", prefix));
+                }
                 list_shared_context_internal(get_state(&state), scope)?
             };
             result.message = format!(
@@ -327,214 +398,6 @@ pub(crate) async fn apply_chat_command(
             result.ok = false;
             result.message = "workspace commands are managed automatically.".to_string();
             result.payload = json!({});
-        }
-        ["/app_role", "list"] => {
-            let roles = list_all_roles(get_state(&state))?;
-            result.message = format!("{} roles", roles.len());
-            result.payload = json!({ "roles": roles });
-        }
-        ["/app_role", "bind", role_name, runtime_kind, prompt @ ..] => {
-            let normalized_runtime = normalize_runtime_key(runtime_kind)
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| (*runtime_kind).to_string());
-            let role = upsert_role(
-                state.clone(),
-                (*role_name).to_string(),
-                normalized_runtime.clone(),
-                if prompt.is_empty() {
-                    "default-system-prompt".to_string()
-                } else {
-                    prompt.join(" ")
-                },
-                None,
-                None,
-                None,
-                None,
-                None,
-            )?;
-            result.message = format!("role bound: {}", role.role_name);
-            result.payload = json!({ "role": role });
-            let runtime_for_warmup = normalized_runtime.clone();
-            let role_for_warmup = (*role_name).to_string();
-            let prewarm_cwd = resolve_chat_cwd();
-            tauri::async_runtime::spawn(async move {
-                acp::prewarm_role(&runtime_for_warmup, &role_for_warmup, &prewarm_cwd, None).await;
-            });
-        }
-        ["/app_role", "prompt", role_name, prompt @ ..] => {
-            let runtime = resolve_role_runtime(state.clone(), role_name)?;
-            let role = upsert_role(
-                state.clone(),
-                (*role_name).to_string(),
-                runtime,
-                prompt.join(" "),
-                None,
-                None,
-                None,
-                None,
-                None,
-            )?;
-            result.message = format!("role prompt updated: {}", role.role_name);
-            result.payload = json!({ "role": role });
-        }
-        ["/app_role", "delete", role_name] => {
-            with_db(get_state(&state), |conn| {
-                conn.execute("DELETE FROM roles WHERE role_name = ?1", params![role_name])
-                    .map_err(|e| e.to_string())?;
-                Ok(())
-            })?;
-            result.message = format!("role deleted: {}", role_name);
-            result.payload = json!({ "roleName": role_name });
-        }
-        ["/app_role", "edit", role_name, "model", value @ ..] => {
-            let model_value = if value.is_empty() {
-                None
-            } else {
-                Some(value.join(" "))
-            };
-            with_db(get_state(&state), |conn| {
-                conn.execute(
-                    "UPDATE roles SET model = ?1, updated_at = ?2 WHERE role_name = ?3",
-                    params![model_value, now_ms(), role_name],
-                )
-                .map_err(|e| e.to_string())?;
-                Ok(())
-            })?;
-            result.message = format!("role {} model updated", role_name);
-            result.payload = json!({ "role": role_name, "model": model_value });
-        }
-        ["/app_role", "edit", role_name, "mode", value @ ..] => {
-            let runtime = resolve_role_runtime(state.clone(), role_name)?;
-            let available_modes = acp::list_discovered_modes(&runtime);
-            if value.is_empty() {
-                result.message = format!(
-                    "role {} available modes for {}: {}",
-                    role_name,
-                    runtime,
-                    if available_modes.is_empty() {
-                        "<unknown yet, run the role once to discover>".to_string()
-                    } else {
-                        available_modes.join(", ")
-                    }
-                );
-                result.payload = json!({ "role": role_name, "runtime": runtime, "availableModes": available_modes });
-            } else {
-                let requested_mode = value.join(" ");
-                let mode_value = if requested_mode.eq_ignore_ascii_case("none")
-                    || requested_mode.eq_ignore_ascii_case("clear")
-                {
-                    None
-                } else {
-                    Some(requested_mode.clone())
-                };
-                if let Some(ref selected) = mode_value {
-                    if !available_modes.is_empty()
-                        && !available_modes
-                            .iter()
-                            .any(|m| m.eq_ignore_ascii_case(selected))
-                    {
-                        result.ok = false;
-                        result.message =
-                            format!("unsupported mode '{}' for runtime {}", selected, runtime);
-                        result.payload = json!({ "role": role_name, "runtime": runtime, "availableModes": available_modes });
-                    }
-                }
-                if result.ok {
-                    with_db(get_state(&state), |conn| {
-                        conn.execute(
-                            "UPDATE roles SET mode = ?1, updated_at = ?2 WHERE role_name = ?3",
-                            params![mode_value, now_ms(), role_name],
-                        )
-                        .map_err(|e| e.to_string())?;
-                        Ok(())
-                    })?;
-                    result.message = format!("role {} mode updated", role_name);
-                    result.payload = json!({ "role": role_name, "mode": mode_value });
-                }
-            }
-        }
-        ["/app_role", "edit", role_name, "auto-approve", value] => {
-            let auto = *value == "true" || *value == "1" || *value == "yes";
-            with_db(get_state(&state), |conn| {
-                conn.execute(
-                    "UPDATE roles SET auto_approve = ?1, updated_at = ?2 WHERE role_name = ?3",
-                    params![auto, now_ms(), role_name],
-                )
-                .map_err(|e| e.to_string())?;
-                Ok(())
-            })?;
-            result.message = format!("role {} auto-approve: {}", role_name, auto);
-            result.payload = json!({ "role": role_name, "autoApprove": auto });
-        }
-        ["/app_role", "edit", role_name, "mcp-add", server_json @ ..] => {
-            let json_str = server_json.join(" ");
-            let current = with_db(get_state(&state), |conn| {
-                conn.query_row(
-                    "SELECT mcp_servers_json FROM roles WHERE role_name = ?1",
-                    params![role_name],
-                    |row| row.get::<_, String>(0),
-                )
-                .map_err(|e| e.to_string())
-            })?;
-            let mut servers: Vec<Value> = serde_json::from_str(&current).unwrap_or_default();
-            let new_server: Value = serde_json::from_str(&json_str).map_err(|e| e.to_string())?;
-            servers.push(new_server);
-            let updated = serde_json::to_string(&servers).map_err(|e| e.to_string())?;
-            with_db(get_state(&state), |conn| {
-                conn.execute(
-                    "UPDATE roles SET mcp_servers_json = ?1, updated_at = ?2 WHERE role_name = ?3",
-                    params![updated, now_ms(), role_name],
-                )
-                .map_err(|e| e.to_string())?;
-                Ok(())
-            })?;
-            result.message = format!("role {} mcp server added", role_name);
-            result.payload = json!({ "role": role_name, "mcpServers": servers });
-        }
-        ["/app_role", "edit", role_name, "mcp-remove", name] => {
-            let current = with_db(get_state(&state), |conn| {
-                conn.query_row(
-                    "SELECT mcp_servers_json FROM roles WHERE role_name = ?1",
-                    params![role_name],
-                    |row| row.get::<_, String>(0),
-                )
-                .map_err(|e| e.to_string())
-            })?;
-            let mut servers: Vec<Value> = serde_json::from_str(&current).unwrap_or_default();
-            servers.retain(|s| s.get("name").and_then(|n| n.as_str()) != Some(name));
-            let updated = serde_json::to_string(&servers).map_err(|e| e.to_string())?;
-            with_db(get_state(&state), |conn| {
-                conn.execute(
-                    "UPDATE roles SET mcp_servers_json = ?1, updated_at = ?2 WHERE role_name = ?3",
-                    params![updated, now_ms(), role_name],
-                )
-                .map_err(|e| e.to_string())?;
-                Ok(())
-            })?;
-            result.message = format!("role {} mcp server removed: {}", role_name, name);
-            result.payload = json!({ "role": role_name, "mcpServers": servers });
-        }
-        ["/app_role", "copy", src_name, dst_name] => {
-            let src = with_db(get_state(&state), |conn| {
-                conn.query_row(
-                    "SELECT runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, auto_approve FROM roles WHERE role_name = ?1",
-                    params![src_name],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?, row.get::<_, bool>(6)?)),
-                ).map_err(|e| e.to_string())
-            })?;
-            let role = upsert_role(
-                state.clone(),
-                (*dst_name).to_string(),
-                src.0,
-                src.1,
-                src.2,
-                src.3,
-                Some(src.4),
-                Some(src.5),
-                Some(src.6),
-            )?;
-            result.message = format!("role copied: {} -> {}", src_name, dst_name);
-            result.payload = json!({ "role": role });
         }
         _ => {
             result.ok = false;

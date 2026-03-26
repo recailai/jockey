@@ -1,6 +1,6 @@
 use crate::db::{get_state, with_db};
 use crate::types::*;
-use crate::{acp, now_ms, resolve_chat_cwd};
+use crate::now_ms;
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use tauri::State;
@@ -108,12 +108,6 @@ pub(crate) async fn upsert_role_cmd(
         input.config_options_json,
         input.auto_approve,
     )?;
-    let runtime_for_warmup = role.runtime_kind.clone();
-    let role_for_warmup = role.role_name.clone();
-    let cwd_for_warmup = resolve_chat_cwd();
-    tauri::async_runtime::spawn(async move {
-        acp::prewarm_role(&runtime_for_warmup, &role_for_warmup, &cwd_for_warmup, None).await;
-    });
     Ok(role)
 }
 
@@ -161,6 +155,15 @@ pub(crate) fn list_roles(state: State<'_, AppState>) -> Result<Vec<Role>, String
     list_all_roles(get_state(&state))
 }
 
+#[tauri::command]
+pub(crate) fn delete_role_cmd(state: State<'_, AppState>, role_name: String) -> Result<(), String> {
+    with_db(get_state(&state), |conn| {
+        conn.execute("DELETE FROM roles WHERE role_name = ?1", params![role_name])
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })
+}
+
 pub(crate) fn load_role(state: &AppState, role_name: &str) -> Result<Option<Role>, String> {
     with_db(state, |conn| {
         conn.query_row(
@@ -191,22 +194,3 @@ pub(crate) fn resolve_role_runtime(
     load_role_runtime_kind(get_state(&state), role_name)
 }
 
-pub(crate) fn resolve_role_prompt(
-    state: State<'_, AppState>,
-    role_name: &str,
-) -> Result<String, String> {
-    resolve_role_prompt_raw(get_state(&state), role_name)
-}
-
-pub(crate) fn resolve_role_prompt_raw(state: &AppState, role_name: &str) -> Result<String, String> {
-    with_db(state, |conn| {
-        conn.query_row(
-            "SELECT system_prompt FROM roles WHERE role_name = ?1",
-            params![role_name],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())
-        .map(|item| item.unwrap_or_default())
-    })
-}

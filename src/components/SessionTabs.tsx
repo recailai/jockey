@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { For, Show, createSignal } from "solid-js";
 import type { Accessor, Setter } from "solid-js";
-import type { AppSession, AssistantRuntime } from "./types";
+import type { AppSession } from "./types";
 import { INTERACTIVE_MOTION } from "./types";
 
 type SessionTabsProps = {
@@ -9,7 +9,6 @@ type SessionTabsProps = {
   activeSessionId: Accessor<string | null>;
   setActiveSessionId: Setter<string | null>;
   activeSession: Accessor<AppSession | null>;
-  assistants: Accessor<AssistantRuntime[]>;
   patchActiveSession: (patch: Partial<AppSession>) => void;
   activeBackendRole: () => string;
   onNewSession: () => void;
@@ -98,28 +97,6 @@ export default function SessionTabs(props: SessionTabsProps) {
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
       <div class="flex-1" />
-      <For each={props.assistants()}>
-        {(a) => (
-          <button
-            onClick={() => a.available && props.patchActiveSession({ runtimeKind: a.key })}
-            class={`flex items-center gap-1.5 rounded-full px-3 py-1 text-[10.5px] font-bold tracking-wide transition-all duration-300 border shadow-sm ${
-              props.activeSession()?.runtimeKind === a.key
-                ? "bg-indigo-500/15 text-indigo-200 border-indigo-500/30 ring-1 ring-indigo-500/20 drop-shadow-[0_0_8px_rgba(99,102,241,0.15)]"
-                : "bg-zinc-900/40 text-zinc-500 border-transparent hover:bg-zinc-800/80 hover:text-zinc-300 hover:border-white/[0.05]"
-            } ${!a.available ? "opacity-30 pointer-events-none" : ""}`}
-            title={a.label}
-          >
-            <span class={`h-1.5 w-1.5 rounded-full shadow-[0_0_5px_currentColor] ${
-              !a.available ? "bg-rose-500 text-rose-500"
-              : props.activeSession()?.runtimeKind === a.key && props.activeSession()?.status === "error" ? "bg-rose-400 text-rose-400"
-              : props.activeSession()?.runtimeKind === a.key && props.activeSession()?.status === "running" ? "bg-blue-400 text-blue-400 animate-pulse"
-              : props.activeSession()?.runtimeKind === a.key ? "bg-indigo-400 text-indigo-400"
-              : "bg-emerald-500 text-emerald-500"
-            }`} />
-            {a.label}
-          </button>
-        )}
-      </For>
       <Show when={(props.activeSession()?.agentModes ?? []).length > 0}>
         <div class="flex gap-1.5 ml-1.5">
           <For each={props.activeSession()?.agentModes ?? []}>

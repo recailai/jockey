@@ -36,53 +36,6 @@ pub(crate) fn set_app_session_cwd(
     })
 }
 
-pub(crate) fn load_app_session_role_cli_id(
-    state: &AppState,
-    app_session_id: &str,
-    runtime_key: &str,
-    role_name: &str,
-) -> Option<String> {
-    if app_session_id.is_empty() {
-        return None;
-    }
-    with_db(state, |conn| {
-        conn.query_row(
-            "SELECT acp_session_id FROM app_session_roles WHERE app_session_id = ?1 AND role_name = ?2 AND runtime_kind = ?3",
-            params![app_session_id, role_name, runtime_key],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())
-    })
-    .ok()
-    .flatten()
-    .flatten()
-}
-
-pub(crate) fn save_app_session_role_cli_id(
-    state: &AppState,
-    app_session_id: &str,
-    runtime_key: &str,
-    role_name: &str,
-    cli_session_id: &str,
-) -> Result<(), String> {
-    if app_session_id.is_empty() {
-        return Ok(());
-    }
-    with_db(state, |conn| {
-        conn.execute(
-            "INSERT INTO app_session_roles (app_session_id, role_name, runtime_kind, acp_session_id)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(app_session_id, role_name) DO UPDATE SET
-               runtime_kind = excluded.runtime_kind,
-               acp_session_id = excluded.acp_session_id",
-            params![app_session_id, role_name, runtime_key, cli_session_id],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    })
-}
-
 #[tauri::command]
 pub(crate) fn list_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSession>, String> {
     with_db(get_state(&state), |conn| {
