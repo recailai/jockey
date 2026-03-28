@@ -97,10 +97,15 @@ export default function ChatInput(props: ChatInputProps) {
           <button
             type="submit"
             class={`shrink-0 flex h-9 w-9 items-center justify-center rounded-xl motion-safe:transition-all motion-safe:duration-300 ${props.input().trim() ? "bg-gradient-to-t from-indigo-600 to-indigo-500 text-white shadow-md shadow-indigo-500/25 border border-indigo-400/30 hover:shadow-indigo-500/40 hover:scale-105" : "bg-zinc-800/50 text-zinc-600 border border-transparent"} ${INTERACTIVE_MOTION}`}
-            title={props.activeSession()?.submitting ? "Queue" : "Send"}
+            title={props.activeSession()?.submitting ? `Queue (${props.activeSession()?.queuedMessages.length ?? 0})` : "Send"}
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class={props.input().trim() ? "drop-shadow-[0_1px_2px_rgba(0,0,0,0.3)]" : ""}><line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" /></svg>
           </button>
+          <Show when={(props.activeSession()?.queuedMessages.length ?? 0) > 0}>
+            <span class="shrink-0 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-amber-300">
+              Q{props.activeSession()?.queuedMessages.length ?? 0}
+            </span>
+          </Show>
         </div>
         <Show when={props.slashOpen() && props.slashItems().length > 0}>
           <div ref={(el) => { slashListEl = el; }} class="absolute bottom-14 left-0 right-0 z-30 max-h-56 overflow-auto rounded-lg border border-zinc-700 bg-zinc-900 p-1 shadow-xl">

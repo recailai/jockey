@@ -46,23 +46,55 @@ pub(crate) fn upsert_app_skill(
     if name.is_empty() {
         return Err("skill name cannot be empty".to_string());
     }
+    if name.chars().any(|c| c.is_whitespace()) {
+        return Err("skill name cannot contain spaces".to_string());
+    }
+    let input_id = input.id.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
     with_db(get_state(&state), |conn| {
-        let existing_id: Option<String> = conn
+        let existing_id_by_name: Option<String> = conn
             .query_row(
-                "SELECT id FROM app_skills WHERE name = ?1",
+                "SELECT id FROM app_skills WHERE lower(name) = lower(?1)",
                 params![&name],
                 |row| row.get(0),
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        let id = existing_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        if let Some(edit_id) = input_id {
+            let created_at: i64 = conn
+                .query_row(
+                    "SELECT created_at FROM app_skills WHERE id = ?1",
+                    params![&edit_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("skill not found: {}", edit_id))?;
+            if let Some(existing_id) = existing_id_by_name {
+                if existing_id != edit_id {
+                    return Err(format!("skill name already exists: {}", name));
+                }
+            }
+            conn.execute(
+                "UPDATE app_skills SET name = ?1, description = ?2, content = ?3, updated_at = ?4 WHERE id = ?5",
+                params![&name, &input.description, &input.content, now, &edit_id],
+            )
+            .map_err(|e| e.to_string())?;
+            return Ok(AppSkill {
+                id: edit_id,
+                name,
+                description: input.description,
+                content: input.content,
+                created_at,
+                updated_at: now,
+            });
+        }
+        if existing_id_by_name.is_some() {
+            return Err(format!("skill name already exists: {}", name));
+        }
+        let id = Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO app_skills (id, name, description, content, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(name) DO UPDATE SET
-               description = excluded.description,
-               content = excluded.content,
-               updated_at = excluded.updated_at",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![&id, &name, &input.description, &input.content, now, now,],
         )
         .map_err(|e| e.to_string())?;

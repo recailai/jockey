@@ -1,107 +1,32 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { For, Show, Suspense, createEffect, createMemo, createSignal, lazy, onCleanup, onMount } from "solid-js";
-import { createStore, produce } from "solid-js/store";
+import { For, Show, Suspense, createSignal, lazy, onCleanup, onMount } from "solid-js";
+import { produce } from "solid-js/store";
 
 import SessionTabs from "./components/SessionTabs";
 import MessageWindow from "./components/MessageWindow";
 import ChatInput from "./components/ChatInput";
 import type {
   Role, AppPlanEntry,
-  AcpStreamEvent, AcpConfigOption, AssistantRuntime,
-  AssistantChatResponse, AcpDeltaEvent, SessionUpdateEvent, WorkflowStateEvent,
-  AppMessage, AppMentionItem, AppSkill, AppSession, AppToolCall,
+  AcpStreamEvent, AssistantChatResponse, AcpDeltaEvent, SessionUpdateEvent, WorkflowStateEvent,
+  AppMessage, AppSession, AppToolCall,
 } from "./components/types";
 import {
   now, DEFAULT_BACKEND_ROLE, DEFAULT_ROLE_ALIAS,
-  flattenConfigValues,
 } from "./components/types";
+
+import { useSessionManager } from "./hooks/useSessionManager";
+import { useStreamEngine } from "./hooks/useStreamEngine";
+import { useAgentContext } from "./hooks/useAgentContext";
+import { useCompletions } from "./hooks/useCompletions";
+import {
+  uniqueName, normalizeSessionTitle, isDefaultSessionTitle, makeDefaultSession,
+} from "./lib/sessionHelpers";
 
 const ConfigDrawer = lazy(() => import("./components/ConfigDrawer"));
 const ManagementPanel = lazy(() => import("./components/ManagementPanel"));
 
-const MAX_MESSAGES = 500;
-const MAX_THOUGHT_CHARS = 5000;
-const MENTION_DEBOUNCE_MS = 90;
-const MENTION_CACHE_LIMIT = 80;
-
-let sessionIdCounter = 0;
-const makeSessionId = () => `session-${Date.now()}-${++sessionIdCounter}`;
-
-const uniqueName = (desired: string, existing: string[]): string => {
-  const set = new Set(existing);
-  if (!set.has(desired)) return desired;
-  const base = desired.replace(/_copy(\d+)?$/, "");
-  let n = 2;
-  let candidate = `${base}_copy`;
-  while (set.has(candidate)) candidate = `${base}_copy${n++}`;
-  return candidate;
-};
-
-const makeDefaultSession = (title: string): AppSession => ({
-  id: makeSessionId(),
-  title,
-  activeRole: DEFAULT_ROLE_ALIAS,
-  runtimeKind: null,
-  cwd: null,
-  messages: [],
-  streamingMessage: null,
-  toolCalls: {},
-  streamSegments: [],
-  currentPlan: null,
-  pendingPermission: null,
-  agentModes: [],
-  currentMode: null,
-  submitting: false,
-  discoveredConfigOptions: [],
-  configOptionsLoading: false,
-  agentCommands: new Map(),
-  status: "idle",
-  thoughtText: "",
-  queuedMessages: [],
-});
-
 export default function App() {
-  const [sessions, setSessions] = createStore<AppSession[]>([]);
-  const [activeSessionId, setActiveSessionId] = createSignal<string | null>(null);
-
-  const activeSession = createMemo(() => sessions.find((s) => s.id === activeSessionId()) ?? null);
-
-  const updateSession = (id: string, patch: Partial<AppSession>) => {
-    setSessions((s) => s.id === id, produce((s) => Object.assign(s, patch)));
-  };
-
-  const persistSessionPatch = (id: string, patch: Partial<AppSession>) => {
-    const update: { title?: string; activeRole?: string; runtimeKind?: string | null | undefined } = {};
-    if (typeof patch.title === "string") update.title = patch.title;
-    if (typeof patch.activeRole === "string") update.activeRole = patch.activeRole;
-    if ("runtimeKind" in patch) update.runtimeKind = patch.runtimeKind ?? null;
-    if (Object.keys(update).length === 0) return;
-    void invoke("update_app_session", { id, update }).catch(() => { });
-  };
-
-  const patchActiveSession = (patch: Partial<AppSession>) => {
-    const id = activeSessionId();
-    if (!id) return;
-    updateSession(id, patch);
-    persistSessionPatch(id, patch);
-  };
-
-  const [roles, setRoles] = createSignal<Role[]>([]);
-  const [assistants, setAssistants] = createSignal<AssistantRuntime[]>([]);
-  const [input, setInput] = createSignal("");
-  const [mentionOpen, setMentionOpen] = createSignal(false);
-  const [mentionItems, setMentionItems] = createSignal<AppMentionItem[]>([]);
-  const [mentionActiveIndex, setMentionActiveIndex] = createSignal(0);
-  const [mentionRange, setMentionRange] = createSignal<{ start: number; end: number; query: string } | null>(null);
-  const [slashOpen, setSlashOpen] = createSignal(false);
-  const [slashItems, setSlashItems] = createSignal<AppMentionItem[]>([]);
-  const [slashActiveIndex, setSlashActiveIndex] = createSignal(0);
-  const [slashRange, setSlashRange] = createSignal<{ end: number; query: string } | null>(null);
-  const [showDrawer, setShowDrawer] = createSignal(false);
-  const [showManagement, setShowManagement] = createSignal(false);
-  const [managementInitialTab, setManagementInitialTab] = createSignal<"sessions" | "workflows" | "roles" | "mcp" | "skills" | "context">("sessions");
-
   type Toast = { id: number; message: string; severity?: "error" | "info" };
   const [toasts, setToasts] = createSignal<Toast[]>([]);
   let toastSeq = 0;
@@ -111,169 +36,75 @@ export default function App() {
     window.setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 4000);
   };
 
-  let mentionReqSeq = 0;
-  let slashReqSeq = 0;
-  const mentionCloseTimerRef = { current: null as number | null };
-  const mentionDebounceTimerRef = { current: null as number | null };
-  let mentionPathCache = new Map<string, AppMentionItem[]>();
-  const runtimeConfigCache = new Map<string, AcpConfigOption[]>();
-  let mentionPathCacheKeys: string[] = [];
-  let slashCliCache: AppMentionItem[] | null = null;
-  let slashCliCacheVersion = 0;
+  const [showDrawer, setShowDrawer] = createSignal(false);
+  const [showManagement, setShowManagement] = createSignal(false);
+  const [managementInitialTab, setManagementInitialTab] = createSignal<"sessions" | "workflows" | "roles" | "mcp" | "skills">("sessions");
+  const [managementInitialRole, setManagementInitialRole] = createSignal<string | undefined>(undefined);
+
+  const [input, setInput] = createSignal("");
   let inputEl: HTMLInputElement | undefined;
-  const acceptingStreams = new Set<string>();
-  const streamBatchBuffers = new Map<string, string>();
-  const thoughtBatchBuffers = new Map<string, string>();
-  let streamBatchRaf: number | null = null;
-  let runTokenSeq = 0;
-  let canceledRunToken = 0;
+
+  const sessionManager = useSessionManager();
+  const {
+    sessions, setSessions,
+    activeSessionId, setActiveSessionId,
+    activeSession,
+    updateSession, patchActiveSession,
+    appendMessageToSession, pushMessage,
+    listRefMap, scheduleScrollToBottom,
+  } = sessionManager;
+
+  const streamEngine = useStreamEngine(sessionManager);
+  const {
+    acceptingStreams, streamBatchBuffers, thoughtBatchBuffers,
+    appendStream, appendThought,
+    resetStreamState, dropStream,
+    finalizeSessionStream,
+    normalizeToolLocations,
+    scheduleSessionEventFlush,
+  } = streamEngine;
+
+  const agentContext = useAgentContext(sessionManager, streamEngine, showToast);
+  const {
+    roles, assistants, skills,
+    normalizeRuntimeKey, commandCacheKey,
+    bumpRunToken, getCanceledRunToken,
+    isCustomRole, activeBackendRole, runtimeForRole,
+    refreshRoles, refreshSkills,
+    fetchConfigOptions,
+    parseAgentCommands,
+    fetchAndCacheAgentCommands,
+    setPreferredAssistant, refreshAssistants,
+    resetActiveAgentContext,
+    cancelCurrentRun: cancelCurrentRunBase,
+  } = agentContext;
+
+  const completions = useCompletions(
+    agentContext,
+    sessionManager,
+    input,
+    setInput,
+    () => inputEl,
+  );
+  const {
+    mentionOpen, mentionItems, mentionActiveIndex,
+    slashOpen, slashItems, slashActiveIndex,
+    mentionCloseTimerRef, mentionDebounceTimerRef,
+    closeMentionMenu, closeSlashMenu,
+    refreshInputCompletions,
+    applyMentionCandidate, applySlashCandidate,
+  } = completions;
+
   const queuedInputsFor = (sid: string | null): string[] => {
     if (!sid) return [];
     const s = sessions.find((x) => x.id === sid);
     return s?.queuedMessages ?? [];
   };
-  let scrollRaf: number | null = null;
-  const listRefMap = new Map<string, HTMLElement>();
-  let pendingSessionEvents: string[] = [];
-  let sessionEventFlushTimer: number | null = null;
+
   let inputHistory: string[] = [];
   let historyIndex = -1;
   let historySavedInput = "";
   const HISTORY_MAX = 200;
-
-  const [skills, setSkills] = createSignal<AppSkill[]>([]);
-  const normalizeRuntimeKey = (runtimeKey: string): string => {
-    const k = runtimeKey.trim().toLowerCase();
-    if (k === "claude" || k === "claude-acp") return "claude-code";
-    if (k === "gemini") return "gemini-cli";
-    if (k === "codex" || k === "codex-acp") return "codex-cli";
-    return k;
-  };
-  const commandCacheKey = (runtimeKey: string, roleName: string) => `${runtimeKey}:${roleName}`;
-
-  const scheduleScrollToBottom = () => {
-    if (scrollRaf !== null) return;
-    scrollRaf = window.requestAnimationFrame(() => {
-      scrollRaf = null;
-      const id = activeSessionId();
-      const el = id ? listRefMap.get(id) : null;
-      if (el) el.scrollTop = el.scrollHeight;
-    });
-  };
-
-  createEffect(() => {
-    if (!activeSessionId()) return;
-    const session = activeSession();
-    void session?.messages.length;
-    void session?.streamingMessage?.text.length;
-    void session?.streamSegments.length;
-    scheduleScrollToBottom();
-  });
-
-  const persistMessage = (sessionId: string, message: AppMessage) => {
-    if (!sessionId || message.roleName === "event") return;
-    void invoke("append_app_message", {
-      sessionId,
-      roleName: message.roleName,
-      content: message.text,
-    }).catch(() => {});
-  };
-
-  const appendMessageToSession = (sessionId: string, message: AppMessage) => {
-    const idx = sessions.findIndex((s) => s.id === sessionId);
-    if (idx === -1) return;
-    setSessions(idx, "messages", produce((msgs: AppMessage[]) => {
-      if (msgs.length >= MAX_MESSAGES) msgs.splice(0, msgs.length - MAX_MESSAGES + 1);
-      msgs.push(message);
-    }));
-    scheduleScrollToBottom();
-    persistMessage(sessionId, message);
-  };
-
-  const appendMessage = (message: AppMessage) => {
-    const id = activeSessionId();
-    if (!id) return;
-    appendMessageToSession(id, message);
-  };
-
-  const pushMessage = (roleName: string, text: string) => {
-    appendMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, roleName, text, at: now() });
-  };
-
-  const flushStreamBatch = () => {
-    for (const [sid, buf] of streamBatchBuffers) {
-      if (!buf) continue;
-      const chunk = buf;
-      streamBatchBuffers.set(sid, "");
-      setSessions(
-        (s) => s.id === sid && !!s.streamingMessage,
-        produce((s) => {
-          s.streamingMessage!.text = (s.streamingMessage!.text ?? "") + chunk;
-          const last = s.streamSegments[s.streamSegments.length - 1];
-          if (last && last.kind === "text") {
-            s.streamSegments[s.streamSegments.length - 1] = { kind: "text" as const, text: last.text + chunk };
-          } else {
-            s.streamSegments.push({ kind: "text" as const, text: chunk });
-          }
-        }),
-      );
-    }
-    for (const [sid, buf] of thoughtBatchBuffers) {
-      if (!buf) continue;
-      const chunk = buf;
-      thoughtBatchBuffers.set(sid, "");
-      setSessions(
-        (s) => s.id === sid,
-        "thoughtText",
-        (prev) => {
-          const next = `${prev ?? ""}${chunk}`;
-          return next.length <= MAX_THOUGHT_CHARS ? next : next.slice(next.length - MAX_THOUGHT_CHARS);
-        },
-      );
-    }
-    scheduleScrollToBottom();
-    streamBatchRaf = null;
-  };
-
-  const appendStream = (sessionId: string, chunk: string) => {
-    if (!chunk) return;
-    const existing = streamBatchBuffers.get(sessionId) ?? "";
-    streamBatchBuffers.set(sessionId, existing + normalizeNewlines(chunk));
-    if (streamBatchRaf === null) {
-      streamBatchRaf = window.requestAnimationFrame(flushStreamBatch);
-    }
-  };
-
-  const resetStreamState = (sessionId?: string) => {
-    if (streamBatchRaf !== null) {
-      window.cancelAnimationFrame(streamBatchRaf);
-      streamBatchRaf = null;
-    }
-    if (sessionId) {
-      streamBatchBuffers.delete(sessionId);
-      thoughtBatchBuffers.delete(sessionId);
-      acceptingStreams.delete(sessionId);
-    } else {
-      streamBatchBuffers.clear();
-      thoughtBatchBuffers.clear();
-      acceptingStreams.clear();
-    }
-  };
-
-  const dropStream = () => {
-    patchActiveSession({ streamingMessage: null });
-    resetStreamState(activeSessionId() ?? undefined);
-  };
-
-  const scheduleSessionEventFlush = () => {
-    if (sessionEventFlushTimer !== null) return;
-    sessionEventFlushTimer = window.setTimeout(() => {
-      sessionEventFlushTimer = null;
-      if (pendingSessionEvents.length === 0) return;
-      pushMessage("event", pendingSessionEvents.join("\n"));
-      pendingSessionEvents = [];
-    }, 120);
-  };
 
   const runNextQueued = () => {
     const s = activeSession();
@@ -281,521 +112,23 @@ export default function App() {
     const sid = activeSessionId();
     const queue = queuedInputsFor(sid);
     if (queue.length === 0) return;
-    const next = queue[0];
     if (sid) {
-      setSessions((ss) => ss.id === sid, "queuedMessages", (prev) => prev.slice(1));
+      setSessions((ss) => ss.id === sid, "queuedMessages", []);
     }
-    void sendRaw(next);
-  };
-
-  const isCustomRole = () => {
-    const s = activeSession();
-    return s ? s.activeRole !== DEFAULT_ROLE_ALIAS && s.activeRole !== DEFAULT_BACKEND_ROLE : false;
-  };
-
-  const activeBackendRole = () => isCustomRole() ? (activeSession()?.activeRole ?? DEFAULT_BACKEND_ROLE) : DEFAULT_BACKEND_ROLE;
-
-  const runtimeForRole = (roleName: string): string | null => {
-    if (!isCustomRole() || roleName === DEFAULT_BACKEND_ROLE) return activeSession()?.runtimeKind ?? null;
-    return roles().find((r) => r.roleName === roleName)?.runtimeKind ?? activeSession()?.runtimeKind ?? null;
-  };
-
-  const resetActiveAgentContext = async () => {
-    const sid = activeSessionId();
-    const role = activeBackendRole();
-    const runtime = runtimeForRole(role);
-    if (!sid || !runtime) {
-      showToast("No active agent context to reset.", "info");
-      return;
+    const merged = queue.map((q) => q.trim()).filter(Boolean).join("\n");
+    if (!merged) return;
+    if (queue.length > 1) {
+      pushMessage("event", `queued messages merged: ${queue.length}`);
     }
-    if (activeSession()?.submitting) {
-      showToast("Stop current run before resetting context.", "info");
-      return;
-    }
-    try {
-      await invoke("reset_acp_session", { runtimeKind: runtime, roleName: role, appSessionId: sid });
-      const cacheKey = commandCacheKey(normalizeRuntimeKey(runtime), role);
-      setSessions((s) => s.id === sid, produce((s) => {
-        const next = new Map(s.agentCommands);
-        next.delete(cacheKey);
-        s.agentCommands = next;
-      }));
-      updateSession(sid, {
-        discoveredConfigOptions: [],
-        toolCalls: {},
-        streamSegments: [],
-        currentPlan: null,
-        pendingPermission: null,
-        thoughtText: "",
-        agentState: undefined,
-        currentMode: null,
-        agentModes: [],
-      });
-      pushMessage("event", `[${role}] CLI context reset.`);
-    } catch (e) {
-      showToast(`Failed to reset ${role} context: ${String(e)}`);
-    }
+    void sendRaw(merged);
   };
 
   const cancelCurrentRun = async () => {
-    const sid = activeSessionId();
-    const sess = sid ? sessions.find((s) => s.id === sid) : null;
-    if (!sess?.submitting || !sid) return;
-    canceledRunToken = Math.max(canceledRunToken, runTokenSeq);
-    acceptingStreams.delete(sid);
-    finalizeSessionStream(sid, activeBackendRole());
-    updateSession(sid, { toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, thoughtText: "", submitting: false, status: "idle" });
-    pushMessage("event", "Cancellation requested.");
-    const role = activeBackendRole();
-    const runtime = runtimeForRole(role);
-    if (runtime) {
-      try {
-        await invoke("cancel_acp_session", { runtimeKind: runtime, roleName: role, appSessionId: sid });
-      } catch { }
-    }
-    runNextQueued();
-  };
-
-  const refreshRoles = async () => {
-    try {
-      const rows = await invoke<Role[]>("list_roles");
-      setRoles(rows);
-      slashCliCache = null;
-    } catch { setRoles([]); }
-  };
-
-  const refreshSkills = async () => {
-    try {
-      const rows = await invoke<AppSkill[]>("list_app_skills");
-      setSkills(rows);
-    } catch { setSkills([]); }
-  };
-
-  const fetchConfigOptions = async (runtimeKey: string, roleName?: string): Promise<AcpConfigOption[]> => {
-    try {
-      const sid = activeSessionId();
-      if (!sid) return [];
-      const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
-      if (roleName) {
-        const raw = await invoke<unknown[]>("prewarm_role_config_cmd", {
-          runtimeKind: normalizedRuntime,
-          roleName,
-          appSessionId: sid,
-        });
-        return raw as AcpConfigOption[];
-      }
-      const hit = runtimeConfigCache.get(normalizedRuntime);
-      if (hit) return hit;
-      const raw = await invoke<unknown[]>("prewarm_role_config_cmd", {
-        runtimeKind: normalizedRuntime,
-        roleName: "UnionAIAssistant",
-        appSessionId: sid,
-      });
-      const opts = raw as AcpConfigOption[];
-      if (opts.length > 0) runtimeConfigCache.set(normalizedRuntime, opts);
-      return opts;
-    } catch { return []; }
-  };
-
-  const parseAgentCommands = (raw: unknown[]): Array<{ name: string; description: string; hint?: string }> => {
-    return (raw as Array<{ name: string; description?: string; input?: { hint?: string } }>).map((c) => ({
-      name: c.name, description: c.description ?? "", hint: c.input?.hint,
-    }));
-  };
-
-  const normalizeNewlines = (input: string): string => input.replace(/\r\n?/g, "\n");
-
-  const normalizeToolLocations = (
-    raw: unknown[] | undefined,
-  ): Array<{ path: string; line?: number }> | undefined => {
-    if (!Array.isArray(raw) || raw.length === 0) return undefined;
-    const out = raw
-      .map((item) => {
-        if (!item || typeof item !== "object") return null;
-        const obj = item as Record<string, unknown>;
-        const path = typeof obj.path === "string" ? obj.path : "";
-        if (!path) return null;
-        const line = typeof obj.line === "number" ? obj.line : undefined;
-        return { path, line };
-      })
-      .filter((item): item is NonNullable<typeof item> => !!item);
-    return out.length > 0 ? out : undefined;
-  };
-
-  const appendThought = (sessionId: string, chunk: string) => {
-    const normalized = normalizeNewlines(chunk);
-    if (!normalized.trim()) return;
-    const existing = thoughtBatchBuffers.get(sessionId) ?? "";
-    thoughtBatchBuffers.set(sessionId, existing + normalized);
-    if (streamBatchRaf === null) {
-      streamBatchRaf = window.requestAnimationFrame(flushStreamBatch);
-    }
-  };
-
-  const finalizeSessionStream = (sessionId: string, fallbackRoleName: string, finalReply?: string) => {
-    flushStreamBatch();
-    const sess = sessions.find((x) => x.id === sessionId);
-    const row = sess?.streamingMessage ?? null;
-    const snapshotToolCalls = sess && Object.keys(sess.toolCalls).length > 0 ? Object.values(sess.toolCalls) : undefined;
-    const snapshotSegments = sess && sess.streamSegments.length > 0 ? [...sess.streamSegments] : undefined;
-    if (snapshotSegments && finalReply) {
-      const last = snapshotSegments[snapshotSegments.length - 1];
-      if (last && last.kind === "text") {
-        snapshotSegments[snapshotSegments.length - 1] = { kind: "text", text: normalizeNewlines(finalReply) };
-      } else {
-        snapshotSegments.push({ kind: "text", text: normalizeNewlines(finalReply) });
-      }
-    }
-    if (row) {
-      const text = normalizeNewlines(finalReply ?? row.text);
-      const shouldAppend = !!text.trim() || !!snapshotToolCalls?.length || !!snapshotSegments?.length;
-      if (shouldAppend) {
-        appendMessageToSession(sessionId, {
-          ...row,
-          text,
-          at: now(),
-          toolCalls: snapshotToolCalls,
-          segments: snapshotSegments,
-        });
-      }
-      updateSession(sessionId, { streamingMessage: null, thoughtText: "" });
-    } else if (finalReply && finalReply.trim()) {
-      appendMessageToSession(sessionId, {
-        id: `${now()}-${Math.random().toString(36).slice(2)}`,
-        roleName: fallbackRoleName,
-        text: normalizeNewlines(finalReply),
-        at: now(),
-        toolCalls: snapshotToolCalls,
-        segments: snapshotSegments,
-      });
-    }
-    resetStreamState(sessionId);
-    updateSession(sessionId, {
-      toolCalls: {},
-      streamSegments: [],
-      currentPlan: null,
-      pendingPermission: null,
-      agentState: undefined,
-      thoughtText: "",
-    });
-  };
-
-  const fetchAgentCommands = async (runtimeKey: string, roleName: string): Promise<{ runtimeKey: string; commands: Array<{ name: string; description: string; hint?: string }> }> => {
-    const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
-    try {
-      const sid = activeSessionId();
-      if (!sid) return { runtimeKey: normalizedRuntime, commands: [] };
-      const raw = await invoke<unknown[]>("list_available_commands_cmd", {
-        runtimeKey: normalizedRuntime,
-        roleName,
-        appSessionId: sid,
-      });
-      return { runtimeKey: normalizedRuntime, commands: parseAgentCommands(raw) };
-    } catch {
-      return { runtimeKey: normalizedRuntime, commands: [] };
-    }
-  };
-
-  const hydrateAgentCommandsForSession = async (
-    sessionId: string,
-    runtimeKey: string,
-    roleName: string,
-  ): Promise<number> => {
-    const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
-    const result = await fetchAgentCommands(normalizedRuntime, roleName);
-
-    const aidx = sessions.findIndex((sess) => sess.id === sessionId);
-    const commandKey = commandCacheKey(result.runtimeKey, roleName);
-    if (aidx !== -1) {
-      setSessions(aidx, "agentCommands", (m) => {
-        const next = new Map(m);
-        next.set(commandKey, result.commands);
-        return next;
-      });
-    }
-    return result.commands.length;
-  };
-
-  const fetchAndCacheAgentCommands = (runtimeKey: string, roleName: string) => {
-    void (async () => {
-      const sid = activeSessionId();
-      if (!sid) return;
-      await hydrateAgentCommandsForSession(sid, runtimeKey, roleName);
-    })().catch((e: unknown) => {
-      showToast(`Commands unavailable for ${roleName}: ${String(e)}`, "info");
-    });
-  };
-
-  const setPreferredAssistant = (assistantKey: string | null) => {
-    patchActiveSession({ runtimeKind: assistantKey });
-  };
-
-  const refreshAssistants = async () => {
-    const rows = await invoke<AssistantRuntime[]>("detect_assistants");
-    setAssistants(rows);
-    slashCliCache = null;
-    const current = activeSession()?.runtimeKind ?? null;
-    const currentAvailable = current ? rows.find((a) => a.key === current && a.available) : null;
-    if (currentAvailable) return;
-    const first = rows.find((a) => a.available) ?? null;
-    if (first) {
-      setPreferredAssistant(first.key);
-    }
-  };
-
-  const closeMentionMenu = () => {
-    setMentionOpen(false);
-    setMentionItems([]);
-    setMentionActiveIndex(0);
-    setMentionRange(null);
-  };
-
-  const closeSlashMenu = () => {
-    setSlashOpen(false);
-    setSlashItems([]);
-    setSlashActiveIndex(0);
-    setSlashRange(null);
-  };
-
-  const extractMentionContext = (text: string, caret: number) => {
-    const left = text.slice(0, caret);
-    for (const trigger of ["@", "#"]) {
-      const at = left.lastIndexOf(trigger);
-      if (at < 0) continue;
-      const prev = at > 0 ? left[at - 1] : " ";
-      if (!/\s/.test(prev)) continue;
-      const query = left.slice(at + 1);
-      if (/\s/.test(query)) continue;
-      let end = caret;
-      while (end < text.length && !/\s/.test(text[end])) end += 1;
-      return { start: at + 1, end, query, trigger };
-    }
-    return null;
-  };
-
-  const listRoleMentionCandidates = (query: string) => {
-    const q = query.startsWith("role:") ? query.slice(5).toLowerCase() : query.toLowerCase();
-    const out: AppMentionItem[] = [];
-    for (const role of roles()) {
-      const nameLower = role.roleName.toLowerCase();
-      if (q && !nameLower.includes(q)) continue;
-      out.push({ value: role.roleName, kind: "role", detail: role.runtimeKind });
-    }
-    return out;
-  };
-
-  const extractSlashContext = (text: string, caret: number) => {
-    const left = text.slice(0, caret);
-    if (!left.startsWith("/")) return null;
-    if (left.includes("\n")) return null;
-    return { end: caret, query: left.trimEnd() };
-  };
-
-  const shouldPathComplete = (query: string) => {
-    return query.startsWith("file:")
-      || query.startsWith("dir:")
-      || query.includes("/")
-      || query.startsWith(".")
-      || query.startsWith("~")
-      || query.length === 0;
-  };
-
-  const refreshMentionSuggestions = async (text: string, caret: number) => {
-    const ctx = extractMentionContext(text, caret);
-    if (!ctx) {
-      closeMentionMenu();
-      return;
-    }
-    setMentionRange(ctx);
-    if (ctx.trigger === "#") {
-      const q = ctx.query.toLowerCase();
-      const skillItems: AppMentionItem[] = skills()
-        .filter((s) => !q || s.name.toLowerCase().includes(q))
-        .map((s) => ({ value: s.name, kind: "skill" as const, detail: s.description || s.content.slice(0, 60) }));
-      setMentionItems(skillItems);
-      setMentionActiveIndex(0);
-      if (skillItems.length > 0) setMentionOpen(true); else closeMentionMenu();
-      return;
-    }
-    const staticItems: AppMentionItem[] = [];
-    if (ctx.query.length === 0) {
-      staticItems.push(
-        { value: "file:", kind: "hint", detail: "explicit file path" },
-        { value: "dir:", kind: "hint", detail: "explicit directory path" },
-      );
-    }
-    let items = [...staticItems, ...listRoleMentionCandidates(ctx.query)];
-
-    if (shouldPathComplete(ctx.query)) {
-      const seq = ++mentionReqSeq;
-      const cached = mentionPathCache.get(ctx.query);
-      if (cached) {
-        items = [...items, ...cached];
-      } else {
-        try {
-          const rows = await invoke<AppMentionItem[]>("complete_mentions", {
-            query: ctx.query,
-            limit: 12,
-          });
-          if (seq !== mentionReqSeq) return;
-          mentionPathCache.set(ctx.query, rows);
-          mentionPathCacheKeys.push(ctx.query);
-          if (mentionPathCacheKeys.length > MENTION_CACHE_LIMIT) {
-            const evictKey = mentionPathCacheKeys.shift()!;
-            mentionPathCache.delete(evictKey);
-          }
-          items = [...items, ...rows];
-        } catch {
-        }
-      }
-    }
-
-    const dedup = new Set<string>();
-    const merged = items.filter((it) => {
-      const key = `${it.kind}:${it.value}`;
-      if (dedup.has(key)) return false;
-      dedup.add(key);
-      return true;
-    }).slice(0, 12);
-
-    if (merged.length === 0) {
-      closeMentionMenu();
-      return;
-    }
-    setMentionItems(merged);
-    setMentionActiveIndex(0);
-    setMentionOpen(true);
-  };
-
-  const buildAgentSlashCandidates = (runtimeKey: string, roleName: string, query: string): AppMentionItem[] => {
-    const queryLower = query.toLowerCase().replace(/^\//, "");
-    const out: AppMentionItem[] = [];
-    const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
-    const cmds = activeSession()?.agentCommands.get(commandCacheKey(normalizedRuntime, roleName)) ?? [];
-    for (const cmd of cmds) {
-      const value = `/${cmd.name}`;
-      if (queryLower && !cmd.name.toLowerCase().includes(queryLower)) continue;
-      out.push({ value, kind: "command", detail: cmd.description });
-    }
-    for (const opt of activeSession()?.discoveredConfigOptions ?? []) {
-      const vals = flattenConfigValues(opt.options);
-      for (const v of vals) {
-        const value = `/${opt.id} ${v.value}`;
-        if (queryLower && !value.toLowerCase().includes(queryLower)) continue;
-        out.push({ value, kind: "command", detail: `${opt.name}: ${v.name}` });
-      }
-    }
-    return out.slice(0, 30);
-  };
-
-  const refreshSlashSuggestions = async (text: string, caret: number) => {
-    const ctx = extractSlashContext(text, caret);
-    if (!ctx) {
-      closeSlashMenu();
-      return;
-    }
-    setSlashRange(ctx);
-    const seq = ++slashReqSeq;
-
-    if (isCustomRole() && !ctx.query.startsWith("/app_")) {
-      const s = activeSession();
-      const roleName = s?.activeRole;
-      if (!roleName) { closeSlashMenu(); return; }
-      const runtimeRaw = roles().find((r) => r.roleName === roleName)?.runtimeKind ?? s?.runtimeKind ?? "";
-      const runtimeKey = normalizeRuntimeKey(runtimeRaw);
-      if (!runtimeKey) { closeSlashMenu(); return; }
-      const key = commandCacheKey(runtimeKey, roleName);
-      if ((s?.discoveredConfigOptions.length ?? 0) === 0) {
-        const opts = await fetchConfigOptions(runtimeKey, roleName);
-        if (seq !== slashReqSeq) return;
-        patchActiveSession({ discoveredConfigOptions: opts });
-      }
-      if ((s?.agentCommands.get(key) ?? []).length === 0) {
-        const sid = activeSessionId();
-        if (sid) await hydrateAgentCommandsForSession(sid, runtimeKey, roleName);
-      }
-      const candidates = buildAgentSlashCandidates(runtimeKey, roleName, ctx.query);
-      if (seq !== slashReqSeq) return;
-      if (candidates.length === 0) { closeSlashMenu(); return; }
-      setSlashItems(candidates);
-      setSlashActiveIndex(0);
-      setSlashOpen(true);
-      return;
-    }
-
-    try {
-      const version = slashCliCacheVersion;
-      const all = slashCliCache ?? await (async () => {
-        const rows = await invoke<AppMentionItem[]>("complete_cli", { query: "", limit: 200 });
-        if (slashCliCacheVersion === version) {
-          slashCliCache = rows;
-        }
-        return rows;
-      })();
-      if (seq !== slashReqSeq) return;
-      const q = ctx.query.toLowerCase();
-      const filtered = q
-        ? all.filter((r) => r.value.toLowerCase().includes(q)).slice(0, 20)
-        : all.slice(0, 20);
-      if (filtered.length === 0) {
-        closeSlashMenu();
-        return;
-      }
-      setSlashItems(filtered);
-      setSlashActiveIndex(0);
-      setSlashOpen(true);
-    } catch {
-      closeSlashMenu();
-    }
-  };
-
-  const refreshInputCompletions = (value: string, caret: number) => {
-    if (extractSlashContext(value, caret)) {
-      closeMentionMenu();
-      void refreshSlashSuggestions(value, caret);
-      return;
-    }
-    closeSlashMenu();
-    void refreshMentionSuggestions(value, caret);
-  };
-
-  const applyMentionCandidate = (item: AppMentionItem) => {
-    const target = inputEl;
-    if (!target) return;
-    const range = mentionRange();
-    if (!range) return;
-    const current = input();
-    const left = current.slice(0, range.start);
-    const right = current.slice(range.end);
-    const next = `${left}${item.value} ${right}`;
-    setInput(next);
-    closeMentionMenu();
-    const caret = range.start + item.value.length + 1;
-    queueMicrotask(() => {
-      target.focus();
-      target.setSelectionRange(caret, caret);
-    });
-  };
-
-  const applySlashCandidate = (item: AppMentionItem) => {
-    const target = inputEl;
-    if (!target) return;
-    const range = slashRange();
-    if (!range) return;
-    const current = input();
-    const right = current.slice(range.end);
-    const next = `${item.value} ${right}`;
-    setInput(next);
-    closeSlashMenu();
-    const caret = item.value.length + 1;
-    queueMicrotask(() => {
-      target.focus();
-      target.setSelectionRange(caret, caret);
-    });
+    await cancelCurrentRunBase(runNextQueued);
   };
 
   const sendRaw = async (text: string, silent = false) => {
-    const runToken = ++runTokenSeq;
+    const runToken = bumpRunToken();
     const originSessionId = activeSessionId();
     closeMentionMenu();
     closeSlashMenu();
@@ -811,6 +144,7 @@ export default function App() {
     let inRoleContext = effectiveRole !== DEFAULT_ROLE_ALIAS && effectiveRole !== DEFAULT_BACKEND_ROLE;
     const isUnionAiCommand = text.startsWith("/app_");
     let routedText = text;
+    const roleExists = (name: string) => roles().some((r) => r.roleName === name);
 
     if (!isCommand) {
       const mentionMatch = text.match(/^@(\S+)/);
@@ -828,6 +162,10 @@ export default function App() {
           inRoleContext = false;
           routedText = text.replace(/^@\S+\s*/, "").trim();
         } else {
+          if (!roles().some((r) => r.roleName === target)) {
+            pushMessage("event", `role not found: ${target}`);
+            return;
+          }
           patchActiveSession({ activeRole: target, discoveredConfigOptions: [] });
           sendRoleLabel = target;
           effectiveRole = target;
@@ -841,12 +179,20 @@ export default function App() {
           if (!routedText) return;
         }
       } else if (isCustomRole() && !text.startsWith("@")) {
+        if (!roleExists(effectiveRole)) {
+          pushMessage("event", `active role not found: ${effectiveRole}`);
+          return;
+        }
         routedText = `@${effectiveRole} ${text}`;
       }
     }
 
     const isRoleSlashCmd = isCommand && inRoleContext && !isUnionAiCommand;
     if (isRoleSlashCmd) {
+      if (!roleExists(effectiveRole)) {
+        pushMessage("event", `active role not found: ${effectiveRole}`);
+        return;
+      }
       routedText = `@${effectiveRole} ${text}`;
     }
 
@@ -855,7 +201,7 @@ export default function App() {
       const sid = activeSessionId();
       if (sid) {
         const sess = sessions.find((x) => x.id === sid);
-        if (sess && sess.title === "New Session" && sess.messages.filter((m) => m.roleName === "user").length === 0) {
+        if (sess && isDefaultSessionTitle(sess.title) && sess.messages.filter((m) => m.roleName === "user").length === 0) {
           const cleaned = text.replace(/[@#][^\s]*/g, "").replace(/^\/\S+\s*/, "").trim();
           const words = cleaned.split(/\s+/);
           let autoTitle = "";
@@ -864,6 +210,10 @@ export default function App() {
             autoTitle = (autoTitle + " " + w).trim();
           }
           if (!autoTitle) autoTitle = cleaned.slice(0, 30);
+          autoTitle = normalizeSessionTitle(autoTitle);
+          if (!autoTitle) autoTitle = `Session_${Date.now()}`;
+          const existing = sessions.filter((x) => x.id !== sid).map((x) => x.title);
+          autoTitle = uniqueName(autoTitle, existing);
           updateSession(sid, { title: autoTitle });
           void invoke("update_app_session", { id: sid, update: { title: autoTitle } }).catch(() => {});
         }
@@ -932,7 +282,7 @@ export default function App() {
           appSessionId: originSessionId ?? null,
         }
       });
-      if (runToken <= canceledRunToken) return;
+      if (runToken <= getCanceledRunToken()) return;
       if (res.runtimeKind) setPreferredAssistant(res.runtimeKind);
       if (text.startsWith("/app_role")) void refreshRoles();
 
@@ -943,7 +293,7 @@ export default function App() {
       }
 
     } catch (e) {
-      if (runToken <= canceledRunToken) return;
+      if (runToken <= getCanceledRunToken()) return;
       dropOriginStream();
       const errMsg = String(e);
       if (!errMsg.toLowerCase().includes("cancel")) showToast(errMsg);
@@ -954,7 +304,7 @@ export default function App() {
       return;
     } finally {
       if (originSessionId) acceptingStreams.delete(originSessionId);
-      if (runToken <= canceledRunToken) {
+      if (runToken <= getCanceledRunToken()) {
         patchOriginSession({ submitting: false, status: "idle" });
         runNextQueued();
         return;
@@ -1000,10 +350,10 @@ export default function App() {
     mentionDebounceTimerRef.current = window.setTimeout(() => {
       mentionDebounceTimerRef.current = null;
       refreshInputCompletions(value, caret);
-    }, MENTION_DEBOUNCE_MS);
+    }, 90);
   };
 
-  const handleInputKeyDown = (e: KeyboardEvent) => {
+  const handleInputKeyDownFinal = (e: KeyboardEvent) => {
     if (e.key === "Escape" && activeSession()?.submitting) {
       e.preventDefault();
       void cancelCurrentRun();
@@ -1014,12 +364,13 @@ export default function App() {
     if (slashOpen() && slash.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setSlashActiveIndex((i) => (i + 1) % slash.length);
+        // We need setSlashActiveIndex — expose it from completions
+        completions._setSlashActiveIndex((i: number) => (i + 1) % slash.length);
         return;
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
-        setSlashActiveIndex((i) => (i - 1 + slash.length) % slash.length);
+        completions._setSlashActiveIndex((i: number) => (i - 1 + slash.length) % slash.length);
         return;
       }
       if (e.key === "Tab" || e.key === "Enter") {
@@ -1038,12 +389,12 @@ export default function App() {
     if (mentionOpen() && items.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setMentionActiveIndex((i) => (i + 1) % items.length);
+        completions._setMentionActiveIndex((i: number) => (i + 1) % items.length);
         return;
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
-        setMentionActiveIndex((i) => (i - 1 + items.length) % items.length);
+        completions._setMentionActiveIndex((i: number) => (i - 1 + items.length) % items.length);
         return;
       }
       if (e.key === "Tab" || e.key === "Enter") {
@@ -1082,7 +433,7 @@ export default function App() {
 
   const newSession = () => {
     const availableAssistant = assistants().find((a) => a.available)?.key ?? null;
-    const title = uniqueName("New Session", sessions.map((s) => s.title));
+    const title = uniqueName("Session_1", sessions.map((s) => s.title));
     void invoke<{ id: string }>("create_app_session", { title }).then((created) => {
       const s = makeDefaultSession(title);
       s.id = created.id;
@@ -1142,12 +493,12 @@ export default function App() {
 
       if (loaded.length === 0) {
         try {
-          const created = await invoke<{ id: string }>("create_app_session", { title: "Session 1" });
-          const s = makeDefaultSession("Session 1");
+          const created = await invoke<{ id: string }>("create_app_session", { title: "Session_1" });
+          const s = makeDefaultSession("Session_1");
           s.id = created.id;
           loaded = [s];
         } catch {
-          loaded = [makeDefaultSession("Session 1")];
+          loaded = [makeDefaultSession("Session_1")];
         }
       }
 
@@ -1193,7 +544,7 @@ export default function App() {
       }),
       listen<SessionUpdateEvent>("session/update", (ev) => {
         if (!ev.payload.delta) return;
-        pendingSessionEvents.push(`[${ev.payload.roleName}] ${ev.payload.delta}`);
+        streamEngine.pendingSessionEvents.push(`[${ev.payload.roleName}] ${ev.payload.delta}`);
         scheduleSessionEventFlush();
       }),
       listen<WorkflowStateEvent>("workflow/state_changed", (ev) => {
@@ -1324,7 +675,7 @@ export default function App() {
               if (roleName) {
                 const parsed = parseAgentCommands(e.commands as unknown[]);
                 const runtimeKey = ev.payload.runtimeKind
-                  || roles().find((r) => r.roleName === roleName)?.runtimeKind
+                  || roles().find((r: Role) => r.roleName === roleName)?.runtimeKind
                   || "";
                 const normalizedRuntime = runtimeKey ? normalizeRuntimeKey(runtimeKey) : "";
                 if (!normalizedRuntime) break;
@@ -1364,11 +715,8 @@ export default function App() {
       dropStream();
       if (mentionCloseTimerRef.current !== null) window.clearTimeout(mentionCloseTimerRef.current);
       if (mentionDebounceTimerRef.current !== null) window.clearTimeout(mentionDebounceTimerRef.current);
-      if (sessionEventFlushTimer !== null) window.clearTimeout(sessionEventFlushTimer);
-      if (scrollRaf !== null) {
-        window.cancelAnimationFrame(scrollRaf);
-        scrollRaf = null;
-      }
+      if (streamEngine.sessionEventFlushTimer !== null) window.clearTimeout(streamEngine.sessionEventFlushTimer);
+      scheduleScrollToBottom(); // flushes scrollRaf reference via sessionManager
       closeMentionMenu();
       closeSlashMenu();
       handlers.forEach((h) => h());
@@ -1412,7 +760,7 @@ export default function App() {
         isCustomRole={isCustomRole}
         onSubmit={handleSend}
         onInputEvent={handleInputEvent}
-        onInputKeyDown={handleInputKeyDown}
+        onInputKeyDown={handleInputKeyDownFinal}
         refreshInputCompletions={refreshInputCompletions}
         mentionOpen={mentionOpen}
         mentionItems={mentionItems}
@@ -1444,8 +792,9 @@ export default function App() {
             refreshSkills={refreshSkills}
             pushMessage={pushMessage}
             fetchConfigOptions={fetchConfigOptions}
-            onOpenManagement={(tab) => {
+            onOpenManagement={(tab, roleName) => {
               setManagementInitialTab(tab ?? "sessions");
+              setManagementInitialRole(roleName);
               setShowManagement(true);
             }}
           />
@@ -1458,6 +807,7 @@ export default function App() {
             show={showManagement}
             onClose={() => setShowManagement(false)}
             initialTab={managementInitialTab()}
+            initialRoleName={managementInitialRole()}
             activeSessions={sessions}
             onRestoreSession={(id, title, activeRole, runtimeKind, cwd) => {
               const existing = sessions.find((s) => s.id === id);
@@ -1470,7 +820,6 @@ export default function App() {
                 setSessions(sessions.length, s);
               }
               setActiveSessionId(id);
-              setShowManagement(false);
             }}
             skills={skills}
             roles={roles}

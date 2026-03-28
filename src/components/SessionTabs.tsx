@@ -22,6 +22,25 @@ type SessionTabsProps = {
 export default function SessionTabs(props: SessionTabsProps) {
   const [renamingSessionId, setRenamingSessionId] = createSignal<string | null>(null);
   const [renameValue, setRenameValue] = createSignal("");
+  const isValidSessionName = (sessionId: string, raw: string): string | null => {
+    const val = raw.trim();
+    if (!val) return null;
+    if (/\s/.test(val)) return null;
+    if (props.sessions.some((s) => s.id !== sessionId && s.title.toLowerCase() === val.toLowerCase())) return null;
+    return val;
+  };
+  const commitRename = async (sessionId: string) => {
+    const val = isValidSessionName(sessionId, renameValue());
+    if (!val) {
+      setRenamingSessionId(null);
+      return;
+    }
+    try {
+      await invoke("update_app_session", { id: sessionId, update: { title: val } });
+      props.updateSession(sessionId, { title: val });
+    } catch {}
+    setRenamingSessionId(null);
+  };
 
   return (
     <div class="flex h-11 shrink-0 items-center border-b border-white/[0.04] bg-[#0a0a0c]/80 backdrop-blur-md gap-1.5 shadow-sm relative z-10" style="padding-left: max(12px, env(titlebar-area-x, 78px)); padding-right: 12px;">
@@ -57,23 +76,13 @@ export default function SessionTabs(props: SessionTabsProps) {
                 onInput={(e) => setRenameValue(e.currentTarget.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
-                    const val = renameValue().trim();
-                    if (val) {
-                      props.updateSession(s.id, { title: val });
-                      void invoke("update_app_session", { id: s.id, update: { title: val } }).catch(() => {});
-                    }
-                    setRenamingSessionId(null);
+                    void commitRename(s.id);
                   } else if (e.key === "Escape") {
                     setRenamingSessionId(null);
                   }
                 }}
                 onBlur={() => {
-                  const val = renameValue().trim();
-                  if (val) {
-                    props.updateSession(s.id, { title: val });
-                    void invoke("update_app_session", { id: s.id, update: { title: val } }).catch(() => {});
-                  }
-                  setRenamingSessionId(null);
+                  void commitRename(s.id);
                 }}
                 ref={(el) => queueMicrotask(() => el?.select())}
                 onClick={(e) => e.stopPropagation()}

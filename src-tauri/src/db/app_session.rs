@@ -5,6 +5,41 @@ use rusqlite::{params, OptionalExtension};
 use tauri::State;
 use uuid::Uuid;
 
+fn validate_session_title(raw: &str) -> Result<String, String> {
+    let title = raw.trim().to_string();
+    if title.is_empty() {
+        return Err("session name required".to_string());
+    }
+    if title.chars().any(|c| c.is_whitespace()) {
+        return Err("session name cannot contain spaces".to_string());
+    }
+    Ok(title)
+}
+
+fn active_session_title_exists(
+    conn: &rusqlite::Connection,
+    title: &str,
+    exclude_id: Option<&str>,
+) -> Result<bool, String> {
+    let sql = if exclude_id.is_some() {
+        "SELECT 1 FROM app_sessions WHERE lower(title) = lower(?1) AND closed_at IS NULL AND id <> ?2 LIMIT 1"
+    } else {
+        "SELECT 1 FROM app_sessions WHERE lower(title) = lower(?1) AND closed_at IS NULL LIMIT 1"
+    };
+    let exists = if let Some(id) = exclude_id {
+        conn.query_row(sql, params![title, id], |_row| Ok(()))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .is_some()
+    } else {
+        conn.query_row(sql, params![title], |_row| Ok(()))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .is_some()
+    };
+    Ok(exists)
+}
+
 pub(crate) fn get_app_session_cwd(state: &AppState, session_id: &str) -> Option<String> {
     with_db(state, |conn| {
         conn.query_row(
@@ -158,9 +193,10 @@ pub(crate) fn create_app_session(
     title: Option<String>,
 ) -> Result<AppSession, String> {
     let now = now_ms();
+    let title = validate_session_title(title.as_deref().unwrap_or("Session_1"))?;
     let session = AppSession {
         id: Uuid::new_v4().to_string(),
-        title: title.unwrap_or_else(|| "New Session".to_string()),
+        title,
         active_role: "UnionAI".to_string(),
         runtime_kind: None,
         cwd: Some(default_chat_cwd()),
@@ -170,6 +206,9 @@ pub(crate) fn create_app_session(
         closed_at: None,
     };
     with_db(get_state(&state), |conn| {
+        if active_session_title_exists(conn, &session.title, None)? {
+            return Err(format!("session name already exists: {}", session.title));
+        }
         conn.execute(
             "INSERT INTO app_sessions (id, title, active_role, runtime_kind, cwd, created_at, last_active_at, closed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
@@ -198,6 +237,10 @@ pub(crate) fn update_app_session(
     let now = now_ms();
     with_db(get_state(&state), |conn| {
         if let Some(ref title) = update.title {
+            let title = validate_session_title(title)?;
+            if active_session_title_exists(conn, &title, Some(&id))? {
+                return Err(format!("session name already exists: {}", title));
+            }
             conn.execute(
                 "UPDATE app_sessions SET title = ?1, last_active_at = ?2 WHERE id = ?3",
                 params![title, now, &id],
@@ -239,6 +282,16 @@ pub(crate) fn delete_app_session(state: State<'_, AppState>, id: String) -> Resu
 pub(crate) fn reopen_app_session(state: State<'_, AppState>, id: String) -> Result<AppSession, String> {
     let now = now_ms();
     with_db(get_state(&state), |conn| {
+        let title: String = conn
+            .query_row(
+                "SELECT title FROM app_sessions WHERE id = ?1",
+                params![&id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if active_session_title_exists(conn, &title, Some(&id))? {
+            return Err(format!("session name already exists: {}", title));
+        }
         conn.execute(
             "UPDATE app_sessions SET closed_at = NULL, last_active_at = ?1 WHERE id = ?2",
             params![now, &id],

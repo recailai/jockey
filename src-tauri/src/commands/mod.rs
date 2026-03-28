@@ -314,11 +314,17 @@ pub(crate) async fn apply_chat_command(
         ["/app_context", "list"] | ["/app_context", "list", ..] => {
             let sid = required_app_session_id(app_session_id_ref)?;
             let prefix = app_session_scope(sid);
+            let scoped_prefix = format!("{prefix}:");
             let scope = tokens.get(2).copied().unwrap_or("");
             let entries = if scope.is_empty() {
                 list_shared_context_prefix_internal(get_state(&state), &prefix)?
+                    .into_iter()
+                    .filter(|entry| {
+                        entry.scope == prefix || entry.scope.starts_with(&scoped_prefix)
+                    })
+                    .collect()
             } else {
-                if !scope.starts_with(&prefix) {
+                if !(scope == prefix || scope.starts_with(&scoped_prefix)) {
                     return Err(format!("scope must stay within {}", prefix));
                 }
                 list_shared_context_internal(get_state(&state), scope)?

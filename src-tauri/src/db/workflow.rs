@@ -1,9 +1,20 @@
 use crate::db::{get_state, with_db};
 use crate::now_ms;
 use crate::types::*;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use tauri::State;
 use uuid::Uuid;
+
+fn validate_workflow_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim().to_string();
+    if name.is_empty() {
+        return Err("workflow name required".to_string());
+    }
+    if name.chars().any(|c| c.is_whitespace()) {
+        return Err("workflow name cannot contain spaces".to_string());
+    }
+    Ok(name)
+}
 
 #[tauri::command]
 pub(crate) fn create_workflow(
@@ -11,6 +22,7 @@ pub(crate) fn create_workflow(
     name: String,
     steps: Vec<String>,
 ) -> Result<Workflow, String> {
+    let name = validate_workflow_name(&name)?;
     if steps.is_empty() {
         return Err("workflow steps cannot be empty".to_string());
     }
@@ -25,6 +37,18 @@ pub(crate) fn create_workflow(
     let steps_json = serde_json::to_string(&workflow.steps).map_err(|e| e.to_string())?;
 
     with_db(get_state(&state), |conn| {
+        let exists = conn
+            .query_row(
+                "SELECT 1 FROM workflows WHERE lower(name) = lower(?1) LIMIT 1",
+                params![&workflow.name],
+                |_row| Ok(()),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .is_some();
+        if exists {
+            return Err(format!("workflow name already exists: {}", workflow.name));
+        }
         conn.execute(
             "INSERT INTO workflows (id, name, steps_json, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",

@@ -180,7 +180,7 @@ export default function MessageWindow(props: MessageWindowProps) {
               <Show when={(props.activeSession()?.streamSegments ?? []).length > 0} fallback={
                 <>
                   <Show when={streaming().text}>
-                    <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{streaming().text}</div>
+                    <div class="md-prose" innerHTML={renderMd(streaming().text)} />
                   </Show>
                   <Show when={!streaming().text && props.activeSession()?.agentState}>
                     <div class="text-[11px] text-zinc-500 italic">{props.activeSession()?.agentState}</div>
@@ -296,7 +296,7 @@ function StreamSegmentList(props: { segments: AppSegment[] }) {
   return (
     <Index each={groups()}>{(g) => (
       g().kind === "text"
-        ? <div class="whitespace-pre-wrap break-words text-[13.5px] text-zinc-200 leading-[1.7] font-mono">{(g() as { kind: "text"; text: string }).text}</div>
+        ? <div class="md-prose" innerHTML={renderMd((g() as { kind: "text"; text: string }).text)} />
         : <ToolCallGroup tools={(g() as { kind: "tools"; tools: AppToolCall[] }).tools} streaming={true} />
     )}</Index>
   );

@@ -319,7 +319,7 @@ pub(crate) async fn assistant_chat(
             )
         })
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())??;
 
         let runtime = db_data.runtime;
         let mut context_pairs = db_data.context_pairs;

@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { Accessor, Setter } from "solid-js";
 import type { Role, RoleUpsertInput, AppSession, AssistantRuntime, AcpConfigOption, AppSkill } from "./types";
-import { INTERACTIVE_MOTION, flattenConfigValues } from "./types";
+import { INTERACTIVE_MOTION, RUNTIME_COLOR, flattenConfigValues } from "./types";
 
 type SelectOption = { value: string; label: string };
 
@@ -76,7 +76,7 @@ type ConfigDrawerProps = {
   refreshSkills: () => Promise<void>;
   pushMessage: (role: string, text: string) => void;
   fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
-  onOpenManagement?: (tab?: "roles" | "skills" | "sessions" | "workflows" | "mcp" | "context") => void;
+  onOpenManagement?: (tab?: "roles" | "skills" | "sessions" | "workflows" | "mcp", roleName?: string) => void;
 };
 
 export default function ConfigDrawer(props: ConfigDrawerProps) {
@@ -106,16 +106,15 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
             />
 
             {/* Roles & Skills — managed in the Management panel */}
+            <RolesSection roles={props.roles} onOpenManagement={props.onOpenManagement} setShowDrawer={props.setShowDrawer} />
             <div class="space-y-1.5">
               <span class="text-[10px] font-medium uppercase tracking-widest text-zinc-600">Manage</span>
               <div class="space-y-0.5">
                 {([
-                  { tab: "roles" as const, label: "Roles", count: () => props.roles().filter((r) => r.roleName !== "UnionAIAssistant").length, color: "text-orange-300" },
                   { tab: "skills" as const, label: "Skills", count: () => props.skills().length, color: "text-teal-300" },
                   { tab: "workflows" as const, label: "Workflows", count: () => null, color: "text-indigo-300" },
                   { tab: "mcp" as const, label: "MCP Registry", count: () => null, color: "text-sky-300" },
                   { tab: "sessions" as const, label: "Session History", count: () => null, color: "text-zinc-400" },
-                  { tab: "context" as const, label: "Context", count: () => null, color: "text-amber-300" },
                 ] as const).map(({ tab, label, count, color }) => (
                   <button
                     onClick={() => { props.setShowDrawer(false); props.onOpenManagement?.(tab); }}
@@ -332,6 +331,69 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
         >
           Save
         </button>
+      </Show>
+    </div>
+  );
+}
+
+function RolesSection(props: {
+  roles: Accessor<Role[]>;
+  onOpenManagement?: (tab?: "roles" | "skills" | "sessions" | "workflows" | "mcp", roleName?: string) => void;
+  setShowDrawer: Setter<boolean>;
+}) {
+  const [expanded, setExpanded] = createSignal(true);
+  const userRoles = () => props.roles().filter((r) => r.roleName !== "UnionAIAssistant");
+
+  const openRole = (roleName: string) => {
+    props.setShowDrawer(false);
+    props.onOpenManagement?.("roles", roleName);
+  };
+
+  return (
+    <div class="space-y-1">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        class={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-colors duration-150 hover:bg-zinc-900/60 group ${INTERACTIVE_MOTION}`}
+      >
+        <span class="text-[10px] font-medium uppercase tracking-widest text-zinc-600 group-hover:text-zinc-400 transition-colors">Roles</span>
+        <div class="flex items-center gap-1.5">
+          <span class="font-mono text-[10px] text-orange-300">{userRoles().length}</span>
+          <svg
+            width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            class={`text-zinc-700 group-hover:text-zinc-500 transition-all ${expanded() ? "rotate-90" : ""}`}
+          >
+            <path d="M5 12h14M12 5l7 7-7 7"/>
+          </svg>
+        </div>
+      </button>
+      <Show when={expanded()}>
+        <div class="space-y-0.5 pl-1">
+          <Show when={userRoles().length === 0}>
+            <div class="px-2.5 py-1.5 text-[10px] text-zinc-600 italic">No roles yet</div>
+          </Show>
+          <For each={userRoles()}>
+            {(role) => {
+              const color = () => RUNTIME_COLOR[role.runtimeKind] ?? "text-zinc-500";
+              return (
+                <button
+                  onClick={() => openRole(role.roleName)}
+                  class={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 hover:bg-zinc-900/40 transition-colors text-left ${INTERACTIVE_MOTION}`}
+                >
+                  <span class="flex-1 truncate font-mono text-[10px] text-zinc-300">{role.roleName}</span>
+                  <span class={`font-mono text-[9px] shrink-0 ${color()}`}>{role.runtimeKind}</span>
+                  <Show when={role.model}><span class="font-mono text-[9px] text-blue-400 shrink-0">{role.model}</span></Show>
+                </button>
+              );
+            }}
+          </For>
+          <button
+            onClick={() => { props.setShowDrawer(false); props.onOpenManagement?.("roles"); }}
+            class={`flex w-full items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[10px] text-zinc-600 hover:text-zinc-300 hover:bg-zinc-900/40 transition-colors ${INTERACTIVE_MOTION}`}
+          >
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+            manage roles
+          </button>
+        </div>
       </Show>
     </div>
   );

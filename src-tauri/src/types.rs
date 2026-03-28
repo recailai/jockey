@@ -186,6 +186,7 @@ pub(crate) struct AppSkill {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AppSkillUpsert {
+    pub(crate) id: Option<String>,
     pub(crate) name: String,
     pub(crate) description: String,
     pub(crate) content: String,
