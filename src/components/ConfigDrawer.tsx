@@ -76,7 +76,7 @@ type ConfigDrawerProps = {
   refreshSkills: () => Promise<void>;
   pushMessage: (role: string, text: string) => void;
   fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
-  onOpenManagement?: (tab?: "roles" | "skills" | "sessions" | "workflows" | "mcp") => void;
+  onOpenManagement?: (tab?: "roles" | "skills" | "sessions" | "workflows" | "mcp" | "context") => void;
 };
 
 export default function ConfigDrawer(props: ConfigDrawerProps) {
@@ -115,6 +115,7 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
                   { tab: "workflows" as const, label: "Workflows", count: () => null, color: "text-indigo-300" },
                   { tab: "mcp" as const, label: "MCP Registry", count: () => null, color: "text-sky-300" },
                   { tab: "sessions" as const, label: "Session History", count: () => null, color: "text-zinc-400" },
+                  { tab: "context" as const, label: "Context", count: () => null, color: "text-amber-300" },
                 ] as const).map(({ tab, label, count, color }) => (
                   <button
                     onClick={() => { props.setShowDrawer(false); props.onOpenManagement?.(tab); }}
@@ -130,10 +131,6 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
                   </button>
                 ))}
               </div>
-            </div>
-
-            <div class="flex flex-wrap gap-0.5 border-t border-white/[0.05] pt-3">
-              <button onClick={() => void props.sendRaw("/app_context list")} class={`min-h-8 rounded-md px-2.5 py-1 text-xs text-zinc-600 hover:text-zinc-300 hover:bg-white/[0.04] ${INTERACTIVE_MOTION}`}>context</button>
             </div>
 
           </div>

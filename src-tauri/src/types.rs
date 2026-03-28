@@ -161,6 +161,7 @@ pub(crate) struct AppSession {
     pub(crate) messages: Vec<serde_json::Value>,
     pub(crate) created_at: i64,
     pub(crate) last_active_at: i64,
+    pub(crate) closed_at: Option<i64>,
 }
 
 #[derive(Deserialize)]

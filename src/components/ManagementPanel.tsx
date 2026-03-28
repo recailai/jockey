@@ -9,8 +9,9 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import {
-  For, Show, createEffect, createMemo, createSignal, onMount,
+  For, Show, createEffect, createMemo, createSignal, onCleanup, onMount,
 } from "solid-js";
+import { Portal } from "solid-js/web";
 import type { Accessor } from "solid-js";
 import type { AppSession, AppSkill, Role, RoleUpsertInput, AcpConfigOption } from "./types";
 import { INTERACTIVE_MOTION, RUNTIME_COLOR, RUNTIMES, flattenConfigValues } from "./types";
@@ -28,6 +29,7 @@ type StoredSession = {
   messageCount: number;
   createdAt: number;
   updatedAt: number;
+  closedAt: number | null;
 };
 
 type Workflow = {
@@ -158,49 +160,73 @@ function InlineSelect(props: {
   class?: string;
 }) {
   const [open, setOpen] = createSignal(false);
+  const [pos, setPos] = createSignal({ top: 0, left: 0, width: 0 });
+  let triggerRef: HTMLButtonElement | undefined;
   const selected = () => props.options.find((o) => o.value === props.value);
+
   const close = () => setOpen(false);
+
   const handleOutside = (e: MouseEvent) => {
     if (!(e.target as Element).closest("[data-isel]")) close();
   };
+
   const toggle = () => {
-    if (!open()) document.addEventListener("click", handleOutside, { once: true });
+    if (!open()) {
+      if (triggerRef) {
+        const r = triggerRef.getBoundingClientRect();
+        setPos({ top: r.bottom + 2, left: r.left, width: r.width });
+      }
+      setTimeout(() => document.addEventListener("click", handleOutside, { once: true }), 0);
+    } else {
+      close();
+    }
     setOpen((v) => !v);
   };
+
+  onCleanup(() => document.removeEventListener("click", handleOutside));
+
   return (
     <div data-isel class={`relative ${props.class ?? ""}`}>
       <button
+        ref={triggerRef}
         type="button"
         onClick={toggle}
         class={`flex h-8 w-full items-center justify-between gap-2 rounded-md border border-zinc-800 bg-zinc-950 px-2.5 text-xs text-left ${INTERACTIVE_MOTION} ${open() ? "border-zinc-600" : "hover:border-zinc-700"}`}
       >
-        <span class={selected() ? "text-zinc-200" : "text-zinc-600"}>
+        <span class={`min-w-0 flex-1 truncate ${selected() ? "text-zinc-200" : "text-zinc-600"}`}>
           {selected()?.label ?? "Select…"}
         </span>
         <svg class={`h-3 w-3 shrink-0 text-zinc-500 transition-transform ${open() ? "rotate-180" : ""}`} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4l4 4 4-4" /></svg>
       </button>
       <Show when={open()}>
-        <div class="absolute left-0 right-0 top-full z-50 mt-0.5 max-h-44 overflow-y-auto rounded-md border border-zinc-800 bg-[#0d0d10] shadow-xl shadow-black/50">
-          <For each={props.options}>
-            {(opt) => (
-              <button
-                type="button"
-                onClick={() => { props.onChange(opt.value); close(); }}
-                class={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs ${INTERACTIVE_MOTION} ${opt.value === props.value ? "bg-zinc-800/60 text-white" : "text-zinc-300 hover:bg-zinc-800/40 hover:text-white"}`}
-              >
-                <span class={`h-1 w-1 shrink-0 rounded-full ${opt.value === props.value ? "bg-emerald-400" : "bg-transparent"}`} />
-                {opt.label}
-              </button>
-            )}
-          </For>
-        </div>
+        <Portal mount={document.body}>
+          <div
+            data-isel
+            style={{ position: "fixed", top: `${pos().top}px`, left: `${pos().left}px`, width: `${pos().width}px` }}
+            class="z-[9999] max-h-44 overflow-y-auto rounded-md border border-zinc-800 bg-[#0d0d10] shadow-xl shadow-black/60"
+          >
+            <For each={props.options}>
+              {(opt) => (
+                <button
+                  data-isel
+                  type="button"
+                  onClick={() => { props.onChange(opt.value); close(); }}
+                  class={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs ${INTERACTIVE_MOTION} ${opt.value === props.value ? "bg-zinc-800/60 text-white" : "text-zinc-300 hover:bg-zinc-800/40 hover:text-white"}`}
+                >
+                  <span class={`h-1 w-1 shrink-0 rounded-full ${opt.value === props.value ? "bg-emerald-400" : "bg-transparent"}`} />
+                  {opt.label}
+                </button>
+              )}
+            </For>
+          </div>
+        </Portal>
       </Show>
     </div>
   );
 }
 
 function ActionButton(props: {
-  onClick: () => void; label: string; variant?: "primary" | "danger" | "ghost"; class?: string;
+  onClick: () => void; label: string; variant?: "primary" | "danger" | "ghost"; class?: string; disabled?: boolean;
 }) {
   const cls = () => ({
     primary: "bg-zinc-100 text-zinc-900 hover:bg-white border-transparent",
@@ -210,7 +236,8 @@ function ActionButton(props: {
   return (
     <button
       onClick={props.onClick}
-      class={`min-h-7 rounded-md border px-3 text-xs font-medium transition-all duration-150 active:scale-[0.98] ${cls()} ${props.class ?? ""}`}
+      disabled={props.disabled}
+      class={`min-h-7 rounded-md border px-3 text-xs font-medium transition-all duration-150 active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none ${cls()} ${props.class ?? ""}`}
     >
       {props.label}
     </button>
@@ -221,7 +248,7 @@ function ActionButton(props: {
 // Nav tab definitions
 // ─────────────────────────────────────────────────────────────────────────────
 
-type TabId = "sessions" | "workflows" | "roles" | "mcp" | "skills";
+type TabId = "sessions" | "workflows" | "roles" | "mcp" | "skills" | "context";
 
 const TABS: Array<{ id: TabId; label: string; icon: () => any }> = [
   {
@@ -265,6 +292,14 @@ const TABS: Array<{ id: TabId; label: string; icon: () => any }> = [
       </svg>
     ),
   },
+  {
+    id: "context", label: "Context",
+    icon: () => (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4.03 3-9 3S3 13.66 3 12"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/>
+      </svg>
+    ),
+  },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -284,6 +319,21 @@ function RolesTab(props: {
 
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
   const [creating, setCreating] = createSignal(false);
+  const [saving, setSaving] = createSignal(false);
+  const [deletingId, setDeletingId] = createSignal<string | null>(null);
+
+  const openCreate = () => {
+    setCName("Developer");
+    setCRuntime("gemini-cli");
+    setCPrompt("You are a senior developer. Implement the solution step by step.");
+    setCModel("");
+    setCAutoApprove(true);
+    setCConfigOpts([]);
+    setCConfigSel({});
+    setCreating(true);
+    setSelectedId(null);
+    setDeletingId(null);
+  };
 
   // Create form
   const [cName, setCName] = createSignal("Developer");
@@ -326,9 +376,20 @@ function RolesTab(props: {
     }).catch(() => props.patchActiveSession({ configOptionsLoading: false }));
   };
 
+  const uniqueRoleName = (desired: string): string => {
+    const existing = new Set(userRoles().map((r) => r.roleName));
+    if (!existing.has(desired)) return desired;
+    const base = desired.replace(/_copy(\d+)?$/, "");
+    let n = 2;
+    let candidate = `${base}_copy`;
+    while (existing.has(candidate)) candidate = `${base}_copy${n++}`;
+    return candidate;
+  };
+
   const handleCreate = async () => {
-    const name = cName().trim();
-    if (!name) return;
+    const name = uniqueRoleName(cName().trim());
+    if (!name || saving()) return;
+    setSaving(true);
     const configMap: Record<string, string> = {};
     for (const [k, v] of Object.entries(cConfigSel())) { if (v) configMap[k] = v; }
     try {
@@ -346,16 +407,18 @@ function RolesTab(props: {
       await props.refreshRoles();
       props.pushMessage("event", `role created: ${saved.roleName} (${saved.runtimeKind})`);
     } catch (e) { props.pushMessage("event", `Failed to create role: ${String(e)}`); }
+    finally { setSaving(false); }
   };
 
   const handleSaveEdit = async () => {
     const role = editingRole();
-    if (!role) return;
+    if (!role || saving()) return;
     let parsedMcp: unknown; let parsedCfg: unknown;
     try { parsedMcp = JSON.parse(eMcpJson().trim() || "[]"); if (!Array.isArray(parsedMcp)) throw new Error("must be array"); }
     catch (e) { props.pushMessage("event", `Invalid MCP JSON: ${String(e)}`); return; }
     try { parsedCfg = JSON.parse(eCfgJson().trim() || "{}"); if (!parsedCfg || typeof parsedCfg !== "object" || Array.isArray(parsedCfg)) throw new Error("must be object"); }
     catch (e) { props.pushMessage("event", `Invalid config JSON: ${String(e)}`); return; }
+    setSaving(true);
     try {
       const saved = await invoke<Role>("upsert_role_cmd", {
         input: {
@@ -369,12 +432,14 @@ function RolesTab(props: {
       await props.refreshRoles();
       props.pushMessage("event", `role saved: ${saved.roleName}`);
     } catch (e) { props.pushMessage("event", `Failed to save: ${String(e)}`); }
+    finally { setSaving(false); }
   };
 
   const handleDelete = async (roleName: string) => {
     try {
       await invoke("delete_role_cmd", { roleName });
       if (editingRole()?.roleName === roleName) setSelectedId(null);
+      setDeletingId(null);
       await props.refreshRoles();
     } catch (e) { props.pushMessage("event", `Failed to delete role: ${String(e)}`); }
   };
@@ -401,7 +466,7 @@ function RolesTab(props: {
             label="+ New Role"
             variant="ghost"
             class="w-full"
-            onClick={() => { setCreating(true); setSelectedId(null); }}
+            onClick={openCreate}
           />
         </div>
         <div class="flex-1 overflow-y-auto">
@@ -418,12 +483,19 @@ function RolesTab(props: {
                 >
                   <div class="flex items-center justify-between min-w-0 gap-1">
                     <span class={`truncate font-mono text-[10px] font-semibold ${selectedId() === role.id ? "text-zinc-100" : "text-zinc-300"}`}>{role.roleName}</span>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); void handleDelete(role.roleName); }}
-                      class="shrink-0 opacity-0 group-hover:opacity-100 text-zinc-700 hover:text-rose-400 transition-all"
-                    >
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                    </button>
+                    <Show when={deletingId() === role.roleName} fallback={
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setDeletingId(role.roleName); }}
+                        class="shrink-0 opacity-0 group-hover:opacity-100 text-zinc-700 hover:text-rose-400 transition-all"
+                      >
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                      </button>
+                    }>
+                      <div class="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                        <button onClick={() => void handleDelete(role.roleName)} class="font-mono text-[9px] text-rose-400 hover:text-rose-300">del</button>
+                        <button onClick={() => setDeletingId(null)} class="font-mono text-[9px] text-zinc-600 hover:text-zinc-400">✕</button>
+                      </div>
+                    </Show>
                   </div>
                   <div class="flex items-center gap-1.5">
                     <span class={`font-mono text-[9px] ${color()}`}>{role.runtimeKind}</span>
@@ -483,7 +555,7 @@ function RolesTab(props: {
               </Show>
             </div>
             <div class="flex gap-2">
-              <ActionButton label="Create" variant="primary" onClick={() => void handleCreate()} />
+              <ActionButton label={saving() ? "Creating…" : "Create"} variant="primary" disabled={saving()} onClick={() => void handleCreate()} />
               <ActionButton label="Cancel" variant="ghost" onClick={() => setCreating(false)} />
             </div>
           </div>
@@ -503,7 +575,14 @@ function RolesTab(props: {
                     <span class={`font-mono text-[10px] ${RUNTIME_COLOR[role().runtimeKind] ?? "text-zinc-500"}`}>{role().runtimeKind}</span>
                     <span class="font-mono text-[9px] text-zinc-700 ml-2">provider locked</span>
                   </div>
-                  <ActionButton label="Delete" variant="danger" onClick={() => void handleDelete(role().roleName)} />
+                  <Show when={deletingId() === role().roleName} fallback={
+                    <ActionButton label="Delete" variant="danger" onClick={() => setDeletingId(role().roleName)} />
+                  }>
+                    <div class="flex items-center gap-2">
+                      <ActionButton label="Confirm" variant="danger" onClick={() => void handleDelete(role().roleName)} />
+                      <ActionButton label="Cancel" variant="ghost" onClick={() => setDeletingId(null)} />
+                    </div>
+                  </Show>
                 </div>
 
                 <div class="space-y-2 rounded-lg border border-white/[0.04] bg-zinc-950/40 p-4">
@@ -577,7 +656,7 @@ function RolesTab(props: {
                 </div>
 
                 <div class="flex gap-2">
-                  <ActionButton label="Save" variant="primary" onClick={() => void handleSaveEdit()} />
+                  <ActionButton label={saving() ? "Saving…" : "Save"} variant="primary" disabled={saving()} onClick={() => void handleSaveEdit()} />
                   <ActionButton label="Cancel" variant="ghost" onClick={() => setSelectedId(null)} />
                 </div>
               </div>
@@ -599,31 +678,42 @@ function RolesTab(props: {
 
 function SessionsTab(props: {
   activeSessions: AppSession[];
-  onRestoreSession?: (id: string) => void;
+  onRestoreSession?: (id: string, title: string, activeRole: string, runtimeKind: string | null, cwd: string | null) => void;
 }) {
   const [storedSessions, setStoredSessions] = createSignal<StoredSession[]>([]);
   const [loading, setLoading] = createSignal(true);
+  const [reopening, setReopening] = createSignal<string | null>(null);
   const [search, setSearch] = createSignal("");
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
+
+  type RawSession = {
+    id: string; title: string; activeRole?: string;
+    runtimeKind?: string | null; cwd?: string | null;
+    messages?: unknown[]; createdAt?: number; lastActiveAt?: number; closedAt?: number | null;
+  };
+
+  const mapRaw = (r: RawSession, closedAt: number | null): StoredSession => ({
+    id: r.id,
+    title: r.title,
+    activeRole: r.activeRole ?? "—",
+    runtimeKind: r.runtimeKind ?? null,
+    cwd: r.cwd ?? null,
+    messageCount: Array.isArray(r.messages) ? r.messages.length : 0,
+    createdAt: r.createdAt ?? 0,
+    updatedAt: r.lastActiveAt ?? r.createdAt ?? 0,
+    closedAt,
+  });
 
   const load = async () => {
     setLoading(true);
     try {
-      const raw = await invoke<Array<{
-        id: string; title: string; activeRole?: string;
-        runtimeKind?: string | null; cwd?: string | null;
-        messages?: unknown[]; createdAt?: number; updatedAt?: number;
-      }>>("list_app_sessions");
-      setStoredSessions(raw.map((r) => ({
-        id: r.id,
-        title: r.title,
-        activeRole: r.activeRole ?? "—",
-        runtimeKind: r.runtimeKind ?? null,
-        cwd: r.cwd ?? null,
-        messageCount: Array.isArray(r.messages) ? r.messages.length : 0,
-        createdAt: r.createdAt ?? 0,
-        updatedAt: r.updatedAt ?? 0,
-      })));
+      const [active, closed] = await Promise.all([
+        invoke<RawSession[]>("list_app_sessions"),
+        invoke<RawSession[]>("list_closed_app_sessions"),
+      ]);
+      const activeMapped = active.map((r) => mapRaw(r, null));
+      const closedMapped = closed.map((r) => mapRaw(r, r.closedAt ?? null));
+      setStoredSessions([...activeMapped, ...closedMapped]);
     } catch { /* ignore */ }
     setLoading(false);
   };
@@ -632,16 +722,34 @@ function SessionsTab(props: {
 
   const filtered = createMemo(() => {
     const q = search().toLowerCase();
-    return storedSessions().filter((s) =>
+    const matches = storedSessions().filter((s) =>
       !q || s.title.toLowerCase().includes(q) || (s.cwd ?? "").toLowerCase().includes(q),
     );
+    return matches.sort((a, b) => {
+      const aClosed = a.closedAt !== null;
+      const bClosed = b.closedAt !== null;
+      if (aClosed !== bClosed) return aClosed ? 1 : -1;
+      return (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt);
+    });
   });
 
   const selected = createMemo(() =>
-    filtered().find((s) => s.id === selectedId()) ?? null,
+    storedSessions().find((s) => s.id === selectedId()) ?? null,
   );
 
-  const activeIds = new Set(props.activeSessions.map((s) => s.id));
+  const activeIds = () => new Set(props.activeSessions.map((s) => s.id));
+
+  const handleReopen = async (s: StoredSession) => {
+    if (reopening()) return;
+    setReopening(s.id);
+    try {
+      await invoke("reopen_app_session", { id: s.id });
+      props.onRestoreSession?.(s.id, s.title, s.activeRole, s.runtimeKind, s.cwd);
+      setStoredSessions((prev) => prev.map((p) => p.id === s.id ? { ...p, closedAt: null, updatedAt: Date.now() } : p));
+    } catch { /* ignore */ } finally {
+      setReopening(null);
+    }
+  };
 
   return (
     <div class="flex h-full">
@@ -664,18 +772,30 @@ function SessionsTab(props: {
           </Show>
           <For each={filtered()}>
             {(s) => {
-              const isActive = activeIds.has(s.id);
+              const isActive = () => activeIds().has(s.id);
+              const isClosed = () => s.closedAt !== null && !activeIds().has(s.id);
+              const isReopening = () => reopening() === s.id;
               const color = () => RUNTIME_COLOR[s.runtimeKind ?? ""] ?? "text-zinc-500";
               return (
                 <button
-                  onClick={() => setSelectedId(s.id)}
-                  class={`group flex w-full flex-col gap-0.5 border-b border-white/[0.03] px-3 py-2.5 text-left transition-colors duration-100 ${selectedId() === s.id ? "bg-zinc-800/50" : "hover:bg-zinc-900/50"}`}
+                  onClick={() => {
+                    if (isClosed()) { void handleReopen(s); } else { setSelectedId(s.id); }
+                  }}
+                  disabled={isReopening()}
+                  class={`group flex w-full flex-col gap-0.5 border-b border-white/[0.03] px-3 py-2.5 text-left transition-colors duration-100 ${selectedId() === s.id && !isClosed() ? "bg-zinc-800/50" : "hover:bg-zinc-900/50"} ${isClosed() ? "opacity-60 hover:opacity-100" : ""}`}
+                  title={isClosed() ? "Click to reopen" : undefined}
                 >
                   <div class="flex items-center gap-1.5 min-w-0">
-                    <Show when={isActive}>
+                    <Show when={isActive()}>
                       <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400 shadow-[0_0_4px_rgba(52,211,153,0.5)]" />
                     </Show>
-                    <span class={`truncate font-mono text-[10px] font-semibold ${selectedId() === s.id ? "text-zinc-100" : "text-zinc-300"}`}>{s.title}</span>
+                    <Show when={isClosed()}>
+                      <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-zinc-600" />
+                    </Show>
+                    <span class={`truncate font-mono text-[10px] font-semibold ${isClosed() ? "text-zinc-500" : selectedId() === s.id ? "text-zinc-100" : "text-zinc-300"}`}>{s.title}</span>
+                    <Show when={isReopening()}>
+                      <span class="ml-auto font-mono text-[9px] text-zinc-600 shrink-0">opening…</span>
+                    </Show>
                   </div>
                   <div class="flex items-center gap-1.5">
                     <Show when={s.runtimeKind}>
@@ -706,11 +826,15 @@ function SessionsTab(props: {
                   <p class="mt-0.5 font-mono text-[10px] text-zinc-600">{s().id}</p>
                 </div>
                 <div class="flex gap-2 shrink-0">
-                  <Show when={activeIds.has(s().id)}>
+                  <Show when={activeIds().has(s().id)}>
                     <Badge label="active" color="bg-emerald-500/15 text-emerald-300" />
                   </Show>
-                  <Show when={!activeIds.has(s().id) && props.onRestoreSession}>
-                    <ActionButton label="Restore" variant="ghost" onClick={() => props.onRestoreSession?.(s().id)} />
+                  <Show when={s().closedAt !== null && !activeIds().has(s().id)}>
+                    <ActionButton
+                      label={reopening() === s().id ? "Opening…" : "Reopen"}
+                      variant="ghost"
+                      onClick={() => { if (s().closedAt !== null) void handleReopen(s()); }}
+                    />
                   </Show>
                 </div>
               </div>
@@ -736,6 +860,11 @@ function SessionsTab(props: {
                 <FieldRow label="Updated">
                   <span class="font-mono text-[10px] text-zinc-500">{s().updatedAt ? fmtDate(s().updatedAt) : "—"}</span>
                 </FieldRow>
+                <Show when={s().closedAt}>
+                  <FieldRow label="Closed">
+                    <span class="font-mono text-[10px] text-zinc-600">{fmtDate(s().closedAt!)}</span>
+                  </FieldRow>
+                </Show>
               </div>
             </div>
           )}
@@ -1354,6 +1483,83 @@ function SkillRegistryTab(props: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Context tab
+// ─────────────────────────────────────────────────────────────────────────────
+
+type ContextEntry = { scope: string; key: string; value: string; updatedAt: number };
+
+function ContextTab(props: { activeSession: Accessor<AppSession | null> }) {
+  const [entries, setEntries] = createSignal<ContextEntry[]>([]);
+  const [loading, setLoading] = createSignal(true);
+  const [err, setErr] = createSignal<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const res = await invoke<{ ok: boolean; payload: { entries?: ContextEntry[] } }>("apply_chat_command", {
+        input: "/app_context list",
+        appSessionId: props.activeSession()?.id ?? null,
+      });
+      setEntries(res.payload.entries ?? []);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  onMount(() => { void load(); });
+
+  return (
+    <div class="flex h-full flex-col overflow-hidden">
+      <div class="flex items-center justify-between border-b border-white/[0.04] px-5 py-2.5">
+        <span class="font-mono text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Session Context</span>
+        <button
+          onClick={() => void load()}
+          class={`min-h-6 rounded border border-zinc-800 px-2 py-0.5 text-[10px] text-zinc-600 hover:border-zinc-700 hover:text-zinc-300 ${INTERACTIVE_MOTION}`}
+        >
+          refresh
+        </button>
+      </div>
+      <div class="flex-1 overflow-y-auto">
+        <Show when={loading()}>
+          <div class="px-5 py-4 font-mono text-[10px] text-zinc-600">loading…</div>
+        </Show>
+        <Show when={err()}>
+          <div class="px-5 py-4 font-mono text-[10px] text-rose-500">{err()}</div>
+        </Show>
+        <Show when={!loading() && !err() && entries().length === 0}>
+          <div class="px-5 py-4 font-mono text-[10px] text-zinc-600">no context entries</div>
+        </Show>
+        <Show when={!loading() && entries().length > 0}>
+          <table class="w-full border-collapse font-mono text-[10px]">
+            <thead>
+              <tr class="border-b border-white/[0.04] text-left text-zinc-600">
+                <th class="px-5 py-2 font-semibold uppercase tracking-widest">scope</th>
+                <th class="px-5 py-2 font-semibold uppercase tracking-widest">key</th>
+                <th class="px-5 py-2 font-semibold uppercase tracking-widest">value</th>
+              </tr>
+            </thead>
+            <tbody>
+              <For each={entries()}>
+                {(e) => (
+                  <tr class="border-b border-white/[0.03] hover:bg-white/[0.02]">
+                    <td class="px-5 py-2 text-zinc-500">{e.scope}</td>
+                    <td class="px-5 py-2 text-amber-400/80">{e.key}</td>
+                    <td class="px-5 py-2 max-w-[240px] truncate text-zinc-300" title={e.value}>{e.value}</td>
+                  </tr>
+                )}
+              </For>
+            </tbody>
+          </table>
+        </Show>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Root ManagementPanel
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1362,6 +1568,7 @@ export type ManagementPanelProps = {
   onClose: () => void;
   initialTab?: TabId;
   activeSessions: AppSession[];
+  onRestoreSession?: (id: string, title: string, activeRole: string, runtimeKind: string | null, cwd: string | null) => void;
   skills: Accessor<AppSkill[]>;
   roles: Accessor<Role[]>;
   refreshSkills: () => Promise<void>;
@@ -1438,7 +1645,7 @@ export default function ManagementPanel(props: ManagementPanelProps) {
           {/* Tab content */}
           <div class="flex-1 overflow-hidden">
             <Show when={activeTab() === "sessions"}>
-              <SessionsTab activeSessions={props.activeSessions} />
+              <SessionsTab activeSessions={props.activeSessions} onRestoreSession={props.onRestoreSession} />
             </Show>
             <Show when={activeTab() === "workflows"}>
               <WorkflowsTab roles={props.roles()} />
@@ -1458,6 +1665,9 @@ export default function ManagementPanel(props: ManagementPanelProps) {
             </Show>
             <Show when={activeTab() === "skills"}>
               <SkillRegistryTab skills={props.skills()} refreshSkills={props.refreshSkills} />
+            </Show>
+            <Show when={activeTab() === "context"}>
+              <ContextTab activeSession={props.activeSession} />
             </Show>
           </div>
         </div>

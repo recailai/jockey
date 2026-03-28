@@ -1,10 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { For, Index, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { For, Index, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { Accessor } from "solid-js";
-import { SolidMarkdown } from "solid-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeHighlight from "rehype-highlight";
+import { marked } from "marked";
 import type { AppSession, AppMessage, AppToolCall, AppSegment } from "./types";
 import { INTERACTIVE_MOTION, RUNTIME_COLOR, MESSAGE_RENDER_WINDOW, fmt } from "./types";
 
@@ -17,8 +15,7 @@ type MessageWindowProps = {
   onListUnmounted?: (id: string) => void;
 };
 
-const remarkPlugins = [remarkGfm];
-const rehypePlugins = [rehypeHighlight];
+const renderMd = (text: string) => marked.parse(text, { async: false }) as string;
 
 export default function MessageWindow(props: MessageWindowProps) {
   let listEl: HTMLDivElement | undefined;
@@ -69,10 +66,22 @@ export default function MessageWindow(props: MessageWindowProps) {
     openUrl(href);
   }
 
+  const [ctxMenu, setCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
+
   function handleResetContextMenu(e: MouseEvent) {
     e.preventDefault();
-    props.onResetAgentContext?.();
+    e.stopPropagation();
+    setCtxMenu({ x: e.clientX, y: e.clientY });
   }
+
+  function closeCtxMenu() {
+    setCtxMenu(null);
+  }
+
+  onMount(() => {
+    window.addEventListener("click", closeCtxMenu);
+    onCleanup(() => window.removeEventListener("click", closeCtxMenu));
+  });
 
   return (
     <div
@@ -136,7 +145,7 @@ export default function MessageWindow(props: MessageWindowProps) {
                   </Show>
                 </div>
                 <Show when={msg.segments && msg.segments.length > 0} fallback={
-                  <div class="md-prose"><SolidMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} children={msg.text} /></div>
+                  <div class="md-prose" innerHTML={renderMd(msg.text)} />
                 }>
                   <SegmentList segments={msg.segments!} />
                 </Show>
@@ -231,6 +240,25 @@ export default function MessageWindow(props: MessageWindowProps) {
           </div>
         </div>
       </Show>
+      <Show when={ctxMenu()}>
+        {(pos) => (
+          <div
+            class="fixed z-[200] min-w-[140px] overflow-hidden rounded-lg border border-white/[0.08] bg-zinc-900/95 shadow-xl shadow-black/60 backdrop-blur-md py-1"
+            style={`left:${pos().x}px;top:${pos().y}px`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-zinc-300 hover:bg-white/[0.06] hover:text-white transition-colors"
+              onClick={() => { closeCtxMenu(); props.onResetAgentContext?.(); }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-zinc-500">
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>
+              </svg>
+              Reset context
+            </button>
+          </div>
+        )}
+      </Show>
     </div>
   );
 }
@@ -257,7 +285,7 @@ function SegmentList(props: { segments: AppSegment[] }) {
   return (
     <For each={groups()}>{(g) => (
       g.kind === "text"
-        ? <div class="md-prose"><SolidMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} children={g.text} /></div>
+        ? <div class="md-prose" innerHTML={renderMd(g.text)} />
         : <ToolCallGroup tools={g.tools} streaming={false} />
     )}</For>
   );

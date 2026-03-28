@@ -36,46 +36,46 @@ pub(crate) fn set_app_session_cwd(
     })
 }
 
-#[tauri::command]
-pub(crate) fn list_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSession>, String> {
-    with_db(get_state(&state), |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, title, active_role, runtime_kind, cwd, created_at, last_active_at
-                 FROM app_sessions ORDER BY last_active_at DESC LIMIT 50",
-            )
-            .map_err(|e| e.to_string())?;
-        let sessions: Vec<(String, AppSession)> = stmt
-            .query_map([], |row| {
-                let id: String = row.get(0)?;
-                Ok((
-                    id.clone(),
-                    AppSession {
-                        id,
-                        title: row.get(1)?,
-                        active_role: row.get(2)?,
-                        runtime_kind: row.get(3)?,
-                        cwd: row.get(4)?,
-                        messages: Vec::new(),
-                        created_at: row.get(5)?,
-                        last_active_at: row.get(6)?,
-                    },
-                ))
-            })
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
+fn query_sessions(conn: &rusqlite::Connection, sql: &str) -> Result<Vec<AppSession>, String> {
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let sessions: Vec<(String, AppSession)> = stmt
+        .query_map([], |row| {
+            let id: String = row.get(0)?;
+            Ok((
+                id.clone(),
+                AppSession {
+                    id,
+                    title: row.get(1)?,
+                    active_role: row.get(2)?,
+                    runtime_kind: row.get(3)?,
+                    cwd: row.get(4)?,
+                    messages: Vec::new(),
+                    created_at: row.get(5)?,
+                    last_active_at: row.get(6)?,
+                    closed_at: row.get(7)?,
+                },
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
 
-        let mut msg_stmt = conn
-            .prepare(
-                "SELECT session_id, role_name, content, created_at
-                 FROM app_session_messages
-                 WHERE session_id IN (SELECT id FROM app_sessions ORDER BY last_active_at DESC LIMIT 50)
-                 ORDER BY session_id, id ASC",
-            )
-            .map_err(|e| e.to_string())?;
-        let mut msgs_by_session: std::collections::HashMap<String, Vec<serde_json::Value>> =
-            std::collections::HashMap::new();
+    let ids_list = sessions
+        .iter()
+        .map(|(id, _)| format!("'{}'", id.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let mut msgs_by_session: std::collections::HashMap<String, Vec<serde_json::Value>> =
+        std::collections::HashMap::new();
+
+    if !ids_list.is_empty() {
+        let msg_sql = format!(
+            "SELECT session_id, role_name, content, created_at
+             FROM app_session_messages WHERE session_id IN ({}) ORDER BY session_id, id ASC",
+            ids_list
+        );
+        let mut msg_stmt = conn.prepare(&msg_sql).map_err(|e| e.to_string())?;
         for row in msg_stmt
             .query_map([], |row| {
                 Ok((
@@ -97,13 +97,35 @@ pub(crate) fn list_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSes
             });
             msgs_by_session.entry(session_id).or_default().push(v);
         }
+    }
 
-        let mut out = Vec::with_capacity(sessions.len());
-        for (session_id, mut session) in sessions {
-            session.messages = msgs_by_session.remove(&session_id).unwrap_or_default();
-            out.push(session);
-        }
-        Ok(out)
+    let mut out = Vec::with_capacity(sessions.len());
+    for (session_id, mut session) in sessions {
+        session.messages = msgs_by_session.remove(&session_id).unwrap_or_default();
+        out.push(session);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub(crate) fn list_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSession>, String> {
+    with_db(get_state(&state), |conn| {
+        query_sessions(
+            conn,
+            "SELECT id, title, active_role, runtime_kind, cwd, created_at, last_active_at, closed_at
+             FROM app_sessions WHERE closed_at IS NULL ORDER BY last_active_at DESC LIMIT 50",
+        )
+    })
+}
+
+#[tauri::command]
+pub(crate) fn list_closed_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSession>, String> {
+    with_db(get_state(&state), |conn| {
+        query_sessions(
+            conn,
+            "SELECT id, title, active_role, runtime_kind, cwd, created_at, last_active_at, closed_at
+             FROM app_sessions WHERE closed_at IS NOT NULL ORDER BY closed_at DESC LIMIT 200",
+        )
     })
 }
 
@@ -145,11 +167,12 @@ pub(crate) fn create_app_session(
         messages: Vec::new(),
         created_at: now,
         last_active_at: now,
+        closed_at: None,
     };
     with_db(get_state(&state), |conn| {
         conn.execute(
-            "INSERT INTO app_sessions (id, title, active_role, runtime_kind, cwd, created_at, last_active_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO app_sessions (id, title, active_role, runtime_kind, cwd, created_at, last_active_at, closed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
             params![
                 &session.id,
                 &session.title,
@@ -201,19 +224,46 @@ pub(crate) fn update_app_session(
 
 #[tauri::command]
 pub(crate) fn delete_app_session(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let now = now_ms();
     with_db(get_state(&state), |conn| {
         conn.execute(
-            "DELETE FROM app_session_messages WHERE session_id = ?1",
-            params![&id],
+            "UPDATE app_sessions SET closed_at = ?1 WHERE id = ?2",
+            params![now, &id],
         )
         .map_err(|e| e.to_string())?;
-        conn.execute(
-            "DELETE FROM app_session_roles WHERE app_session_id = ?1",
-            params![&id],
-        )
-        .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM app_sessions WHERE id = ?1", params![&id])
-            .map_err(|e| e.to_string())?;
         Ok(())
+    })
+}
+
+#[tauri::command]
+pub(crate) fn reopen_app_session(state: State<'_, AppState>, id: String) -> Result<AppSession, String> {
+    let now = now_ms();
+    with_db(get_state(&state), |conn| {
+        conn.execute(
+            "UPDATE app_sessions SET closed_at = NULL, last_active_at = ?1 WHERE id = ?2",
+            params![now, &id],
+        )
+        .map_err(|e| e.to_string())?;
+        let session = conn
+            .query_row(
+                "SELECT id, title, active_role, runtime_kind, cwd, created_at, last_active_at, closed_at
+                 FROM app_sessions WHERE id = ?1",
+                params![&id],
+                |row| {
+                    Ok(AppSession {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        active_role: row.get(2)?,
+                        runtime_kind: row.get(3)?,
+                        cwd: row.get(4)?,
+                        messages: Vec::new(),
+                        created_at: row.get(5)?,
+                        last_active_at: row.get(6)?,
+                        closed_at: row.get(7)?,
+                    })
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(session)
     })
 }

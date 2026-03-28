@@ -28,6 +28,16 @@ const MENTION_CACHE_LIMIT = 80;
 let sessionIdCounter = 0;
 const makeSessionId = () => `session-${Date.now()}-${++sessionIdCounter}`;
 
+const uniqueName = (desired: string, existing: string[]): string => {
+  const set = new Set(existing);
+  if (!set.has(desired)) return desired;
+  const base = desired.replace(/_copy(\d+)?$/, "");
+  let n = 2;
+  let candidate = `${base}_copy`;
+  while (set.has(candidate)) candidate = `${base}_copy${n++}`;
+  return candidate;
+};
+
 const makeDefaultSession = (title: string): AppSession => ({
   id: makeSessionId(),
   title,
@@ -90,7 +100,7 @@ export default function App() {
   const [slashRange, setSlashRange] = createSignal<{ end: number; query: string } | null>(null);
   const [showDrawer, setShowDrawer] = createSignal(false);
   const [showManagement, setShowManagement] = createSignal(false);
-  const [managementInitialTab, setManagementInitialTab] = createSignal<"sessions" | "workflows" | "roles" | "mcp" | "skills">("sessions");
+  const [managementInitialTab, setManagementInitialTab] = createSignal<"sessions" | "workflows" | "roles" | "mcp" | "skills" | "context">("sessions");
 
   type Toast = { id: number; message: string; severity?: "error" | "info" };
   const [toasts, setToasts] = createSignal<Toast[]>([]);
@@ -106,6 +116,7 @@ export default function App() {
   const mentionCloseTimerRef = { current: null as number | null };
   const mentionDebounceTimerRef = { current: null as number | null };
   let mentionPathCache = new Map<string, AppMentionItem[]>();
+  const runtimeConfigCache = new Map<string, AcpConfigOption[]>();
   let mentionPathCacheKeys: string[] = [];
   let slashCliCache: AppMentionItem[] | null = null;
   let slashCliCacheVersion = 0;
@@ -333,7 +344,7 @@ export default function App() {
     canceledRunToken = Math.max(canceledRunToken, runTokenSeq);
     acceptingStreams.delete(sid);
     finalizeSessionStream(sid, activeBackendRole());
-    updateSession(sid, { toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, thoughtText: "", submitting: false, status: "idle", queuedMessages: [] });
+    updateSession(sid, { toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, thoughtText: "", submitting: false, status: "idle" });
     pushMessage("event", "Cancellation requested.");
     const role = activeBackendRole();
     const runtime = runtimeForRole(role);
@@ -352,11 +363,6 @@ export default function App() {
       slashCliCache = null;
     } catch { setRoles([]); }
   };
-
-  createEffect(() => {
-    if (!activeSession()) return;
-    void refreshRoles();
-  });
 
   const refreshSkills = async () => {
     try {
@@ -378,18 +384,16 @@ export default function App() {
         });
         return raw as AcpConfigOption[];
       }
-      const cached = await invoke<unknown[]>("list_discovered_config_options_cmd", {
-        runtimeKey: normalizedRuntime,
-        roleName: "UnionAIAssistant",
-        appSessionId: sid,
-      });
-      if (cached.length > 0) return cached as AcpConfigOption[];
+      const hit = runtimeConfigCache.get(normalizedRuntime);
+      if (hit) return hit;
       const raw = await invoke<unknown[]>("prewarm_role_config_cmd", {
         runtimeKind: normalizedRuntime,
         roleName: "UnionAIAssistant",
         appSessionId: sid,
       });
-      return raw as AcpConfigOption[];
+      const opts = raw as AcpConfigOption[];
+      if (opts.length > 0) runtimeConfigCache.set(normalizedRuntime, opts);
+      return opts;
     } catch { return []; }
   };
 
@@ -1078,8 +1082,9 @@ export default function App() {
 
   const newSession = () => {
     const availableAssistant = assistants().find((a) => a.available)?.key ?? null;
-    void invoke<{ id: string }>("create_app_session", { title: "New Session" }).then((created) => {
-      const s = makeDefaultSession("New Session");
+    const title = uniqueName("New Session", sessions.map((s) => s.title));
+    void invoke<{ id: string }>("create_app_session", { title }).then((created) => {
+      const s = makeDefaultSession(title);
       s.id = created.id;
       s.runtimeKind = availableAssistant;
       setSessions(sessions.length, s);
@@ -1092,7 +1097,7 @@ export default function App() {
       }
     }).catch((e: unknown) => {
       showToast(`Failed to create session: ${String(e)}`);
-      const s = makeDefaultSession("New Session");
+      const s = makeDefaultSession(title);
       s.runtimeKind = availableAssistant;
       setSessions(sessions.length, s);
       setActiveSessionId(s.id);
@@ -1168,6 +1173,10 @@ export default function App() {
       });
 
       pushMessage("system", "Welcome to UnionAI. Agent sessions are warming up in the background.");
+
+      assistants().filter((a) => a.available).forEach((a) => {
+        void fetchConfigOptions(a.key);
+      });
     };
     startupRaf = window.requestAnimationFrame(() => {
       startupRaf = null;
@@ -1194,7 +1203,7 @@ export default function App() {
       listen<{ role: string; runtimeKind?: string; appSessionId?: string; event: AcpStreamEvent }>("acp/stream", (ev) => {
         const e = ev.payload.event;
         const sid = ev.payload.appSessionId;
-        if (!sid) return;
+        if (!sid || !acceptingStreams.has(sid)) return;
         const patchSession = (patch: Partial<AppSession>) => updateSession(sid, patch);
         switch (e.kind) {
           case "statusUpdate":
@@ -1450,6 +1459,19 @@ export default function App() {
             onClose={() => setShowManagement(false)}
             initialTab={managementInitialTab()}
             activeSessions={sessions}
+            onRestoreSession={(id, title, activeRole, runtimeKind, cwd) => {
+              const existing = sessions.find((s) => s.id === id);
+              if (!existing) {
+                const s = makeDefaultSession(title);
+                s.id = id;
+                s.activeRole = activeRole;
+                s.runtimeKind = runtimeKind;
+                s.cwd = cwd;
+                setSessions(sessions.length, s);
+              }
+              setActiveSessionId(id);
+              setShowManagement(false);
+            }}
             skills={skills}
             roles={roles}
             refreshSkills={refreshSkills}
