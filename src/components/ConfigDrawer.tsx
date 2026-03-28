@@ -1,8 +1,8 @@
-import { invoke } from "@tauri-apps/api/core";
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { Accessor, Setter } from "solid-js";
 import type { Role, RoleUpsertInput, AppSession, AssistantRuntime, AcpConfigOption, AppSkill } from "./types";
 import { INTERACTIVE_MOTION, RUNTIME_COLOR, flattenConfigValues } from "./types";
+import { assistantApi, configApi, roleApi } from "../lib/tauriApi";
 
 type SelectOption = { value: string; label: string };
 
@@ -117,7 +117,7 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
                   { tab: "sessions" as const, label: "Session History", count: () => null, color: "text-zinc-400" },
                 ] as const).map(({ tab, label, count, color }) => (
                   <button
-                    onClick={() => { props.setShowDrawer(false); props.onOpenManagement?.(tab); }}
+                    onClick={(e) => { e.stopPropagation(); props.setShowDrawer(false); props.onOpenManagement?.(tab); }}
                     class={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-colors duration-150 hover:bg-zinc-900/60 group ${INTERACTIVE_MOTION}`}
                   >
                     <span class="text-zinc-400 group-hover:text-zinc-200 transition-colors">{label}</span>
@@ -209,7 +209,8 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
   const [mode, setMode] = createSignal("");
   const [configOptionsJson, setConfigOptionsJson] = createSignal("{}");
   const [configOptions, setConfigOptions] = createSignal<AcpConfigOption[]>([]);
-  const [loading, setLoading] = createSignal(true);
+  const [optionsLoading, setOptionsLoading] = createSignal(false);
+  let optionsReqSeq = 0;
 
   const runtimeKind = () => props.activeSession()?.runtimeKind ?? "claude-code";
 
@@ -226,10 +227,9 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
   const otherOpts = createMemo(() => configOptions().filter((o) => o.id !== "model" && o.id !== "mode" && o.category !== "model" && o.category !== "mode"));
 
   // Load existing UnionAIAssistant role on mount
-  const init = async () => {
-    setLoading(true);
+  const initRole = async () => {
     try {
-      const roles = await invoke<Role[]>("list_roles");
+      const roles = await roleApi.list();
       const existing = roles.find((r) => r.roleName === UNION_ASSISTANT_ROLE);
       if (existing) {
         setPrompt(existing.systemPrompt ?? "");
@@ -237,30 +237,53 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
         setMode(existing.mode ?? "");
         setConfigOptionsJson(existing.configOptionsJson || "{}");
       }
-      const opts = await props.fetchConfigOptions(runtimeKind(), UNION_ASSISTANT_ROLE);
-      setConfigOptions(opts);
-    } catch { /* ignore */ }
-    setLoading(false);
+    } catch {}
   };
+
+  const refreshOptions = async (runtime: string) => {
+    const reqSeq = ++optionsReqSeq;
+    const sid = props.activeSession()?.id ?? "";
+    setOptionsLoading(true);
+    try {
+      const cachedRaw = await assistantApi.listDiscoveredConfig(runtime, UNION_ASSISTANT_ROLE, sid);
+      if (reqSeq !== optionsReqSeq) return;
+      setConfigOptions(configApi.asOptions(cachedRaw));
+    } catch {
+      if (reqSeq !== optionsReqSeq) return;
+      setConfigOptions([]);
+    }
+    if (!sid) {
+      if (reqSeq === optionsReqSeq) setOptionsLoading(false);
+      return;
+    }
+    void assistantApi.prewarmRoleConfig(runtime, UNION_ASSISTANT_ROLE, sid).then((raw) => {
+      if (reqSeq !== optionsReqSeq) return;
+      setConfigOptions(configApi.asOptions(raw));
+    }).catch(() => {
+    }).finally(() => {
+      if (reqSeq !== optionsReqSeq) return;
+      setOptionsLoading(false);
+    });
+  };
+
+  void initRole();
   createEffect(() => {
-    void runtimeKind();
-    void init();
+    const runtime = runtimeKind();
+    void refreshOptions(runtime);
   });
 
   const handleSave = async () => {
     try {
-      const saved = await invoke<Role>("upsert_role_cmd", {
-        input: {
-          roleName: UNION_ASSISTANT_ROLE,
-          runtimeKind: runtimeKind(),
-          systemPrompt: prompt().trim(),
-          model: model().trim() || null,
-          mode: mode() || null,
-          mcpServersJson: "[]",
-          configOptionsJson: configOptionsJson(),
-          autoApprove: true,
-        } satisfies RoleUpsertInput,
-      });
+      const saved = await roleApi.upsert({
+        roleName: UNION_ASSISTANT_ROLE,
+        runtimeKind: runtimeKind(),
+        systemPrompt: prompt().trim(),
+        model: model().trim() || null,
+        mode: mode() || null,
+        mcpServersJson: "[]",
+        configOptionsJson: configOptionsJson(),
+        autoApprove: true,
+      } satisfies RoleUpsertInput);
       await props.refreshRoles();
       props.pushMessage("event", `assistant config saved (${saved.runtimeKind}${saved.model ? `, model=${saved.model}` : ""}${saved.mode ? `, mode=${saved.mode}` : ""})`);
       props.onClose();
@@ -271,11 +294,12 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
 
   return (
     <div class="mt-2 space-y-2 rounded-xl border border-zinc-800/60 bg-zinc-950/60 p-3">
-      <Show when={loading()}>
-        <div class="text-[10px] text-zinc-600 italic">Loading...</div>
-      </Show>
-      <Show when={!loading()}>
+      <div class="flex items-center justify-between">
         <div class="text-[10px] text-zinc-600">runtime: {runtimeKind()}</div>
+        <Show when={optionsLoading()}>
+          <div class="text-[10px] text-zinc-600 italic">loading options…</div>
+        </Show>
+      </div>
         <textarea
           value={prompt()}
           onInput={(e) => setPrompt(e.currentTarget.value)}
@@ -331,7 +355,6 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
         >
           Save
         </button>
-      </Show>
     </div>
   );
 }
@@ -376,7 +399,7 @@ function RolesSection(props: {
               const color = () => RUNTIME_COLOR[role.runtimeKind] ?? "text-zinc-500";
               return (
                 <button
-                  onClick={() => openRole(role.roleName)}
+                  onClick={(e) => { e.stopPropagation(); openRole(role.roleName); }}
                   class={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 hover:bg-zinc-900/40 transition-colors text-left ${INTERACTIVE_MOTION}`}
                 >
                   <span class="flex-1 truncate font-mono text-[10px] text-zinc-300">{role.roleName}</span>
@@ -387,7 +410,7 @@ function RolesSection(props: {
             }}
           </For>
           <button
-            onClick={() => { props.setShowDrawer(false); props.onOpenManagement?.("roles"); }}
+            onClick={(e) => { e.stopPropagation(); props.setShowDrawer(false); props.onOpenManagement?.("roles"); }}
             class={`flex w-full items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[10px] text-zinc-600 hover:text-zinc-300 hover:bg-zinc-900/40 transition-colors ${INTERACTIVE_MOTION}`}
           >
             <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>

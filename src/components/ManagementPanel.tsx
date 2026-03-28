@@ -49,7 +49,10 @@ export default function ManagementPanel(props: ManagementPanelProps) {
   });
 
   const handleBackdrop = (e: MouseEvent) => {
-    if ((e.target as Element).closest("[data-panel]")) return;
+    const target = e.target;
+    if (!(target instanceof Node)) return;
+    if (!(e.currentTarget as HTMLElement).contains(target)) return;
+    if (target instanceof Element && target.closest("[data-panel]")) return;
     props.onClose();
   };
 

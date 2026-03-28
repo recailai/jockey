@@ -1,10 +1,10 @@
 import { createSignal } from "solid-js";
 import { produce } from "solid-js/store";
-import { invoke } from "@tauri-apps/api/core";
 import type { Role, AssistantRuntime, AppSkill, AcpConfigOption } from "../components/types";
 import { DEFAULT_ROLE_ALIAS, DEFAULT_BACKEND_ROLE } from "../components/types";
 import type { SessionManager } from "./useSessionManager";
 import type { StreamEngine } from "./useStreamEngine";
+import { assistantApi, roleApi, skillApi } from "../lib/tauriApi";
 
 export function useAgentContext(
   sessionManager: SessionManager,
@@ -65,7 +65,7 @@ export function useAgentContext(
 
   const refreshRoles = async () => {
     try {
-      const rows = await invoke<Role[]>("list_roles");
+      const rows = await roleApi.list();
       setRoles(rows);
       slashCliCacheRef.cache = null;
     } catch { setRoles([]); }
@@ -73,7 +73,7 @@ export function useAgentContext(
 
   const refreshSkills = async () => {
     try {
-      const rows = await invoke<AppSkill[]>("list_app_skills");
+      const rows = await skillApi.list();
       setSkills(rows);
     } catch { setSkills([]); }
   };
@@ -84,20 +84,25 @@ export function useAgentContext(
       if (!sid) return [];
       const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
       if (roleName) {
-        const raw = await invoke<unknown[]>("prewarm_role_config_cmd", {
-          runtimeKind: normalizedRuntime,
-          roleName,
-          appSessionId: sid,
-        });
+        const cachedRaw = await assistantApi.listDiscoveredConfig(normalizedRuntime, roleName, sid);
+        const cached = cachedRaw as AcpConfigOption[];
+        if (cached.length > 0) {
+          void assistantApi.prewarmRoleConfig(normalizedRuntime, roleName, sid).catch(() => {});
+          return cached;
+        }
+        const raw = await assistantApi.prewarmRoleConfig(normalizedRuntime, roleName, sid);
         return raw as AcpConfigOption[];
       }
       const hit = runtimeConfigCache.get(normalizedRuntime);
       if (hit) return hit;
-      const raw = await invoke<unknown[]>("prewarm_role_config_cmd", {
-        runtimeKind: normalizedRuntime,
-        roleName: "UnionAIAssistant",
-        appSessionId: sid,
-      });
+      const cachedRaw = await assistantApi.listDiscoveredConfig(normalizedRuntime, "UnionAIAssistant", sid);
+      const cached = cachedRaw as AcpConfigOption[];
+      if (cached.length > 0) {
+        runtimeConfigCache.set(normalizedRuntime, cached);
+        void assistantApi.prewarmRoleConfig(normalizedRuntime, "UnionAIAssistant", sid).catch(() => {});
+        return cached;
+      }
+      const raw = await assistantApi.prewarmRoleConfig(normalizedRuntime, "UnionAIAssistant", sid);
       const opts = raw as AcpConfigOption[];
       if (opts.length > 0) runtimeConfigCache.set(normalizedRuntime, opts);
       return opts;
@@ -115,11 +120,7 @@ export function useAgentContext(
     try {
       const sid = activeSessionId();
       if (!sid) return { runtimeKey: normalizedRuntime, commands: [] };
-      const raw = await invoke<unknown[]>("list_available_commands_cmd", {
-        runtimeKey: normalizedRuntime,
-        roleName,
-        appSessionId: sid,
-      });
+      const raw = await assistantApi.listAvailableCommands(normalizedRuntime, roleName, sid);
       return { runtimeKey: normalizedRuntime, commands: parseAgentCommands(raw) };
     } catch {
       return { runtimeKey: normalizedRuntime, commands: [] };
@@ -161,7 +162,7 @@ export function useAgentContext(
   };
 
   const refreshAssistants = async () => {
-    const rows = await invoke<AssistantRuntime[]>("detect_assistants");
+    const rows = await assistantApi.detect();
     setAssistants(rows);
     slashCliCacheRef.cache = null;
     const current = activeSession()?.runtimeKind ?? null;
@@ -186,7 +187,7 @@ export function useAgentContext(
       return;
     }
     try {
-      await invoke("reset_acp_session", { runtimeKind: runtime, roleName: role, appSessionId: sid });
+      await assistantApi.resetSession(runtime, role, sid);
       const cacheKey = commandCacheKey(normalizeRuntimeKey(runtime), role);
       setSessions((s) => s.id === sid, produce((s) => {
         const next = new Map(s.agentCommands);
@@ -223,7 +224,7 @@ export function useAgentContext(
     const runtime = runtimeForRole(role);
     if (runtime) {
       try {
-        await invoke("cancel_acp_session", { runtimeKind: runtime, roleName: role, appSessionId: sid });
+        await assistantApi.cancelSession(runtime, role, sid);
       } catch { }
     }
     runNextQueued();

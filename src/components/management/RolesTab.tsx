@@ -1,9 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import type { Accessor } from "solid-js";
 import type { AppSession, Role, RoleUpsertInput, AcpConfigOption } from "../types";
 import { RUNTIME_COLOR, RUNTIMES, flattenConfigValues } from "../types";
 import { EmptyState, FieldRow, TextInput, InlineSelect, ActionButton } from "./primitives";
+import { assistantApi, configApi, roleApi } from "../../lib/tauriApi";
 
 export function RolesTab(props: {
   roles: Accessor<Role[]>;
@@ -70,22 +70,12 @@ export function RolesTab(props: {
     setEMcpJson(role.mcpServersJson || "[]");
     setECfgJson(role.configOptionsJson || "{}");
     const appSessionId = props.activeSession()?.id ?? "";
-    // Read from in-memory cache immediately — no subprocess, no loading state
-    const cached = invoke<unknown[]>("list_discovered_config_options_cmd", {
-      runtimeKey: role.runtimeKind,
-      roleName: role.roleName,
-      appSessionId,
-    });
+    const cached = assistantApi.listDiscoveredConfig(role.runtimeKind, role.roleName, appSessionId);
     void cached.then((raw) => {
-      props.patchActiveSession({ discoveredConfigOptions: raw as AcpConfigOption[] });
+      props.patchActiveSession({ discoveredConfigOptions: configApi.asOptions(raw) });
     });
-    // Prewarm in background to populate cache for future opens
-    void invoke<unknown[]>("prewarm_role_config_cmd", {
-      runtimeKind: role.runtimeKind,
-      roleName: role.roleName,
-      appSessionId,
-    }).then((raw) => {
-      props.patchActiveSession({ discoveredConfigOptions: raw as AcpConfigOption[] });
+    void assistantApi.prewarmRoleConfig(role.runtimeKind, role.roleName, appSessionId).then((raw) => {
+      props.patchActiveSession({ discoveredConfigOptions: configApi.asOptions(raw) });
     }).catch(() => {});
   };
 
@@ -121,15 +111,13 @@ export function RolesTab(props: {
     const configMap: Record<string, string> = {};
     for (const [k, v] of Object.entries(cConfigSel())) { if (v) configMap[k] = v; }
     try {
-      const saved = await invoke<Role>("upsert_role_cmd", {
-        input: {
-          roleName: name, runtimeKind: cRuntime(),
-          systemPrompt: cPrompt().trim() || "You are a helpful AI assistant.",
-          model: cModel().trim() || null, mode: cMode().trim() || null,
-          mcpServersJson: "[]", configOptionsJson: JSON.stringify(configMap),
-          autoApprove: cAutoApprove(),
-        } satisfies RoleUpsertInput,
-      });
+      const saved = await roleApi.upsert({
+        roleName: name, runtimeKind: cRuntime(),
+        systemPrompt: cPrompt().trim() || "You are a helpful AI assistant.",
+        model: cModel().trim() || null, mode: cMode().trim() || null,
+        mcpServersJson: "[]", configOptionsJson: JSON.stringify(configMap),
+        autoApprove: cAutoApprove(),
+      } satisfies RoleUpsertInput);
       setCreating(false);
       setCConfigSel({}); setCConfigOpts([]);
       await props.refreshRoles();
@@ -148,14 +136,12 @@ export function RolesTab(props: {
     catch (e) { props.pushMessage("event", `Invalid config JSON: ${String(e)}`); return; }
     setSaving(true);
     try {
-      const saved = await invoke<Role>("upsert_role_cmd", {
-        input: {
-          roleName: role.roleName, runtimeKind: role.runtimeKind,
-          systemPrompt: ePrompt().trim(), model: eModel().trim() || null,
-          mode: eMode().trim() || null, mcpServersJson: JSON.stringify(parsedMcp),
-          configOptionsJson: JSON.stringify(parsedCfg), autoApprove: eAutoApprove(),
-        } satisfies RoleUpsertInput,
-      });
+      const saved = await roleApi.upsert({
+        roleName: role.roleName, runtimeKind: role.runtimeKind,
+        systemPrompt: ePrompt().trim(), model: eModel().trim() || null,
+        mode: eMode().trim() || null, mcpServersJson: JSON.stringify(parsedMcp),
+        configOptionsJson: JSON.stringify(parsedCfg), autoApprove: eAutoApprove(),
+      } satisfies RoleUpsertInput);
       setSelectedId(null);
       await props.refreshRoles();
       props.pushMessage("event", `role saved: ${saved.roleName}`);
@@ -165,7 +151,7 @@ export function RolesTab(props: {
 
   const handleDelete = async (roleName: string) => {
     try {
-      await invoke("delete_role_cmd", { roleName });
+      await roleApi.remove(roleName);
       if (editingRole()?.roleName === roleName) setSelectedId(null);
       setDeletingId(null);
       await props.refreshRoles();

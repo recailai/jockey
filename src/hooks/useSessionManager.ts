@@ -1,9 +1,9 @@
 import { createEffect, createMemo, createSignal } from "solid-js";
 import { createStore, produce } from "solid-js/store";
-import { invoke } from "@tauri-apps/api/core";
 import type { AppMessage, AppSession } from "../components/types";
 import { now } from "../components/types";
 import { MAX_MESSAGES } from "../lib/sessionHelpers";
+import { appSessionApi } from "../lib/tauriApi";
 
 export function useSessionManager() {
   const [sessions, setSessions] = createStore<AppSession[]>([]);
@@ -21,7 +21,7 @@ export function useSessionManager() {
     if (typeof patch.activeRole === "string") update.activeRole = patch.activeRole;
     if ("runtimeKind" in patch) update.runtimeKind = patch.runtimeKind ?? null;
     if (Object.keys(update).length === 0) return;
-    void invoke("update_app_session", { id, update }).catch(() => { });
+    void appSessionApi.update(id, update).catch(() => { });
   };
 
   const patchActiveSession = (patch: Partial<AppSession>) => {
@@ -55,11 +55,7 @@ export function useSessionManager() {
 
   const persistMessage = (sessionId: string, message: AppMessage) => {
     if (!sessionId || message.roleName === "event") return;
-    void invoke("append_app_message", {
-      sessionId,
-      roleName: message.roleName,
-      content: message.text,
-    }).catch(() => {});
+    void appSessionApi.appendMessage(sessionId, message.roleName, message.text).catch(() => {});
   };
 
   const appendMessageToSession = (sessionId: string, message: AppMessage) => {

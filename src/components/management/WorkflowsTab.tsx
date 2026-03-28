@@ -1,10 +1,10 @@
-import { invoke } from "@tauri-apps/api/core";
 import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 import type { Role } from "../types";
 import { RUNTIME_COLOR } from "../types";
 import { EmptyState, FieldRow, TextInput, InlineSelect, PanelSection, ActionButton } from "./primitives";
 import type { Workflow, WorkflowStep } from "./primitives";
 import { fmtDate, fmtRelative } from "./primitives";
+import { workflowApi } from "../../lib/tauriApi";
 
 export function WorkflowsTab(props: { roles: Role[] }) {
   const [workflows, setWorkflows] = createSignal<Workflow[]>([]);
@@ -18,7 +18,7 @@ export function WorkflowsTab(props: { roles: Role[] }) {
   const load = async () => {
     setLoading(true);
     try {
-      const raw = await invoke<Workflow[]>("list_workflows");
+      const raw = await workflowApi.list<Workflow[]>();
       setWorkflows(raw);
       if (raw.length > 0 && !selectedId()) setSelectedId(raw[0].id);
     } catch { setWorkflows([]); }
@@ -42,7 +42,7 @@ export function WorkflowsTab(props: { roles: Role[] }) {
     const name = wfName().trim();
     if (!name) return;
     try {
-      await invoke("create_workflow", { name, description: wfDesc().trim(), steps: wfSteps() });
+      await workflowApi.create(name, wfDesc().trim(), wfSteps());
       setCreating(false);
       setWfName(""); setWfDesc("");
       setWfSteps([{ roleName: "", prompt: "", order: 0 }]);
@@ -52,7 +52,7 @@ export function WorkflowsTab(props: { roles: Role[] }) {
 
   const handleDelete = async (id: string) => {
     try {
-      await invoke("delete_workflow", { id });
+      await workflowApi.remove(id);
       if (selectedId() === id) setSelectedId(null);
       await load();
     } catch { /* ignore */ }

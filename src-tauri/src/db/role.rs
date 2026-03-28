@@ -23,7 +23,7 @@ fn validate_role_name(role_name: &str) -> Result<(), String> {
 }
 
 pub(crate) fn upsert_role(
-    state: State<'_, AppState>,
+    state: &AppState,
     role_name: String,
     runtime_kind: String,
     system_prompt: String,
@@ -36,7 +36,7 @@ pub(crate) fn upsert_role(
     let role_name = role_name.trim().to_string();
     validate_role_name(&role_name)?;
     let now = now_ms();
-    let existing_id = with_db(get_state(&state), |conn| {
+    let existing_id = with_db(state, |conn| {
         let name_hit: Option<(String, String)> = conn
             .query_row(
                 "SELECT id, role_name FROM roles WHERE lower(role_name) = lower(?1) LIMIT 1",
@@ -65,7 +65,7 @@ pub(crate) fn upsert_role(
     let cfg = config_options_json.unwrap_or_else(|| "{}".to_string());
     let approve = auto_approve.unwrap_or(true);
 
-    with_db(get_state(&state), |conn| {
+    with_db(state, |conn| {
         conn.execute(
             "INSERT INTO roles (id, role_name, runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, auto_approve, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
@@ -130,7 +130,7 @@ pub(crate) async fn upsert_role_cmd(
     input: RoleInput,
 ) -> Result<Role, String> {
     let role = upsert_role(
-        state.clone(),
+        get_state(&state),
         input.role_name,
         input.runtime_kind,
         input.system_prompt,
@@ -230,8 +230,8 @@ pub(crate) fn load_role_runtime_kind(state: &AppState, role_name: &str) -> Resul
 }
 
 pub(crate) fn resolve_role_runtime(
-    state: State<'_, AppState>,
+    state: &AppState,
     role_name: &str,
 ) -> Result<String, String> {
-    load_role_runtime_kind(get_state(&state), role_name)
+    load_role_runtime_kind(state, role_name)
 }

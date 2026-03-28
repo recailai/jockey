@@ -21,6 +21,19 @@ export const uniqueName = (desired: string, existing: string[]): string => {
 
 export const normalizeSessionTitle = (raw: string): string => raw.trim().replace(/\s+/g, "_");
 export const isDefaultSessionTitle = (raw: string): boolean => /^Session_1(?:_copy\d*)?$/.test(raw);
+export const deriveSessionTitleFromMessage = (text: string, existingTitles: string[]): string => {
+  const cleaned = text.replace(/[@#][^\s]*/g, "").replace(/^\/\S+\s*/, "").trim();
+  const words = cleaned.split(/\s+/);
+  let autoTitle = "";
+  for (const w of words) {
+    if ((autoTitle + " " + w).trim().length > 40) break;
+    autoTitle = (autoTitle + " " + w).trim();
+  }
+  if (!autoTitle) autoTitle = cleaned.slice(0, 30);
+  autoTitle = normalizeSessionTitle(autoTitle);
+  if (!autoTitle) autoTitle = `Session_${Date.now()}`;
+  return uniqueName(autoTitle, existingTitles);
+};
 
 export const makeDefaultSession = (title: string): AppSession => ({
   id: makeSessionId(),

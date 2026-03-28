@@ -1,18 +1,17 @@
+mod context_bundle;
+mod prompt_builder;
 mod session_runtime;
 
 use crate::commands::apply_chat_command;
 use crate::db::context::{list_shared_context_internal, set_shared_context_internal};
 use crate::db::get_state;
 use crate::db::session_context::app_session_scope;
-use crate::db::skill::load_skills_by_names;
-use crate::fs_context::{attach_dir_context, attach_file_context};
 use crate::parser::parse_route_input;
 use crate::chat::session_runtime::load_role_runtime_data;
 use crate::types::*;
-use crate::{acp, build_unionai_tool_prompt, clip_text, now_ms, resolve_chat_cwd};
+use crate::{acp, build_unionai_tool_prompt, clip_text, now_ms};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::fmt::Write as FmtWrite;
 use std::time::Instant;
 use tauri::{AppHandle, State};
 
@@ -60,7 +59,7 @@ fn normalize_recent_chat_text(raw: &str) -> String {
     clip_text(&compact, RECENT_ROLE_CHAT_TEXT_MAX)
 }
 
-fn load_recent_role_chats(state: &AppState, app_session_id: &str) -> Vec<RecentRoleChat> {
+pub(super) fn load_recent_role_chats(state: &AppState, app_session_id: &str) -> Vec<RecentRoleChat> {
     let scope = app_session_scope(app_session_id);
     let entries = list_shared_context_internal(state, &scope).unwrap_or_default();
     entries
@@ -220,80 +219,20 @@ pub(crate) async fn assistant_chat(
     if role_targets.is_empty() {
         role_targets.push("UnionAIAssistant".to_string());
     }
-    let mut message = routed.message;
+    let mut message = routed.message.clone();
     if message.is_empty() {
         message = "Please answer based on the attached context.".to_string();
     }
 
     let tool_prompt = build_unionai_tool_prompt();
-    let cwd = input.app_session_id.as_deref()
-        .and_then(|sid| crate::db::app_session::get_app_session_cwd(crate::db::get_state(&state), sid))
-        .unwrap_or_else(resolve_chat_cwd);
-    let mut attachment_pairs: Vec<(String, String)> = Vec::new();
-    let mut attach_budget = ATTACH_MAX_TOTAL_BYTES;
-    let mut attach_notes = Vec::new();
-
-    {
-        let per_file_budget =
-            attach_budget / (routed.file_refs.len() + routed.dir_refs.len()).max(1);
-        let per_file_budget = per_file_budget.min(ATTACH_MAX_TOTAL_BYTES);
-        let file_futs: Vec<_> = routed
-            .file_refs
-            .iter()
-            .map(|r| attach_file_context(cwd.clone(), r.clone(), per_file_budget))
-            .collect();
-        let dir_futs: Vec<_> = routed
-            .dir_refs
-            .iter()
-            .map(|r| attach_dir_context(cwd.clone(), r.clone(), per_file_budget))
-            .collect();
-        let (file_results, dir_results) = tokio::join!(
-            futures::future::join_all(file_futs),
-            futures::future::join_all(dir_futs)
-        );
-        for result in file_results.into_iter().chain(dir_results) {
-            if attach_budget == 0 {
-                attach_notes.push("attachment budget reached; some files skipped".to_string());
-                break;
-            }
-            match result {
-                Ok((key, value, used)) => {
-                    attachment_pairs.push((key, value));
-                    attach_budget = attach_budget.saturating_sub(used);
-                }
-                Err(e) => attach_notes.push(e),
-            }
-        }
-    }
-    // Extract Send-able handles once so spawn_blocking closures can own them.
+    let bundle = context_bundle::build_context_bundle(&state, &app_session_id, &routed).await;
+    let cwd = bundle.cwd.clone();
+    let attachment_pairs = bundle.attachment_pairs;
+    let attach_notes = bundle.attach_notes;
+    let skill_pairs = bundle.skill_pairs;
+    let all_recent_chats = bundle.recent_chats;
     let db_pool = get_state(&state).db.clone();
     let shared_ctx = get_state(&state).shared_context.clone();
-
-    let skill_refs = routed.skill_refs.clone();
-    let skill_pool = db_pool.clone();
-    let skill_ctx = shared_ctx.clone();
-    let skill_pairs: Vec<(String, String)> = tokio::task::spawn_blocking(move || {
-        let tmp_state = AppState {
-            db: skill_pool,
-            shared_context: skill_ctx,
-        };
-        load_skills_by_names(&tmp_state, &skill_refs)
-    })
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .filter(|s| !s.content.is_empty())
-    .map(|s| (format!("skill:{}", s.name), s.content))
-    .collect();
-    let pre_pool = db_pool.clone();
-    let pre_ctx = shared_ctx.clone();
-    let pre_app_session_id = app_session_id.clone();
-    let all_recent_chats: Vec<RecentRoleChat> = tokio::task::spawn_blocking(move || {
-        let tmp = AppState { db: pre_pool, shared_context: pre_ctx };
-        load_recent_role_chats(&tmp, &pre_app_session_id)
-    })
-    .await
-    .unwrap_or_default();
 
     let mut role_outputs: Vec<(String, String)> = Vec::new();
 
@@ -349,46 +288,13 @@ pub(crate) async fn assistant_chat(
             context_pairs.insert(0, ("cwd".to_string(), cwd.clone()));
         }
 
-        let ctx_bytes: usize = context_pairs
-            .iter()
-            .map(|(k, v)| k.len() + v.len() + 4)
-            .sum();
-        let estimated = if is_union_assistant {
-            tool_prompt.len() + 10
-        } else {
-            0
-        } + ctx_bytes
-            + message.len()
-            + 64;
-        let mut prepared = String::with_capacity(estimated);
-        if is_union_assistant {
-            prepared.push_str("Tools:\n");
-            prepared.push_str(tool_prompt);
-            if let Some(ref sp) = role_system_prompt {
-                prepared.push_str("\n\nSystem:\n");
-                prepared.push_str(sp);
-            }
-        }
-        let is_slash_cmd = message.starts_with('/');
-        if !is_slash_cmd {
-            if !context_pairs.is_empty() {
-                if !prepared.is_empty() {
-                    prepared.push_str("\n\n");
-                }
-                prepared.push_str("Context:\n");
-                for (i, (k, v)) in context_pairs.iter().enumerate() {
-                    if i > 0 {
-                        prepared.push('\n');
-                    }
-                    let _ = write!(prepared, "{}: {}", k, v);
-                }
-            }
-            if !prepared.is_empty() {
-                prepared.push_str("\n\n");
-            }
-            prepared.push_str("User:\n");
-        }
-        prepared.push_str(&message);
+        let prepared = prompt_builder::build_prepared_prompt(
+            is_union_assistant,
+            &tool_prompt,
+            role_system_prompt.as_deref(),
+            &context_pairs,
+            &message,
+        );
 
         chat_log(
             "route.acp.start",
@@ -451,12 +357,13 @@ pub(crate) async fn assistant_chat(
                         "command": clip_text(&command_text, 180)
                     }),
                 );
-                final_output = format!(
-                    "{}\n\n[Command suggestion]\n{}\nRun this command manually if you want to apply it.",
-                    final_output, command_text
-                );
             }
         }
+        final_output = prompt_builder::with_command_suggestion(
+            final_output,
+            explicit_role_targets,
+            is_union_assistant,
+        );
         if !is_union_assistant {
             append_recent_role_chat(
                 get_state(&state),

@@ -1,10 +1,10 @@
-import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { For, Index, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { Accessor } from "solid-js";
 import { marked } from "marked";
 import type { AppSession, AppMessage, AppToolCall, AppSegment } from "./types";
 import { INTERACTIVE_MOTION, RUNTIME_COLOR, MESSAGE_RENDER_WINDOW, fmt } from "./types";
+import { assistantApi } from "../lib/tauriApi";
 
 type MessageWindowProps = {
   activeSessionId: Accessor<string | null>;
@@ -411,7 +411,7 @@ function PermissionModal(props: PermissionModalProps) {
               <button
                 class={`min-h-8 rounded border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-300 hover:bg-emerald-500/20 ${INTERACTIVE_MOTION}`}
                 onClick={() => {
-                  void invoke("respond_permission", { requestId: perm().requestId, optionId: opt.optionId, cancelled: false });
+                  void assistantApi.respondPermission(perm().requestId, opt.optionId, false);
                   props.patchActiveSession({ pendingPermission: null });
                 }}
               >
@@ -421,7 +421,7 @@ function PermissionModal(props: PermissionModalProps) {
             <button
               class={`min-h-8 rounded border border-rose-500/40 bg-rose-500/10 px-3 py-1 text-xs text-rose-300 hover:bg-rose-500/20 ${INTERACTIVE_MOTION}`}
               onClick={() => {
-                void invoke("respond_permission", { requestId: perm().requestId, optionId: "", cancelled: true });
+                void assistantApi.respondPermission(perm().requestId, "", true);
                 props.patchActiveSession({ pendingPermission: null });
               }}
             >

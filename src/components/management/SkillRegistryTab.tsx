@@ -1,8 +1,8 @@
-import { invoke } from "@tauri-apps/api/core";
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import type { AppSkill } from "../types";
 import { INTERACTIVE_MOTION } from "../types";
 import { EmptyState, FieldRow, TextInput, PanelSection, ActionButton, fmtDate } from "./primitives";
+import { skillApi } from "../../lib/tauriApi";
 
 export function SkillRegistryTab(props: {
   skills: AppSkill[];
@@ -51,11 +51,11 @@ export function SkillRegistryTab(props: {
     const payload = { name, description: fDesc().trim(), content: fContent().trim() };
     if (editing() && selectedId()) {
       try {
-        await invoke("upsert_app_skill", { input: { id: selectedId(), ...payload } });
+        await skillApi.upsert({ id: selectedId()!, ...payload });
       } catch { /* ignore */ }
     } else {
       try {
-        await invoke("upsert_app_skill", { input: payload });
+        await skillApi.upsert(payload);
       } catch { /* ignore */ }
     }
     await props.refreshSkills();
@@ -64,7 +64,7 @@ export function SkillRegistryTab(props: {
 
   const handleDelete = async (id: string) => {
     try {
-      await invoke("delete_app_skill", { id });
+      await skillApi.remove(id);
       if (selectedId() === id) setSelectedId(null);
       await props.refreshSkills();
     } catch { /* ignore */ }

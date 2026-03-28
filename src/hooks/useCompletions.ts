@@ -1,10 +1,10 @@
 import { createSignal } from "solid-js";
-import { invoke } from "@tauri-apps/api/core";
 import type { AppMentionItem } from "../components/types";
 import { flattenConfigValues } from "../components/types";
 import { MENTION_CACHE_LIMIT } from "../lib/sessionHelpers";
 import type { AgentContext } from "./useAgentContext";
 import type { SessionManager } from "./useSessionManager";
+import { completionApi } from "../lib/tauriApi";
 
 export function useCompletions(
   agentContext: AgentContext,
@@ -137,10 +137,7 @@ export function useCompletions(
         items = [...items, ...cached];
       } else {
         try {
-          const rows = await invoke<AppMentionItem[]>("complete_mentions", {
-            query: ctx.query,
-            limit: 12,
-          });
+          const rows = await completionApi.mentions(ctx.query, 12);
           if (seq !== mentionReqSeq) return;
           mentionPathCache.set(ctx.query, rows);
           mentionPathCacheKeys.push(ctx.query);
@@ -230,7 +227,7 @@ export function useCompletions(
     try {
       const version = slashCliCacheRef.version;
       const all = (slashCliCacheRef.cache as AppMentionItem[] | null) ?? await (async () => {
-        const rows = await invoke<AppMentionItem[]>("complete_cli", { query: "", limit: 200 });
+        const rows = await completionApi.cli("", 200);
         if (slashCliCacheRef.version === version) {
           slashCliCacheRef.cache = rows;
         }

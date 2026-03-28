@@ -1,10 +1,10 @@
-import { invoke } from "@tauri-apps/api/core";
 import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 import type { AppSession } from "../types";
 import { RUNTIME_COLOR } from "../types";
 import { Badge, EmptyState, FieldRow, ActionButton } from "./primitives";
 import type { ContextEntry, StoredSession } from "./primitives";
 import { fmtDate, fmtRelative } from "./primitives";
+import { appSessionApi, commandApi } from "../../lib/tauriApi";
 
 export function SessionsTab(props: {
   activeSessions: AppSession[];
@@ -17,6 +17,7 @@ export function SessionsTab(props: {
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
   const [contextEntries, setContextEntries] = createSignal<ContextEntry[]>([]);
   const [contextLoading, setContextLoading] = createSignal(false);
+  let contextReqSeq = 0;
 
   type RawSession = {
     id: string; title: string; activeRole?: string;
@@ -40,8 +41,8 @@ export function SessionsTab(props: {
     setLoading(true);
     try {
       const [active, closed] = await Promise.all([
-        invoke<RawSession[]>("list_app_sessions"),
-        invoke<RawSession[]>("list_closed_app_sessions"),
+        appSessionApi.list(),
+        appSessionApi.listClosed(),
       ]);
       const activeMapped = active.map((r) => mapRaw(r, null));
       const closedMapped = closed.map((r) => mapRaw(r, r.closedAt ?? null));
@@ -54,16 +55,17 @@ export function SessionsTab(props: {
 
   createEffect(() => {
     const sid = selectedId();
-    if (!sid) { setContextEntries([]); return; }
+    const reqSeq = ++contextReqSeq;
+    if (!sid) { setContextEntries([]); setContextLoading(false); return; }
     setContextLoading(true);
-    invoke<{ ok: boolean; payload: { entries?: ContextEntry[] } }>("apply_chat_command", {
-      input: "/app_context list",
-      appSessionId: sid,
-    }).then((res) => {
+    commandApi.apply<{ entries?: ContextEntry[] }>("/app_context list", sid).then((res) => {
+      if (reqSeq !== contextReqSeq) return;
       setContextEntries(res.payload.entries ?? []);
     }).catch(() => {
+      if (reqSeq !== contextReqSeq) return;
       setContextEntries([]);
     }).finally(() => {
+      if (reqSeq !== contextReqSeq) return;
       setContextLoading(false);
     });
   });
@@ -91,7 +93,7 @@ export function SessionsTab(props: {
     if (reopening()) return;
     setReopening(s.id);
     try {
-      await invoke("reopen_app_session", { id: s.id });
+      await appSessionApi.reopen(s.id);
       props.onRestoreSession?.(s.id, s.title, s.activeRole, s.runtimeKind, s.cwd);
       setSelectedId(s.id);
       setStoredSessions((prev) => prev.map((p) => p.id === s.id ? { ...p, closedAt: null, updatedAt: Date.now() } : p));

@@ -1,0 +1,130 @@
+type ResolveRouteInput = {
+  text: string;
+  activeRole: string;
+  roleNames: string[];
+  isCustomRole: boolean;
+  defaultRoleAlias: string;
+  defaultBackendRole: string;
+};
+
+export type ResolveRouteResult = {
+  sendRoleLabel: string;
+  effectiveRole: string;
+  routedText: string;
+  isCommand: boolean;
+  isUnionAiCommand: boolean;
+  inRoleContext: boolean;
+  activateRole?: string;
+  prefetchRole?: string;
+  explicitRoleMention: boolean;
+  error?: string;
+};
+
+export type AgentControlCmd = "plan" | "act" | "auto" | "cancel";
+
+export const resolveRoute = (input: ResolveRouteInput): ResolveRouteResult => {
+  const { text, activeRole, roleNames, isCustomRole, defaultRoleAlias, defaultBackendRole } = input;
+  const isCommand = text.startsWith("/");
+  const isUnionAiCommand = text.startsWith("/app_");
+  let sendRoleLabel = activeRole;
+  let effectiveRole = activeRole;
+  let inRoleContext = effectiveRole !== defaultRoleAlias && effectiveRole !== defaultBackendRole;
+  let routedText = text;
+  let activateRole: string | undefined;
+  let prefetchRole: string | undefined;
+  let explicitRoleMention = false;
+  const roleExists = (name: string) => roleNames.includes(name);
+
+  if (!isCommand) {
+    const mentionMatch = text.match(/^@(\S+)/);
+    if (mentionMatch) {
+      const rawTarget = mentionMatch[1];
+      const target = rawTarget.startsWith("role:") ? rawTarget.slice(5) : rawTarget;
+      if (
+        target === "assistant"
+        || target === defaultRoleAlias
+        || target === defaultBackendRole
+      ) {
+        activateRole = defaultRoleAlias;
+        sendRoleLabel = defaultRoleAlias;
+        effectiveRole = defaultRoleAlias;
+        inRoleContext = false;
+        routedText = text.replace(/^@\S+\s*/, "").trim();
+      } else {
+        if (!roleExists(target)) {
+          return {
+            sendRoleLabel,
+            effectiveRole,
+            routedText,
+            isCommand,
+            isUnionAiCommand,
+            inRoleContext,
+            explicitRoleMention,
+            error: `role not found: ${target}`,
+          };
+        }
+        explicitRoleMention = true;
+        activateRole = target;
+        prefetchRole = target;
+        sendRoleLabel = target;
+        effectiveRole = target;
+        inRoleContext = true;
+        routedText = text.replace(/^@\S+\s*/, "").trim();
+      }
+    } else if (isCustomRole && !text.startsWith("@")) {
+      if (!roleExists(effectiveRole)) {
+        return {
+          sendRoleLabel,
+          effectiveRole,
+          routedText,
+          isCommand,
+          isUnionAiCommand,
+          inRoleContext,
+          explicitRoleMention,
+          error: `active role not found: ${effectiveRole}`,
+        };
+      }
+      routedText = `@${effectiveRole} ${text}`;
+    }
+  }
+
+  const isRoleSlashCmd = isCommand && inRoleContext && !isUnionAiCommand;
+  if (isRoleSlashCmd) {
+    if (!roleExists(effectiveRole)) {
+      return {
+        sendRoleLabel,
+        effectiveRole,
+        routedText,
+        isCommand,
+        isUnionAiCommand,
+        inRoleContext,
+        explicitRoleMention,
+        error: `active role not found: ${effectiveRole}`,
+      };
+    }
+    routedText = `@${effectiveRole} ${text}`;
+  }
+
+  return {
+    sendRoleLabel,
+    effectiveRole,
+    routedText,
+    isCommand,
+    isUnionAiCommand,
+    inRoleContext,
+    activateRole,
+    prefetchRole,
+    explicitRoleMention,
+  };
+};
+
+export const parseAgentControlCommand = (
+  text: string,
+  isCommand: boolean,
+  inRoleContext: boolean,
+): AgentControlCmd | null => {
+  if (!isCommand || inRoleContext) return null;
+  const match = text.match(/^\/(plan|act|auto|cancel)\b/);
+  if (!match) return null;
+  return match[1] as AgentControlCmd;
+};

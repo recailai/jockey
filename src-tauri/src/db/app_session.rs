@@ -73,73 +73,57 @@ pub(crate) fn set_app_session_cwd(
 
 fn query_sessions(conn: &rusqlite::Connection, sql: &str) -> Result<Vec<AppSession>, String> {
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let sessions: Vec<(String, AppSession)> = stmt
+    let mut sessions: Vec<AppSession> = stmt
         .query_map([], |row| {
-            let id: String = row.get(0)?;
-            Ok((
-                id.clone(),
-                AppSession {
-                    id,
-                    title: row.get(1)?,
-                    active_role: row.get(2)?,
-                    runtime_kind: row.get(3)?,
-                    cwd: row.get(4)?,
-                    messages: Vec::new(),
-                    created_at: row.get(5)?,
-                    last_active_at: row.get(6)?,
-                    closed_at: row.get(7)?,
-                },
-            ))
+            Ok(AppSession {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                active_role: row.get(2)?,
+                runtime_kind: row.get(3)?,
+                cwd: row.get(4)?,
+                messages: Vec::new(),
+                created_at: row.get(5)?,
+                last_active_at: row.get(6)?,
+                closed_at: row.get(7)?,
+            })
         })
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
-    let ids_list = sessions
-        .iter()
-        .map(|(id, _)| format!("'{}'", id.replace('\'', "''")))
-        .collect::<Vec<_>>()
-        .join(",");
+    let mut msg_stmt = conn
+        .prepare(
+            "SELECT role_name, content, created_at
+             FROM app_session_messages
+             WHERE session_id = ?1
+             ORDER BY id ASC",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let mut msgs_by_session: std::collections::HashMap<String, Vec<serde_json::Value>> =
-        std::collections::HashMap::new();
-
-    if !ids_list.is_empty() {
-        let msg_sql = format!(
-            "SELECT session_id, role_name, content, created_at
-             FROM app_session_messages WHERE session_id IN ({}) ORDER BY session_id, id ASC",
-            ids_list
-        );
-        let mut msg_stmt = conn.prepare(&msg_sql).map_err(|e| e.to_string())?;
-        for row in msg_stmt
-            .query_map([], |row| {
+    for session in sessions.iter_mut() {
+        let rows = msg_stmt
+            .query_map(params![&session.id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(2)?,
                 ))
             })
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-        {
-            let (session_id, role_name, content, at) = row;
-            let v = serde_json::json!({
+            .map_err(|e| e.to_string())?;
+        let mut messages = Vec::new();
+        for row in rows {
+            let (role_name, content, at) = row.map_err(|e| e.to_string())?;
+            messages.push(serde_json::json!({
                 "id": uuid::Uuid::new_v4().to_string(),
                 "roleName": role_name,
                 "text": content,
                 "at": at
-            });
-            msgs_by_session.entry(session_id).or_default().push(v);
+            }));
         }
+        session.messages = messages;
     }
 
-    let mut out = Vec::with_capacity(sessions.len());
-    for (session_id, mut session) in sessions {
-        session.messages = msgs_by_session.remove(&session_id).unwrap_or_default();
-        out.push(session);
-    }
-    Ok(out)
+    Ok(sessions)
 }
 
 #[tauri::command]

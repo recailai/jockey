@@ -1,8 +1,8 @@
-import { invoke } from "@tauri-apps/api/core";
 import { For, Show, createSignal } from "solid-js";
 import type { Accessor, Setter } from "solid-js";
 import type { AppSession } from "./types";
 import { INTERACTIVE_MOTION } from "./types";
+import { appSessionApi, assistantApi } from "../lib/tauriApi";
 
 type SessionTabsProps = {
   sessions: AppSession[];
@@ -36,7 +36,7 @@ export default function SessionTabs(props: SessionTabsProps) {
       return;
     }
     try {
-      await invoke("update_app_session", { id: sessionId, update: { title: val } });
+      await appSessionApi.update(sessionId, { title: val });
       props.updateSession(sessionId, { title: val });
     } catch {}
     setRenamingSessionId(null);
@@ -116,7 +116,7 @@ export default function SessionTabs(props: SessionTabsProps) {
                 onClick={() => {
                   const assistant = props.activeSession()?.runtimeKind ?? null;
                   const role = props.activeBackendRole();
-                  if (assistant) void invoke("set_acp_mode", { runtimeKind: assistant, roleName: role, modeId: m.id, appSessionId: props.activeSessionId() ?? "" });
+                  if (assistant) void assistantApi.setMode(assistant, role, m.id, props.activeSessionId() ?? "");
                 }}
               >
                 {m.title ?? m.id}
