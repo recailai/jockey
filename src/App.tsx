@@ -658,6 +658,12 @@ export default function App() {
               });
             }
             break;
+          case "permissionExpired":
+            // Clear the pending permission UI if the request timed out on the backend
+            if (e.requestId && activeSession()?.pendingPermission?.requestId === e.requestId) {
+              patchSession({ pendingPermission: null });
+            }
+            break;
           case "modeUpdate":
             if (e.modeId) patchSession({ currentMode: e.modeId });
             break;

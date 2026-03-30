@@ -78,6 +78,65 @@
 - [ ] Light mode 配套更新 accent 色（当前 light mode 无彩色 accent）
 - [ ] 系统 dark/light 自动跟随 + 手动切换开关放入 Settings
 
+### Terminal Visibility
+- [ ] Expose `get_terminal_output(terminal_id)` and `kill_terminal_cmd(terminal_id)` as Tauri commands
+- [ ] Frontend: detect `ToolCallContent::Terminal` (`type === "terminal"`) in ToolCallItem and render a live terminal panel
+- [ ] Terminal panel: poll `get_terminal_output` on interval, show scrolling output, Stop button calls `kill_terminal_cmd`
+- [ ] Note: ACP terminal = subprocess spawned by agent for bash commands (not a subagent); no stdin/human-input support in ACP spec
+- [ ] Note: `kill_terminal` keeps TerminalId valid (agent can still read final output); `release_terminal` kills + invalidates TerminalId — Stop button should use kill, not release
+
+### ACP Session Modes & Config Options (现状 + 缺口)
+
+**Session Modes 现状：**
+- ✅ 后端：`set_acp_mode` Tauri command 暴露，调用 `worker::SetMode` → `conn.set_session_mode()`
+- ✅ 后端：`SessionUpdate::CurrentModeUpdate` → `AcpEvent::ModeUpdate { mode_id }` 已处理
+- ✅ 后端：`SessionUpdate::AvailableCommandsUpdate` 已处理（注意：`AvailableModes` 是 cold_start 时从 `new_session` 响应里读取，不是 SessionUpdate）
+- ✅ 前端：`SessionTabs` 渲染 available modes 按钮，点击调 `assistantApi.setMode()`
+- ✅ 前端：`currentMode` badge 显示在消息头部
+- ❌ 缺失：available modes 列表仅在 prewarm/cold_start 时获取一次，`session/update` 推送的 modes 变化未处理（`_ => return Ok(())` 丢弃）— spec 说 agent 可以在任何时候更新可用 modes
+- ❌ 缺失：client 无法在 session 建立时通过 `newSession` 的 `initialMode` 字段指定初始 mode（目前是 cold_start 后再 `set_session_mode`，多一个 round-trip）
+
+**Session Config Options 现状：**
+- ✅ 后端：`set_acp_config_option` Tauri command 暴露
+- ✅ 后端：`SessionUpdate::ConfigOptionUpdate` → `AcpEvent::ConfigUpdate { options }` 已处理
+- ✅ 后端：`list_discovered_config_options_cmd` 暴露，prewarm 时从 `new_session` 响应里读取 config options
+- ✅ 前端：`ConfigDrawer` 按 `category`（model/mode/other）分组显示 config options，支持 select 类型
+- ⚠️ 部分：`ConfigOptionUpdate`（agent 主动推送更新）事件到达前端但未更新 ConfigDrawer 内的 select 状态（只更新了 session 的 configOptions 字段，UI 不响应）
+- ❌ 缺失：agent 响应 `set_config_option` 时返回完整更新后的 config state（含 dependent changes），前端未读取响应并更新 UI
+
+### ACP Content Types (部分未实现)
+**后端 session_notification 现状：**
+- `ContentBlock::Text` → ✅ 提取 `.text` 字段，发送 TextDelta
+- `ContentBlock::ResourceLink` → ✅ 提取 `.uri` 作为文本显示（降级处理）
+- `ContentBlock::Image` → ❌ `_ => return Ok(())` 静默丢弃，图片不显示
+- `ContentBlock::Audio` → ❌ 同上，静默丢弃
+- `ContentBlock::Resource` (EmbeddedResource) → ❌ 静默丢弃
+
+**ToolCallContent 现状：**
+- `ToolCallContent::Content(text/image/resource)` → ✅ 序列化为 JSON 存入 contentJson，文本可见
+- `ToolCallContent::Terminal` → ❌ 序列化后前端无专门处理，terminal_id 不被识别（见 Terminal Visibility）
+- `ToolCallContent::Diff` → ❌ 序列化后前端无专门处理，`{ type: "diff", path, oldText, newText }` 以原始 JSON 显示，无 diff 渲染
+
+**Agent Plan 现状：**
+- ✅ 后端：`SessionUpdate::Plan` → `AcpEvent::Plan { entries }` 已实现
+- ✅ 前端：`currentPlan` 存入 session state，MessageWindow 渲染步骤列表（status 点 + content 文字）
+- ⚠️ 缺失：`priority` 字段有类型定义但渲染时未使用；plan 不持久化到已完成消息里（只在 streaming 时显示）
+- ❌ 缺失：plan 完成后不保存到 message segments，用户看不到历史 plan
+
+**待做：**
+- [ ] Image content：前端 ToolCallItem / session_notification 支持渲染 base64 图片（`data` + `mimeType`）
+- [ ] Diff content：前端 ToolCallItem 识别 `type === "diff"`，渲染 unified diff 视图（path + old/new text）
+- [ ] Plan 持久化：plan 完成后保存到 message segments，历史消息可回顾 plan
+- [ ] Plan priority 显示：high/medium/low 用不同颜色或图标区分
+
+### ACP Agent Session Management (未实现)
+- [ ] `session/list` — list agent's known sessions (requires `sessionCapabilities.list`); useful for session picker on resume
+- [ ] `session/load` — restore session by ID with full message history replay; prerequisite for session restore after restart
+- [ ] `session/resume` — re-attach to session without replaying history (lighter than load); currently using `resume_session_id` field in `new_session` as workaround
+- [ ] `session/close` — gracefully close session and free agent resources; currently gate-flagged as `unstable_session_close` in SDK v0.10.2
+- [ ] `session/fork` — fork session for side tasks (summaries, PR descriptions) without polluting main history; gate-flagged as `unstable_session_fork`
+- [ ] Note: `dump_session`/`destroy_session` do not exist in ACP spec — these names were mistaken; actual session lifecycle methods are load/resume/close/fork above
+
 ### Desktop Polish
 - [ ] Background throttling configuration
 - [ ] Confirmation prompts for high-risk commands
