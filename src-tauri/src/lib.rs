@@ -344,6 +344,58 @@ pub fn run() {
                 }
             });
 
+            // Background config-options refresh: every 5 minutes, re-prewarm all active
+            // session roles so the in-memory cache stays current without user interaction.
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+                    interval.tick().await; // skip immediate first tick
+                    loop {
+                        interval.tick().await;
+                        let state_ref = app_handle.state::<AppState>();
+                        let app_state: &AppState = state_ref.inner();
+                        // Collect all active (non-closed) sessions and their role mappings
+                        let session_roles: Vec<(String, String, String)> = with_db(app_state, |conn| {
+                            let mut stmt = conn.prepare(
+                                "SELECT r.app_session_id, r.role_name, r.runtime_kind
+                                 FROM app_session_roles r
+                                 JOIN app_sessions s ON s.id = r.app_session_id
+                                 WHERE s.closed_at IS NULL",
+                            ).map_err(|e| e.to_string())?;
+                            let rows = stmt.query_map([], |row| {
+                                Ok((
+                                    row.get::<_, String>(0)?,
+                                    row.get::<_, String>(1)?,
+                                    row.get::<_, String>(2)?,
+                                ))
+                            }).map_err(|e| e.to_string())?;
+                            Ok(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+                        }).unwrap_or_default();
+
+                        for (session_id, role_name, runtime_kind) in session_roles {
+                            if runtime_kind == "mock" { continue; }
+                            let db_clone = app_state.db.clone();
+                            let ctx_clone = app_state.shared_context.clone();
+                            let sid_clone = session_id.clone();
+                            let rn_clone = role_name.clone();
+                            let rk_clone = runtime_kind.clone();
+                            tokio::spawn(async move {
+                                let tmp = AppState { db: db_clone, shared_context: ctx_clone };
+                                let cwd = crate::db::app_session::get_app_session_cwd(&tmp, &sid_clone)
+                                    .unwrap_or_else(resolve_chat_cwd);
+                                acp::prewarm_role_for_config(
+                                    &rk_clone,
+                                    &rn_clone,
+                                    &cwd,
+                                    Some((&tmp, &sid_clone)),
+                                ).await;
+                            });
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

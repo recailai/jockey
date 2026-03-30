@@ -40,34 +40,42 @@ export function useStreamEngine(sessionManager: SessionManager) {
   };
 
   const flushStreamBatch = () => {
+    // Collect all pending buffers keyed by session id
+    const textChunks = new Map<string, string>();
     for (const [sid, buf] of streamBatchBuffers) {
       if (!buf) continue;
-      const chunk = buf;
+      textChunks.set(sid, buf);
       streamBatchBuffers.set(sid, "");
-      setSessions(
-        (s) => s.id === sid && !!s.streamingMessage,
-        produce((s) => {
-          s.streamingMessage!.text = (s.streamingMessage!.text ?? "") + chunk;
-          const last = s.streamSegments[s.streamSegments.length - 1];
-          if (last && last.kind === "text") {
-            s.streamSegments[s.streamSegments.length - 1] = { kind: "text" as const, text: last.text + chunk };
-          } else {
-            s.streamSegments.push({ kind: "text" as const, text: chunk });
-          }
-        }),
-      );
     }
+    const thoughtChunks = new Map<string, string>();
     for (const [sid, buf] of thoughtBatchBuffers) {
       if (!buf) continue;
-      const chunk = buf;
+      thoughtChunks.set(sid, buf);
       thoughtBatchBuffers.set(sid, "");
+    }
+
+    // Merge text + thought updates into a single setSessions call per session
+    const allSids = new Set([...textChunks.keys(), ...thoughtChunks.keys()]);
+    for (const sid of allSids) {
+      const textChunk = textChunks.get(sid);
+      const thoughtChunk = thoughtChunks.get(sid);
       setSessions(
         (s) => s.id === sid,
-        "thoughtText",
-        (prev) => {
-          const next = `${prev ?? ""}${chunk}`;
-          return next.length <= MAX_THOUGHT_CHARS ? next : next.slice(next.length - MAX_THOUGHT_CHARS);
-        },
+        produce((s) => {
+          if (textChunk && s.streamingMessage) {
+            s.streamingMessage.text = (s.streamingMessage.text ?? "") + textChunk;
+            const last = s.streamSegments[s.streamSegments.length - 1];
+            if (last && last.kind === "text") {
+              s.streamSegments[s.streamSegments.length - 1] = { kind: "text" as const, text: last.text + textChunk };
+            } else {
+              s.streamSegments.push({ kind: "text" as const, text: textChunk });
+            }
+          }
+          if (thoughtChunk) {
+            const next = `${s.thoughtText ?? ""}${thoughtChunk}`;
+            s.thoughtText = next.length <= MAX_THOUGHT_CHARS ? next : next.slice(next.length - MAX_THOUGHT_CHARS);
+          }
+        }),
       );
     }
     scheduleScrollToBottom();

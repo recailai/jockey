@@ -17,6 +17,22 @@ type MessageWindowProps = {
 
 const renderMd = (text: string) => marked.parse(text, { async: false }) as string;
 
+// Module-level LRU-style cache for completed (non-streaming) message markdown.
+// Keyed by message id so re-renders never re-parse the same static content.
+const mdCache = new Map<string, string>();
+const MD_CACHE_MAX = 500;
+function renderMdCached(id: string, text: string): string {
+  const hit = mdCache.get(id);
+  if (hit !== undefined) return hit;
+  const html = renderMd(text);
+  if (mdCache.size >= MD_CACHE_MAX) {
+    // evict oldest entry
+    mdCache.delete(mdCache.keys().next().value!);
+  }
+  mdCache.set(id, html);
+  return html;
+}
+
 export default function MessageWindow(props: MessageWindowProps) {
   let listEl: HTMLDivElement | undefined;
   let boundSessionId: string | null = null;
@@ -145,7 +161,7 @@ export default function MessageWindow(props: MessageWindowProps) {
                   </Show>
                 </div>
                 <Show when={msg.segments && msg.segments.length > 0} fallback={
-                  <div class="md-prose" innerHTML={renderMd(msg.text)} />
+                  <div class="md-prose" innerHTML={renderMdCached(msg.id, msg.text)} />
                 }>
                   <SegmentList segments={msg.segments!} />
                 </Show>
