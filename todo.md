@@ -137,6 +137,12 @@
 - [ ] `session/fork` — fork session for side tasks (summaries, PR descriptions) without polluting main history; gate-flagged as `unstable_session_fork`
 - [ ] Note: `dump_session`/`destroy_session` do not exist in ACP spec — these names were mistaken; actual session lifecycle methods are load/resume/close/fork above
 
+### ACP Client Registry Listing
+- [ ] Submit PR to https://github.com/agentclientprotocol/agent-client-protocol to add UnionAI to `docs/get-started/clients.mdx`
+- [ ] Entry format: `- [UnionAI](https://github.com/recailai/unionai) — Multi-agent orchestrator for Claude Code, Gemini CLI, and Codex CLI`
+- [ ] Add under "Clients and apps" section, alphabetical order
+- [ ] PR title: `docs: add UnionAI to the clients list`
+
 ### Desktop Polish
 - [ ] Background throttling configuration
 - [ ] Confirmation prompts for high-risk commands
