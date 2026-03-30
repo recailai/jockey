@@ -162,16 +162,13 @@ export function InlineSelect(props: {
   };
 
   const toggle = () => {
-    if (!open()) {
-      if (triggerRef) {
-        const r = triggerRef.getBoundingClientRect();
-        setPos({ top: r.bottom + 2, left: r.left, width: r.width });
-      }
-      setTimeout(() => document.addEventListener("click", handleOutside, true), 0);
-    } else {
-      close();
+    if (open()) { close(); return; }
+    if (triggerRef) {
+      const r = triggerRef.getBoundingClientRect();
+      setPos({ top: r.bottom + 2, left: r.left, width: r.width });
     }
-    setOpen((v) => !v);
+    setOpen(true);
+    setTimeout(() => document.addEventListener("click", handleOutside, true), 0);
   };
 
   onCleanup(() => document.removeEventListener("click", handleOutside, true));
@@ -283,4 +280,5 @@ export const TABS: Array<{ id: TabId; label: string; icon: () => any }> = [
       </svg>
     ),
   },
+
 ];

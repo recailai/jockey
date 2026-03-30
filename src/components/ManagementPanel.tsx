@@ -130,6 +130,7 @@ export default function ManagementPanel(props: ManagementPanelProps) {
             <Show when={activeTab() === "skills"}>
               <SkillRegistryTab skills={props.skills()} refreshSkills={props.refreshSkills} />
             </Show>
+
           </div>
         </div>
       </div>

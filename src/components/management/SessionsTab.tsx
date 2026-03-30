@@ -6,6 +6,188 @@ import type { ContextEntry, StoredSession } from "./primitives";
 import { fmtDate, fmtRelative } from "./primitives";
 import { appSessionApi, commandApi } from "../../lib/tauriApi";
 
+// ─── value renderer ──────────────────────────────────────────────────────────
+function ContextValue(props: { raw: string }) {
+  const parsed = () => {
+    try { return JSON.parse(props.raw); } catch { return null; }
+  };
+  return (
+    <Show when={parsed()} fallback={
+      <span class="font-mono text-[10px] text-zinc-300 whitespace-pre-wrap break-all">{props.raw}</span>
+    }>
+      {(v) => (
+        <Show when={Array.isArray(v())} fallback={
+          <pre class="whitespace-pre-wrap break-all font-mono text-[10px] text-zinc-300 leading-relaxed">
+            {JSON.stringify(v(), null, 2)}
+          </pre>
+        }>
+          <ul class="space-y-0.5">
+            <For each={v() as unknown[]}>
+              {(item) => (
+                <li class="flex items-start gap-1.5">
+                  <span class="mt-[3px] h-1 w-1 shrink-0 rounded-full bg-amber-400/60" />
+                  <span class="font-mono text-[10px] text-zinc-300 break-all">
+                    {typeof item === "string" ? item : JSON.stringify(item)}
+                  </span>
+                </li>
+              )}
+            </For>
+          </ul>
+        </Show>
+      )}
+    </Show>
+  );
+}
+
+// ─── context section ─────────────────────────────────────────────────────────
+function SessionContextSection(props: { sessionId: string }) {
+  const [entries, setEntries] = createSignal<ContextEntry[]>([]);
+  const [loading, setLoading] = createSignal(false);
+  const [editingKey, setEditingKey] = createSignal<string | null>(null);
+  const [editValue, setEditValue] = createSignal("");
+  const [addingNew, setAddingNew] = createSignal(false);
+  const [newKey, setNewKey] = createSignal("");
+  const [newValue, setNewValue] = createSignal("");
+  let reqSeq = 0;
+
+  const reload = () => {
+    const sid = props.sessionId;
+    const seq = ++reqSeq;
+    if (!sid) { setEntries([]); return; }
+    setLoading(true);
+    commandApi.apply<{ entries?: ContextEntry[] }>("/app_context list", sid)
+      .then((res) => { if (seq === reqSeq) setEntries(res.payload.entries ?? []); })
+      .catch(() => { if (seq === reqSeq) setEntries([]); })
+      .finally(() => { if (seq === reqSeq) setLoading(false); });
+  };
+
+  createEffect(() => {
+    props.sessionId; // reactive dependency
+    reload();
+  });
+
+  const handleSet = async (key: string, value: string) => {
+    if (!key.trim() || !value.trim()) return;
+    await commandApi.apply(`/app_context set ${key} ${value}`, props.sessionId).catch(() => {});
+    setEditingKey(null);
+    reload();
+  };
+
+  const handleDelete = async (key: string) => {
+    await commandApi.apply(`/app_context delete ${key}`, props.sessionId).catch(() => {});
+    reload();
+  };
+
+  const handleAdd = async () => {
+    const k = newKey().trim();
+    const v = newValue().trim();
+    if (!k || !v) return;
+    await handleSet(k, v);
+    setNewKey(""); setNewValue(""); setAddingNew(false);
+  };
+
+  return (
+    <div>
+      {/* Section header */}
+      <div class="mb-2 flex items-center justify-between">
+        <span class="font-mono text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+          Context
+          <Show when={!loading() && entries().length > 0}>
+            <span class="ml-1.5 text-zinc-700">({entries().length})</span>
+          </Show>
+          <Show when={loading()}>
+            <span class="ml-1.5 text-zinc-700 italic">loading…</span>
+          </Show>
+        </span>
+        <div class="flex items-center gap-1.5">
+          <button
+            onClick={reload}
+            class="font-mono text-[9px] text-zinc-600 hover:text-zinc-400 transition-colors"
+            title="Refresh"
+          >↻</button>
+          <button
+            onClick={() => { setAddingNew(true); setNewKey(""); setNewValue(""); }}
+            class="font-mono text-[9px] text-amber-500/70 hover:text-amber-400 transition-colors"
+          >+ add</button>
+        </div>
+      </div>
+
+      {/* Add row */}
+      <Show when={addingNew()}>
+        <div class="mb-2 flex flex-col gap-1.5 rounded-md border border-amber-500/20 bg-zinc-900/40 p-2">
+          <input
+            value={newKey()}
+            onInput={(e) => setNewKey(e.currentTarget.value)}
+            placeholder="key"
+            class="h-6 w-full rounded border border-zinc-700 bg-zinc-950 px-2 font-mono text-[10px] text-zinc-200 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
+          />
+          <textarea
+            value={newValue()}
+            onInput={(e) => setNewValue(e.currentTarget.value)}
+            placeholder='value (string or JSON: "text", [...], {...})'
+            rows={2}
+            class="w-full resize-none rounded border border-zinc-700 bg-zinc-950 px-2 py-1 font-mono text-[10px] text-zinc-200 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
+            onKeyDown={(e) => { if (e.key === "Escape") setAddingNew(false); }}
+          />
+          <div class="flex gap-1.5">
+            <ActionButton label="Save" variant="primary" onClick={() => void handleAdd()} />
+            <ActionButton label="Cancel" variant="ghost" onClick={() => setAddingNew(false)} />
+          </div>
+        </div>
+      </Show>
+
+      {/* Empty */}
+      <Show when={!loading() && entries().length === 0 && !addingNew()}>
+        <p class="font-mono text-[10px] text-zinc-700 italic">no context entries</p>
+      </Show>
+
+      {/* Entries */}
+      <Show when={entries().length > 0}>
+        <div class="space-y-1">
+          <For each={entries()}>
+            {(entry) => {
+              const isEditing = () => editingKey() === entry.key;
+              return (
+                <div class="group rounded border border-white/[0.03] bg-zinc-950/30 px-3 py-2 hover:border-white/[0.07] hover:bg-zinc-900/30 transition-colors">
+                  <div class="mb-1 flex items-center justify-between gap-2">
+                    <span class="font-mono text-[9px] font-semibold text-amber-400/80 truncate">{entry.key}</span>
+                    <div class="flex items-center gap-2 shrink-0">
+                      <Show when={!isEditing()}>
+                        <button
+                          onClick={() => { setEditingKey(entry.key); setEditValue(entry.value); }}
+                          class="opacity-0 group-hover:opacity-100 font-mono text-[9px] text-zinc-600 hover:text-zinc-400 transition-all"
+                        >edit</button>
+                      </Show>
+                      <button
+                        onClick={() => void handleDelete(entry.key)}
+                        class="opacity-0 group-hover:opacity-100 font-mono text-[9px] text-rose-600 hover:text-rose-400 transition-all"
+                      >del</button>
+                    </div>
+                  </div>
+                  <Show when={isEditing()} fallback={<ContextValue raw={entry.value} />}>
+                    <textarea
+                      value={editValue()}
+                      onInput={(e) => setEditValue(e.currentTarget.value)}
+                      rows={3}
+                      class="w-full resize-none rounded border border-zinc-600 bg-zinc-950 px-2 py-1 font-mono text-[10px] text-zinc-200 focus:border-zinc-400 focus:outline-none"
+                      onKeyDown={(e) => { if (e.key === "Escape") setEditingKey(null); }}
+                    />
+                    <div class="mt-1 flex gap-1.5">
+                      <ActionButton label="Save" variant="primary" onClick={() => void handleSet(entry.key, editValue())} />
+                      <ActionButton label="Cancel" variant="ghost" onClick={() => setEditingKey(null)} />
+                    </div>
+                  </Show>
+                </div>
+              );
+            }}
+          </For>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
+// ─── main component ───────────────────────────────────────────────────────────
 export function SessionsTab(props: {
   activeSessions: AppSession[];
   onRestoreSession?: (id: string, title: string, activeRole: string, runtimeKind: string | null, cwd: string | null) => void;
@@ -15,9 +197,6 @@ export function SessionsTab(props: {
   const [reopening, setReopening] = createSignal<string | null>(null);
   const [search, setSearch] = createSignal("");
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
-  const [contextEntries, setContextEntries] = createSignal<ContextEntry[]>([]);
-  const [contextLoading, setContextLoading] = createSignal(false);
-  let contextReqSeq = 0;
 
   type RawSession = {
     id: string; title: string; activeRole?: string;
@@ -44,31 +223,15 @@ export function SessionsTab(props: {
         appSessionApi.list(),
         appSessionApi.listClosed(),
       ]);
-      const activeMapped = active.map((r) => mapRaw(r, null));
-      const closedMapped = closed.map((r) => mapRaw(r, r.closedAt ?? null));
-      setStoredSessions([...activeMapped, ...closedMapped]);
+      setStoredSessions([
+        ...active.map((r) => mapRaw(r, null)),
+        ...closed.map((r) => mapRaw(r, r.closedAt ?? null)),
+      ]);
     } catch { /* ignore */ }
     setLoading(false);
   };
 
   onMount(() => void load());
-
-  createEffect(() => {
-    const sid = selectedId();
-    const reqSeq = ++contextReqSeq;
-    if (!sid) { setContextEntries([]); setContextLoading(false); return; }
-    setContextLoading(true);
-    commandApi.apply<{ entries?: ContextEntry[] }>("/app_context list", sid).then((res) => {
-      if (reqSeq !== contextReqSeq) return;
-      setContextEntries(res.payload.entries ?? []);
-    }).catch(() => {
-      if (reqSeq !== contextReqSeq) return;
-      setContextEntries([]);
-    }).finally(() => {
-      if (reqSeq !== contextReqSeq) return;
-      setContextLoading(false);
-    });
-  });
 
   const filtered = createMemo(() => {
     const q = search().toLowerCase();
@@ -171,6 +334,7 @@ export function SessionsTab(props: {
         }>
           {(s) => (
             <div class="space-y-5">
+              {/* Header */}
               <div class="flex items-start justify-between gap-4">
                 <div>
                   <h2 class="font-mono text-sm font-bold text-zinc-100">{s().title}</h2>
@@ -190,6 +354,7 @@ export function SessionsTab(props: {
                 </div>
               </div>
 
+              {/* Metadata */}
               <div class="space-y-2 rounded-lg border border-white/[0.04] bg-zinc-950/40 p-4">
                 <FieldRow label="Role">
                   <span class="font-mono text-xs text-zinc-200">{s().activeRole}</span>
@@ -218,47 +383,9 @@ export function SessionsTab(props: {
                 </Show>
               </div>
 
-              {/* Context entries */}
-              <div>
-                <div class="mb-2 flex items-center justify-between">
-                  <span class="font-mono text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Context</span>
-                  <Show when={contextLoading()}>
-                    <span class="font-mono text-[9px] text-zinc-700">loading…</span>
-                  </Show>
-                </div>
-                <Show when={!contextLoading() && contextEntries().length === 0}>
-                  <p class="font-mono text-[10px] text-zinc-700 italic">no context entries</p>
-                </Show>
-                <Show when={contextEntries().length > 0}>
-                  <table class="w-full border-collapse font-mono text-[10px]">
-                    <thead>
-                      <tr class="border-b border-white/[0.04] text-left text-zinc-600">
-                        <th class="py-1.5 pr-4 font-semibold uppercase tracking-widest">scope</th>
-                        <th class="py-1.5 pr-4 font-semibold uppercase tracking-widest">key</th>
-                        <th class="py-1.5 font-semibold uppercase tracking-widest">value</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <For each={contextEntries()}>
-                        {(e) => {
-                          const formatted = () => {
-                            try { return JSON.stringify(JSON.parse(e.value), null, 2); }
-                            catch { return e.value; }
-                          };
-                          return (
-                            <tr class="border-b border-white/[0.03]">
-                              <td class="py-2 pr-4 align-top text-zinc-500">{e.scope}</td>
-                              <td class="py-2 pr-4 align-top text-amber-400/80">{e.key}</td>
-                              <td class="py-2 align-top text-zinc-300">
-                                <pre class="whitespace-pre-wrap break-all font-mono text-[9px] leading-relaxed">{formatted()}</pre>
-                              </td>
-                            </tr>
-                          );
-                        }}
-                      </For>
-                    </tbody>
-                  </table>
-                </Show>
+              {/* Context — full CRUD, scoped to this session */}
+              <div class="rounded-lg border border-white/[0.04] bg-zinc-950/40 p-4">
+                <SessionContextSection sessionId={s().id} />
               </div>
             </div>
           )}

@@ -17,30 +17,15 @@ export function RolesTab(props: {
   const UNION_ROLE = "UnionAIAssistant";
   const userRoles = createMemo(() => props.roles().filter((r) => r.roleName !== UNION_ROLE));
 
+  // "creating" = create form open; selectedId = which role is being edited
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
   const [creating, setCreating] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [deletingId, setDeletingId] = createSignal<string | null>(null);
 
-  const openCreate = () => {
-    const defaultRuntime = "gemini-cli";
-    setCName("Developer");
-    setCRuntime(defaultRuntime);
-    setCPrompt("You are a senior developer. Implement the solution step by step.");
-    setCModel("");
-    setCMode("");
-    setCAutoApprove(true);
-    setCConfigOpts([]);
-    setCConfigSel({});
-    setCreating(true);
-    setSelectedId(null);
-    setDeletingId(null);
-    void props.fetchConfigOptions(defaultRuntime).then(setCConfigOpts);
-  };
-
-  // Create form
+  // ── Create form state ───────────────────────────────────────────────────────
   const [cName, setCName] = createSignal("Developer");
-  const [cRuntime, setCRuntime] = createSignal("gemini-cli");
+  const [cRuntime, setCRuntime] = createSignal("claude-code");
   const [cPrompt, setCPrompt] = createSignal("You are a senior developer. Implement the solution step by step.");
   const [cModel, setCModel] = createSignal("");
   const [cMode, setCMode] = createSignal("");
@@ -48,7 +33,7 @@ export function RolesTab(props: {
   const [cConfigOpts, setCConfigOpts] = createSignal<AcpConfigOption[]>([]);
   const [cConfigSel, setCConfigSel] = createSignal<Record<string, string>>({});
 
-  // Edit form
+  // ── Edit form state ─────────────────────────────────────────────────────────
   const [ePrompt, setEPrompt] = createSignal("");
   const [eModel, setEModel] = createSignal("");
   const [eMode, setEMode] = createSignal("");
@@ -60,6 +45,24 @@ export function RolesTab(props: {
     selectedId() ? userRoles().find((r) => r.id === selectedId()) ?? null : null,
   );
 
+  // ── Open create ─────────────────────────────────────────────────────────────
+  const openCreate = () => {
+    const defaultRuntime = "claude-code";
+    setCName("Developer");
+    setCRuntime(defaultRuntime);
+    setCPrompt("You are a senior developer. Implement the solution step by step.");
+    setCModel("");
+    setCMode("");
+    setCAutoApprove(true);
+    setCConfigOpts([]);
+    setCConfigSel({});
+    setSelectedId(null);  // 退出 edit 状态
+    setDeletingId(null);
+    setCreating(true);    // 最后设，避免被 effect 覆盖
+    void props.fetchConfigOptions(defaultRuntime).then(setCConfigOpts);
+  };
+
+  // ── Open edit ───────────────────────────────────────────────────────────────
   const openEdit = (role: Role) => {
     setCreating(false);
     setSelectedId(role.id);
@@ -70,22 +73,20 @@ export function RolesTab(props: {
     setEMcpJson(role.mcpServersJson || "[]");
     setECfgJson(role.configOptionsJson || "{}");
     const appSessionId = props.activeSession()?.id ?? "";
-    const cached = assistantApi.listDiscoveredConfig(role.runtimeKind, role.roleName, appSessionId);
-    void cached.then((raw) => {
+    void assistantApi.listDiscoveredConfig(role.runtimeKind, role.roleName, appSessionId).then((raw) => {
       props.patchActiveSession({ discoveredConfigOptions: configApi.asOptions(raw) });
     });
-    void assistantApi.prewarmRoleConfig(role.runtimeKind, role.roleName, appSessionId).then((raw) => {
-      props.patchActiveSession({ discoveredConfigOptions: configApi.asOptions(raw) });
-    }).catch(() => {});
   };
 
-  // Auto-open edit when panel is opened from sidebar with a pre-selected role name
+  // Auto-open edit when panel is opened from sidebar with a pre-selected role name.
+  // Guard: only run once (when selectedId is still null and creating is false).
   createEffect(() => {
-    if (!props.initialRoleName) return;
+    if (!props.initialRoleName || creating() || selectedId()) return;
     const role = userRoles().find((r) => r.roleName === props.initialRoleName);
-    if (role && !selectedId()) openEdit(role);
+    if (role) openEdit(role);
   });
 
+  // ── Helpers ─────────────────────────────────────────────────────────────────
   const uniqueRoleName = (desired: string): string => {
     const existing = new Set(userRoles().map((r) => r.roleName.toLowerCase()));
     if (!existing.has(desired.toLowerCase())) return desired;
@@ -96,17 +97,19 @@ export function RolesTab(props: {
     return candidate;
   };
 
+  const isModelOrMode = (o: AcpConfigOption) => {
+    const id = o.id.toLowerCase();
+    const cat = o.category?.toLowerCase();
+    const name = o.name.toLowerCase();
+    return id === "model" || id === "mode" || cat === "model" || cat === "mode" || name === "model" || name === "mode";
+  };
+
+  // ── Create submit ───────────────────────────────────────────────────────────
   const handleCreate = async () => {
     const name = uniqueRoleName(cName().trim());
     if (!name || saving()) return;
-    if (/\s/.test(name)) {
-      props.pushMessage("event", "Role name cannot contain spaces.");
-      return;
-    }
-    if (!/^[A-Za-z0-9_-]+$/.test(name)) {
-      props.pushMessage("event", "Role name only allows letters, numbers, - and _.");
-      return;
-    }
+    if (/\s/.test(name)) { props.pushMessage("event", "Role name cannot contain spaces."); return; }
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) { props.pushMessage("event", "Role name only allows letters, numbers, - and _."); return; }
     setSaving(true);
     const configMap: Record<string, string> = {};
     for (const [k, v] of Object.entries(cConfigSel())) { if (v) configMap[k] = v; }
@@ -118,14 +121,21 @@ export function RolesTab(props: {
         mcpServersJson: "[]", configOptionsJson: JSON.stringify(configMap),
         autoApprove: cAutoApprove(),
       } satisfies RoleUpsertInput);
-      setCreating(false);
-      setCConfigSel({}); setCConfigOpts([]);
       await props.refreshRoles();
+      // 创建成功后直接进入编辑状态
+      const created = props.roles().find((r) => r.roleName === saved.roleName);
+      if (created) {
+        openEdit(created);
+      } else {
+        setCreating(false);
+      }
+      setCConfigSel({}); setCConfigOpts([]);
       props.pushMessage("event", `role created: ${saved.roleName} (${saved.runtimeKind})`);
     } catch (e) { props.pushMessage("event", `Failed to create role: ${String(e)}`); }
     finally { setSaving(false); }
   };
 
+  // ── Edit submit ─────────────────────────────────────────────────────────────
   const handleSaveEdit = async () => {
     const role = editingRole();
     if (!role || saving()) return;
@@ -136,19 +146,20 @@ export function RolesTab(props: {
     catch (e) { props.pushMessage("event", `Invalid config JSON: ${String(e)}`); return; }
     setSaving(true);
     try {
-      const saved = await roleApi.upsert({
+      await roleApi.upsert({
         roleName: role.roleName, runtimeKind: role.runtimeKind,
         systemPrompt: ePrompt().trim(), model: eModel().trim() || null,
         mode: eMode().trim() || null, mcpServersJson: JSON.stringify(parsedMcp),
         configOptionsJson: JSON.stringify(parsedCfg), autoApprove: eAutoApprove(),
       } satisfies RoleUpsertInput);
-      setSelectedId(null);
       await props.refreshRoles();
-      props.pushMessage("event", `role saved: ${saved.roleName}`);
+      // 保存后留在编辑页，不关闭
+      props.pushMessage("event", `role saved: ${role.roleName}`);
     } catch (e) { props.pushMessage("event", `Failed to save: ${String(e)}`); }
     finally { setSaving(false); }
   };
 
+  // ── Delete ──────────────────────────────────────────────────────────────────
   const handleDelete = async (roleName: string) => {
     try {
       await roleApi.remove(roleName);
@@ -160,7 +171,7 @@ export function RolesTab(props: {
 
   const runtimeOptions = RUNTIMES.map((r) => ({ value: r, label: r }));
 
-  // Config option helpers for edit form
+  // Edit form config options
   const editConfigOpts = createMemo(() => props.activeSession()?.discoveredConfigOptions ?? []);
   const editCfgMap = createMemo((): Record<string, string> => {
     try { return JSON.parse(eCfgJson() || "{}"); } catch { return {}; }
@@ -171,9 +182,10 @@ export function RolesTab(props: {
     setECfgJson(JSON.stringify(map));
   };
 
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div class="flex h-full">
-      {/* List */}
+      {/* ── List pane ── */}
       <div class="flex w-56 shrink-0 flex-col border-r border-white/[0.04]">
         <div class="border-b border-white/[0.04] p-3">
           <ActionButton
@@ -190,13 +202,14 @@ export function RolesTab(props: {
           <For each={userRoles()}>
             {(role) => {
               const color = () => RUNTIME_COLOR[role.runtimeKind] ?? "text-zinc-500";
+              const isSelected = () => selectedId() === role.id && !creating();
               return (
                 <div
                   onClick={() => openEdit(role)}
-                  class={`group flex w-full flex-col gap-0.5 border-b border-white/[0.03] px-3 py-2.5 text-left transition-colors duration-100 cursor-default ${selectedId() === role.id ? "bg-zinc-800/50" : "hover:bg-zinc-900/50"}`}
+                  class={`group flex w-full flex-col gap-0.5 border-b border-white/[0.03] px-3 py-2.5 text-left transition-colors duration-100 cursor-default ${isSelected() ? "bg-zinc-800/50" : "hover:bg-zinc-900/50"}`}
                 >
                   <div class="flex items-center justify-between min-w-0 gap-1">
-                    <span class={`truncate font-mono text-[10px] font-semibold ${selectedId() === role.id ? "text-zinc-100" : "text-zinc-300"}`}>{role.roleName}</span>
+                    <span class={`truncate font-mono text-[10px] font-semibold ${isSelected() ? "text-zinc-100" : "text-zinc-300"}`}>{role.roleName}</span>
                     <Show when={deletingId() === role.roleName} fallback={
                       <button
                         onClick={(e) => { e.stopPropagation(); setDeletingId(role.roleName); }}
@@ -223,8 +236,9 @@ export function RolesTab(props: {
         </div>
       </div>
 
-      {/* Detail */}
+      {/* ── Detail pane ── */}
       <div class="flex-1 overflow-y-auto p-5">
+
         {/* Create form */}
         <Show when={creating()}>
           <div class="space-y-4">
@@ -253,6 +267,7 @@ export function RolesTab(props: {
               <FieldRow label="Prompt">
                 <TextInput value={cPrompt()} onInput={setCPrompt} placeholder="System prompt…" multiline rows={4} />
               </FieldRow>
+              {/* Model — dropdown if runtime provides options, otherwise plain text */}
               <FieldRow label="Model">
                 <Show when={cConfigOpts().find((o) => o.category?.toLowerCase() === "model" || o.id.toLowerCase() === "model")} fallback={
                   <TextInput value={cModel()} onInput={setCModel} placeholder="Optional model override" monospace />
@@ -269,6 +284,7 @@ export function RolesTab(props: {
                   }}
                 </Show>
               </FieldRow>
+              {/* Mode — only shown when runtime provides it */}
               <Show when={cConfigOpts().find((o) => o.category?.toLowerCase() === "mode" || o.id.toLowerCase() === "mode")}>
                 {(mo) => {
                   const values = () => flattenConfigValues(mo().options);
@@ -289,12 +305,9 @@ export function RolesTab(props: {
                   <span class="font-mono text-[10px] text-zinc-500">auto-approve permissions</span>
                 </label>
               </FieldRow>
+              {/* Other runtime-specific options (excluding model/mode) */}
               <Show when={cConfigOpts().length > 0}>
-                <For each={cConfigOpts().filter((o) => {
-                    const id = o.id.toLowerCase();
-                    const cat = o.category?.toLowerCase();
-                    return id !== "model" && id !== "mode" && cat !== "model" && cat !== "mode";
-                  })}>
+                <For each={cConfigOpts().filter((o) => !isModelOrMode(o))}>
                   {(opt) => {
                     const values = () => flattenConfigValues(opt.options);
                     return (
@@ -322,11 +335,7 @@ export function RolesTab(props: {
           {(role) => {
             const modelOpt = createMemo(() => editConfigOpts().find((o) => o.category?.toLowerCase() === "model" || o.id.toLowerCase() === "model"));
             const modeOpt = createMemo(() => editConfigOpts().find((o) => o.category?.toLowerCase() === "mode" || o.id.toLowerCase() === "mode"));
-            const otherOpts = createMemo(() => editConfigOpts().filter((o) => {
-              const id = o.id.toLowerCase();
-              const cat = o.category?.toLowerCase();
-              return id !== "model" && id !== "mode" && cat !== "model" && cat !== "mode";
-            }));
+            const otherOpts = createMemo(() => editConfigOpts().filter((o) => !isModelOrMode(o)));
             return (
               <div class="space-y-4">
                 <div class="flex items-start justify-between gap-4">
@@ -339,7 +348,7 @@ export function RolesTab(props: {
                     <ActionButton label="Delete" variant="danger" onClick={() => setDeletingId(role().roleName)} />
                   }>
                     <div class="flex items-center gap-2">
-                      <ActionButton label="Confirm" variant="danger" onClick={() => void handleDelete(role().roleName)} />
+                      <ActionButton label="Confirm delete" variant="danger" onClick={() => void handleDelete(role().roleName)} />
                       <ActionButton label="Cancel" variant="ghost" onClick={() => setDeletingId(null)} />
                     </div>
                   </Show>
@@ -349,7 +358,6 @@ export function RolesTab(props: {
                   <FieldRow label="Prompt">
                     <TextInput value={ePrompt()} onInput={setEPrompt} placeholder="System prompt" multiline rows={4} />
                   </FieldRow>
-
                   <FieldRow label="Model">
                     <Show when={modelOpt()} fallback={
                       <TextInput value={eModel()} onInput={setEModel} placeholder="Optional model" monospace />
@@ -366,7 +374,6 @@ export function RolesTab(props: {
                       }}
                     </Show>
                   </FieldRow>
-
                   <Show when={modeOpt()}>
                     {(mo) => {
                       const values = () => flattenConfigValues(mo().options);
@@ -381,7 +388,6 @@ export function RolesTab(props: {
                       );
                     }}
                   </Show>
-
                   <For each={otherOpts()}>
                     {(opt) => {
                       const values = () => flattenConfigValues(opt.options);
@@ -396,11 +402,9 @@ export function RolesTab(props: {
                       );
                     }}
                   </For>
-
                   <FieldRow label="MCP">
                     <TextInput value={eMcpJson()} onInput={setEMcpJson} placeholder='[{"name":"..."}]' multiline rows={2} monospace />
                   </FieldRow>
-
                   <FieldRow label="Auto-approve">
                     <label class="flex items-center gap-2 cursor-pointer">
                       <input type="checkbox" checked={eAutoApprove()} onChange={(e) => setEAutoApprove(e.currentTarget.checked)} class="rounded accent-emerald-500" />
@@ -411,13 +415,14 @@ export function RolesTab(props: {
 
                 <div class="flex gap-2">
                   <ActionButton label={saving() ? "Saving…" : "Save"} variant="primary" disabled={saving()} onClick={() => void handleSaveEdit()} />
-                  <ActionButton label="Cancel" variant="ghost" onClick={() => setSelectedId(null)} />
+                  <ActionButton label="Back" variant="ghost" onClick={() => setSelectedId(null)} />
                 </div>
               </div>
             );
           }}
         </Show>
 
+        {/* Empty state */}
         <Show when={!creating() && !editingRole()}>
           <EmptyState icon="◎" title="Select a role" sub="Or create a new one" />
         </Show>
