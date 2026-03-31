@@ -13,7 +13,7 @@ A high-performance, open-source Multi-Agent Collaboration Platform built with Ta
 - **Persistent Agent Memory**: Integrated cross-session memory mechanisms for dynamic, searchable history and shared context.
 ## Demo
 
-https://github.com/user-attachments/assets/5c17b184-4563-47ac-a966-bb6f5c6595ce
+https://github.com/user-attachments/assets/fd1afbbc-d925-47df-89ed-a1125018f6b4
 
 **Video Walkthrough (Subtitles & Steps):**
 1. **Querying the Assistant**: Asked the default `@JockeyUIAssistant` for help and received its capability overview.

@@ -661,10 +661,9 @@ pub async fn execute_runtime(
                         adapter.runtime_key, role_name, delta_count
                     )
                 } else {
-                    format!(
-                        "{} completed for role {} with no text output ({} event(s)).",
-                        adapter.runtime_key, role_name, delta_count
-                    )
+                    // Non-command prompts that produce no text output (e.g. cancelled
+                    // or tool-only turns) should be silently ignored by the frontend.
+                    String::new()
                 }
             } else {
                 full_output
