@@ -106,7 +106,8 @@ export default function MessageWindow(props: MessageWindowProps) {
       role="log"
       aria-live="polite"
       aria-relevant="additions text"
-      class="flex-1 overflow-auto px-4 py-4 space-y-4 bg-[#09090b] bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(120,119,198,0.08),rgba(255,255,255,0))]"
+      class="flex-1 overflow-auto px-4 py-4 space-y-4"
+      style={{ "background-color": "var(--ui-bg)", "background-image": "radial-gradient(ellipse 80% 80% at 50% -20%, var(--ui-accent-soft), rgba(255,255,255,0))" }}
       onClick={handleContainerClick}
     >
       <Show when={hiddenMessageCount() > 0}>
@@ -119,7 +120,7 @@ export default function MessageWindow(props: MessageWindowProps) {
           const msg = item.msg;
           if (msg.roleName === "user") return (
             <div class="flex flex-col items-end w-full mb-3 group/user">
-              <div class="max-w-[85%] bg-gradient-to-br from-zinc-800 to-zinc-900 rounded-2xl rounded-tr-md px-4 py-2 text-[13px] text-zinc-100 shadow-lg border border-white/[0.08] ring-1 ring-black/20">
+              <div class="user-bubble max-w-[85%] rounded-2xl rounded-tr-md px-4 py-2 text-[13px]">
                 <div class="whitespace-pre-wrap break-words leading-relaxed font-mono">{msg.text}</div>
               </div>
               <div class="mt-1.5 text-[10px] text-zinc-500 mr-1 opacity-0 transition-opacity duration-300 group-hover/user:opacity-100 tracking-wide">{fmt(msg.at)}</div>
