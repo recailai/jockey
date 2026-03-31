@@ -73,7 +73,7 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         CREATE TABLE IF NOT EXISTS app_sessions (
           id TEXT PRIMARY KEY,
           title TEXT NOT NULL,
-          active_role TEXT NOT NULL DEFAULT 'UnionAI',
+          active_role TEXT NOT NULL DEFAULT 'JockeyUI',
           runtime_kind TEXT,
           cwd TEXT,
           created_at INTEGER NOT NULL,

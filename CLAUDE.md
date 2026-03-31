@@ -20,7 +20,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ## Architecture
 
-UnionAI is a **Tauri 2 desktop app** — a multi-agent orchestrator ("Conductor") that coordinates AI CLI agents (Claude Code, Gemini CLI, Codex CLI) via the **ACP (Agent Client Protocol)** JSON-RPC-over-stdio standard.
+JockeyUI is a **Tauri 2 desktop app** — a multi-agent orchestrator ("Conductor") that coordinates AI CLI agents (Claude Code, Gemini CLI, Codex CLI) via the **ACP (Agent Client Protocol)** JSON-RPC-over-stdio standard.
 
 ### File Layout
 

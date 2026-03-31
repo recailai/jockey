@@ -75,7 +75,7 @@ pub fn run_stdio_server(db_path: String) -> io::Result<()> {
                     "tools": {}
                 },
                 "serverInfo": {
-                    "name": "unionai-conductor",
+                    "name": "jockeyui-conductor",
                     "version": "0.1.0"
                 }
             })),

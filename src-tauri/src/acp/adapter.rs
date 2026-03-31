@@ -256,5 +256,5 @@ fn supports_arg_in_help(binary: &str, arg_flag: &str) -> bool {
 }
 
 pub(super) fn acp_log(event: &str, payload: Value) {
-    eprintln!("[unionai.acp] {} {} {}", now_ms(), event, payload);
+    eprintln!("[jockeyui.acp] {} {} {}", now_ms(), event, payload);
 }

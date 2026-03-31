@@ -167,7 +167,7 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
   );
 }
 
-const UNION_ASSISTANT_ROLE = "UnionAIAssistant";
+const UNION_ASSISTANT_ROLE = "JockeyAssistant";
 
 type AssistantSectionProps = {
   assistants: Accessor<AssistantRuntime[]>;
@@ -277,7 +277,7 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
   const modeOpt = createMemo(() => configOptions().find((o) => o.category === "mode" || o.id === "mode"));
   const otherOpts = createMemo(() => configOptions().filter((o) => o.id !== "model" && o.id !== "mode" && o.category !== "model" && o.category !== "mode"));
 
-  // Load existing UnionAIAssistant role on mount
+  // Load existing JockeyAssistant role on mount
   const initRole = async () => {
     try {
       const roles = await roleApi.list();
@@ -416,7 +416,7 @@ function RolesSection(props: {
   setShowDrawer: Setter<boolean>;
 }) {
   const [expanded, setExpanded] = createSignal(true);
-  const userRoles = () => props.roles().filter((r) => r.roleName !== "UnionAIAssistant");
+  const userRoles = () => props.roles().filter((r) => r.roleName !== "JockeyAssistant");
 
   const openRole = (roleName: string) => {
     props.setShowDrawer(false);

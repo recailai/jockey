@@ -67,21 +67,21 @@ pub(crate) fn handle_catalog_command(
     result: &mut ChatCommandResult,
 ) -> Result<bool, String> {
     let assistant_scope =
-        app_session_id_ref.map(|sid| app_session_role_scope(sid, "UnionAIAssistant"));
+        app_session_id_ref.map(|sid| app_session_role_scope(sid, "JockeyAssistant"));
     match tokens {
         ["/app_model", "list"] => {
             let runtime = resolve_model_runtime(result.runtime_kind.as_deref());
             let models = list_models_for_runtime(state, &runtime)?;
             let selected = app_session_id_ref
                 .and_then(|sid| {
-                    load_app_session_role_state(state, sid, "UnionAIAssistant")
+                    load_app_session_role_state(state, sid, "JockeyAssistant")
                         .ok()
                         .flatten()
                 })
                 .and_then(|row| row.model_override)
                 .and_then(|value| {
                     app_session_id_ref.map(|sid| ContextEntry {
-                        scope: app_session_role_scope(sid, "UnionAIAssistant"),
+                        scope: app_session_role_scope(sid, "JockeyAssistant"),
                         key: "model".to_string(),
                         value,
                         updated_at: now_ms(),
@@ -148,12 +148,12 @@ pub(crate) fn handle_catalog_command(
             save_app_session_role_model_override(
                 state,
                 sid,
-                "UnionAIAssistant",
+                "JockeyAssistant",
                 &runtime,
                 Some(&selected_model),
             )?;
             let entry = ContextEntry {
-                scope: app_session_role_scope(sid, "UnionAIAssistant"),
+                scope: app_session_role_scope(sid, "JockeyAssistant"),
                 key: "model".to_string(),
                 value: selected_model,
                 updated_at: now_ms(),
@@ -180,9 +180,9 @@ pub(crate) fn handle_catalog_command(
         ["/app_model", "get"] => {
             let sid = required_app_session_id(app_session_id_ref)?;
             let entry =
-                load_app_session_role_state(state, sid, "UnionAIAssistant")?.and_then(|row| {
+                load_app_session_role_state(state, sid, "JockeyAssistant")?.and_then(|row| {
                     row.model_override.map(|value| ContextEntry {
-                        scope: app_session_role_scope(sid, "UnionAIAssistant"),
+                        scope: app_session_role_scope(sid, "JockeyAssistant"),
                         key: "model".to_string(),
                         value,
                         updated_at: now_ms(),
@@ -204,7 +204,7 @@ pub(crate) fn handle_catalog_command(
         ["/app_model", "clear"] => {
             let sid = required_app_session_id(app_session_id_ref)?;
             let runtime = resolve_model_runtime(result.runtime_kind.as_deref());
-            save_app_session_role_model_override(state, sid, "UnionAIAssistant", &runtime, None)?;
+            save_app_session_role_model_override(state, sid, "JockeyAssistant", &runtime, None)?;
             result.message = "model cleared".to_string();
             result.payload = json!({});
             Ok(true)

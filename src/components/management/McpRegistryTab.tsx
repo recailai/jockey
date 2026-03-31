@@ -40,7 +40,7 @@ export function McpRegistryTab(props: { roles: Role[]; refreshRoles: () => Promi
   }[t] ?? "bg-[var(--ui-surface-muted)] theme-muted");
 
   const roleOptions = createMemo(() =>
-    props.roles.filter((r) => r.roleName !== "UnionAIAssistant").map((r) => ({ value: r.roleName, label: r.roleName }))
+    props.roles.filter((r) => r.roleName !== "JockeyAssistant").map((r) => ({ value: r.roleName, label: r.roleName }))
   );
 
   function parseEnvPairs(text: string): Array<{ name: string; value: string }> {

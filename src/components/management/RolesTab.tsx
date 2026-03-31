@@ -16,7 +16,7 @@ export function RolesTab(props: {
   pushMessage: (role: string, text: string) => void;
   initialRoleName?: string;
 }) {
-  const UNION_ROLE = "UnionAIAssistant";
+  const UNION_ROLE = "JockeyAssistant";
   const userRoles = createMemo(() => props.roles().filter((r) => r.roleName !== UNION_ROLE));
 
   // "creating" = create form open; selectedId = which role is being edited

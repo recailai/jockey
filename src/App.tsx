@@ -281,7 +281,7 @@ export default function App() {
     const sendRoleLabel = route.sendRoleLabel;
     const isCommand = route.isCommand;
     const inRoleContext = route.inRoleContext;
-    const isUnionAiCommand = route.isUnionAiCommand;
+    const isAppCommand = route.isAppCommand;
     const routedText = route.routedText;
 
     if (!silent) {
@@ -298,7 +298,7 @@ export default function App() {
 
     let streamStarted = false;
     let finalStatus: "done" | "error" = "done";
-    if ((!isUnionAiCommand) && s?.runtimeKind) {
+    if ((!isAppCommand) && s?.runtimeKind) {
       startOriginStream();
       streamStarted = true;
     }

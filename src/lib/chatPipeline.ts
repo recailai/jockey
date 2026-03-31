@@ -12,7 +12,7 @@ export type ResolveRouteResult = {
   effectiveRole: string;
   routedText: string;
   isCommand: boolean;
-  isUnionAiCommand: boolean;
+  isAppCommand: boolean;
   inRoleContext: boolean;
   activateRole?: string;
   prefetchRole?: string;
@@ -25,7 +25,7 @@ export type AgentControlCmd = "plan" | "act" | "auto" | "cancel";
 export const resolveRoute = (input: ResolveRouteInput): ResolveRouteResult => {
   const { text, activeRole, roleNames, isCustomRole, defaultRoleAlias, defaultBackendRole } = input;
   const isCommand = text.startsWith("/");
-  const isUnionAiCommand = text.startsWith("/app_");
+  const isAppCommand = text.startsWith("/app_");
   let sendRoleLabel = activeRole;
   let effectiveRole = activeRole;
   let inRoleContext = effectiveRole !== defaultRoleAlias && effectiveRole !== defaultBackendRole;
@@ -57,7 +57,7 @@ export const resolveRoute = (input: ResolveRouteInput): ResolveRouteResult => {
             effectiveRole,
             routedText,
             isCommand,
-            isUnionAiCommand,
+            isAppCommand,
             inRoleContext,
             explicitRoleMention,
             error: `role not found: ${target}`,
@@ -78,7 +78,7 @@ export const resolveRoute = (input: ResolveRouteInput): ResolveRouteResult => {
           effectiveRole,
           routedText,
           isCommand,
-          isUnionAiCommand,
+          isAppCommand,
           inRoleContext,
           explicitRoleMention,
           error: `active role not found: ${effectiveRole}`,
@@ -88,7 +88,7 @@ export const resolveRoute = (input: ResolveRouteInput): ResolveRouteResult => {
     }
   }
 
-  const isRoleSlashCmd = isCommand && inRoleContext && !isUnionAiCommand;
+  const isRoleSlashCmd = isCommand && inRoleContext && !isAppCommand;
   if (isRoleSlashCmd) {
     if (!roleExists(effectiveRole)) {
       return {
@@ -96,7 +96,7 @@ export const resolveRoute = (input: ResolveRouteInput): ResolveRouteResult => {
         effectiveRole,
         routedText,
         isCommand,
-        isUnionAiCommand,
+        isAppCommand,
         inRoleContext,
         explicitRoleMention,
         error: `active role not found: ${effectiveRole}`,
@@ -110,7 +110,7 @@ export const resolveRoute = (input: ResolveRouteInput): ResolveRouteResult => {
     effectiveRole,
     routedText,
     isCommand,
-    isUnionAiCommand,
+    isAppCommand,
     inRoleContext,
     activateRole,
     prefetchRole,

@@ -1,8 +1,8 @@
-# UnionAI
+# JockeyUI
 
 A high-performance, open-source Multi-Agent Collaboration Platform built with Tauri, Rust, and SolidJS.
 
-![UnionAI](docs/ScreenShot_2026-03-23_201927_117.png)
+![JockeyUI](docs/ScreenShot_2026-03-23_201927_117.png)
 
 ## Features
 
@@ -16,7 +16,7 @@ A high-performance, open-source Multi-Agent Collaboration Platform built with Ta
 https://github.com/user-attachments/assets/5c17b184-4563-47ac-a966-bb6f5c6595ce
 
 **Video Walkthrough (Subtitles & Steps):**
-1. **Querying the Assistant**: Asked the default `@UnionAIAssistant` for help and received its capability overview.
+1. **Querying the Assistant**: Asked the default `@JockeyUIAssistant` for help and received its capability overview.
 2. **Engaging the PM Role (`claude-code`)**: Mentioned `@PM Who are you?`. The agent (Claude Opus), bound to a UX Designer prompt via the ACP protocol, responded concisely acknowledging its strict design role and avoiding implementation details.
 3. **Engaging the Developer Role (`codex-cli`)**: Mentioned `@Developer who are you?`. The system instantly launched the Codex CLI runtime bound to the shared context, declaring itself as the senior developer in charge of implementation.
 4. **Seamless Orchestration**: Showcases the ability to dynamically hot-swap models and prompts within a single chat window, controlling token costs and context flow per role.
@@ -48,8 +48,8 @@ https://github.com/user-attachments/assets/5c17b184-4563-47ac-a966-bb6f5c6595ce
 
 ```bash
 # Clone the repository
-git clone https://github.com/locustbaby/unionai.git
-cd unionai
+git clone https://github.com/locustbaby/jockeyui.git
+cd jockeyui
 
 # Install dependencies
 pnpm install

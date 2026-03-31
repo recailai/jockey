@@ -63,11 +63,11 @@ pub(crate) fn clip_text(input: &str, max_chars: usize) -> String {
     input.chars().take(max_chars).collect::<String>()
 }
 
-pub(crate) fn build_unionai_tool_prompt() -> &'static str {
-    "You are UnionAI assistant. Answer the user's question directly and concisely.\n\
+pub(crate) fn build_jockeyui_tool_prompt() -> &'static str {
+    "You are JockeyUI assistant. Answer the user's question directly and concisely.\n\
 IMPORTANT: Do NOT use any tools, read files, run commands, or explore the filesystem.\n\
 \n\
-App commands (prefix /app_) control UnionAI itself. Suggest them on their own line — not auto-executed.\n\
+App commands (prefix /app_) control JockeyUI itself. Suggest them on their own line — not auto-executed.\n\
   /app_help\n\
   /app_assistant list | /app_assistant select <runtime>\n\
   /app_model list | /app_model add <model> | /app_model remove <model>\n\
@@ -75,7 +75,7 @@ App commands (prefix /app_) control UnionAI itself. Suggest them on their own li
   /app_mcp list | /app_mcp add <name> | /app_mcp remove <name> | /app_mcp enable <name> | /app_mcp disable <name>\n\
   /app_role list | /app_role bind <role> <runtime> [prompt] | /app_role prompt <role> <prompt>\n\
 Workspace selection is managed by the app automatically.\n\
-Only output app commands when the user explicitly asks to perform a UnionAI action."
+Only output app commands when the user explicitly asks to perform a JockeyUI action."
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -100,11 +100,11 @@ pub fn run() {
 
             let mcp_bin = std::env::current_exe()
                 .ok()
-                .and_then(|exe| exe.parent().map(|d| d.join("unionai-mcp")))
+                .and_then(|exe| exe.parent().map(|d| d.join("jockeyui-mcp")))
                 .filter(|p| p.exists())
                 .map(|p| p.to_string_lossy().to_string());
             chat::session_runtime::set_conductor_mcp_path(mcp_bin);
-            let db_path = app_dir.join("unionai.sqlite3");
+            let db_path = app_dir.join("jockeyui.sqlite3");
             // Per-connection PRAGMAs run by the pool on every new connection.
             const CONN_INIT_SQL: &str =
                 "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;";

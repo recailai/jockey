@@ -36,6 +36,7 @@ export function useAgentContext(
     if (k === "codex" || k === "codex-acp") return "codex-cli";
     return k;
   };
+  const runtimeProbeRole = (runtimeKey: string): string => `runtime:${runtimeKey}`;
 
   const commandCacheKey = (runtimeKey: string, roleName: string) => `${runtimeKey}:${roleName}`;
 
@@ -99,14 +100,15 @@ export function useAgentContext(
       }
       const hit = runtimeConfigCache.get(normalizedRuntime);
       if (hit) return hit;
-      const cachedRaw = await assistantApi.listDiscoveredConfig("UnionAIAssistant", sid);
+      const probeRole = runtimeProbeRole(normalizedRuntime);
+      const cachedRaw = await assistantApi.listDiscoveredConfig(probeRole, sid);
       const cached = cachedRaw as AcpConfigOption[];
       if (cached.length > 0) {
         runtimeConfigCache.set(normalizedRuntime, cached);
-        void assistantApi.prewarmRoleConfig("UnionAIAssistant", sid).catch(() => {});
+        void assistantApi.prewarmRoleConfig(probeRole, sid).catch(() => {});
         return cached;
       }
-      const raw = await assistantApi.prewarmRoleConfig("UnionAIAssistant", sid);
+      const raw = await assistantApi.prewarmRoleConfig(probeRole, sid);
       const opts = raw as AcpConfigOption[];
       if (opts.length > 0) runtimeConfigCache.set(normalizedRuntime, opts);
       return opts;

@@ -183,7 +183,7 @@ pub(crate) fn create_app_session(
     let session = AppSession {
         id: Uuid::new_v4().to_string(),
         title,
-        active_role: "UnionAI".to_string(),
+        active_role: "JockeyUI".to_string(),
         runtime_kind: None,
         cwd: Some(default_chat_cwd()),
         messages: Vec::new(),

@@ -6,8 +6,17 @@ use crate::types::AppState;
 use rusqlite::{params, OptionalExtension};
 use tauri::State;
 
+const RUNTIME_PROBE_PREFIX: &str = "runtime:";
+
 fn normalize_runtime_or_self(runtime: &str) -> String {
     normalize_runtime_key(runtime).unwrap_or(runtime).to_string()
+}
+
+fn resolve_runtime_probe(role_name: &str) -> Option<String> {
+    role_name
+        .strip_prefix(RUNTIME_PROBE_PREFIX)
+        .and_then(normalize_runtime_key)
+        .map(|v| v.to_string())
 }
 
 fn resolve_runtime_for_session_role(
@@ -20,7 +29,7 @@ fn resolve_runtime_for_session_role(
         return Err("app session id required".to_string());
     }
 
-    if role_name == "UnionAIAssistant" {
+    if role_name == "JockeyAssistant" {
         let session_runtime = with_db(state, |conn| {
             conn.query_row(
                 "SELECT runtime_kind FROM app_sessions WHERE id = ?1",
@@ -35,6 +44,10 @@ fn resolve_runtime_for_session_role(
             return Ok(normalize_runtime_or_self(&rt));
         }
         return Err("assistant runtime not selected".to_string());
+    }
+
+    if let Some(probe_runtime) = resolve_runtime_probe(role_name) {
+        return Ok(probe_runtime);
     }
 
     if let Some(row) =

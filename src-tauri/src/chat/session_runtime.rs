@@ -22,18 +22,18 @@ fn inject_conductor_mcp(mcp_servers: &mut Vec<acp::McpServer>) {
         None => return,
     };
     let already = mcp_servers.iter().any(|s| match s {
-        acp::McpServer::Stdio(s) => s.name == "unionai-conductor",
+        acp::McpServer::Stdio(s) => s.name == "jockeyui-conductor",
         _ => false,
     });
     if already {
         return;
     }
     let db_env = crate::acp::app_data_dir()
-        .map(|d| d.join("unionai.sqlite3").to_string_lossy().to_string())
+        .map(|d| d.join("jockeyui.sqlite3").to_string_lossy().to_string())
         .unwrap_or_default();
     mcp_servers.push(acp::McpServer::Stdio(
-        acp::McpServerStdio::new("unionai-conductor", bin)
-            .env(vec![acp::EnvVariable::new("UNIONAI_DB_PATH", &db_env)]),
+        acp::McpServerStdio::new("jockeyui-conductor", bin)
+            .env(vec![acp::EnvVariable::new("JOCKEYUI_DB_PATH", &db_env)]),
     ));
 }
 
@@ -144,7 +144,7 @@ pub(super) fn load_role_runtime_data(
     let role_state = load_app_session_role_state(state, app_session_id, role_name)?;
     let role_data = load_role(state, role_name)?;
 
-    let runtime = if role_name == "UnionAIAssistant" {
+    let runtime = if role_name == "JockeyAssistant" {
         assistant_runtime.to_string()
     } else {
         if role_state.is_none() && role_data.is_none() {
@@ -164,7 +164,7 @@ pub(super) fn load_role_runtime_data(
 
     let mut context_log = None;
 
-    if role_name != "UnionAIAssistant" {
+    if role_name != "JockeyAssistant" {
         let role_prompt = role_data
             .as_ref()
             .map(|r| r.system_prompt.clone())

@@ -50,13 +50,13 @@ pub(super) async fn shutdown_terminals() {
     }
 }
 
-pub(super) struct UnionAiClient {
+pub(super) struct JockeyUiClient {
     pub(super) delta_slot: DeltaSlot,
     pub(super) auto_approve: bool,
 }
 
 #[async_trait::async_trait(?Send)]
-impl acp::Client for UnionAiClient {
+impl acp::Client for JockeyUiClient {
     async fn request_permission(
         &self,
         args: acp::RequestPermissionRequest,

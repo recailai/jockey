@@ -289,7 +289,7 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "list_roles",
-            "description": "List all configured roles in UnionAI with their runtime, model, and MCP server summary.",
+            "description": "List all configured roles in JockeyUI with their runtime, model, and MCP server summary.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
@@ -368,12 +368,12 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "list_sessions",
-            "description": "List active (open) UnionAI sessions.",
+            "description": "List active (open) JockeyUI sessions.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
             "name": "list_skills",
-            "description": "List all skills registered in UnionAI.",
+            "description": "List all skills registered in JockeyUI.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({

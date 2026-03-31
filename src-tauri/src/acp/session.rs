@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use super::adapter::{acp_log, build_stdio_adapter, clip, friendly_error_message};
-use super::client::UnionAiClient;
+use super::client::JockeyUiClient;
 use super::runtime_state::{
     remember_runtime_available_commands, remember_runtime_config_options, remember_runtime_models,
     remember_runtime_modes,
@@ -147,7 +147,7 @@ pub(super) async fn cold_start(
     acp_log("spawn.ok", json!({ "binary": binary, "pid": child.id() }));
 
     let (conn, io_future) = acp::ClientSideConnection::new(
-        UnionAiClient {
+        JockeyUiClient {
             delta_slot: delta_slot.clone(),
             auto_approve,
         },
@@ -171,7 +171,7 @@ pub(super) async fn cold_start(
         INIT_TIMEOUT,
         conn.initialize(
             acp::InitializeRequest::new(acp::ProtocolVersion::V1)
-                .client_info(acp::Implementation::new("unionai", "0.1.0").title("UnionAI"))
+                .client_info(acp::Implementation::new("jockeyui", "0.1.0").title("JockeyUI"))
                 .client_capabilities(
                     acp::ClientCapabilities::new()
                         .fs(acp::FileSystemCapabilities::new()

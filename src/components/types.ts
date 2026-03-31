@@ -88,8 +88,8 @@ export const RUNTIME_COLOR: Record<string, string> = {
   mock: "text-zinc-400",
 };
 export const INTERACTIVE_MOTION = "motion-safe:transition-colors motion-safe:transition-transform motion-safe:duration-150 motion-safe:ease-out active:scale-[0.98]";
-export const DEFAULT_BACKEND_ROLE = "UnionAIAssistant";
-export const DEFAULT_ROLE_ALIAS = "UnionAI";
+export const DEFAULT_BACKEND_ROLE = "JockeyAssistant";
+export const DEFAULT_ROLE_ALIAS = "JockeyUI";
 export const MESSAGE_RENDER_WINDOW = 280;
 
 export const now = (): number => Date.now();
