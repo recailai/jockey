@@ -45,7 +45,7 @@ export type AcpConfigOption = {
   currentValue: string;
   options: ConfigOptionValue[] | ConfigOptionGroup[];
 };
-export type AssistantRuntime = { key: string; label: string; binary: string; available: boolean; version: string | null };
+export type AssistantRuntime = { key: string; label: string; binary: string; available: boolean; version: string | null; installHint: string | null };
 export type ChatCommandResult = { ok: boolean; message: string; runtimeKind: string | null; sessionId: string | null; payload: Record<string, unknown> };
 export type AssistantChatResponse = { ok: boolean; reply: string; runtimeKind: string | null; sessionId: string | null; commandResult: ChatCommandResult | null };
 export type SessionUpdateEvent = { sessionId: string; roleName: string; delta: string; done: boolean };

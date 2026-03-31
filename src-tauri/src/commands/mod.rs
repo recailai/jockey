@@ -30,12 +30,8 @@ pub(crate) fn enrich_command_message(base: &str, payload: &Value) -> String {
     format!("{base}\n{detail}")
 }
 
-type ExternalCommandHandler = fn(
-    &[&str],
-    &AppState,
-    Option<&str>,
-    &mut ChatCommandResult,
-) -> Result<bool, String>;
+type ExternalCommandHandler =
+    fn(&[&str], &AppState, Option<&str>, &mut ChatCommandResult) -> Result<bool, String>;
 
 fn dispatch_external_handlers(
     app: &AppHandle,

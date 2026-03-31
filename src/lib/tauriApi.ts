@@ -38,6 +38,36 @@ type RawSession = {
 
 const call = <T>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
 
+export type AppErrorCode =
+  | "VALIDATION_FAILED"
+  | "NOT_FOUND"
+  | "ALREADY_EXISTS"
+  | "DB_ERROR"
+  | "PERMISSION_DENIED"
+  | "INVALID_INPUT"
+  | "ADAPTER_UNAVAILABLE"
+  | "UNSUPPORTED_RUNTIME"
+  | "INCOMPATIBLE_VERSION"
+  | "RATE_LIMITED"
+  | "TIMEOUT"
+  | "PROCESS_CRASHED"
+  | "ACP_ERROR"
+  | "FILESYSTEM_ERROR"
+  | "INTERNAL_ERROR";
+
+export type AppError = { code: AppErrorCode; message: string };
+
+export function parseError(e: unknown): AppError {
+  const raw = String(e);
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && "code" in parsed && "message" in parsed) {
+      return parsed as AppError;
+    }
+  } catch { /* not structured */ }
+  return { code: "INTERNAL_ERROR", message: raw };
+}
+
 export const appSessionApi = {
   create: (title: string) => call<{ id: string }>("create_app_session", { title }),
   update: (id: string, update: SessionUpdate) => call<void>("update_app_session", { id, update }),
@@ -73,18 +103,18 @@ export const assistantApi = {
   chat: (input: { input: string; runtimeKind: string | null; appSessionId: string | null }) =>
     call<AssistantChatResponse>("assistant_chat", { input }),
   detect: () => call<AssistantRuntime[]>("detect_assistants"),
-  cancelSession: (runtimeKind: string, roleName: string, appSessionId: string) =>
-    call<void>("cancel_acp_session", { runtimeKind, roleName, appSessionId }),
-  setMode: (runtimeKind: string, roleName: string, modeId: string, appSessionId: string) =>
-    call<void>("set_acp_mode", { runtimeKind, roleName, modeId, appSessionId }),
-  resetSession: (runtimeKind: string, roleName: string, appSessionId: string) =>
-    call<void>("reset_acp_session", { runtimeKind, roleName, appSessionId }),
-  prewarmRoleConfig: (runtimeKind: string, roleName: string, appSessionId: string) =>
-    call<unknown[]>("prewarm_role_config_cmd", { runtimeKind, roleName, appSessionId }),
-  listDiscoveredConfig: (runtimeKey: string, roleName: string, appSessionId: string) =>
-    call<unknown[]>("list_discovered_config_options_cmd", { runtimeKey, roleName, appSessionId }),
-  listAvailableCommands: (runtimeKey: string, roleName: string, appSessionId: string) =>
-    call<unknown[]>("list_available_commands_cmd", { runtimeKey, roleName, appSessionId }),
+  cancelSession: (roleName: string, appSessionId: string) =>
+    call<void>("cancel_acp_session", { roleName, appSessionId }),
+  setMode: (roleName: string, modeId: string, appSessionId: string) =>
+    call<void>("set_acp_mode", { roleName, modeId, appSessionId }),
+  resetSession: (roleName: string, appSessionId: string) =>
+    call<void>("reset_acp_session", { roleName, appSessionId }),
+  prewarmRoleConfig: (roleName: string, appSessionId: string) =>
+    call<unknown[]>("prewarm_role_config_cmd", { roleName, appSessionId }),
+  listDiscoveredConfig: (roleName: string, appSessionId: string) =>
+    call<unknown[]>("list_discovered_config_options_cmd", { roleName, appSessionId }),
+  listAvailableCommands: (roleName: string, appSessionId: string) =>
+    call<unknown[]>("list_available_commands_cmd", { roleName, appSessionId }),
   respondPermission: (requestId: string, optionId: string, cancelled: boolean) =>
     call<void>("respond_permission", { requestId, optionId, cancelled }),
 };
@@ -92,6 +122,21 @@ export const assistantApi = {
 export const commandApi = {
   apply: <P extends Record<string, unknown> = Record<string, unknown>>(input: string, appSessionId?: string) =>
     call<Omit<ApplyChatCommandResult, "payload"> & { payload: P }>("apply_chat_command", { input, appSessionId }),
+};
+
+export const contextApi = {
+  list: (appSessionId: string) =>
+    call<Array<{ scope: string; key: string; value: string; updatedAt: number }>>(
+      "list_session_context_entries_cmd",
+      { appSessionId },
+    ),
+  set: (appSessionId: string, scope: string, key: string, value: string) =>
+    call<{ scope: string; key: string; value: string; updatedAt: number }>(
+      "set_session_context_entry_cmd",
+      { appSessionId, scope, key, value },
+    ),
+  remove: (appSessionId: string, scope: string, key: string) =>
+    call<void>("delete_session_context_entry_cmd", { appSessionId, scope, key }),
 };
 
 export const completionApi = {

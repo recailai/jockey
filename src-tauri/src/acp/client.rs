@@ -87,7 +87,10 @@ impl acp::Client for UnionAiClient {
             if let Some(tx) = guard.as_ref() {
                 if tx.try_send(event).is_err() {
                     use super::adapter::acp_log;
-                    acp_log("permission.channel.drop", serde_json::json!({ "requestId": request_id }));
+                    acp_log(
+                        "permission.channel.drop",
+                        serde_json::json!({ "requestId": request_id }),
+                    );
                 }
             }
         }
@@ -232,7 +235,10 @@ impl acp::Client for UnionAiClient {
                 if tx.try_send(event).is_err() {
                     // Channel full or disconnected — log once per overflow to aid debugging
                     use super::adapter::acp_log;
-                    acp_log("delta.channel.drop", serde_json::json!({ "capacity": super::worker::DELTA_CHANNEL_CAPACITY }));
+                    acp_log(
+                        "delta.channel.drop",
+                        serde_json::json!({ "capacity": super::worker::DELTA_CHANNEL_CAPACITY }),
+                    );
                 }
             }
         }

@@ -85,7 +85,7 @@ export default function App() {
     roles, assistants, skills,
     normalizeRuntimeKey, commandCacheKey,
     bumpRunToken, getCanceledRunToken,
-    isCustomRole, activeBackendRole, runtimeForRole,
+    isCustomRole, activeBackendRole,
     refreshRoles, refreshSkills,
     fetchConfigOptions,
     parseAgentCommands,
@@ -221,13 +221,12 @@ export default function App() {
     const cmd = parseAgentControlCommand(text, isCommand, inRoleContext);
     if (!cmd) return false;
     const role = activeBackendRole();
-    const runtime = runtimeForRole(role);
     try {
       if (cmd === "cancel") {
-        if (runtime && originSessionId) await assistantApi.cancelSession(runtime, role, originSessionId);
+        if (originSessionId) await assistantApi.cancelSession(role, originSessionId);
         pushMessage("event", `cancelled ${role}`);
       } else {
-        if (runtime && originSessionId) await assistantApi.setMode(runtime, role, cmd, originSessionId);
+        if (originSessionId) await assistantApi.setMode(role, cmd, originSessionId);
         pushMessage("event", `${role} mode → ${cmd}`);
       }
     } catch (e) {
@@ -288,6 +287,7 @@ export default function App() {
       buildOriginStreamOps(originSessionId, sendRoleLabel);
 
     let streamStarted = false;
+    let finalStatus: "done" | "error" = "done";
     if ((!isUnionAiCommand) && s?.runtimeKind) {
       startOriginStream();
       streamStarted = true;
@@ -303,6 +303,14 @@ export default function App() {
       if (res.runtimeKind) setPreferredAssistant(res.runtimeKind);
       if (text.startsWith("/app_role")) void refreshRoles();
 
+      if (!res.ok) {
+        if (streamStarted) dropOriginStream();
+        showToast(res.reply);
+        appendOriginMessage({ id: `${now()}-err`, roleName: "event", text: res.reply, at: now() });
+        finalStatus = "error";
+        return;
+      }
+
       if (streamStarted) {
         completeOriginStream(res.reply);
       } else {
@@ -315,9 +323,7 @@ export default function App() {
       const errMsg = String(e);
       if (!errMsg.toLowerCase().includes("cancel")) showToast(errMsg);
       appendOriginMessage({ id: `${now()}-err`, roleName: "event", text: errMsg, at: now() });
-      patchOriginSession({ submitting: false, status: "error" });
-      if (originSessionId) acceptingStreams.delete(originSessionId);
-      runNextQueued(originSessionId);
+      finalStatus = "error";
       return;
     } finally {
       if (originSessionId) acceptingStreams.delete(originSessionId);
@@ -326,7 +332,7 @@ export default function App() {
         runNextQueued(originSessionId);
         return;
       }
-      patchOriginSession({ submitting: false, status: "done" });
+      patchOriginSession({ submitting: false, status: finalStatus });
       runNextQueued(originSessionId);
     }
   };
@@ -546,6 +552,10 @@ export default function App() {
     });
 
     void Promise.all([
+      listen<{ runtimeKey: string; roleName: string; appSessionId: string }>("acp/connection-lost", (ev) => {
+        const { runtimeKey, roleName } = ev.payload;
+        pushMessage("event", `Agent ${runtimeKey} (role: ${roleName}) disconnected — will reconnect on next message.`);
+      }),
       listen<AcpDeltaEvent & { appSessionId?: string }>("acp/delta", (ev) => {
         const sid = ev.payload.appSessionId;
         if (!sid || !acceptingStreams.has(sid)) return;
@@ -809,6 +819,7 @@ export default function App() {
             sendRaw={sendRaw}
             refreshRoles={refreshRoles}
             refreshSkills={refreshSkills}
+            refreshAssistants={refreshAssistants}
             pushMessage={pushMessage}
             fetchConfigOptions={fetchConfigOptions}
             onOpenManagement={(tab, roleName) => {

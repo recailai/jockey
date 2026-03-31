@@ -115,9 +115,9 @@ export default function SessionTabs(props: SessionTabsProps) {
               <button
                 class={`min-h-6 rounded-md border px-2 py-px text-[9px] font-bold tracking-wider uppercase transition-all duration-200 ${INTERACTIVE_MOTION} ${props.activeSession()?.currentMode === m.id ? "border-indigo-500/40 bg-indigo-500/20 text-indigo-300 shadow-[0_0_8px_rgba(99,102,241,0.15)] ring-1 ring-indigo-500/20" : "border-[var(--ui-border)] bg-[var(--ui-surface-muted)] theme-muted hover:text-primary hover:bg-[var(--ui-surface-muted)] hover:border-[var(--ui-border-strong)]"}`}
                 onClick={() => {
-                  const assistant = props.activeSession()?.runtimeKind ?? null;
                   const role = props.activeBackendRole();
-                  if (assistant) void assistantApi.setMode(assistant, role, m.id, props.activeSessionId() ?? "");
+                  const sid = props.activeSessionId() ?? "";
+                  if (sid) void assistantApi.setMode(role, m.id, sid);
                 }}
               >
                 {m.title ?? m.id}

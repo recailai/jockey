@@ -1,5 +1,5 @@
 use crate::db::app_session_role::load_app_session_role_state;
-use crate::db::context::list_shared_context_internal;
+use crate::db::context::{list_shared_context_internal, sanitize_dynamic_item_name};
 use crate::db::role::load_role;
 use crate::db::session_context::app_session_role_scope;
 use crate::types::AppState;
@@ -36,12 +36,6 @@ fn parse_config_map(raw: &str) -> Vec<(String, String)> {
             })
         })
         .unwrap_or_default()
-}
-
-fn merge_config_pairs(base: &mut Vec<(String, String)>, overlay: Vec<(String, String)>) {
-    for (key, value) in overlay {
-        upsert_context_pair(base, &key, value);
-    }
 }
 
 pub(super) fn load_role_runtime_data(
@@ -86,9 +80,7 @@ pub(super) fn load_role_runtime_data(
         // Only inject cross-role context on the first message to this role in the session.
         // If this role has already replied at least once, it already has its own history
         // in the ACP session — no need to keep prepending the handoff context every turn.
-        let this_role_has_history = recent_chats_snapshot
-            .iter()
-            .any(|c| c.role == role_name);
+        let this_role_has_history = recent_chats_snapshot.iter().any(|c| c.role == role_name);
 
         let cross_role_chats: Vec<_> = recent_chats_snapshot
             .into_iter()
@@ -112,17 +104,11 @@ pub(super) fn load_role_runtime_data(
         }
     }
     let auto_approve = role_data.as_ref().map(|r| r.auto_approve).unwrap_or(true);
-    let role_mode = role_state
-        .as_ref()
-        .and_then(|r| r.mode_override.clone())
-        .or_else(|| role_data.as_ref().and_then(|r| r.mode.clone()));
+    let role_mode = role_data.as_ref().and_then(|r| r.mode.clone());
     let mut role_config: Vec<(String, String)> = role_data
         .as_ref()
         .map(|r| parse_config_map(&r.config_options_json))
         .unwrap_or_default();
-    if let Some(override_json) = role_state.as_ref().and_then(|r| r.config_options_json.clone()) {
-        merge_config_pairs(&mut role_config, parse_config_map(&override_json));
-    }
 
     if !role_config.iter().any(|(k, _)| k == "model") {
         let model = role_state
@@ -144,12 +130,37 @@ pub(super) fn load_role_runtime_data(
         .as_ref()
         .map(|r| r.system_prompt.clone())
         .filter(|s| !s.is_empty());
-    let mcp_servers = role_state
+    let mut mcp_servers = role_data
         .as_ref()
-        .and_then(|r| r.mcp_servers_json.as_ref())
-        .or_else(|| role_data.as_ref().map(|r| &r.mcp_servers_json))
+        .map(|r| &r.mcp_servers_json)
         .and_then(|raw| serde_json::from_str::<Vec<agent_client_protocol::McpServer>>(raw).ok())
         .unwrap_or_default();
+
+    // Respect per-session MCP feature flags when present (mcp:<name>=enabled/disabled).
+    // If no flag is set for this scope, keep default role/session MCP server list.
+    let mcp_flags: std::collections::HashMap<String, String> = context_pairs
+        .iter()
+        .filter_map(|(k, v)| {
+            k.strip_prefix("mcp:")
+                .map(|name| (name.to_ascii_lowercase(), v.to_ascii_lowercase()))
+        })
+        .collect();
+    if !mcp_flags.is_empty() {
+        mcp_servers.retain(|server| {
+            let server_name = match server {
+                agent_client_protocol::McpServer::Http(s) => s.name.as_str(),
+                agent_client_protocol::McpServer::Sse(s) => s.name.as_str(),
+                agent_client_protocol::McpServer::Stdio(s) => s.name.as_str(),
+                _ => "",
+            };
+            let normalized_name = sanitize_dynamic_item_name(server_name)
+                .unwrap_or_else(|| server_name.trim().to_ascii_lowercase());
+            match mcp_flags.get(&normalized_name) {
+                Some(flag) => flag == "enabled",
+                None => true,
+            }
+        });
+    }
 
     Ok(RoleRuntimeData {
         runtime,

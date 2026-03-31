@@ -68,14 +68,18 @@ export function useAgentContext(
       const rows = await roleApi.list();
       setRoles(rows);
       slashCliCacheRef.cache = null;
-    } catch { setRoles([]); }
+    } catch (e) {
+      showToast(`Failed to load roles: ${String(e)}`);
+    }
   };
 
   const refreshSkills = async () => {
     try {
       const rows = await skillApi.list();
       setSkills(rows);
-    } catch { setSkills([]); }
+    } catch (e) {
+      showToast(`Failed to load skills: ${String(e)}`);
+    }
   };
 
   const fetchConfigOptions = async (runtimeKey: string, roleName?: string): Promise<AcpConfigOption[]> => {
@@ -84,25 +88,25 @@ export function useAgentContext(
       if (!sid) return [];
       const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
       if (roleName) {
-        const cachedRaw = await assistantApi.listDiscoveredConfig(normalizedRuntime, roleName, sid);
+        const cachedRaw = await assistantApi.listDiscoveredConfig(roleName, sid);
         const cached = cachedRaw as AcpConfigOption[];
         if (cached.length > 0) {
-          void assistantApi.prewarmRoleConfig(normalizedRuntime, roleName, sid).catch(() => {});
+          void assistantApi.prewarmRoleConfig(roleName, sid).catch(() => {});
           return cached;
         }
-        const raw = await assistantApi.prewarmRoleConfig(normalizedRuntime, roleName, sid);
+        const raw = await assistantApi.prewarmRoleConfig(roleName, sid);
         return raw as AcpConfigOption[];
       }
       const hit = runtimeConfigCache.get(normalizedRuntime);
       if (hit) return hit;
-      const cachedRaw = await assistantApi.listDiscoveredConfig(normalizedRuntime, "UnionAIAssistant", sid);
+      const cachedRaw = await assistantApi.listDiscoveredConfig("UnionAIAssistant", sid);
       const cached = cachedRaw as AcpConfigOption[];
       if (cached.length > 0) {
         runtimeConfigCache.set(normalizedRuntime, cached);
-        void assistantApi.prewarmRoleConfig(normalizedRuntime, "UnionAIAssistant", sid).catch(() => {});
+        void assistantApi.prewarmRoleConfig("UnionAIAssistant", sid).catch(() => {});
         return cached;
       }
-      const raw = await assistantApi.prewarmRoleConfig(normalizedRuntime, "UnionAIAssistant", sid);
+      const raw = await assistantApi.prewarmRoleConfig("UnionAIAssistant", sid);
       const opts = raw as AcpConfigOption[];
       if (opts.length > 0) runtimeConfigCache.set(normalizedRuntime, opts);
       return opts;
@@ -120,7 +124,7 @@ export function useAgentContext(
     try {
       const sid = activeSessionId();
       if (!sid) return { runtimeKey: normalizedRuntime, commands: [] };
-      const raw = await assistantApi.listAvailableCommands(normalizedRuntime, roleName, sid);
+      const raw = await assistantApi.listAvailableCommands(roleName, sid);
       return { runtimeKey: normalizedRuntime, commands: parseAgentCommands(raw) };
     } catch {
       return { runtimeKey: normalizedRuntime, commands: [] };
@@ -162,23 +166,26 @@ export function useAgentContext(
   };
 
   const refreshAssistants = async () => {
-    const rows = await assistantApi.detect();
-    setAssistants(rows);
-    slashCliCacheRef.cache = null;
-    const current = activeSession()?.runtimeKind ?? null;
-    const currentAvailable = current ? rows.find((a) => a.key === current && a.available) : null;
-    if (currentAvailable) return;
-    const first = rows.find((a) => a.available) ?? null;
-    if (first) {
-      setPreferredAssistant(first.key);
+    try {
+      const rows = await assistantApi.detect();
+      setAssistants(rows);
+      slashCliCacheRef.cache = null;
+      const current = activeSession()?.runtimeKind ?? null;
+      const currentAvailable = current ? rows.find((a) => a.key === current && a.available) : null;
+      if (currentAvailable) return;
+      const first = rows.find((a) => a.available) ?? null;
+      if (first) {
+        setPreferredAssistant(first.key);
+      }
+    } catch (e) {
+      showToast(`Failed to detect assistants: ${String(e)}`);
     }
   };
 
   const resetActiveAgentContext = async () => {
     const sid = activeSessionId();
     const role = activeBackendRole();
-    const runtime = runtimeForRole(role);
-    if (!sid || !runtime) {
+    if (!sid) {
       showToast("No active agent context to reset.", "info");
       return;
     }
@@ -187,11 +194,12 @@ export function useAgentContext(
       return;
     }
     try {
-      await assistantApi.resetSession(runtime, role, sid);
-      const cacheKey = commandCacheKey(normalizeRuntimeKey(runtime), role);
+      await assistantApi.resetSession(role, sid);
       setSessions((s) => s.id === sid, produce((s) => {
         const next = new Map(s.agentCommands);
-        next.delete(cacheKey);
+        for (const key of next.keys()) {
+          if (key.endsWith(`:${role}`)) next.delete(key);
+        }
         s.agentCommands = next;
       }));
       updateSession(sid, {
@@ -221,12 +229,9 @@ export function useAgentContext(
     updateSession(sid, { toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, thoughtText: "", submitting: false, status: "idle" });
     pushMessage("event", "Cancellation requested.");
     const role = activeBackendRole();
-    const runtime = runtimeForRole(role);
-    if (runtime) {
-      try {
-        await assistantApi.cancelSession(runtime, role, sid);
-      } catch { }
-    }
+    try {
+      await assistantApi.cancelSession(role, sid);
+    } catch { }
     runNextQueued();
   };
 

@@ -12,22 +12,47 @@ use super::adapter::{acp_log, resolve_cwd};
 use super::client::shutdown_terminals;
 use super::runtime_state::{
     clear_all as clear_runtime_state, clear_session as clear_session_runtime_state,
-    list_discovered_config_options,
-    remember_runtime_available_commands,
+    list_discovered_config_options, remember_runtime_available_commands,
 };
 use super::session::cold_start;
 pub use crate::runtime_kind::RuntimeKind;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ConnectionDeathEvent {
+    pub runtime_key: String,
+    pub role_name: String,
+    pub app_session_id: String,
+}
+
+static DEATH_TX: OnceLock<mpsc::UnboundedSender<ConnectionDeathEvent>> = OnceLock::new();
+
+pub fn set_death_event_sender(tx: mpsc::UnboundedSender<ConnectionDeathEvent>) {
+    let _ = DEATH_TX.set(tx);
+}
+
+fn notify_connection_death(event: ConnectionDeathEvent) {
+    if let Some(tx) = DEATH_TX.get() {
+        let _ = tx.send(event);
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcpPromptResult {
+    pub ok: bool,
     pub output: String,
+    pub error_code: Option<String>,
     pub deltas: Vec<String>,
     pub meta: Value,
 }
 
 #[derive(Clone, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum AcpEvent {
     TextDelta {
         text: String,
@@ -239,11 +264,7 @@ pub(super) fn unregister_child_pid(pid: u32) {
     child_pids().remove(&pid);
 }
 
-fn get_slot_handle(
-    runtime_key: &str,
-    role_name: &str,
-    app_session_id: &str,
-) -> Arc<SlotHandle> {
+fn get_slot_handle(runtime_key: &str, role_name: &str, app_session_id: &str) -> Arc<SlotHandle> {
     let key = pool_key(app_session_id, runtime_key, role_name);
     slot_map()
         .entry(key)
@@ -256,6 +277,7 @@ fn get_slot_handle(
 }
 
 pub(super) struct LiveConnection {
+    pub(super) instance_id: u64,
     pub(super) conn: Rc<acp::ClientSideConnection>,
     pub(super) session_id: acp::SessionId,
     pub(super) cwd: String,
@@ -267,6 +289,7 @@ pub(super) struct LiveConnection {
     pub(super) child_pid: Option<u32>,
     pub(super) _child: tokio::process::Child,
     pub(super) _io_task: tokio::task::JoinHandle<()>,
+    pub(super) health_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 impl Drop for LiveConnection {
@@ -360,12 +383,10 @@ async fn reset_worker_session(
     }
 
     if let Some((_, slot)) = slot_map().remove(&key) {
-        let mut guard = tokio::time::timeout(
-            std::time::Duration::from_millis(1200),
-            slot.conn.lock(),
-        )
-        .await
-        .map_err(|_| "timeout resetting active ACP session".to_string())?;
+        let mut guard =
+            tokio::time::timeout(std::time::Duration::from_millis(1200), slot.conn.lock())
+                .await
+                .map_err(|_| "timeout resetting active ACP session".to_string())?;
         *guard = None;
     }
 
@@ -637,7 +658,10 @@ async fn apply_cold_start_config(
             ))
             .await
         {
-            acp_log("config.set_mode.error", json!({ "mode": mode, "error": e.to_string() }));
+            acp_log(
+                "config.set_mode.error",
+                json!({ "mode": mode, "error": e.to_string() }),
+            );
         }
     }
     for (key, value) in role_config_options {
@@ -650,7 +674,10 @@ async fn apply_cold_start_config(
             ))
             .await
         {
-            acp_log("config.set_option.error", json!({ "key": key, "error": e.to_string() }));
+            acp_log(
+                "config.set_option.error",
+                json!({ "key": key, "error": e.to_string() }),
+            );
         }
     }
 }
@@ -669,6 +696,46 @@ fn build_prompt_blocks(prompt: String, context: &[(String, String)]) -> Vec<acp:
         ))));
     }
     blocks
+}
+
+fn spawn_connection_health_watch(
+    slot: Arc<SlotHandle>,
+    wk: String,
+    death: ConnectionDeathEvent,
+    instance_id: u64,
+    mut hrx: tokio::sync::watch::Receiver<bool>,
+) {
+    tokio::task::spawn_local(async move {
+        loop {
+            if hrx.changed().await.is_err() {
+                break;
+            }
+            if !*hrx.borrow() {
+                break;
+            }
+        }
+        acp_log("health.process_died", json!({ "key": &wk }));
+
+        let mut should_notify = false;
+        {
+            let mut g = slot.conn.lock().await;
+            let is_same_connection = g
+                .as_ref()
+                .map(|live| live.instance_id == instance_id)
+                .unwrap_or(false);
+            if is_same_connection {
+                *g = None;
+                should_notify = true;
+            }
+        }
+
+        if should_notify {
+            CANCEL_HANDLES.with(|m| {
+                m.borrow_mut().remove(&wk);
+            });
+            notify_connection_death(death);
+        }
+    });
 }
 
 async fn handle_execute(
@@ -739,6 +806,15 @@ async fn handle_execute(
             &role_config_options,
         )
         .await;
+
+        let wk = pool_key(&app_session_id, runtime_key, &role_name);
+        let death = ConnectionDeathEvent {
+            runtime_key: runtime_key.to_string(),
+            role_name: role_name.clone(),
+            app_session_id: app_session_id.clone(),
+        };
+        let instance_id = conn.instance_id;
+        spawn_connection_health_watch(slot.clone(), wk, death, instance_id, conn.health_rx.clone());
     }
 
     let blocks = build_prompt_blocks(prompt, &context);
@@ -818,7 +894,10 @@ async fn handle_prewarm(
                 .as_ref()
                 .map(|c| c.session_id.to_string())
                 .unwrap_or_default();
-            let _ = tx.send((list_discovered_config_options(&app_session_id, runtime_key, &role_name), session_id));
+            let _ = tx.send((
+                list_discovered_config_options(&app_session_id, runtime_key, &role_name),
+                session_id,
+            ));
         }
         return;
     }
@@ -862,7 +941,8 @@ async fn handle_prewarm(
             .await;
             // Install a temporary drain channel so notifications sent after session/new
             // (e.g. AvailableCommandsUpdate via setTimeout) are captured rather than dropped.
-            let (drain_tx, mut drain_rx) = mpsc::channel::<super::worker::AcpEvent>(DELTA_CHANNEL_CAPACITY);
+            let (drain_tx, mut drain_rx) =
+                mpsc::channel::<super::worker::AcpEvent>(DELTA_CHANNEL_CAPACITY);
             {
                 if let Ok(mut slot_guard) = conn.delta_slot.lock() {
                     *slot_guard = Some(drain_tx);
@@ -883,7 +963,12 @@ async fn handle_prewarm(
                                 "names": commands.iter().filter_map(|c| c.get("name").and_then(|n| n.as_str()).map(|s| s.to_string())).collect::<Vec<_>>()
                             }),
                         );
-                        remember_runtime_available_commands(&app_session_id, runtime_key, &role_name, commands);
+                        remember_runtime_available_commands(
+                            &app_session_id,
+                            runtime_key,
+                            &role_name,
+                            commands,
+                        );
                     }
                     Ok(Some(_)) => {}
                     _ => break,
@@ -896,8 +981,26 @@ async fn handle_prewarm(
                     *slot_guard = None;
                 }
             }
+            if let Some(live) = guard.as_ref() {
+                let wk = pool_key(&app_session_id, runtime_key, &role_name);
+                let death = ConnectionDeathEvent {
+                    runtime_key: runtime_key.to_string(),
+                    role_name: role_name.clone(),
+                    app_session_id: app_session_id.clone(),
+                };
+                spawn_connection_health_watch(
+                    slot.clone(),
+                    wk,
+                    death,
+                    live.instance_id,
+                    live.health_rx.clone(),
+                );
+            }
             if let Some(tx) = result_tx {
-                let _ = tx.send((list_discovered_config_options(&app_session_id, runtime_key, &role_name), session_id_str));
+                let _ = tx.send((
+                    list_discovered_config_options(&app_session_id, runtime_key, &role_name),
+                    session_id_str,
+                ));
             }
         }
         Err(e) => {

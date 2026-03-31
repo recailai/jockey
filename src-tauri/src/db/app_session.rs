@@ -1,6 +1,6 @@
 use crate::db::{get_state, with_db};
-use crate::{default_chat_cwd, now_ms};
 use crate::types::*;
+use crate::{default_chat_cwd, now_ms};
 use rusqlite::{params, OptionalExtension};
 use tauri::State;
 use uuid::Uuid;
@@ -138,7 +138,9 @@ pub(crate) fn list_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSes
 }
 
 #[tauri::command]
-pub(crate) fn list_closed_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSession>, String> {
+pub(crate) fn list_closed_app_sessions(
+    state: State<'_, AppState>,
+) -> Result<Vec<AppSession>, String> {
     with_db(get_state(&state), |conn| {
         query_sessions(
             conn,
@@ -263,7 +265,10 @@ pub(crate) fn delete_app_session(state: State<'_, AppState>, id: String) -> Resu
 }
 
 #[tauri::command]
-pub(crate) fn reopen_app_session(state: State<'_, AppState>, id: String) -> Result<AppSession, String> {
+pub(crate) fn reopen_app_session(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<AppSession, String> {
     let now = now_ms();
     with_db(get_state(&state), |conn| {
         let title: String = conn

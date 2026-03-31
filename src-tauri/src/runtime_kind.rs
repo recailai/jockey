@@ -41,4 +41,13 @@ impl RuntimeKind {
     pub fn is_mock(self) -> bool {
         matches!(self, Self::Mock)
     }
+
+    pub fn install_hint(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "npm install -g @anthropic-ai/claude-code",
+            Self::GeminiCli => "npm install -g @google/gemini-cli",
+            Self::CodexCli => "npm install -g @openai/codex",
+            Self::Mock => "",
+        }
+    }
 }

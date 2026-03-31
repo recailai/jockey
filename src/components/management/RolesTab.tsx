@@ -2,8 +2,10 @@ import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import type { Accessor } from "solid-js";
 import type { AppSession, Role, RoleUpsertInput, AcpConfigOption } from "../types";
 import { RUNTIME_COLOR, RUNTIMES, flattenConfigValues } from "../types";
-import { EmptyState, FieldRow, TextInput, InlineSelect, ActionButton } from "./primitives";
-import { assistantApi, configApi, roleApi } from "../../lib/tauriApi";
+import { EmptyState, FieldRow, TextInput, InlineSelect, ActionButton, Badge } from "./primitives";
+import type { AcpMcpServer } from "./primitives";
+import { mcpTransport, mcpDisplayUri, parseCommandArgs } from "./primitives";
+import { assistantApi, configApi, roleApi, parseError } from "../../lib/tauriApi";
 
 export function RolesTab(props: {
   roles: Accessor<Role[]>;
@@ -38,7 +40,13 @@ export function RolesTab(props: {
   const [eModel, setEModel] = createSignal("");
   const [eMode, setEMode] = createSignal("");
   const [eAutoApprove, setEAutoApprove] = createSignal(true);
-  const [eMcpJson, setEMcpJson] = createSignal("[]");
+  const [eMcpServers, setEMcpServers] = createSignal<AcpMcpServer[]>([]);
+  const [eMcpAdding, setEMcpAdding] = createSignal(false);
+  const [eMcpName, setEMcpName] = createSignal("");
+  const [eMcpTransport, setEMcpTransport] = createSignal<"stdio" | "http" | "sse">("stdio");
+  const [eMcpCommand, setEMcpCommand] = createSignal("");
+  const [eMcpArgs, setEMcpArgs] = createSignal("");
+  const [eMcpUrl, setEMcpUrl] = createSignal("");
   const [eCfgJson, setECfgJson] = createSignal("{}");
 
   const editingRole = createMemo(() =>
@@ -70,10 +78,11 @@ export function RolesTab(props: {
     setEModel(role.model ?? "");
     setEMode(role.mode ?? "");
     setEAutoApprove(role.autoApprove);
-    setEMcpJson(role.mcpServersJson || "[]");
+    try { setEMcpServers(JSON.parse(role.mcpServersJson || "[]")); } catch { setEMcpServers([]); }
+    setEMcpAdding(false);
     setECfgJson(role.configOptionsJson || "{}");
     const appSessionId = props.activeSession()?.id ?? "";
-    void assistantApi.listDiscoveredConfig(role.runtimeKind, role.roleName, appSessionId).then((raw) => {
+    void assistantApi.listDiscoveredConfig(role.roleName, appSessionId).then((raw) => {
       props.patchActiveSession({ discoveredConfigOptions: configApi.asOptions(raw) });
     });
   };
@@ -131,7 +140,7 @@ export function RolesTab(props: {
       }
       setCConfigSel({}); setCConfigOpts([]);
       props.pushMessage("event", `role created: ${saved.roleName} (${saved.runtimeKind})`);
-    } catch (e) { props.pushMessage("event", `Failed to create role: ${String(e)}`); }
+    } catch (e) { const err = parseError(e); props.pushMessage("event", `Failed to create role: ${err.message}`); }
     finally { setSaving(false); }
   };
 
@@ -139,9 +148,7 @@ export function RolesTab(props: {
   const handleSaveEdit = async () => {
     const role = editingRole();
     if (!role || saving()) return;
-    let parsedMcp: unknown; let parsedCfg: unknown;
-    try { parsedMcp = JSON.parse(eMcpJson().trim() || "[]"); if (!Array.isArray(parsedMcp)) throw new Error("must be array"); }
-    catch (e) { props.pushMessage("event", `Invalid MCP JSON: ${String(e)}`); return; }
+    let parsedCfg: unknown;
     try { parsedCfg = JSON.parse(eCfgJson().trim() || "{}"); if (!parsedCfg || typeof parsedCfg !== "object" || Array.isArray(parsedCfg)) throw new Error("must be object"); }
     catch (e) { props.pushMessage("event", `Invalid config JSON: ${String(e)}`); return; }
     setSaving(true);
@@ -149,13 +156,13 @@ export function RolesTab(props: {
       await roleApi.upsert({
         roleName: role.roleName, runtimeKind: role.runtimeKind,
         systemPrompt: ePrompt().trim(), model: eModel().trim() || null,
-        mode: eMode().trim() || null, mcpServersJson: JSON.stringify(parsedMcp),
+        mode: eMode().trim() || null, mcpServersJson: JSON.stringify(eMcpServers()),
         configOptionsJson: JSON.stringify(parsedCfg), autoApprove: eAutoApprove(),
       } satisfies RoleUpsertInput);
       await props.refreshRoles();
       // 保存后留在编辑页，不关闭
       props.pushMessage("event", `role saved: ${role.roleName}`);
-    } catch (e) { props.pushMessage("event", `Failed to save: ${String(e)}`); }
+    } catch (e) { const err = parseError(e); props.pushMessage("event", `Failed to save: ${err.message}`); }
     finally { setSaving(false); }
   };
 
@@ -166,7 +173,7 @@ export function RolesTab(props: {
       if (editingRole()?.roleName === roleName) setSelectedId(null);
       setDeletingId(null);
       await props.refreshRoles();
-    } catch (e) { props.pushMessage("event", `Failed to delete role: ${String(e)}`); }
+    } catch (e) { const err = parseError(e); props.pushMessage("event", `Failed to delete role: ${err.message}`); }
   };
 
   const runtimeOptions = RUNTIMES.map((r) => ({ value: r, label: r }));
@@ -403,7 +410,97 @@ export function RolesTab(props: {
                     }}
                   </For>
                   <FieldRow label="MCP">
-                    <TextInput value={eMcpJson()} onInput={setEMcpJson} placeholder='[{"name":"..."}]' multiline rows={2} monospace />
+                    <div class="space-y-2">
+                      <Show when={eMcpServers().length > 0}>
+                        <div class="space-y-1">
+                          <For each={eMcpServers()}>
+                            {(srv, idx) => {
+                              const t = () => mcpTransport(srv);
+                              const tColor = () => ({ stdio: "bg-amber-500/15 text-amber-300", http: "bg-sky-500/15 text-sky-300", sse: "bg-violet-500/15 text-violet-300" }[t()] ?? "");
+                              return (
+                                <div class="flex items-center gap-2 rounded-md border theme-border bg-[var(--ui-surface)] px-2 py-1.5">
+                                  <Badge label={t()} color={tColor()} />
+                                  <span class="flex-1 truncate font-mono text-[10px] theme-text">{srv.name}</span>
+                                  <span class="truncate font-mono text-[9px] theme-muted max-w-[200px]">{mcpDisplayUri(srv)}</span>
+                                  <button
+                                    onClick={() => setEMcpServers((s) => s.filter((_, i) => i !== idx()))}
+                                    class="shrink-0 theme-muted hover:text-rose-400"
+                                  >
+                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                                  </button>
+                                </div>
+                              );
+                            }}
+                          </For>
+                        </div>
+                      </Show>
+                      <Show when={eMcpAdding()} fallback={
+                        <button
+                          onClick={() => { setEMcpAdding(true); setEMcpName(""); setEMcpCommand(""); setEMcpArgs(""); setEMcpUrl(""); setEMcpTransport("stdio"); }}
+                          class="font-mono text-[10px] theme-muted hover:theme-text"
+                        >
+                          + add MCP server
+                        </button>
+                      }>
+                        <div class="space-y-1.5 rounded-md border theme-border bg-[var(--ui-surface)] p-2.5">
+                          <div class="flex gap-2">
+                            <input
+                              value={eMcpName()} onInput={(e) => setEMcpName(e.currentTarget.value)}
+                              placeholder="name" class="h-6 flex-1 rounded border theme-border theme-surface px-1.5 font-mono text-[10px] theme-text placeholder:theme-muted focus:outline-none"
+                            />
+                            <InlineSelect
+                              value={eMcpTransport()}
+                              options={[{ value: "stdio", label: "stdio" }, { value: "http", label: "http" }, { value: "sse", label: "sse" }]}
+                              onChange={(v) => setEMcpTransport(v as "stdio" | "http" | "sse")}
+                              class="w-24"
+                            />
+                          </div>
+                          <Show when={eMcpTransport() === "stdio"}>
+                            <input
+                              value={eMcpCommand()} onInput={(e) => setEMcpCommand(e.currentTarget.value)}
+                              placeholder="command (e.g. npx)" class="h-6 w-full rounded border theme-border theme-surface px-1.5 font-mono text-[10px] theme-text placeholder:theme-muted focus:outline-none"
+                            />
+                            <input
+                              value={eMcpArgs()} onInput={(e) => setEMcpArgs(e.currentTarget.value)}
+                              placeholder="args (e.g. -y @anthropic-ai/chrome-devtools-mcp@latest)" class="h-6 w-full rounded border theme-border theme-surface px-1.5 font-mono text-[10px] theme-text placeholder:theme-muted focus:outline-none"
+                            />
+                          </Show>
+                          <Show when={eMcpTransport() !== "stdio"}>
+                            <input
+                              value={eMcpUrl()} onInput={(e) => setEMcpUrl(e.currentTarget.value)}
+                              placeholder="url (e.g. https://mcp.example.com)" class="h-6 w-full rounded border theme-border theme-surface px-1.5 font-mono text-[10px] theme-text placeholder:theme-muted focus:outline-none"
+                            />
+                          </Show>
+                          <div class="flex gap-2 pt-1">
+                            <button
+                              onClick={() => {
+                                const name = eMcpName().trim();
+                                if (!name) return;
+                                let srv: AcpMcpServer;
+                                if (eMcpTransport() === "stdio") {
+                                  const cmd = eMcpCommand().trim();
+                                  if (!cmd) return;
+                                  const parsedArgs = parseCommandArgs(eMcpArgs().trim());
+                                  if (parsedArgs === null) {
+                                    props.pushMessage("event", "Invalid MCP args: check quotes/escaping.");
+                                    return;
+                                  }
+                                  srv = { name, command: cmd, args: parsedArgs, env: [] };
+                                } else {
+                                  const url = eMcpUrl().trim();
+                                  if (!url) return;
+                                  srv = { type: eMcpTransport() as "http" | "sse", name, url, headers: [] };
+                                }
+                                setEMcpServers((s) => [...s, srv]);
+                                setEMcpAdding(false);
+                              }}
+                              class="font-mono text-[10px] text-emerald-400 hover:text-emerald-300"
+                            >add</button>
+                            <button onClick={() => setEMcpAdding(false)} class="font-mono text-[10px] theme-muted hover:theme-text">cancel</button>
+                          </div>
+                        </div>
+                      </Show>
+                    </div>
                   </FieldRow>
                   <FieldRow label="Auto-approve">
                     <label class="flex items-center gap-2 cursor-pointer">

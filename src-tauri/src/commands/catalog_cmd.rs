@@ -9,8 +9,8 @@ use crate::db::context::{
 };
 use crate::db::role::load_role_runtime_kind;
 use crate::db::session_context::app_session_role_scope;
-use crate::types::{AppState, ChatCommandResult, ContextEntry};
 use crate::now_ms;
+use crate::types::{AppState, ChatCommandResult, ContextEntry};
 use serde_json::json;
 
 fn required_app_session_id(app_session_id: Option<&str>) -> Result<&str, String> {
@@ -25,13 +25,18 @@ pub(crate) fn handle_catalog_command(
     app_session_id_ref: Option<&str>,
     result: &mut ChatCommandResult,
 ) -> Result<bool, String> {
-    let assistant_scope = app_session_id_ref.map(|sid| app_session_role_scope(sid, "UnionAIAssistant"));
+    let assistant_scope =
+        app_session_id_ref.map(|sid| app_session_role_scope(sid, "UnionAIAssistant"));
     match tokens {
         ["/app_model", "list"] => {
             let runtime = resolve_model_runtime(result.runtime_kind.as_deref());
             let models = list_models_for_runtime(state, &runtime)?;
             let selected = app_session_id_ref
-                .and_then(|sid| load_app_session_role_state(state, sid, "UnionAIAssistant").ok().flatten())
+                .and_then(|sid| {
+                    load_app_session_role_state(state, sid, "UnionAIAssistant")
+                        .ok()
+                        .flatten()
+                })
                 .and_then(|row| row.model_override)
                 .and_then(|value| {
                     app_session_id_ref.map(|sid| ContextEntry {
@@ -114,15 +119,14 @@ pub(crate) fn handle_catalog_command(
         }
         ["/app_model", "get", "role", role_name] => {
             let sid = required_app_session_id(app_session_id_ref)?;
-            let entry = load_app_session_role_state(state, sid, role_name)?
-                .and_then(|row| {
-                    row.model_override.map(|value| ContextEntry {
-                        scope: app_session_role_scope(sid, role_name),
-                        key: "model".to_string(),
-                        value,
-                        updated_at: now_ms(),
-                    })
-                });
+            let entry = load_app_session_role_state(state, sid, role_name)?.and_then(|row| {
+                row.model_override.map(|value| ContextEntry {
+                    scope: app_session_role_scope(sid, role_name),
+                    key: "model".to_string(),
+                    value,
+                    updated_at: now_ms(),
+                })
+            });
             let runtime = load_role_runtime_kind(state, role_name)?;
             result.message = format!("model fetched for role {}", role_name);
             result.payload = json!({ "entry": entry, "runtime": runtime });
@@ -130,8 +134,8 @@ pub(crate) fn handle_catalog_command(
         }
         ["/app_model", "get"] => {
             let sid = required_app_session_id(app_session_id_ref)?;
-            let entry = load_app_session_role_state(state, sid, "UnionAIAssistant")?
-                .and_then(|row| {
+            let entry =
+                load_app_session_role_state(state, sid, "UnionAIAssistant")?.and_then(|row| {
                     row.model_override.map(|value| ContextEntry {
                         scope: app_session_role_scope(sid, "UnionAIAssistant"),
                         key: "model".to_string(),
@@ -212,7 +216,8 @@ pub(crate) fn handle_catalog_command(
                 } else {
                     "disabled"
                 };
-                let entry = set_shared_context_internal(state, &scope, &format!("mcp:{name}"), value)?;
+                let entry =
+                    set_shared_context_internal(state, &scope, &format!("mcp:{name}"), value)?;
                 result.message = format!("mcp {}: {}", mode, name);
                 result.payload = json!({ "entry": entry });
             }

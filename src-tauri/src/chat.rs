@@ -2,12 +2,12 @@ mod context_bundle;
 mod prompt_builder;
 mod session_runtime;
 
+use crate::chat::session_runtime::load_role_runtime_data;
 use crate::commands::apply_chat_command;
 use crate::db::context::{list_shared_context_internal, set_shared_context_internal};
 use crate::db::get_state;
 use crate::db::session_context::app_session_scope;
 use crate::parser::parse_route_input;
-use crate::chat::session_runtime::load_role_runtime_data;
 use crate::types::*;
 use crate::{acp, build_unionai_tool_prompt, clip_text, now_ms};
 use serde::{Deserialize, Serialize};
@@ -59,7 +59,10 @@ fn normalize_recent_chat_text(raw: &str) -> String {
     clip_text(&compact, RECENT_ROLE_CHAT_TEXT_MAX)
 }
 
-pub(super) fn load_recent_role_chats(state: &AppState, app_session_id: &str) -> Vec<RecentRoleChat> {
+pub(super) fn load_recent_role_chats(
+    state: &AppState,
+    app_session_id: &str,
+) -> Vec<RecentRoleChat> {
     let scope = app_session_scope(app_session_id);
     let entries = list_shared_context_internal(state, &scope).unwrap_or_default();
     entries
@@ -184,8 +187,14 @@ pub(crate) async fn assistant_chat(
 
     if text.starts_with("/app_") {
         let route_started = Instant::now();
-        let command_result =
-            apply_chat_command(app, state, text, input.runtime_kind.clone(), Some(app_session_id.clone())).await?;
+        let command_result = apply_chat_command(
+            app,
+            state,
+            text,
+            input.runtime_kind.clone(),
+            Some(app_session_id.clone()),
+        )
+        .await?;
         chat_log(
             "route.command",
             json!({
@@ -235,6 +244,7 @@ pub(crate) async fn assistant_chat(
     let shared_ctx = get_state(&state).shared_context.clone();
 
     let mut role_outputs: Vec<(String, String)> = Vec::new();
+    let mut any_acp_error = false;
 
     for role_name in role_targets {
         let is_union_assistant = role_name == "UnionAIAssistant";
@@ -374,6 +384,9 @@ pub(crate) async fn assistant_chat(
                 &app_session_id,
             );
         }
+        if !llm.ok {
+            any_acp_error = true;
+        }
         role_outputs.push((role_name.clone(), final_output));
     }
 
@@ -391,7 +404,7 @@ pub(crate) async fn assistant_chat(
     };
 
     Ok(AssistantChatResponse {
-        ok: true,
+        ok: !any_acp_error,
         reply,
         runtime_kind: Some(assistant),
         session_id: None,
