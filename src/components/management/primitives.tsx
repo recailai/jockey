@@ -88,7 +88,7 @@ export function EmptyState(props: { icon: string; title: string; sub?: string })
 export function PanelSection(props: { title: string; action?: { label: string; onClick: () => void }; children: unknown }) {
   return (
     <div>
-      <div class="mb-3 flex items-center justify-between border-b theme-border pb-2">
+      <div class="mb-3 flex items-center justify-between pb-2">
         <span class="font-mono text-[9px] font-semibold uppercase tracking-[0.12em] theme-muted">{props.title}</span>
         <Show when={props.action}>
           {(action) => (
@@ -119,7 +119,7 @@ export function TextInput(props: {
   value: string; onInput: (v: string) => void; placeholder?: string;
   multiline?: boolean; rows?: number; class?: string; monospace?: boolean; error?: boolean;
 }) {
-  const base = () => `w-full rounded-md border ${props.error ? "border-rose-600" : "theme-border"} theme-surface px-2.5 py-1.5 text-xs theme-text placeholder:text-[var(--ui-muted)] focus:border-[var(--ui-border-strong)] focus:outline-none ${props.monospace ? "font-mono" : ""} ${props.class ?? ""}`;
+  const base = () => `w-full rounded-md border ${props.error ? "border-rose-600" : "theme-border"} theme-surface px-2 py-1 text-xs theme-text placeholder:text-[var(--ui-muted)] focus:border-[var(--ui-border-strong)] focus:outline-none ${props.monospace ? "font-mono" : ""} ${props.class ?? ""}`;
   if (props.multiline) {
     return (
       <textarea
@@ -136,7 +136,7 @@ export function TextInput(props: {
       value={props.value}
       onInput={(e) => props.onInput(e.currentTarget.value)}
       placeholder={props.placeholder}
-      class={`h-8 ${base()}`}
+      class={`h-7 ${base()}`}
     />
   );
 }
@@ -179,12 +179,12 @@ export function InlineSelect(props: {
         ref={triggerRef}
         type="button"
         onClick={toggle}
-        class={`flex h-8 w-full items-center justify-between gap-2 rounded-md border theme-border theme-surface px-2.5 text-xs text-left ${INTERACTIVE_MOTION} ${open() ? "border-[var(--ui-border-strong)]" : "hover:border-[var(--ui-border-strong)]"}`}
+        class={`flex h-7 w-full items-center justify-between gap-2 rounded-md border theme-border theme-surface px-2 text-xs text-left ${INTERACTIVE_MOTION} ${open() ? "border-[var(--ui-border-strong)]" : "hover:border-[var(--ui-border-strong)]"}`}
       >
         <span class={`min-w-0 flex-1 truncate ${selected() ? "theme-text" : "theme-muted"}`}>
           {selected()?.label ?? "Select…"}
         </span>
-        <svg class={`h-3 w-3 shrink-0 text-zinc-500 transition-transform ${open() ? "rotate-180" : ""}`} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4l4 4 4-4" /></svg>
+        <svg class={`h-3 w-3 shrink-0 theme-muted transition-transform ${open() ? "rotate-180" : ""}`} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4l4 4 4-4" /></svg>
       </button>
       <Show when={open()}>
         <Portal mount={document.body}>
@@ -242,7 +242,7 @@ export const TABS: Array<{ id: TabId; label: string; icon: () => any }> = [
   {
     id: "sessions", label: "Sessions",
     icon: () => (
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="9" y1="21" x2="9" y2="9" />
       </svg>
     ),
@@ -250,7 +250,7 @@ export const TABS: Array<{ id: TabId; label: string; icon: () => any }> = [
   {
     id: "workflows", label: "Workflows",
     icon: () => (
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
         <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
       </svg>
@@ -259,7 +259,7 @@ export const TABS: Array<{ id: TabId; label: string; icon: () => any }> = [
   {
     id: "roles", label: "Roles",
     icon: () => (
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
       </svg>
     ),
@@ -267,7 +267,7 @@ export const TABS: Array<{ id: TabId; label: string; icon: () => any }> = [
   {
     id: "mcp", label: "MCP",
     icon: () => (
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" /><polyline points="2 12 12 17 22 12" />
       </svg>
     ),
@@ -275,7 +275,7 @@ export const TABS: Array<{ id: TabId; label: string; icon: () => any }> = [
   {
     id: "skills", label: "Skills",
     icon: () => (
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
       </svg>
     ),

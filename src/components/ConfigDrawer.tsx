@@ -33,12 +33,12 @@ function Select(props: {
       <button
         type="button"
         onClick={toggle}
-        class={`flex h-8 w-full items-center justify-between gap-2 rounded-lg border theme-border theme-surface px-2.5 text-xs text-left ${INTERACTIVE_MOTION} ${open() ? "border-[var(--ui-border-strong)]" : "hover:border-[var(--ui-border-strong)]"}`}
+        class={`flex h-7 w-full items-center justify-between gap-2 rounded-md border theme-border theme-surface px-2.5 text-xs text-left ${INTERACTIVE_MOTION} ${open() ? "border-[var(--ui-border-strong)]" : "hover:border-[var(--ui-border-strong)]"}`}
       >
         <span class={selected() ? "theme-text" : "theme-muted"}>
           {selected()?.label ?? props.placeholder ?? "Select…"}
         </span>
-        <svg class={`h-3.5 w-3.5 shrink-0 text-zinc-500 transition-transform ${open() ? "rotate-180" : ""}`} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4l4 4 4-4"/></svg>
+        <svg class={`h-3.5 w-3.5 shrink-0 theme-muted transition-transform ${open() ? "rotate-180" : ""}`} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4l4 4 4-4"/></svg>
       </button>
       <Show when={open()}>
         <div class="absolute left-0 right-0 top-full z-50 mt-0.5 max-h-52 overflow-y-auto rounded-lg theme-dropdown shadow-xl shadow-black/40">
@@ -87,12 +87,12 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
     <Show when={props.showDrawer()}>
       <div class="absolute inset-0 z-50 flex">
         <div class="flex-1" onClick={() => props.setShowDrawer(false)} />
-        <div class="w-72 border-l theme-border flex flex-col overflow-hidden theme-surface">
-          <div class="flex items-center justify-between px-4 py-3.5 border-b theme-border">
+        <div class="w-72 flex flex-col overflow-hidden theme-surface">
+          <div class="flex items-center justify-between px-4 py-2.5">
             <span class="text-[10px] font-medium uppercase tracking-widest theme-muted">Config</span>
             <button
               onClick={() => props.setShowDrawer(false)}
-              class={`flex h-6 w-6 items-center justify-center rounded text-zinc-600 hover:text-zinc-300 ${INTERACTIVE_MOTION}`}
+              class={`flex h-6 w-6 items-center justify-center rounded theme-muted hover:text-primary ${INTERACTIVE_MOTION}`}
             >
               <svg viewBox="0 0 12 12" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 1l10 10M11 1L1 11"/></svg>
             </button>
@@ -144,14 +144,14 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
                 ] as const).map(({ tab, label, count, color }) => (
                   <button
                     onClick={(e) => { e.stopPropagation(); props.setShowDrawer(false); props.onOpenManagement?.(tab); }}
-                    class={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-colors duration-150 hover:bg-[var(--ui-accent-soft)] group ${INTERACTIVE_MOTION}`}
+                    class={`flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-xs transition-colors duration-150 hover:bg-[var(--ui-accent-soft)] group ${INTERACTIVE_MOTION}`}
                   >
                     <span class="theme-muted group-hover:theme-text transition-colors">{label}</span>
                     <div class="flex items-center gap-1.5">
                       {count() !== null && (
                         <span class={`font-mono text-[10px] ${color}`}>{count()}</span>
                       )}
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-zinc-700 group-hover:text-zinc-500 transition-colors"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="theme-muted opacity-40 group-hover:opacity-70 transition-all"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
                     </div>
                   </button>
                 ))}
@@ -194,7 +194,7 @@ function AssistantSection(props: AssistantSectionProps) {
         <For each={props.assistants()}>
           {(a) => (
             <button
-              class={`flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs ${INTERACTIVE_MOTION} ${
+              class={`flex min-h-7 w-full items-center gap-2 rounded-md px-2.5 py-1 text-left text-xs ${INTERACTIVE_MOTION} ${
                 props.activeSession()?.runtimeKind === a.key
                   ? "theme-text"
                   : "theme-muted"
@@ -322,9 +322,9 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
   return (
     <div class="mt-2 space-y-2 rounded-xl border border-theme bg-[var(--ui-surface-muted)] p-3">
       <div class="flex items-center justify-between">
-        <div class="text-[10px] text-zinc-600">runtime: {runtimeKind()}</div>
+        <div class="text-[10px] theme-muted">runtime: {runtimeKind()}</div>
         <Show when={optionsLoading()}>
-          <div class="text-[10px] text-zinc-600 italic">loading options…</div>
+          <div class="text-[10px] theme-muted italic">loading options…</div>
         </Show>
       </div>
         <textarea
@@ -335,7 +335,7 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
           class="w-full resize-none rounded-lg border theme-border theme-surface px-2.5 py-2 text-xs theme-text placeholder:text-[var(--ui-muted)] focus:border-[var(--ui-border-strong)] focus:outline-none"
         />
         <Show when={modelOpt()} fallback={
-          <input value={model()} onInput={(e) => setModel(e.currentTarget.value)} placeholder="Model (optional)" class="h-8 w-full rounded-lg border theme-border theme-surface px-2.5 text-xs theme-text placeholder:text-[var(--ui-muted)] focus:border-[var(--ui-border-strong)] focus:outline-none" />
+          <input value={model()} onInput={(e) => setModel(e.currentTarget.value)} placeholder="Model (optional)" class="h-7 w-full rounded-md border theme-border theme-surface px-2.5 text-xs theme-text placeholder:text-[var(--ui-muted)] focus:border-[var(--ui-border-strong)] focus:outline-none" />
         }>
           {(mo) => {
             const values = () => flattenConfigValues(mo().options);
@@ -366,7 +366,7 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
             const sel = () => currentCfg()[opt.id] ?? "";
             return (
               <div class="flex flex-col gap-0.5">
-                <label class="text-[10px] text-zinc-600 mb-0.5">{opt.name}{opt.description ? ` — ${opt.description}` : ""}</label>
+                <label class="text-[10px] theme-muted mb-0.5">{opt.name}{opt.description ? ` — ${opt.description}` : ""}</label>
                 <Select
                   value={sel()}
                   options={[{ value: "", label: `(default: ${opt.currentValue})` }, ...values().map((v) => ({ value: v.value, label: v.description ? `${v.name} — ${v.description}` : v.name }))]}
@@ -378,7 +378,7 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
         </For>
         <button
           onClick={() => void handleSave()}
-          class={`h-8 w-full rounded-lg bg-white text-xs font-medium text-zinc-950 ${INTERACTIVE_MOTION}`}
+          class={`h-7 w-full rounded-md bg-white text-xs font-medium text-zinc-950 ${INTERACTIVE_MOTION}`}
         >
           Save
         </button>
@@ -405,12 +405,12 @@ function RolesSection(props: {
         onClick={() => setExpanded((v) => !v)}
         class={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-colors duration-150 hover:bg-[var(--ui-surface-muted)] group ${INTERACTIVE_MOTION}`}
       >
-        <span class="text-[10px] font-medium uppercase tracking-widest text-zinc-600 group-hover:text-zinc-400 transition-colors">Roles</span>
+        <span class="text-[10px] font-medium uppercase tracking-widest theme-muted group-hover:text-primary transition-colors">Roles</span>
         <div class="flex items-center gap-1.5">
           <span class="font-mono text-[10px] text-orange-300">{userRoles().length}</span>
           <svg
             width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            class={`text-zinc-700 group-hover:text-zinc-500 transition-all ${expanded() ? "rotate-90" : ""}`}
+            class={`theme-muted opacity-40 group-hover:opacity-70 transition-all ${expanded() ? "rotate-90" : ""}`}
           >
             <path d="M5 12h14M12 5l7 7-7 7"/>
           </svg>
@@ -419,17 +419,17 @@ function RolesSection(props: {
       <Show when={expanded()}>
         <div class="space-y-0.5 pl-1">
           <Show when={userRoles().length === 0}>
-            <div class="px-2.5 py-1.5 text-[10px] text-zinc-600 italic">No roles yet</div>
+            <div class="px-2.5 py-1.5 text-[10px] theme-muted italic">No roles yet</div>
           </Show>
           <For each={userRoles()}>
             {(role) => {
-              const color = () => RUNTIME_COLOR[role.runtimeKind] ?? "text-zinc-500";
+              const color = () => RUNTIME_COLOR[role.runtimeKind] ?? "theme-muted";
               return (
                 <button
                   onClick={(e) => { e.stopPropagation(); openRole(role.roleName); }}
                   class={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 hover:bg-[var(--ui-surface-muted)] transition-colors text-left ${INTERACTIVE_MOTION}`}
                 >
-                  <span class="flex-1 truncate font-mono text-[10px] text-zinc-300">{role.roleName}</span>
+                  <span class="flex-1 truncate font-mono text-[10px] theme-text">{role.roleName}</span>
                   <span class={`font-mono text-[9px] shrink-0 ${color()}`}>{role.runtimeKind}</span>
                   <Show when={role.model}><span class="font-mono text-[9px] text-blue-400 shrink-0">{role.model}</span></Show>
                 </button>
@@ -438,7 +438,7 @@ function RolesSection(props: {
           </For>
           <button
             onClick={(e) => { e.stopPropagation(); props.setShowDrawer(false); props.onOpenManagement?.("roles"); }}
-            class={`flex w-full items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[10px] text-zinc-600 hover:text-zinc-300 hover:bg-[var(--ui-surface-muted)] transition-colors ${INTERACTIVE_MOTION}`}
+            class={`flex w-full items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[10px] theme-muted hover:text-primary hover:bg-[var(--ui-surface-muted)] transition-colors ${INTERACTIVE_MOTION}`}
           >
             <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
             manage roles

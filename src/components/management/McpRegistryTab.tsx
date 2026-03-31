@@ -43,7 +43,7 @@ export function McpRegistryTab(props: { roles: Role[] }) {
     stdio: "bg-amber-500/15 text-amber-300",
     http: "bg-sky-500/15 text-sky-300",
     sse: "bg-violet-500/15 text-violet-300",
-  }[t] ?? "bg-zinc-800 text-zinc-400");
+  }[t] ?? "bg-[var(--ui-surface-muted)] theme-muted");
 
   const handleAdd = () => {
     const name = fName().trim();
@@ -78,8 +78,8 @@ export function McpRegistryTab(props: { roles: Role[] }) {
   return (
     <div class="flex h-full">
       {/* List */}
-      <div class="flex w-60 shrink-0 flex-col border-r border-white/[0.04]">
-        <div class="border-b border-white/[0.04] p-3">
+      <div class="flex w-60 shrink-0 flex-col border-r theme-border">
+        <div class="p-3">
           <ActionButton
             label="+ Register Server"
             variant="ghost"
@@ -87,7 +87,7 @@ export function McpRegistryTab(props: { roles: Role[] }) {
             onClick={() => { setCreating(true); setSelectedId(null); }}
           />
         </div>
-        <div class="flex-1 overflow-y-auto">
+        <div class="flex-1 overflow-y-auto space-y-0.5 py-1">
           <Show when={servers().length === 0}>
             <EmptyState icon="◈" title="No MCP servers" sub="Servers are imported from role configurations" />
           </Show>
@@ -95,16 +95,16 @@ export function McpRegistryTab(props: { roles: Role[] }) {
             {(srv) => (
               <button
                 onClick={() => { setSelectedId(srv.id); setCreating(false); }}
-                class={`group flex w-full flex-col gap-0.5 border-b border-white/[0.03] px-3 py-2.5 text-left transition-colors duration-100 ${selectedId() === srv.id ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-surface-muted)]"} ${!srv.enabled ? "opacity-40" : ""}`}
+                class={`group flex w-full flex-col gap-0.5 rounded-lg mx-1.5 px-2.5 py-2 text-left transition-colors duration-100 ${selectedId() === srv.id ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-surface-muted)]"} ${!srv.enabled ? "opacity-40" : ""}`}
               >
                 <div class="flex items-center gap-1.5 min-w-0">
                   <span class={`h-1.5 w-1.5 shrink-0 rounded-full ${srv.enabled ? "bg-emerald-400" : "bg-zinc-700"}`} />
-                  <span class={`truncate font-mono text-[10px] font-semibold ${selectedId() === srv.id ? "text-zinc-100" : "text-zinc-300"}`}>{srv.name}</span>
+                  <span class={`truncate font-mono text-[10px] font-semibold ${selectedId() === srv.id ? "theme-text" : "theme-text"}`}>{srv.name}</span>
                 </div>
                 <div class="flex items-center gap-1.5 pl-3">
                   <Badge label={srv.transport} color={transportBadge(srv.transport)} />
                   <Show when={srv.roleName}>
-                    <span class="font-mono text-[9px] text-zinc-600 truncate">{srv.roleName}</span>
+                    <span class="font-mono text-[9px] theme-muted truncate">{srv.roleName}</span>
                   </Show>
                 </div>
               </button>
@@ -117,7 +117,7 @@ export function McpRegistryTab(props: { roles: Role[] }) {
       <div class="flex-1 overflow-y-auto p-5">
         <Show when={creating()}>
           <div class="space-y-4">
-            <h3 class="font-mono text-xs font-bold text-zinc-300 uppercase tracking-widest">Register MCP Server</h3>
+            <h3 class="font-mono text-xs font-bold theme-text uppercase tracking-widest">Register MCP Server</h3>
             <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
               <FieldRow label="Name">
                 <TextInput value={fName()} onInput={setFName} placeholder="e.g. filesystem" />
@@ -153,7 +153,7 @@ export function McpRegistryTab(props: { roles: Role[] }) {
               <div class="flex items-start justify-between gap-4">
                 <div class="flex items-center gap-2">
                   <span class={`h-2 w-2 rounded-full ${srv().enabled ? "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.4)]" : "bg-zinc-700"}`} />
-                  <h2 class="font-mono text-sm font-bold text-zinc-100">{srv().name}</h2>
+                  <h2 class="font-mono text-sm font-bold theme-text">{srv().name}</h2>
                   <Badge label={srv().transport} color={transportBadge(srv().transport)} />
                 </div>
                 <div class="flex gap-2 shrink-0">
@@ -168,18 +168,18 @@ export function McpRegistryTab(props: { roles: Role[] }) {
 
               <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
                 <FieldRow label="URI">
-                  <span class="break-all font-mono text-[10px] text-zinc-300">{srv().uri}</span>
+                  <span class="break-all font-mono text-[10px] theme-text">{srv().uri}</span>
                 </FieldRow>
                 <FieldRow label="Transport">
                   <Badge label={srv().transport} color={transportBadge(srv().transport)} />
                 </FieldRow>
                 <FieldRow label="Scope">
-                  <span class="font-mono text-[10px] text-zinc-400">{srv().roleName ?? "global"}</span>
+                  <span class="font-mono text-[10px] theme-muted">{srv().roleName ?? "global"}</span>
                 </FieldRow>
                 <FieldRow label="Status">
                   <div class="flex items-center gap-1.5">
                     <span class={`h-1.5 w-1.5 rounded-full ${srv().enabled ? "bg-emerald-400" : "bg-zinc-700"}`} />
-                    <span class="font-mono text-[10px] text-zinc-400">{srv().enabled ? "enabled" : "disabled"}</span>
+                    <span class="font-mono text-[10px] theme-muted">{srv().enabled ? "enabled" : "disabled"}</span>
                   </div>
                 </FieldRow>
               </div>

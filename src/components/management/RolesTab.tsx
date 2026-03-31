@@ -186,8 +186,8 @@ export function RolesTab(props: {
   return (
     <div class="flex h-full">
       {/* ── List pane ── */}
-      <div class="flex w-56 shrink-0 flex-col border-r border-white/[0.04]">
-        <div class="border-b border-white/[0.04] p-3">
+      <div class="flex w-56 shrink-0 flex-col border-r theme-border">
+        <div class="p-3">
           <ActionButton
             label="+ New Role"
             variant="ghost"
@@ -195,32 +195,32 @@ export function RolesTab(props: {
             onClick={openCreate}
           />
         </div>
-        <div class="flex-1 overflow-y-auto">
+        <div class="flex-1 overflow-y-auto space-y-0.5 py-1">
           <Show when={userRoles().length === 0}>
             <EmptyState icon="◎" title="No roles yet" sub="Create your first role" />
           </Show>
           <For each={userRoles()}>
             {(role) => {
-              const color = () => RUNTIME_COLOR[role.runtimeKind] ?? "text-zinc-500";
+              const color = () => RUNTIME_COLOR[role.runtimeKind] ?? "theme-muted";
               const isSelected = () => selectedId() === role.id && !creating();
               return (
                 <div
                   onClick={() => openEdit(role)}
-                  class={`group flex w-full flex-col gap-0.5 border-b border-white/[0.03] px-3 py-2.5 text-left transition-colors duration-100 cursor-default ${isSelected() ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-surface-muted)]"}`}
+                  class={`group flex w-full flex-col gap-0.5 rounded-lg mx-1.5 px-2.5 py-2 text-left transition-colors duration-100 cursor-default ${isSelected() ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-surface-muted)]"}`}
                 >
                   <div class="flex items-center justify-between min-w-0 gap-1">
-                    <span class={`truncate font-mono text-[10px] font-semibold ${isSelected() ? "text-zinc-100" : "text-zinc-300"}`}>{role.roleName}</span>
+                    <span class={`truncate font-mono text-[10px] font-semibold ${isSelected() ? "theme-text" : "theme-text"}`}>{role.roleName}</span>
                     <Show when={deletingId() === role.roleName} fallback={
                       <button
                         onClick={(e) => { e.stopPropagation(); setDeletingId(role.roleName); }}
-                        class="shrink-0 opacity-0 group-hover:opacity-100 text-zinc-700 hover:text-rose-400 transition-all"
+                        class="shrink-0 opacity-0 group-hover:opacity-100 theme-muted hover:text-rose-400 transition-all"
                       >
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                       </button>
                     }>
                       <div class="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                         <button onClick={() => void handleDelete(role.roleName)} class="font-mono text-[9px] text-rose-400 hover:text-rose-300">del</button>
-                        <button onClick={() => setDeletingId(null)} class="font-mono text-[9px] text-zinc-600 hover:text-zinc-400">✕</button>
+                        <button onClick={() => setDeletingId(null)} class="font-mono text-[9px] theme-muted hover:text-primary">✕</button>
                       </div>
                     </Show>
                   </div>
@@ -242,7 +242,7 @@ export function RolesTab(props: {
         {/* Create form */}
         <Show when={creating()}>
           <div class="space-y-4">
-            <h3 class="font-mono text-xs font-bold text-zinc-300 uppercase tracking-widest">New Role</h3>
+            <h3 class="font-mono text-xs font-bold theme-text uppercase tracking-widest">New Role</h3>
             <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
               <FieldRow label="Name">
                 <div class="flex flex-col gap-1 w-full">
@@ -302,7 +302,7 @@ export function RolesTab(props: {
               <FieldRow label="Auto-approve">
                 <label class="flex items-center gap-2 cursor-pointer">
                   <input type="checkbox" checked={cAutoApprove()} onChange={(e) => setCAutoApprove(e.currentTarget.checked)} class="rounded accent-emerald-500" />
-                  <span class="font-mono text-[10px] text-zinc-500">auto-approve permissions</span>
+                  <span class="font-mono text-[10px] theme-muted">auto-approve permissions</span>
                 </label>
               </FieldRow>
               {/* Other runtime-specific options (excluding model/mode) */}
@@ -340,9 +340,9 @@ export function RolesTab(props: {
               <div class="space-y-4">
                 <div class="flex items-start justify-between gap-4">
                   <div>
-                    <h2 class="font-mono text-sm font-bold text-zinc-100">{role().roleName}</h2>
-                    <span class={`font-mono text-[10px] ${RUNTIME_COLOR[role().runtimeKind] ?? "text-zinc-500"}`}>{role().runtimeKind}</span>
-                    <span class="font-mono text-[9px] text-zinc-700 ml-2">provider locked</span>
+                    <h2 class="font-mono text-sm font-bold theme-text">{role().roleName}</h2>
+                    <span class={`font-mono text-[10px] ${RUNTIME_COLOR[role().runtimeKind] ?? "theme-muted"}`}>{role().runtimeKind}</span>
+                    <span class="font-mono text-[9px] theme-muted ml-2">provider locked</span>
                   </div>
                   <Show when={deletingId() === role().roleName} fallback={
                     <ActionButton label="Delete" variant="danger" onClick={() => setDeletingId(role().roleName)} />
@@ -408,7 +408,7 @@ export function RolesTab(props: {
                   <FieldRow label="Auto-approve">
                     <label class="flex items-center gap-2 cursor-pointer">
                       <input type="checkbox" checked={eAutoApprove()} onChange={(e) => setEAutoApprove(e.currentTarget.checked)} class="rounded accent-emerald-500" />
-                      <span class="font-mono text-[10px] text-zinc-500">auto-approve permissions</span>
+                      <span class="font-mono text-[10px] theme-muted">auto-approve permissions</span>
                     </label>
                   </FieldRow>
                 </div>

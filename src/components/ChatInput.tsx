@@ -60,11 +60,11 @@ export default function ChatInput(props: ChatInputProps) {
   return (
     <div class="shrink-0 px-4 pb-4 pt-2 theme-bg">
       <form onSubmit={props.onSubmit} class="relative max-w-5xl mx-auto w-full">
-        <div class="flex items-center rounded-2xl border theme-border backdrop-blur-xl px-2.5 py-1.5 gap-2 shadow-lg focus-within:ring-4 focus-within:ring-[var(--ui-accent-soft)] motion-safe:transition-all motion-safe:duration-300 theme-surface">
+        <div class="flex items-center rounded-xl border theme-border backdrop-blur-xl px-2.5 py-1.5 gap-2 shadow-lg focus-within:ring-2 focus-within:ring-[var(--ui-accent-soft)] motion-safe:transition-all motion-safe:duration-300 theme-surface">
           <button
             type="button"
             onClick={() => props.patchActiveSession({ activeRole: DEFAULT_ROLE_ALIAS })}
-            class={`shrink-0 flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[12.5px] font-bold tracking-wide transition-all ${props.isCustomRole() ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 shadow-[0_0_10px_rgba(99,102,241,0.1)]" : "border theme-border theme-muted hover:text-primary theme-surface-muted"}`}
+            class={`shrink-0 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-bold tracking-wide transition-all ${props.isCustomRole() ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 shadow-[0_0_10px_rgba(99,102,241,0.1)]" : "border theme-border theme-muted hover:text-primary theme-surface-muted"}`}
             title={props.isCustomRole() ? "Click to return to UnionAI" : "UnionAI mode"}
           >
             {props.activeSession()?.activeRole ?? DEFAULT_ROLE_ALIAS}
@@ -96,7 +96,7 @@ export default function ChatInput(props: ChatInputProps) {
           />
           <button
             type="submit"
-            class={`shrink-0 flex h-9 w-9 items-center justify-center rounded-xl motion-safe:transition-all motion-safe:duration-300 ${props.input().trim() ? "bg-gradient-to-t from-indigo-600 to-indigo-500 text-white shadow-md shadow-indigo-500/25 border border-indigo-400/30 hover:shadow-indigo-500/40 hover:scale-105" : "theme-surface-muted theme-muted border border-transparent"} ${INTERACTIVE_MOTION}`}
+            class={`shrink-0 flex h-8 w-8 items-center justify-center rounded-xl motion-safe:transition-all motion-safe:duration-300 ${props.input().trim() ? "bg-gradient-to-t from-indigo-600 to-indigo-500 text-white shadow-md shadow-indigo-500/25 border border-indigo-400/30 hover:shadow-indigo-500/40 hover:scale-105" : "theme-surface-muted theme-muted border border-transparent"} ${INTERACTIVE_MOTION}`}
             title={props.activeSession()?.submitting ? `Queue (${props.activeSession()?.queuedMessages.length ?? 0})` : "Send"}
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class={props.input().trim() ? "drop-shadow-[0_1px_2px_rgba(0,0,0,0.3)]" : ""}><line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" /></svg>

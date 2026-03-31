@@ -126,7 +126,7 @@ function SessionContextSection(props: { sessionId: string }) {
             onInput={(e) => setNewValue(e.currentTarget.value)}
             placeholder='value (string or JSON: "text", [...], {...})'
             rows={2}
-            class="w-full resize-none rounded border border-zinc-700 bg-zinc-950 px-2 py-1 font-mono text-[10px] text-zinc-200 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
+            class="w-full resize-none rounded border theme-border theme-surface px-2 py-1 font-mono text-[10px] theme-text placeholder:text-[var(--ui-muted)] focus:border-[var(--ui-border-strong)] focus:outline-none"
             onKeyDown={(e) => { if (e.key === "Escape") setAddingNew(false); }}
           />
           <div class="flex gap-1.5">
@@ -169,7 +169,7 @@ function SessionContextSection(props: { sessionId: string }) {
                       value={editValue()}
                       onInput={(e) => setEditValue(e.currentTarget.value)}
                       rows={3}
-                      class="w-full resize-none rounded border border-zinc-600 bg-zinc-950 px-2 py-1 font-mono text-[10px] text-zinc-200 focus:border-zinc-400 focus:outline-none"
+                      class="w-full resize-none rounded border theme-border theme-surface px-2 py-1 font-mono text-[10px] theme-text focus:border-[var(--ui-border-strong)] focus:outline-none"
                       onKeyDown={(e) => { if (e.key === "Escape") setEditingKey(null); }}
                     />
                     <div class="mt-1 flex gap-1.5">
@@ -268,8 +268,8 @@ export function SessionsTab(props: {
   return (
     <div class="flex h-full">
       {/* List pane */}
-      <div class="flex w-64 shrink-0 flex-col border-r border-white/[0.04]">
-        <div class="border-b border-white/[0.04] p-3">
+      <div class="flex w-64 shrink-0 flex-col border-r theme-border">
+        <div class="p-3">
           <input
             value={search()}
             onInput={(e) => setSearch(e.currentTarget.value)}
@@ -277,7 +277,7 @@ export function SessionsTab(props: {
             class="h-7 w-full rounded-md border theme-border theme-surface px-2.5 font-mono text-[10px] theme-text placeholder:text-[var(--ui-muted)] focus:border-[var(--ui-border-strong)] focus:outline-none"
           />
         </div>
-        <div class="flex-1 overflow-y-auto">
+        <div class="flex-1 overflow-y-auto space-y-0.5 py-1">
           <Show when={loading()}>
             <p class="p-4 font-mono text-[10px] theme-muted opacity-60">Loading…</p>
           </Show>
@@ -289,14 +289,14 @@ export function SessionsTab(props: {
               const isActive = () => activeIds().has(s.id);
               const isClosed = () => s.closedAt !== null && !activeIds().has(s.id);
               const isReopening = () => reopening() === s.id;
-              const color = () => RUNTIME_COLOR[s.runtimeKind ?? ""] ?? "text-zinc-500";
+              const color = () => RUNTIME_COLOR[s.runtimeKind ?? ""] ?? "theme-muted";
               return (
                 <button
                   onClick={() => {
                     if (isClosed()) { void handleReopen(s); } else { setSelectedId(s.id); }
                   }}
                   disabled={isReopening()}
-                  class={`group flex w-full flex-col gap-0.5 border-b theme-border px-3 py-2.5 text-left transition-colors duration-100 ${selectedId() === s.id && !isClosed() ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-accent-soft)]"} ${isClosed() ? "opacity-60 hover:opacity-100" : ""}`}
+                  class={`group flex w-full flex-col gap-0.5 rounded-lg mx-1.5 px-2.5 py-2 text-left transition-colors duration-100 ${selectedId() === s.id && !isClosed() ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-accent-soft)]"} ${isClosed() ? "opacity-60 hover:opacity-100" : ""}`}
                   title={isClosed() ? "Click to reopen" : undefined}
                 >
                   <div class="flex items-center gap-1.5 min-w-0">
@@ -357,10 +357,10 @@ export function SessionsTab(props: {
               {/* Metadata */}
               <div class="space-y-2 rounded-lg border theme-border theme-surface p-4">
                 <FieldRow label="Role">
-                  <span class="font-mono text-xs text-zinc-200">{s().activeRole}</span>
+                  <span class="font-mono text-xs theme-text">{s().activeRole}</span>
                 </FieldRow>
                 <FieldRow label="Runtime">
-                  <span class={`font-mono text-xs ${RUNTIME_COLOR[s().runtimeKind ?? ""] ?? "text-zinc-500"}`}>
+                  <span class={`font-mono text-xs ${RUNTIME_COLOR[s().runtimeKind ?? ""] ?? "theme-muted"}`}>
                     {s().runtimeKind ?? "—"}
                   </span>
                 </FieldRow>
@@ -368,7 +368,7 @@ export function SessionsTab(props: {
                   <span class="break-all font-mono text-[10px] theme-muted">{s().cwd ?? "—"}</span>
                 </FieldRow>
                 <FieldRow label="Messages">
-                  <span class="font-mono text-xs text-zinc-200">{s().messageCount}</span>
+                  <span class="font-mono text-xs theme-text">{s().messageCount}</span>
                 </FieldRow>
                 <FieldRow label="Created">
                   <span class="font-mono text-[10px] theme-muted">{s().createdAt ? fmtDate(s().createdAt) : "—"}</span>

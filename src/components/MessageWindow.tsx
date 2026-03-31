@@ -5,6 +5,7 @@ import { marked } from "marked";
 import type { AppSession, AppMessage, AppToolCall, AppSegment } from "./types";
 import { INTERACTIVE_MOTION, RUNTIME_COLOR, MESSAGE_RENDER_WINDOW, fmt } from "./types";
 import { assistantApi } from "../lib/tauriApi";
+import { identicon } from "../lib/identicon";
 
 type MessageWindowProps = {
   activeSessionId: Accessor<string | null>;
@@ -107,7 +108,7 @@ export default function MessageWindow(props: MessageWindowProps) {
       aria-live="polite"
       aria-relevant="additions text"
       class="flex-1 overflow-auto px-4 py-4 space-y-4"
-      style={{ "background-color": "var(--ui-bg)", "background-image": "radial-gradient(ellipse 80% 80% at 50% -20%, var(--ui-accent-soft), rgba(255,255,255,0))" }}
+      style={{ "background-color": "transparent" }}
       onClick={handleContainerClick}
     >
       <Show when={hiddenMessageCount() > 0}>
@@ -143,14 +144,10 @@ export default function MessageWindow(props: MessageWindowProps) {
               <button
                 type="button"
                 onContextMenu={handleResetContextMenu}
-                class="relative h-8 w-8 shrink-0 rounded-full border hover:border-indigo-400/60 transition-colors flex items-center justify-center shadow-lg ring-1 ring-black/20 mt-0.5 overflow-hidden cursor-pointer theme-surface-muted theme-border"
+                class="relative h-8 w-8 shrink-0 rounded-xl border hover:border-indigo-400/60 transition-colors flex items-center justify-center shadow-lg ring-1 ring-black/20 mt-0.5 overflow-hidden cursor-pointer theme-border"
                 title="Right-click to reset current agent CLI context"
-              >
-                <div class="absolute inset-0 bg-indigo-500/10"></div>
-                <svg class="w-4 h-4 theme-text relative z-10 drop-shadow-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
-                </svg>
-              </button>
+                innerHTML={identicon(msg.roleName)}
+              />
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2.5 mb-1.5 opacity-90">
                   <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.runtimeKind ?? ""] ?? "text-zinc-300"}`}>
@@ -177,22 +174,34 @@ export default function MessageWindow(props: MessageWindowProps) {
             <button
               type="button"
               onContextMenu={handleResetContextMenu}
-              class="relative h-8 w-8 shrink-0 rounded-full border hover:border-indigo-400/60 transition-colors flex items-center justify-center shadow-lg ring-1 ring-black/20 mt-0.5 overflow-hidden cursor-pointer theme-surface-muted theme-border"
+              class="relative h-8 w-8 shrink-0 rounded-xl border border-indigo-500/30 transition-colors flex items-center justify-center shadow-[0_0_16px_rgba(99,102,241,0.3)] ring-1 ring-indigo-500/20 mt-0.5 overflow-hidden cursor-pointer"
+              style={{ background: "radial-gradient(circle at 50% 50%, rgba(99,102,241,0.15), transparent 70%)" }}
               title="Right-click to reset current agent CLI context"
             >
-              <div class="absolute inset-0 bg-indigo-500/10"></div>
-              <span class="h-1.5 w-1.5 rounded-full bg-zinc-300 animate-pulse shadow-[0_0_8px_rgba(255,255,255,0.8)] relative z-10" />
+              <svg class="absolute inset-0 h-full w-full" viewBox="0 0 32 32" fill="none">
+                <circle cx="16" cy="16" r="13" stroke="rgba(99,102,241,0.1)" stroke-width="0.5" />
+                <circle cx="16" cy="16" r="10" stroke="rgba(99,102,241,0.08)" stroke-width="0.5" />
+                <path d="M16 3a13 13 0 0 1 13 13" stroke="url(#arc1)" stroke-width="1.5" stroke-linecap="round" class="origin-center" style={{ animation: "spin 1.5s linear infinite" }} />
+                <path d="M16 5a11 11 0 0 0-11 11" stroke="url(#arc2)" stroke-width="1" stroke-linecap="round" class="origin-center" style={{ animation: "spin 2.5s linear infinite reverse" }} />
+                <path d="M16 7a9 9 0 0 1 9 9" stroke="url(#arc3)" stroke-width="0.8" stroke-linecap="round" class="origin-center" style={{ animation: "spin 3.5s linear infinite" }} />
+                <circle cx="16" cy="16" r="2.5" fill="url(#core)" class="animate-pulse" />
+                <circle cx="16" cy="16" r="4" stroke="rgba(129,140,248,0.3)" stroke-width="0.5" class="animate-pulse" />
+                <defs>
+                  <linearGradient id="arc1"><stop stop-color="#818cf8" /><stop offset="1" stop-color="#818cf8" stop-opacity="0" /></linearGradient>
+                  <linearGradient id="arc2"><stop stop-color="#c084fc" /><stop offset="1" stop-color="#c084fc" stop-opacity="0" /></linearGradient>
+                  <linearGradient id="arc3"><stop stop-color="#22d3ee" /><stop offset="1" stop-color="#22d3ee" stop-opacity="0" /></linearGradient>
+                  <radialGradient id="core"><stop stop-color="#a5b4fc" /><stop offset="1" stop-color="#6366f1" /></radialGradient>
+                </defs>
+              </svg>
             </button>
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2.5 mb-2">
                 <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.runtimeKind ?? ""] ?? "text-zinc-300"}`}>
                   {props.activeSession()?.activeRole ?? "Agent"}
                 </span>
-                <span class="text-[10px] theme-muted font-medium animate-pulse tracking-wide">
-                  {(props.activeSession()?.streamSegments ?? []).length > 0
-                    ? "streaming"
-                    : (props.activeSession()?.agentState || "thinking...")}
-                </span>
+                <svg class="h-3.5 w-3.5 animate-spin theme-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                  <path d="M12 2a10 10 0 0 1 7.07 2.93" /><path d="M22 12a10 10 0 0 1-2.93 7.07" /><path d="M12 22a10 10 0 0 1-7.07-2.93" /><path d="M2 12a10 10 0 0 1 2.93-7.07" />
+                </svg>
               </div>
               <Show when={(props.activeSession()?.streamSegments ?? []).length > 0} fallback={
                 <>

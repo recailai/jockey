@@ -73,23 +73,23 @@ export function SkillRegistryTab(props: {
   return (
     <div class="flex h-full">
       {/* List */}
-      <div class="flex w-64 shrink-0 flex-col border-r border-white/[0.04]">
-        <div class="flex gap-2 border-b border-white/[0.04] p-3">
+      <div class="flex w-64 shrink-0 flex-col border-r theme-border">
+        <div class="flex gap-2 p-3">
           <input
             value={search()}
             onInput={(e) => setSearch(e.currentTarget.value)}
             placeholder="Filter skills…"
-            class="h-7 flex-1 rounded-md border border-zinc-800 bg-[var(--ui-surface-muted)] px-2.5 font-mono text-[10px] text-zinc-300 placeholder:text-zinc-700 focus:border-zinc-600 focus:outline-none"
+            class="h-7 flex-1 rounded-md border theme-border bg-[var(--ui-surface-muted)] px-2.5 font-mono text-[10px] theme-text placeholder:text-[var(--ui-muted)] focus:border-[var(--ui-border-strong)] focus:outline-none"
           />
           <button
             onClick={openCreate}
-            class={`flex h-7 w-7 items-center justify-center rounded-md border border-zinc-800 text-zinc-500 hover:border-zinc-600 hover:text-zinc-200 ${INTERACTIVE_MOTION}`}
+            class={`flex h-7 w-7 items-center justify-center rounded-md border theme-border theme-muted hover:border-[var(--ui-border-strong)] hover:text-primary ${INTERACTIVE_MOTION}`}
             title="New skill"
           >
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
           </button>
         </div>
-        <div class="flex-1 overflow-y-auto">
+        <div class="flex-1 overflow-y-auto space-y-0.5 py-1">
           <Show when={filtered().length === 0}>
             <EmptyState icon="⚡" title="No skills yet" sub="Skills extend what agents can invoke" />
           </Show>
@@ -97,10 +97,10 @@ export function SkillRegistryTab(props: {
             {(skill) => (
               <button
                 onClick={() => { setSelectedId(skill.id); setCreating(false); setEditing(false); }}
-                class={`group flex w-full flex-col gap-0.5 border-b border-white/[0.03] px-3 py-2.5 text-left transition-colors duration-100 ${selectedId() === skill.id ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-surface-muted)]"}`}
+                class={`group flex w-full flex-col gap-0.5 rounded-lg mx-1.5 px-2.5 py-2 text-left transition-colors duration-100 ${selectedId() === skill.id ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-surface-muted)]"}`}
               >
-                <span class={`font-mono text-[10px] font-semibold ${selectedId() === skill.id ? "text-zinc-100" : "text-zinc-300"}`}>{skill.name}</span>
-                <span class="font-mono text-[9px] text-zinc-600 truncate">{skill.description || "No description"}</span>
+                <span class={`font-mono text-[10px] font-semibold ${selectedId() === skill.id ? "theme-text" : "theme-text"}`}>{skill.name}</span>
+                <span class="font-mono text-[9px] theme-muted truncate">{skill.description || "No description"}</span>
               </button>
             )}
           </For>
@@ -111,7 +111,7 @@ export function SkillRegistryTab(props: {
       <div class="flex-1 overflow-y-auto p-5">
         <Show when={creating() || editing()}>
           <div class="space-y-4">
-            <h3 class="font-mono text-xs font-bold text-zinc-300 uppercase tracking-widest">
+            <h3 class="font-mono text-xs font-bold theme-text uppercase tracking-widest">
               {creating() ? "New Skill" : `Edit: ${selected()?.name ?? ""}`}
             </h3>
             <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
@@ -143,9 +143,9 @@ export function SkillRegistryTab(props: {
             <div class="space-y-5">
               <div class="flex items-start justify-between gap-4">
                 <div>
-                  <h2 class="font-mono text-sm font-bold text-zinc-100">{skill().name}</h2>
+                  <h2 class="font-mono text-sm font-bold theme-text">{skill().name}</h2>
                   <Show when={skill().description}>
-                    <p class="mt-1 text-[10px] text-zinc-500">{skill().description}</p>
+                    <p class="mt-1 text-[10px] theme-muted">{skill().description}</p>
                   </Show>
                 </div>
                 <div class="flex gap-2 shrink-0">
@@ -156,24 +156,24 @@ export function SkillRegistryTab(props: {
 
               <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
                 <FieldRow label="ID">
-                  <span class="font-mono text-[10px] text-zinc-600">{skill().id}</span>
+                  <span class="font-mono text-[10px] theme-muted">{skill().id}</span>
                 </FieldRow>
                 <FieldRow label="Created">
-                  <span class="font-mono text-[10px] text-zinc-500">{fmtDate(skill().createdAt)}</span>
+                  <span class="font-mono text-[10px] theme-muted">{fmtDate(skill().createdAt)}</span>
                 </FieldRow>
                 <FieldRow label="Updated">
-                  <span class="font-mono text-[10px] text-zinc-500">{fmtDate(skill().updatedAt)}</span>
+                  <span class="font-mono text-[10px] theme-muted">{fmtDate(skill().updatedAt)}</span>
                 </FieldRow>
               </div>
 
               <PanelSection title="Content">
-                <pre class="whitespace-pre-wrap rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-3 font-mono text-[10px] leading-relaxed text-zinc-300">
-                  {skill().content || <span class="text-zinc-700">empty</span>}
+                <pre class="whitespace-pre-wrap rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-3 font-mono text-[10px] leading-relaxed theme-text">
+                  {skill().content || <span class="theme-muted">empty</span>}
                 </pre>
               </PanelSection>
 
-              <div class="rounded-lg border border-zinc-800/40 bg-[var(--ui-surface-muted)] p-3">
-                <p class="font-mono text-[10px] text-zinc-600 leading-relaxed">
+              <div class="rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-3">
+                <p class="font-mono text-[10px] theme-muted leading-relaxed">
                   Invoke with <code class="text-teal-400">/{skill().name}</code> in the chat input or reference as <code class="text-teal-400">@{skill().name}</code> in prompts.
                 </p>
               </div>

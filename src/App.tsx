@@ -745,6 +745,7 @@ export default function App() {
       class="window-bg h-dvh overflow-hidden text-[var(--ui-text)] relative flex flex-col"
       onContextMenu={(e) => e.preventDefault()}
     >
+      <div class="flex flex-1 flex-col min-h-0" style={{ "background-color": "var(--ui-bg)", "background-image": "radial-gradient(ellipse 80% 50% at 50% 0%, var(--ui-accent-soft), rgba(255,255,255,0))" }}>
       <SessionTabs
         sessions={sessions}
         activeSessionId={activeSessionId}
@@ -768,6 +769,7 @@ export default function App() {
         onListMounted={(id, el) => { listRefMap.set(id, el); scheduleScrollToBottom(); }}
         onListUnmounted={(id) => { listRefMap.delete(id); }}
       />
+      </div>
 
       <ChatInput
         input={input}
