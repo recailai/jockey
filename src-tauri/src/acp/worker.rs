@@ -83,6 +83,9 @@ pub enum AcpEvent {
         modes: Vec<Value>,
         current: Option<String>,
     },
+    PermissionExpired {
+        request_id: String,
+    },
 }
 
 static PERMISSION_REQUESTS: OnceLock<
@@ -626,23 +629,29 @@ async fn apply_cold_start_config(
     }
 
     if let Some(mode) = role_mode {
-        let _ = conn
+        if let Err(e) = conn
             .conn
             .set_session_mode(acp::SetSessionModeRequest::new(
                 session_id.clone(),
                 acp::SessionModeId::from(mode.clone()),
             ))
-            .await;
+            .await
+        {
+            acp_log("config.set_mode.error", json!({ "mode": mode, "error": e.to_string() }));
+        }
     }
     for (key, value) in role_config_options {
-        let _ = conn
+        if let Err(e) = conn
             .conn
             .set_session_config_option(acp::SetSessionConfigOptionRequest::new(
                 session_id.clone(),
                 acp::SessionConfigId::from(key.clone()),
                 acp::SessionConfigValueId::from(value.clone()),
             ))
-            .await;
+            .await
+        {
+            acp_log("config.set_option.error", json!({ "key": key, "error": e.to_string() }));
+        }
     }
 }
 

@@ -21,3 +21,10 @@ dist/
 *.db
 *.sqlite
 *.mov
+skill/
+skills/
+.kiro/
+*.log
+design-system/
+.agent/
+.github/prompts/

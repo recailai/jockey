@@ -36,6 +36,30 @@ pub(crate) fn record_session_event(
     })
 }
 
+/// Insert multiple session events in a single connection + transaction.
+/// Returns the last inserted row id (or 0 if the slice is empty).
+pub(crate) fn record_session_events_batch(
+    state: &AppState,
+    events: &[(&str, &str, Option<&str>, serde_json::Value)], // (session_id, event_type, role_name, payload)
+) -> Result<(), String> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    let now = now_ms();
+    with_db(state, |conn| {
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        for (session_id, event_type, role_name, payload) in events {
+            let payload_text = payload.to_string();
+            tx.execute(
+                "INSERT INTO session_events (session_id, event_type, role_name, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![session_id, event_type, role_name, payload_text, now],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    })
+}
+
 pub(crate) fn update_session_status(
     state: &AppState,
     session_id: &str,
@@ -193,6 +217,7 @@ pub(crate) async fn run_workflow(
         };
         app.emit("workflow/state_changed", started.clone())
             .map_err(|e| e.to_string())?;
+        // StepStarted is written individually so it's visible before ACP runs
         record_session_event(
             state.inner(),
             &session_id,
@@ -235,14 +260,6 @@ pub(crate) async fn run_workflow(
             "",
         )
         .await;
-        record_session_event(
-            state.inner(),
-            &session_id,
-            "AdapterResult",
-            Some(role_name),
-            acp_result.meta.clone(),
-        )?;
-
         let output = acp_result.output;
         let chunks = if acp_result.deltas.is_empty() {
             chunk_text(&output, 30)
@@ -263,13 +280,6 @@ pub(crate) async fn run_workflow(
             app.emit("session/update", update)
                 .map_err(|e| e.to_string())?;
         }
-        record_session_event(
-            state.inner(),
-            &session_id,
-            "StepOutput",
-            Some(role_name),
-            json!({ "output": &output }),
-        )?;
 
         let summary = summarize_text(&output);
         set_shared_context_internal(
@@ -278,13 +288,12 @@ pub(crate) async fn run_workflow(
             &format!("summary.{role_name}"),
             &summary,
         )?;
-        record_session_event(
-            state.inner(),
-            &session_id,
-            "StepCompleted",
-            Some(role_name),
-            json!({ "summary": summary }),
-        )?;
+        // Batch AdapterResult + StepOutput + StepCompleted into one transaction
+        record_session_events_batch(state.inner(), &[
+            (&session_id, "AdapterResult", Some(role_name.as_str()), acp_result.meta.clone()),
+            (&session_id, "StepOutput",    Some(role_name.as_str()), json!({ "output": &output })),
+            (&session_id, "StepCompleted", Some(role_name.as_str()), json!({ "summary": &summary })),
+        ])?;
 
         prompt = format!("{}\n\n{} handoff summary: {}", prompt, role_name, summary);
         let done_update = SessionUpdateEvent {

@@ -23,8 +23,8 @@
         "shadow": true,
         "decorations": true,
         "transparent": false,
-        "titleBarStyle": "Visible",
-        "hiddenTitle": false
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "security": {

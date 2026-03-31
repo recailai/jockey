@@ -77,7 +77,8 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           runtime_kind TEXT,
           cwd TEXT,
           created_at INTEGER NOT NULL,
-          last_active_at INTEGER NOT NULL
+          last_active_at INTEGER NOT NULL,
+          closed_at INTEGER
         );
         CREATE TABLE IF NOT EXISTS app_session_roles (
           app_session_id TEXT NOT NULL REFERENCES app_sessions(id) ON DELETE CASCADE,
@@ -131,24 +132,6 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         ",
     )
     .map_err(|e| e.to_string())?;
-
-    let _ = conn.execute("ALTER TABLE app_sessions ADD COLUMN cwd TEXT", []);
-    let _ = conn.execute(
-        "ALTER TABLE app_session_roles ADD COLUMN model_override TEXT",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE app_session_roles ADD COLUMN mode_override TEXT",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE app_session_roles ADD COLUMN mcp_servers_json TEXT",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE app_session_roles ADD COLUMN config_options_json TEXT",
-        [],
-    );
 
     Ok(())
 }

@@ -431,6 +431,8 @@ pub async fn execute_runtime(
     let role_owned = role_name.to_string();
     let mut full_output = String::new();
     let mut delta_count = 0usize;
+    // Buffer for batching TextDelta IPC events (~30ms flush interval)
+    let mut delta_batch: String = String::new();
 
     acp_log(
         "execute.stream.listening",
@@ -441,10 +443,27 @@ pub async fn execute_runtime(
         }),
     );
 
+    // Flush helper: emit buffered text deltas as a single IPC event
+    macro_rules! flush_delta_batch {
+        () => {
+            if !delta_batch.is_empty() {
+                let _ = app.emit("acp/delta", AcpDeltaPayload {
+                    role: &role_owned,
+                    runtime_kind: adapter.runtime_key,
+                    app_session_id: &app_session_id_owned,
+                    delta: &delta_batch,
+                });
+                delta_batch.clear();
+            }
+        };
+    }
+
     let heartbeat = tokio::time::Instant::now();
     let mut heartbeat_count = 0u32;
     let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(5));
     heartbeat_interval.tick().await; // consume the immediate first tick
+    let mut flush_interval = tokio::time::interval(std::time::Duration::from_millis(30));
+    flush_interval.tick().await; // consume the immediate first tick
     let result = loop {
         tokio::select! {
             _ = heartbeat_interval.tick() => {
@@ -456,6 +475,10 @@ pub async fn execute_runtime(
                     "deltaCount": delta_count,
                     "beat": heartbeat_count,
                 }));
+                continue;
+            }
+            _ = flush_interval.tick() => {
+                flush_delta_batch!();
                 continue;
             }
             evt = delta_rx.recv() => {
@@ -470,12 +493,7 @@ pub async fn execute_runtime(
                             "chunkLen": text.len(),
                             "preview": clip(text, 60),
                         }));
-                        let _ = app.emit("acp/delta", AcpDeltaPayload {
-                            role: &role_owned,
-                            runtime_kind: adapter.runtime_key,
-                            app_session_id: &app_session_id_owned,
-                            delta: text,
-                        });
+                        delta_batch.push_str(text);
                     }
                     Some(ref evt @ AcpEvent::ConfigUpdate { ref options }) => {
                         delta_count += 1;
@@ -531,17 +549,14 @@ pub async fn execute_runtime(
                 }
             }
             res = &mut result_rx => {
+                // Flush any buffered deltas before draining the channel
+                flush_delta_batch!();
                 while let Ok(evt) = delta_rx.try_recv() {
                     match evt {
                         AcpEvent::TextDelta { ref text } => {
                             full_output.push_str(text);
                             delta_count += 1;
-                            let _ = app.emit("acp/delta", AcpDeltaPayload {
-                                role: &role_owned,
-                                runtime_kind: adapter.runtime_key,
-                                app_session_id: &app_session_id_owned,
-                                delta: text,
-                            });
+                            delta_batch.push_str(text);
                         }
                         ref other => {
                             delta_count += 1;
@@ -554,6 +569,8 @@ pub async fn execute_runtime(
                         }
                     }
                 }
+                // Emit any remaining buffered text from drain
+                flush_delta_batch!();
                 let r = res.unwrap_or_else(|_| Err("worker disconnected".to_string()));
                 acp_log("execute.result", json!({
                     "runtime": adapter.runtime_key,

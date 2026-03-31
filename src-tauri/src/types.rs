@@ -161,6 +161,7 @@ pub(crate) struct AppSession {
     pub(crate) messages: Vec<serde_json::Value>,
     pub(crate) created_at: i64,
     pub(crate) last_active_at: i64,
+    pub(crate) closed_at: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -185,6 +186,7 @@ pub(crate) struct AppSkill {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AppSkillUpsert {
+    pub(crate) id: Option<String>,
     pub(crate) name: String,
     pub(crate) description: String,
     pub(crate) content: String,

@@ -6,8 +6,24 @@ use serde::Deserialize;
 use tauri::State;
 use uuid::Uuid;
 
+fn validate_role_name(role_name: &str) -> Result<(), String> {
+    if role_name.is_empty() {
+        return Err("role name required".to_string());
+    }
+    if role_name.chars().any(|c| c.is_whitespace()) {
+        return Err("role name cannot contain spaces".to_string());
+    }
+    if !role_name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("role name only allows letters, numbers, - and _".to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn upsert_role(
-    state: State<'_, AppState>,
+    state: &AppState,
     role_name: String,
     runtime_kind: String,
     system_prompt: String,
@@ -17,8 +33,24 @@ pub(crate) fn upsert_role(
     config_options_json: Option<String>,
     auto_approve: Option<bool>,
 ) -> Result<Role, String> {
+    let role_name = role_name.trim().to_string();
+    validate_role_name(&role_name)?;
     let now = now_ms();
-    let existing_id = with_db(get_state(&state), |conn| {
+    let existing_id = with_db(state, |conn| {
+        let name_hit: Option<(String, String)> = conn
+            .query_row(
+                "SELECT id, role_name FROM roles WHERE lower(role_name) = lower(?1) LIMIT 1",
+                params![&role_name],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some((id, existing_name)) = name_hit {
+            if existing_name != role_name {
+                return Err(format!("role name already exists: {}", existing_name));
+            }
+            return Ok(Some(id));
+        }
         conn.query_row(
             "SELECT id FROM roles WHERE role_name = ?1",
             params![&role_name],
@@ -33,7 +65,7 @@ pub(crate) fn upsert_role(
     let cfg = config_options_json.unwrap_or_else(|| "{}".to_string());
     let approve = auto_approve.unwrap_or(true);
 
-    with_db(get_state(&state), |conn| {
+    with_db(state, |conn| {
         conn.execute(
             "INSERT INTO roles (id, role_name, runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, auto_approve, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
@@ -98,7 +130,7 @@ pub(crate) async fn upsert_role_cmd(
     input: RoleInput,
 ) -> Result<Role, String> {
     let role = upsert_role(
-        state.clone(),
+        get_state(&state),
         input.role_name,
         input.runtime_kind,
         input.system_prompt,
@@ -157,10 +189,19 @@ pub(crate) fn list_roles(state: State<'_, AppState>) -> Result<Vec<Role>, String
 
 #[tauri::command]
 pub(crate) fn delete_role_cmd(state: State<'_, AppState>, role_name: String) -> Result<(), String> {
+    let role_name = role_name.trim().to_string();
+    if role_name.is_empty() {
+        return Err("role name required".to_string());
+    }
     with_db(get_state(&state), |conn| {
-        conn.execute("DELETE FROM roles WHERE role_name = ?1", params![role_name])
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        conn.execute("DELETE FROM roles WHERE role_name = ?1", params![&role_name])
+            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM app_session_roles WHERE role_name = ?1",
+            params![&role_name],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     })
 }
 
@@ -176,21 +217,21 @@ pub(crate) fn load_role(state: &AppState, role_name: &str) -> Result<Option<Role
 
 pub(crate) fn load_role_runtime_kind(state: &AppState, role_name: &str) -> Result<String, String> {
     with_db(state, |conn| {
-        conn.query_row(
+        let runtime = conn
+            .query_row(
             "SELECT runtime_kind FROM roles WHERE role_name = ?1",
             params![role_name],
             |row| row.get::<_, String>(0),
         )
         .optional()
-        .map_err(|e| e.to_string())
-        .map(|item| item.unwrap_or_else(|| "mock".to_string()))
+        .map_err(|e| e.to_string())?;
+        runtime.ok_or_else(|| format!("role not found: {role_name}"))
     })
 }
 
 pub(crate) fn resolve_role_runtime(
-    state: State<'_, AppState>,
+    state: &AppState,
     role_name: &str,
 ) -> Result<String, String> {
-    load_role_runtime_kind(get_state(&state), role_name)
+    load_role_runtime_kind(state, role_name)
 }
-

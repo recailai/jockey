@@ -1,13 +1,12 @@
 use crate::assistant::normalize_runtime_key;
 use crate::db::role::{list_all_roles, resolve_role_runtime, upsert_role};
-use crate::db::get_state;
 use crate::types::{AppState, ChatCommandResult};
 use serde_json::json;
-use tauri::State;
 
 pub(crate) fn handle_role_template_command(
-    state: State<'_, AppState>,
     tokens: &[&str],
+    state: &AppState,
+    _app_session_id: Option<&str>,
     result: &mut ChatCommandResult,
 ) -> Result<bool, String> {
     if !matches!(tokens.first(), Some(&"/app_role")) {
@@ -16,7 +15,7 @@ pub(crate) fn handle_role_template_command(
 
     match tokens {
         ["/app_role", "list"] => {
-            let roles = list_all_roles(get_state(&state))?;
+            let roles = list_all_roles(state)?;
             result.message = format!("{} roles", roles.len());
             result.payload = json!({ "roles": roles });
         }
@@ -25,7 +24,7 @@ pub(crate) fn handle_role_template_command(
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| (*runtime_kind).to_string());
             let role = upsert_role(
-                state.clone(),
+                state,
                 (*role_name).to_string(),
                 normalized_runtime.clone(),
                 if prompt.is_empty() {
@@ -43,9 +42,9 @@ pub(crate) fn handle_role_template_command(
             result.payload = json!({ "role": role });
         }
         ["/app_role", "prompt", role_name, prompt @ ..] => {
-            let runtime = resolve_role_runtime(state.clone(), role_name)?;
+            let runtime = resolve_role_runtime(state, role_name)?;
             let role = upsert_role(
-                state.clone(),
+                state,
                 (*role_name).to_string(),
                 runtime,
                 prompt.join(" "),

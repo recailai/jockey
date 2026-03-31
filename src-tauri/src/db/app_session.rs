@@ -5,6 +5,41 @@ use rusqlite::{params, OptionalExtension};
 use tauri::State;
 use uuid::Uuid;
 
+fn validate_session_title(raw: &str) -> Result<String, String> {
+    let title = raw.trim().to_string();
+    if title.is_empty() {
+        return Err("session name required".to_string());
+    }
+    if title.chars().any(|c| c.is_whitespace()) {
+        return Err("session name cannot contain spaces".to_string());
+    }
+    Ok(title)
+}
+
+fn active_session_title_exists(
+    conn: &rusqlite::Connection,
+    title: &str,
+    exclude_id: Option<&str>,
+) -> Result<bool, String> {
+    let sql = if exclude_id.is_some() {
+        "SELECT 1 FROM app_sessions WHERE lower(title) = lower(?1) AND closed_at IS NULL AND id <> ?2 LIMIT 1"
+    } else {
+        "SELECT 1 FROM app_sessions WHERE lower(title) = lower(?1) AND closed_at IS NULL LIMIT 1"
+    };
+    let exists = if let Some(id) = exclude_id {
+        conn.query_row(sql, params![title, id], |_row| Ok(()))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .is_some()
+    } else {
+        conn.query_row(sql, params![title], |_row| Ok(()))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .is_some()
+    };
+    Ok(exists)
+}
+
 pub(crate) fn get_app_session_cwd(state: &AppState, session_id: &str) -> Option<String> {
     with_db(state, |conn| {
         conn.query_row(
@@ -36,74 +71,80 @@ pub(crate) fn set_app_session_cwd(
     })
 }
 
-#[tauri::command]
-pub(crate) fn list_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSession>, String> {
-    with_db(get_state(&state), |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, title, active_role, runtime_kind, cwd, created_at, last_active_at
-                 FROM app_sessions ORDER BY last_active_at DESC LIMIT 50",
-            )
-            .map_err(|e| e.to_string())?;
-        let sessions: Vec<(String, AppSession)> = stmt
-            .query_map([], |row| {
-                let id: String = row.get(0)?;
-                Ok((
-                    id.clone(),
-                    AppSession {
-                        id,
-                        title: row.get(1)?,
-                        active_role: row.get(2)?,
-                        runtime_kind: row.get(3)?,
-                        cwd: row.get(4)?,
-                        messages: Vec::new(),
-                        created_at: row.get(5)?,
-                        last_active_at: row.get(6)?,
-                    },
-                ))
+fn query_sessions(conn: &rusqlite::Connection, sql: &str) -> Result<Vec<AppSession>, String> {
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let mut sessions: Vec<AppSession> = stmt
+        .query_map([], |row| {
+            Ok(AppSession {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                active_role: row.get(2)?,
+                runtime_kind: row.get(3)?,
+                cwd: row.get(4)?,
+                messages: Vec::new(),
+                created_at: row.get(5)?,
+                last_active_at: row.get(6)?,
+                closed_at: row.get(7)?,
             })
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
-        let mut msg_stmt = conn
-            .prepare(
-                "SELECT session_id, role_name, content, created_at
-                 FROM app_session_messages
-                 WHERE session_id IN (SELECT id FROM app_sessions ORDER BY last_active_at DESC LIMIT 50)
-                 ORDER BY session_id, id ASC",
-            )
-            .map_err(|e| e.to_string())?;
-        let mut msgs_by_session: std::collections::HashMap<String, Vec<serde_json::Value>> =
-            std::collections::HashMap::new();
-        for row in msg_stmt
-            .query_map([], |row| {
+    let mut msg_stmt = conn
+        .prepare(
+            "SELECT role_name, content, created_at
+             FROM app_session_messages
+             WHERE session_id = ?1
+             ORDER BY id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    for session in sessions.iter_mut() {
+        let rows = msg_stmt
+            .query_map(params![&session.id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(2)?,
                 ))
             })
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-        {
-            let (session_id, role_name, content, at) = row;
-            let v = serde_json::json!({
+            .map_err(|e| e.to_string())?;
+        let mut messages = Vec::new();
+        for row in rows {
+            let (role_name, content, at) = row.map_err(|e| e.to_string())?;
+            messages.push(serde_json::json!({
                 "id": uuid::Uuid::new_v4().to_string(),
                 "roleName": role_name,
                 "text": content,
                 "at": at
-            });
-            msgs_by_session.entry(session_id).or_default().push(v);
+            }));
         }
+        session.messages = messages;
+    }
 
-        let mut out = Vec::with_capacity(sessions.len());
-        for (session_id, mut session) in sessions {
-            session.messages = msgs_by_session.remove(&session_id).unwrap_or_default();
-            out.push(session);
-        }
-        Ok(out)
+    Ok(sessions)
+}
+
+#[tauri::command]
+pub(crate) fn list_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSession>, String> {
+    with_db(get_state(&state), |conn| {
+        query_sessions(
+            conn,
+            "SELECT id, title, active_role, runtime_kind, cwd, created_at, last_active_at, closed_at
+             FROM app_sessions WHERE closed_at IS NULL ORDER BY last_active_at DESC LIMIT 50",
+        )
+    })
+}
+
+#[tauri::command]
+pub(crate) fn list_closed_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSession>, String> {
+    with_db(get_state(&state), |conn| {
+        query_sessions(
+            conn,
+            "SELECT id, title, active_role, runtime_kind, cwd, created_at, last_active_at, closed_at
+             FROM app_sessions WHERE closed_at IS NOT NULL ORDER BY closed_at DESC LIMIT 200",
+        )
     })
 }
 
@@ -136,20 +177,25 @@ pub(crate) fn create_app_session(
     title: Option<String>,
 ) -> Result<AppSession, String> {
     let now = now_ms();
+    let title = validate_session_title(title.as_deref().unwrap_or("Session_1"))?;
     let session = AppSession {
         id: Uuid::new_v4().to_string(),
-        title: title.unwrap_or_else(|| "New Session".to_string()),
+        title,
         active_role: "UnionAI".to_string(),
         runtime_kind: None,
         cwd: Some(default_chat_cwd()),
         messages: Vec::new(),
         created_at: now,
         last_active_at: now,
+        closed_at: None,
     };
     with_db(get_state(&state), |conn| {
+        if active_session_title_exists(conn, &session.title, None)? {
+            return Err(format!("session name already exists: {}", session.title));
+        }
         conn.execute(
-            "INSERT INTO app_sessions (id, title, active_role, runtime_kind, cwd, created_at, last_active_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO app_sessions (id, title, active_role, runtime_kind, cwd, created_at, last_active_at, closed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
             params![
                 &session.id,
                 &session.title,
@@ -175,6 +221,10 @@ pub(crate) fn update_app_session(
     let now = now_ms();
     with_db(get_state(&state), |conn| {
         if let Some(ref title) = update.title {
+            let title = validate_session_title(title)?;
+            if active_session_title_exists(conn, &title, Some(&id))? {
+                return Err(format!("session name already exists: {}", title));
+            }
             conn.execute(
                 "UPDATE app_sessions SET title = ?1, last_active_at = ?2 WHERE id = ?3",
                 params![title, now, &id],
@@ -201,19 +251,56 @@ pub(crate) fn update_app_session(
 
 #[tauri::command]
 pub(crate) fn delete_app_session(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let now = now_ms();
     with_db(get_state(&state), |conn| {
         conn.execute(
-            "DELETE FROM app_session_messages WHERE session_id = ?1",
-            params![&id],
+            "UPDATE app_sessions SET closed_at = ?1 WHERE id = ?2",
+            params![now, &id],
         )
         .map_err(|e| e.to_string())?;
-        conn.execute(
-            "DELETE FROM app_session_roles WHERE app_session_id = ?1",
-            params![&id],
-        )
-        .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM app_sessions WHERE id = ?1", params![&id])
-            .map_err(|e| e.to_string())?;
         Ok(())
+    })
+}
+
+#[tauri::command]
+pub(crate) fn reopen_app_session(state: State<'_, AppState>, id: String) -> Result<AppSession, String> {
+    let now = now_ms();
+    with_db(get_state(&state), |conn| {
+        let title: String = conn
+            .query_row(
+                "SELECT title FROM app_sessions WHERE id = ?1",
+                params![&id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if active_session_title_exists(conn, &title, Some(&id))? {
+            return Err(format!("session name already exists: {}", title));
+        }
+        conn.execute(
+            "UPDATE app_sessions SET closed_at = NULL, last_active_at = ?1 WHERE id = ?2",
+            params![now, &id],
+        )
+        .map_err(|e| e.to_string())?;
+        let session = conn
+            .query_row(
+                "SELECT id, title, active_role, runtime_kind, cwd, created_at, last_active_at, closed_at
+                 FROM app_sessions WHERE id = ?1",
+                params![&id],
+                |row| {
+                    Ok(AppSession {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        active_role: row.get(2)?,
+                        runtime_kind: row.get(3)?,
+                        cwd: row.get(4)?,
+                        messages: Vec::new(),
+                        created_at: row.get(5)?,
+                        last_active_at: row.get(6)?,
+                        closed_at: row.get(7)?,
+                    })
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(session)
     })
 }

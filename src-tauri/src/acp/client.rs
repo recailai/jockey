@@ -19,8 +19,8 @@ fn cap_raw(v: Option<Value>) -> Option<Value> {
 
 struct TerminalHandle {
     child: tokio::sync::Mutex<tokio::process::Child>,
-    #[allow(dead_code)]
     output: tokio::sync::Mutex<String>,
+    output_byte_limit: Option<u64>,
 }
 
 static TERMINAL_HANDLES: OnceLock<DashMap<String, TerminalHandle>> = OnceLock::new();
@@ -85,7 +85,10 @@ impl acp::Client for UnionAiClient {
         };
         if let Ok(guard) = self.delta_slot.lock() {
             if let Some(tx) = guard.as_ref() {
-                let _ = tx.try_send(event);
+                if tx.try_send(event).is_err() {
+                    use super::adapter::acp_log;
+                    acp_log("permission.channel.drop", serde_json::json!({ "requestId": request_id }));
+                }
             }
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -94,6 +97,14 @@ impl acp::Client for UnionAiClient {
             Ok(Ok(decision)) => Ok(acp::RequestPermissionResponse::new(decision)),
             _ => {
                 permission_requests().remove(&request_id);
+                // Notify frontend that this permission request timed out / was cancelled
+                if let Ok(guard) = self.delta_slot.lock() {
+                    if let Some(tx) = guard.as_ref() {
+                        let _ = tx.try_send(AcpEvent::PermissionExpired {
+                            request_id: request_id.clone(),
+                        });
+                    }
+                }
                 Ok(acp::RequestPermissionResponse::new(
                     acp::RequestPermissionOutcome::Cancelled,
                 ))
@@ -218,7 +229,11 @@ impl acp::Client for UnionAiClient {
         };
         if let Ok(guard) = self.delta_slot.lock() {
             if let Some(tx) = guard.as_ref() {
-                let _ = tx.try_send(event);
+                if tx.try_send(event).is_err() {
+                    // Channel full or disconnected — log once per overflow to aid debugging
+                    use super::adapter::acp_log;
+                    acp_log("delta.channel.drop", serde_json::json!({ "capacity": super::worker::DELTA_CHANNEL_CAPACITY }));
+                }
             }
         }
         Ok(())
@@ -229,9 +244,26 @@ impl acp::Client for UnionAiClient {
         args: acp::ReadTextFileRequest,
     ) -> acp::Result<acp::ReadTextFileResponse> {
         let path = args.path;
-        let content = tokio::fs::read_to_string(&path)
+        let full = tokio::fs::read_to_string(&path)
             .await
             .map_err(|e| acp::Error::new(acp::ErrorCode::InternalError.into(), e.to_string()))?;
+
+        // Apply optional line/limit slicing (1-based per spec)
+        let content = match (args.line, args.limit) {
+            (None, None) => full,
+            (start, limit) => {
+                let start_idx = start.map(|l| l.saturating_sub(1) as usize).unwrap_or(0);
+                let lines: Vec<&str> = full.lines().collect();
+                let slice = &lines[start_idx.min(lines.len())..];
+                let slice = if let Some(n) = limit {
+                    &slice[..n.min(slice.len() as u32) as usize]
+                } else {
+                    slice
+                };
+                slice.join("\n")
+            }
+        };
+
         Ok(acp::ReadTextFileResponse::new(content))
     }
 
@@ -257,6 +289,9 @@ impl acp::Client for UnionAiClient {
         if let Some(cwd) = &args.cwd {
             cmd.current_dir(cwd);
         }
+        for env_var in &args.env {
+            cmd.env(&env_var.name, &env_var.value);
+        }
         cmd.stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .stdin(std::process::Stdio::null());
@@ -269,6 +304,7 @@ impl acp::Client for UnionAiClient {
             TerminalHandle {
                 child: tokio::sync::Mutex::new(child),
                 output: tokio::sync::Mutex::new(String::new()),
+                output_byte_limit: args.output_byte_limit,
             },
         );
         Ok(acp::CreateTerminalResponse::new(terminal_id))
@@ -282,24 +318,42 @@ impl acp::Client for UnionAiClient {
         let handle = terminal_handles().get(&key).ok_or_else(|| {
             acp::Error::new(acp::ErrorCode::InvalidParams.into(), "terminal not found")
         })?;
+        let byte_limit = handle.output_byte_limit;
         let mut child = handle.child.lock().await;
-        let mut output = String::new();
+        let mut accumulated = handle.output.lock().await;
+        let mut new_chunk = String::new();
         if let Some(stdout) = child.stdout.as_mut() {
             use tokio::io::AsyncReadExt;
             let mut buf = vec![0u8; 4096];
             match tokio::time::timeout(std::time::Duration::from_millis(100), stdout.read(&mut buf))
                 .await
             {
-                Ok(Ok(n)) if n > 0 => output.push_str(&String::from_utf8_lossy(&buf[..n])),
+                Ok(Ok(n)) if n > 0 => new_chunk.push_str(&String::from_utf8_lossy(&buf[..n])),
                 _ => {}
             }
         }
+        accumulated.push_str(&new_chunk);
+        let truncated = if let Some(limit) = byte_limit {
+            let limit = limit as usize;
+            if accumulated.len() > limit {
+                // Keep only the last `limit` bytes (tail of output)
+                let overflow = accumulated.len() - limit;
+                accumulated.drain(..overflow);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        let output = accumulated.clone();
+        drop(accumulated);
         let exit_status = child
             .try_wait()
             .ok()
             .flatten()
             .map(|s| acp::TerminalExitStatus::new().exit_code(s.code().map(|c| c as u32)));
-        Ok(acp::TerminalOutputResponse::new(output, false).exit_status(exit_status))
+        Ok(acp::TerminalOutputResponse::new(output, truncated).exit_status(exit_status))
     }
 
     async fn wait_for_terminal_exit(

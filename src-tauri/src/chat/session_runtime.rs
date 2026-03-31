@@ -50,19 +50,21 @@ pub(super) fn load_role_runtime_data(
     role_name: &str,
     assistant_runtime: &str,
     recent_chats_snapshot: Vec<RecentRoleChat>,
-) -> RoleRuntimeData {
-    let role_state =
-        load_app_session_role_state(state, app_session_id, role_name).unwrap_or(None);
-    let role_data = load_role(state, role_name).unwrap_or(None);
+) -> Result<RoleRuntimeData, String> {
+    let role_state = load_app_session_role_state(state, app_session_id, role_name)?;
+    let role_data = load_role(state, role_name)?;
 
     let runtime = if role_name == "UnionAIAssistant" {
         assistant_runtime.to_string()
     } else {
+        if role_state.is_none() && role_data.is_none() {
+            return Err(format!("role not found: {role_name}"));
+        }
         role_state
             .as_ref()
             .and_then(|row| row.runtime_kind.clone())
             .or_else(|| role_data.as_ref().map(|r| r.runtime_kind.clone()))
-            .unwrap_or_else(|| assistant_runtime.to_string())
+            .ok_or_else(|| format!("runtime not found for role: {role_name}"))?
     };
 
     let scope = app_session_role_scope(app_session_id, role_name);
@@ -81,20 +83,29 @@ pub(super) fn load_role_runtime_data(
         if !role_prompt.is_empty() {
             context_pairs.push(("role_prompt".to_string(), role_prompt));
         }
-        let recent_chats: Vec<_> = recent_chats_snapshot
+        // Only inject cross-role context on the first message to this role in the session.
+        // If this role has already replied at least once, it already has its own history
+        // in the ACP session — no need to keep prepending the handoff context every turn.
+        let this_role_has_history = recent_chats_snapshot
+            .iter()
+            .any(|c| c.role == role_name);
+
+        let cross_role_chats: Vec<_> = recent_chats_snapshot
             .into_iter()
             .filter(|c| c.role != role_name)
             .collect();
-        let inherited_cwd: Option<String> = recent_chats
+
+        let inherited_cwd: Option<String> = cross_role_chats
             .iter()
             .rev()
             .find(|c| !c.cwd.is_empty())
             .map(|c| c.cwd.clone());
-        if !recent_chats.is_empty() {
-            if let Ok(payload) = serde_json::to_string(&recent_chats) {
+
+        if !cross_role_chats.is_empty() && !this_role_has_history {
+            if let Ok(payload) = serde_json::to_string(&cross_role_chats) {
                 upsert_context_pair(&mut context_pairs, "from_last_role_context", payload);
             }
-            context_log = Some((recent_chats.len(), inherited_cwd.clone()));
+            context_log = Some((cross_role_chats.len(), inherited_cwd.clone()));
         }
         if let Some(prev_cwd) = inherited_cwd {
             upsert_context_pair(&mut context_pairs, "cwd", prev_cwd);
@@ -140,7 +151,7 @@ pub(super) fn load_role_runtime_data(
         .and_then(|raw| serde_json::from_str::<Vec<agent_client_protocol::McpServer>>(raw).ok())
         .unwrap_or_default();
 
-    RoleRuntimeData {
+    Ok(RoleRuntimeData {
         runtime,
         context_pairs,
         auto_approve,
@@ -149,5 +160,5 @@ pub(super) fn load_role_runtime_data(
         role_system_prompt,
         context_log,
         mcp_servers,
-    }
+    })
 }
