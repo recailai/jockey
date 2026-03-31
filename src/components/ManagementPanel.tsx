@@ -66,11 +66,11 @@ export default function ManagementPanel(props: ManagementPanelProps) {
         {/* Panel */}
         <div
           data-panel
-          class="ml-auto flex h-full w-[760px] max-w-[92vw] flex-col bg-[#0b0b0e] border-l border-white/[0.05] shadow-2xl shadow-black/60"
+          class="ml-auto flex h-full w-[760px] max-w-[92vw] flex-col border-l theme-border shadow-2xl shadow-black/60 theme-surface"
           style="animation: slideInRight 180ms cubic-bezier(0.16,1,0.3,1) both"
         >
           {/* Top bar */}
-          <div class="flex h-11 shrink-0 items-center border-b border-white/[0.04] bg-[#0a0a0c]/80 backdrop-blur-md">
+          <div class="flex h-11 shrink-0 items-center border-b theme-border backdrop-blur-md theme-surface-muted">
             {/* Nav tabs */}
             <div class="flex items-stretch h-full">
               <For each={TABS}>
@@ -79,11 +79,11 @@ export default function ManagementPanel(props: ManagementPanelProps) {
                     onClick={() => setActiveTab(tab.id)}
                     class={`flex h-full items-center gap-1.5 border-b-[1.5px] px-4 font-mono text-[10px] font-semibold uppercase tracking-widest transition-colors duration-150 ${
                       activeTab() === tab.id
-                        ? "border-zinc-300 text-zinc-200"
-                        : "border-transparent text-zinc-600 hover:text-zinc-400 hover:border-zinc-700"
+                        ? "border-[var(--ui-text)] theme-text"
+                        : "border-transparent theme-muted hover:border-[var(--ui-border-strong)] hover:theme-text"
                     }`}
                   >
-                    <span class={activeTab() === tab.id ? "text-zinc-300" : "text-zinc-700"}>
+                    <span class={activeTab() === tab.id ? "theme-text" : "theme-muted"}>
                       {tab.icon()}
                     </span>
                     {tab.label}

@@ -85,7 +85,7 @@ export function WorkflowsTab(props: { roles: Role[] }) {
             {(wf) => (
               <button
                 onClick={() => { setSelectedId(wf.id); setCreating(false); }}
-                class={`group flex w-full flex-col gap-0.5 border-b border-white/[0.03] px-3 py-2.5 text-left transition-colors duration-100 ${selectedId() === wf.id ? "bg-zinc-800/50" : "hover:bg-zinc-900/50"}`}
+                class={`group flex w-full flex-col gap-0.5 border-b border-white/[0.03] px-3 py-2.5 text-left transition-colors duration-100 ${selectedId() === wf.id ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-surface-muted)]"}`}
               >
                 <span class={`truncate font-mono text-[10px] font-semibold ${selectedId() === wf.id ? "text-zinc-100" : "text-zinc-300"}`}>{wf.name}</span>
                 <div class="flex items-center gap-1.5">
@@ -104,7 +104,7 @@ export function WorkflowsTab(props: { roles: Role[] }) {
         <Show when={creating()}>
           <div class="space-y-4">
             <h3 class="font-mono text-xs font-bold text-zinc-300 uppercase tracking-widest">New Workflow</h3>
-            <div class="space-y-2 rounded-lg border border-white/[0.04] bg-zinc-950/40 p-4">
+            <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
               <FieldRow label="Name">
                 <TextInput value={wfName()} onInput={setWfName} placeholder="e.g. code-review" />
               </FieldRow>
@@ -117,7 +117,7 @@ export function WorkflowsTab(props: { roles: Role[] }) {
               <div class="space-y-2">
                 <For each={wfSteps()}>
                   {(step, i) => (
-                    <div class="rounded-lg border border-white/[0.04] bg-zinc-950/30 p-3 space-y-2">
+                    <div class="rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-3 space-y-2">
                       <div class="flex items-center justify-between">
                         <span class="font-mono text-[9px] text-zinc-600 uppercase tracking-widest">Step {i() + 1}</span>
                         <Show when={wfSteps().length > 1}>
@@ -167,7 +167,7 @@ export function WorkflowsTab(props: { roles: Role[] }) {
                 <ActionButton label="Delete" variant="danger" onClick={() => void handleDelete(wf().id)} />
               </div>
 
-              <div class="space-y-2 rounded-lg border border-white/[0.04] bg-zinc-950/40 p-4">
+              <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
                 <FieldRow label="ID">
                   <span class="font-mono text-[10px] text-zinc-600">{wf().id}</span>
                 </FieldRow>
@@ -183,7 +183,7 @@ export function WorkflowsTab(props: { roles: Role[] }) {
                   </Show>
                   <For each={wf().steps ?? []}>
                     {(step, i) => (
-                      <div class="rounded-lg border border-white/[0.04] bg-zinc-950/30 p-3">
+                      <div class="rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-3">
                         <div class="mb-1.5 flex items-center gap-2">
                           <span class="font-mono text-[9px] text-zinc-700 uppercase tracking-widest">Step {i() + 1}</span>
                           <span class={`font-mono text-[9px] font-semibold ${RUNTIME_COLOR[props.roles.find((r) => r.roleName === step.roleName)?.runtimeKind ?? ""] ?? "text-zinc-400"}`}>

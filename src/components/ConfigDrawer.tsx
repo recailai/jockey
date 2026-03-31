@@ -3,6 +3,7 @@ import type { Accessor, Setter } from "solid-js";
 import type { Role, RoleUpsertInput, AppSession, AssistantRuntime, AcpConfigOption, AppSkill } from "./types";
 import { INTERACTIVE_MOTION, RUNTIME_COLOR, flattenConfigValues } from "./types";
 import { assistantApi, configApi, roleApi } from "../lib/tauriApi";
+import { type UiTheme, UI_THEMES } from "../lib/theme";
 
 type SelectOption = { value: string; label: string };
 
@@ -32,15 +33,15 @@ function Select(props: {
       <button
         type="button"
         onClick={toggle}
-        class={`flex h-8 w-full items-center justify-between gap-2 rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 text-xs text-left ${INTERACTIVE_MOTION} ${open() ? "border-zinc-600" : "hover:border-zinc-700"}`}
+        class={`flex h-8 w-full items-center justify-between gap-2 rounded-lg border theme-border theme-surface px-2.5 text-xs text-left ${INTERACTIVE_MOTION} ${open() ? "border-[var(--ui-border-strong)]" : "hover:border-[var(--ui-border-strong)]"}`}
       >
-        <span class={selected() ? "text-zinc-200" : "text-zinc-600"}>
+        <span class={selected() ? "theme-text" : "theme-muted"}>
           {selected()?.label ?? props.placeholder ?? "Select…"}
         </span>
         <svg class={`h-3.5 w-3.5 shrink-0 text-zinc-500 transition-transform ${open() ? "rotate-180" : ""}`} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4l4 4 4-4"/></svg>
       </button>
       <Show when={open()}>
-        <div class="absolute left-0 right-0 top-full z-50 mt-0.5 max-h-52 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950 shadow-xl shadow-black/40">
+        <div class="absolute left-0 right-0 top-full z-50 mt-0.5 max-h-52 overflow-y-auto rounded-lg theme-dropdown shadow-xl shadow-black/40">
           <For each={props.options}>
             {(opt) => (
               <button
@@ -48,8 +49,8 @@ function Select(props: {
                 onClick={() => { props.onChange(opt.value); close(); }}
                 class={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs ${INTERACTIVE_MOTION} ${
                   opt.value === props.value
-                    ? "bg-zinc-800/60 text-white"
-                    : "text-zinc-300 hover:bg-zinc-800/60 hover:text-white"
+                    ? "theme-dropdown-item-active"
+                    : "theme-dropdown-item"
                 }`}
               >
                 <span class={`h-1 w-1 shrink-0 rounded-full ${opt.value === props.value ? "bg-emerald-400" : "bg-transparent"}`} />
@@ -77,6 +78,8 @@ type ConfigDrawerProps = {
   pushMessage: (role: string, text: string) => void;
   fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
   onOpenManagement?: (tab?: "roles" | "skills" | "sessions" | "workflows" | "mcp", roleName?: string) => void;
+  uiTheme: Accessor<UiTheme>;
+  setUiTheme: (th: UiTheme) => void;
 };
 
 export default function ConfigDrawer(props: ConfigDrawerProps) {
@@ -84,9 +87,9 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
     <Show when={props.showDrawer()}>
       <div class="absolute inset-0 z-50 flex">
         <div class="flex-1" onClick={() => props.setShowDrawer(false)} />
-        <div class="w-72 bg-[#0d0d10] border-l border-white/[0.06] flex flex-col overflow-hidden">
-          <div class="flex items-center justify-between px-4 py-3.5 border-b border-white/[0.05]">
-            <span class="text-[10px] font-medium uppercase tracking-widest text-zinc-500">Config</span>
+        <div class="w-72 border-l theme-border flex flex-col overflow-hidden theme-surface">
+          <div class="flex items-center justify-between px-4 py-3.5 border-b theme-border">
+            <span class="text-[10px] font-medium uppercase tracking-widest theme-muted">Config</span>
             <button
               onClick={() => props.setShowDrawer(false)}
               class={`flex h-6 w-6 items-center justify-center rounded text-zinc-600 hover:text-zinc-300 ${INTERACTIVE_MOTION}`}
@@ -95,6 +98,29 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
             </button>
           </div>
           <div class="flex-1 overflow-auto p-3 space-y-5">
+            <div class="space-y-2">
+              <span class="text-[10px] font-medium uppercase tracking-widest theme-muted">Interface Theme</span>
+              <div class="grid grid-cols-2 gap-2">
+                <For each={UI_THEMES}>
+                  {(t) => (
+                    <button
+                      onClick={() => props.setUiTheme(t.key)}
+                      class={`flex flex-col items-start gap-1.5 rounded p-2 text-left ring-1 transition-all ${
+                        props.uiTheme() === t.key
+                          ? "ring-[var(--ui-border-strong)] shadow-[0_0_15px_rgba(255,255,255,0.05)]"
+                          : "ring-[var(--ui-border)] hover:ring-[var(--ui-border-strong)]"
+                      }`}
+                      style={{ background: props.uiTheme() === t.key ? "var(--ui-surface-muted)" : "var(--ui-panel)" }}
+                    >
+                      <div class="flex items-center gap-2">
+                        <span class="h-3 w-3 rounded-full shadow-inner" style={{ "background-color": t.swatch }} />
+                        <span class={`text-[11px] font-medium ${props.uiTheme() === t.key ? "theme-text" : "theme-muted"}`}>{t.label}</span>
+                      </div>
+                    </button>
+                  )}
+                </For>
+              </div>
+            </div>
 
             <AssistantSection
               assistants={props.assistants}
@@ -108,7 +134,7 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
             {/* Roles & Skills — managed in the Management panel */}
             <RolesSection roles={props.roles} onOpenManagement={props.onOpenManagement} setShowDrawer={props.setShowDrawer} />
             <div class="space-y-1.5">
-              <span class="text-[10px] font-medium uppercase tracking-widest text-zinc-600">Manage</span>
+              <span class="text-[10px] font-medium uppercase tracking-widest theme-muted">Manage</span>
               <div class="space-y-0.5">
                 {([
                   { tab: "skills" as const, label: "Skills", count: () => props.skills().length, color: "text-teal-300" },
@@ -118,9 +144,9 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
                 ] as const).map(({ tab, label, count, color }) => (
                   <button
                     onClick={(e) => { e.stopPropagation(); props.setShowDrawer(false); props.onOpenManagement?.(tab); }}
-                    class={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-colors duration-150 hover:bg-zinc-900/60 group ${INTERACTIVE_MOTION}`}
+                    class={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-colors duration-150 hover:bg-[var(--ui-accent-soft)] group ${INTERACTIVE_MOTION}`}
                   >
-                    <span class="text-zinc-400 group-hover:text-zinc-200 transition-colors">{label}</span>
+                    <span class="theme-muted group-hover:theme-text transition-colors">{label}</span>
                     <div class="flex items-center gap-1.5">
                       {count() !== null && (
                         <span class={`font-mono text-[10px] ${color}`}>{count()}</span>
@@ -156,10 +182,10 @@ function AssistantSection(props: AssistantSectionProps) {
   return (
     <div>
       <div class="mb-2 flex items-center justify-between">
-        <span class="text-[10px] font-medium uppercase tracking-widest text-zinc-600">Assistant</span>
+        <span class="text-[10px] font-medium uppercase tracking-widest theme-muted">Assistant</span>
         <button
           onClick={() => setShowConfig((v) => !v)}
-          class={`min-h-6 rounded border border-zinc-800 px-2 py-0.5 text-[10px] text-zinc-600 hover:border-zinc-700 hover:text-zinc-300 ${INTERACTIVE_MOTION}`}
+          class={`min-h-6 rounded border theme-border px-2 py-0.5 text-[10px] theme-muted hover:border-[var(--ui-border-strong)] hover:theme-text ${INTERACTIVE_MOTION}`}
         >
           {showConfig() ? "close" : "config"}
         </button>
@@ -170,14 +196,15 @@ function AssistantSection(props: AssistantSectionProps) {
             <button
               class={`flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs ${INTERACTIVE_MOTION} ${
                 props.activeSession()?.runtimeKind === a.key
-                  ? "bg-zinc-800/80 text-white"
-                  : "hover:bg-zinc-900/60 text-zinc-400"
+                  ? "theme-text"
+                  : "theme-muted"
               } ${!a.available ? "opacity-40" : ""}`}
+              style={props.activeSession()?.runtimeKind === a.key ? { background: "var(--ui-surface-muted)" } : undefined}
               onClick={() => a.available && props.patchActiveSession({ runtimeKind: a.key })}
             >
               <span class={`h-1.5 w-1.5 shrink-0 rounded-full ${a.available ? "bg-emerald-400" : "bg-rose-500"}`} />
               <span class="flex-1 font-medium">{a.label}</span>
-              <Show when={a.version}><span class="text-[10px] text-zinc-600">v{a.version}</span></Show>
+              <Show when={a.version}><span class="text-[10px] theme-muted">v{a.version}</span></Show>
             </button>
           )}
         </For>
@@ -293,7 +320,7 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
   };
 
   return (
-    <div class="mt-2 space-y-2 rounded-xl border border-zinc-800/60 bg-zinc-950/60 p-3">
+    <div class="mt-2 space-y-2 rounded-xl border border-theme bg-[var(--ui-surface-muted)] p-3">
       <div class="flex items-center justify-between">
         <div class="text-[10px] text-zinc-600">runtime: {runtimeKind()}</div>
         <Show when={optionsLoading()}>
@@ -305,10 +332,10 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
           onInput={(e) => setPrompt(e.currentTarget.value)}
           rows={3}
           placeholder="System prompt (optional)"
-          class="w-full resize-none rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-2 text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-zinc-600 focus:outline-none"
+          class="w-full resize-none rounded-lg border theme-border theme-surface px-2.5 py-2 text-xs theme-text placeholder:text-[var(--ui-muted)] focus:border-[var(--ui-border-strong)] focus:outline-none"
         />
         <Show when={modelOpt()} fallback={
-          <input value={model()} onInput={(e) => setModel(e.currentTarget.value)} placeholder="Model (optional)" class="h-8 w-full rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-zinc-600 focus:outline-none" />
+          <input value={model()} onInput={(e) => setModel(e.currentTarget.value)} placeholder="Model (optional)" class="h-8 w-full rounded-lg border theme-border theme-surface px-2.5 text-xs theme-text placeholder:text-[var(--ui-muted)] focus:border-[var(--ui-border-strong)] focus:outline-none" />
         }>
           {(mo) => {
             const values = () => flattenConfigValues(mo().options);
@@ -376,7 +403,7 @@ function RolesSection(props: {
     <div class="space-y-1">
       <button
         onClick={() => setExpanded((v) => !v)}
-        class={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-colors duration-150 hover:bg-zinc-900/60 group ${INTERACTIVE_MOTION}`}
+        class={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-colors duration-150 hover:bg-[var(--ui-surface-muted)] group ${INTERACTIVE_MOTION}`}
       >
         <span class="text-[10px] font-medium uppercase tracking-widest text-zinc-600 group-hover:text-zinc-400 transition-colors">Roles</span>
         <div class="flex items-center gap-1.5">
@@ -400,7 +427,7 @@ function RolesSection(props: {
               return (
                 <button
                   onClick={(e) => { e.stopPropagation(); openRole(role.roleName); }}
-                  class={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 hover:bg-zinc-900/40 transition-colors text-left ${INTERACTIVE_MOTION}`}
+                  class={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 hover:bg-[var(--ui-surface-muted)] transition-colors text-left ${INTERACTIVE_MOTION}`}
                 >
                   <span class="flex-1 truncate font-mono text-[10px] text-zinc-300">{role.roleName}</span>
                   <span class={`font-mono text-[9px] shrink-0 ${color()}`}>{role.runtimeKind}</span>
@@ -411,7 +438,7 @@ function RolesSection(props: {
           </For>
           <button
             onClick={(e) => { e.stopPropagation(); props.setShowDrawer(false); props.onOpenManagement?.("roles"); }}
-            class={`flex w-full items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[10px] text-zinc-600 hover:text-zinc-300 hover:bg-zinc-900/40 transition-colors ${INTERACTIVE_MOTION}`}
+            class={`flex w-full items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[10px] text-zinc-600 hover:text-zinc-300 hover:bg-[var(--ui-surface-muted)] transition-colors ${INTERACTIVE_MOTION}`}
           >
             <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
             manage roles

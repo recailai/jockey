@@ -79,7 +79,7 @@ export function SkillRegistryTab(props: {
             value={search()}
             onInput={(e) => setSearch(e.currentTarget.value)}
             placeholder="Filter skills…"
-            class="h-7 flex-1 rounded-md border border-zinc-800 bg-zinc-950/60 px-2.5 font-mono text-[10px] text-zinc-300 placeholder:text-zinc-700 focus:border-zinc-600 focus:outline-none"
+            class="h-7 flex-1 rounded-md border border-zinc-800 bg-[var(--ui-surface-muted)] px-2.5 font-mono text-[10px] text-zinc-300 placeholder:text-zinc-700 focus:border-zinc-600 focus:outline-none"
           />
           <button
             onClick={openCreate}
@@ -97,7 +97,7 @@ export function SkillRegistryTab(props: {
             {(skill) => (
               <button
                 onClick={() => { setSelectedId(skill.id); setCreating(false); setEditing(false); }}
-                class={`group flex w-full flex-col gap-0.5 border-b border-white/[0.03] px-3 py-2.5 text-left transition-colors duration-100 ${selectedId() === skill.id ? "bg-zinc-800/50" : "hover:bg-zinc-900/50"}`}
+                class={`group flex w-full flex-col gap-0.5 border-b border-white/[0.03] px-3 py-2.5 text-left transition-colors duration-100 ${selectedId() === skill.id ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-surface-muted)]"}`}
               >
                 <span class={`font-mono text-[10px] font-semibold ${selectedId() === skill.id ? "text-zinc-100" : "text-zinc-300"}`}>{skill.name}</span>
                 <span class="font-mono text-[9px] text-zinc-600 truncate">{skill.description || "No description"}</span>
@@ -114,7 +114,7 @@ export function SkillRegistryTab(props: {
             <h3 class="font-mono text-xs font-bold text-zinc-300 uppercase tracking-widest">
               {creating() ? "New Skill" : `Edit: ${selected()?.name ?? ""}`}
             </h3>
-            <div class="space-y-2 rounded-lg border border-white/[0.04] bg-zinc-950/40 p-4">
+            <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
               <FieldRow label="Name">
                 <TextInput value={fName()} onInput={setFName} placeholder="skill-name" monospace />
               </FieldRow>
@@ -154,7 +154,7 @@ export function SkillRegistryTab(props: {
                 </div>
               </div>
 
-              <div class="space-y-2 rounded-lg border border-white/[0.04] bg-zinc-950/40 p-4">
+              <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
                 <FieldRow label="ID">
                   <span class="font-mono text-[10px] text-zinc-600">{skill().id}</span>
                 </FieldRow>
@@ -167,12 +167,12 @@ export function SkillRegistryTab(props: {
               </div>
 
               <PanelSection title="Content">
-                <pre class="whitespace-pre-wrap rounded-lg border border-white/[0.03] bg-zinc-950/60 p-3 font-mono text-[10px] leading-relaxed text-zinc-300">
+                <pre class="whitespace-pre-wrap rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-3 font-mono text-[10px] leading-relaxed text-zinc-300">
                   {skill().content || <span class="text-zinc-700">empty</span>}
                 </pre>
               </PanelSection>
 
-              <div class="rounded-lg border border-zinc-800/40 bg-zinc-900/20 p-3">
+              <div class="rounded-lg border border-zinc-800/40 bg-[var(--ui-surface-muted)] p-3">
                 <p class="font-mono text-[10px] text-zinc-600 leading-relaxed">
                   Invoke with <code class="text-teal-400">/{skill().name}</code> in the chat input or reference as <code class="text-teal-400">@{skill().name}</code> in prompts.
                 </p>

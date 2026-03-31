@@ -69,7 +69,7 @@ export const fmtRelative = (ts: number) => {
 
 export function Badge(props: { label: string; color?: string; class?: string }) {
   return (
-    <span class={`inline-flex items-center rounded-sm px-1.5 py-px font-mono text-[9px] font-semibold tracking-wide uppercase ${props.color ?? "bg-zinc-800 text-zinc-400"} ${props.class ?? ""}`}>
+    <span class={`inline-flex items-center rounded-sm px-1.5 py-px font-mono text-[9px] font-semibold tracking-wide uppercase ${props.color ?? "theme-surface-muted theme-muted"} ${props.class ?? ""}`}>
       {props.label}
     </span>
   );
@@ -79,8 +79,8 @@ export function EmptyState(props: { icon: string; title: string; sub?: string })
   return (
     <div class="flex flex-col items-center justify-center gap-2 py-16 text-center">
       <span class="text-3xl opacity-20">{props.icon}</span>
-      <p class="text-xs font-medium text-zinc-500">{props.title}</p>
-      {props.sub && <p class="max-w-[200px] text-[10px] text-zinc-700">{props.sub}</p>}
+      <p class="text-xs font-medium theme-muted">{props.title}</p>
+      {props.sub && <p class="max-w-[200px] text-[10px] theme-muted opacity-60">{props.sub}</p>}
     </div>
   );
 }
@@ -88,13 +88,13 @@ export function EmptyState(props: { icon: string; title: string; sub?: string })
 export function PanelSection(props: { title: string; action?: { label: string; onClick: () => void }; children: unknown }) {
   return (
     <div>
-      <div class="mb-3 flex items-center justify-between border-b border-white/[0.04] pb-2">
-        <span class="font-mono text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">{props.title}</span>
+      <div class="mb-3 flex items-center justify-between border-b theme-border pb-2">
+        <span class="font-mono text-[9px] font-semibold uppercase tracking-[0.12em] theme-muted">{props.title}</span>
         <Show when={props.action}>
           {(action) => (
             <button
               onClick={action().onClick}
-              class={`min-h-6 rounded border border-zinc-800 px-2 py-0.5 font-mono text-[9px] text-zinc-500 hover:border-zinc-600 hover:text-zinc-200 ${INTERACTIVE_MOTION}`}
+              class={`min-h-6 rounded border theme-border px-2 py-0.5 font-mono text-[9px] theme-muted hover:border-[var(--ui-border-strong)] hover:theme-text ${INTERACTIVE_MOTION}`}
             >
               {action().label}
             </button>
@@ -109,7 +109,7 @@ export function PanelSection(props: { title: string; action?: { label: string; o
 export function FieldRow(props: { label: string; children: unknown }) {
   return (
     <div class="flex items-start gap-3">
-      <span class="w-20 shrink-0 font-mono text-[9px] uppercase tracking-wide text-zinc-600 pt-[3px]">{props.label}</span>
+      <span class="w-20 shrink-0 font-mono text-[9px] uppercase tracking-wide theme-muted pt-[3px]">{props.label}</span>
       <div class="flex-1 min-w-0">{props.children as any}</div>
     </div>
   );
@@ -119,7 +119,7 @@ export function TextInput(props: {
   value: string; onInput: (v: string) => void; placeholder?: string;
   multiline?: boolean; rows?: number; class?: string; monospace?: boolean; error?: boolean;
 }) {
-  const base = () => `w-full rounded-md border ${props.error ? "border-rose-600" : "border-zinc-800"} bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-700 focus:border-zinc-600 focus:outline-none ${props.monospace ? "font-mono" : ""} ${props.class ?? ""}`;
+  const base = () => `w-full rounded-md border ${props.error ? "border-rose-600" : "theme-border"} theme-surface px-2.5 py-1.5 text-xs theme-text placeholder:text-[var(--ui-muted)] focus:border-[var(--ui-border-strong)] focus:outline-none ${props.monospace ? "font-mono" : ""} ${props.class ?? ""}`;
   if (props.multiline) {
     return (
       <textarea
@@ -179,9 +179,9 @@ export function InlineSelect(props: {
         ref={triggerRef}
         type="button"
         onClick={toggle}
-        class={`flex h-8 w-full items-center justify-between gap-2 rounded-md border border-zinc-800 bg-zinc-950 px-2.5 text-xs text-left ${INTERACTIVE_MOTION} ${open() ? "border-zinc-600" : "hover:border-zinc-700"}`}
+        class={`flex h-8 w-full items-center justify-between gap-2 rounded-md border theme-border theme-surface px-2.5 text-xs text-left ${INTERACTIVE_MOTION} ${open() ? "border-[var(--ui-border-strong)]" : "hover:border-[var(--ui-border-strong)]"}`}
       >
-        <span class={`min-w-0 flex-1 truncate ${selected() ? "text-zinc-200" : "text-zinc-600"}`}>
+        <span class={`min-w-0 flex-1 truncate ${selected() ? "theme-text" : "theme-muted"}`}>
           {selected()?.label ?? "Select…"}
         </span>
         <svg class={`h-3 w-3 shrink-0 text-zinc-500 transition-transform ${open() ? "rotate-180" : ""}`} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4l4 4 4-4" /></svg>
@@ -191,7 +191,7 @@ export function InlineSelect(props: {
           <div
             data-isel
             style={{ position: "fixed", top: `${pos().top}px`, left: `${pos().left}px`, width: `${pos().width}px` }}
-            class="z-[9999] max-h-44 overflow-y-auto rounded-md border border-zinc-800 bg-[#0d0d10] shadow-xl shadow-black/60"
+            class="z-[9999] max-h-44 overflow-y-auto rounded-md shadow-xl shadow-black/60 theme-dropdown"
           >
             <For each={props.options}>
               {(opt) => (
@@ -199,7 +199,7 @@ export function InlineSelect(props: {
                   data-isel
                   type="button"
                   onClick={() => { props.onChange(opt.value); close(); }}
-                  class={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs ${INTERACTIVE_MOTION} ${opt.value === props.value ? "bg-zinc-800/60 text-white" : "text-zinc-300 hover:bg-zinc-800/40 hover:text-white"}`}
+                  class={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs ${INTERACTIVE_MOTION} ${opt.value === props.value ? "theme-dropdown-item-active" : "theme-dropdown-item"}`}
                 >
                   <span class={`h-1 w-1 shrink-0 rounded-full ${opt.value === props.value ? "bg-emerald-400" : "bg-transparent"}`} />
                   {opt.label}
@@ -217,9 +217,9 @@ export function ActionButton(props: {
   onClick: () => void; label: string; variant?: "primary" | "danger" | "ghost"; class?: string; disabled?: boolean;
 }) {
   const cls = () => ({
-    primary: "bg-zinc-100 text-zinc-900 hover:bg-white border-transparent",
+    primary: "bg-[var(--ui-text)] text-[var(--ui-bg)] hover:opacity-90 border-transparent",
     danger: "border-rose-800/60 text-rose-400 hover:bg-rose-500/10 hover:border-rose-600",
-    ghost: "border-zinc-800 text-zinc-500 hover:border-zinc-600 hover:text-zinc-200",
+    ghost: "border-[var(--ui-border)] text-[var(--ui-muted)] hover:border-[var(--ui-border-strong)] hover:text-[var(--ui-text)]",
   }[props.variant ?? "ghost"]);
   return (
     <button

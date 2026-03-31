@@ -13,6 +13,7 @@ import type {
 import {
   now, DEFAULT_BACKEND_ROLE, DEFAULT_ROLE_ALIAS,
 } from "./components/types";
+import { type UiTheme, normalizeUiTheme, UI_THEME_KEY } from "./lib/theme";
 
 import { useSessionManager } from "./hooks/useSessionManager";
 import { useStreamEngine } from "./hooks/useStreamEngine";
@@ -31,6 +32,20 @@ export default function App() {
   type Toast = { id: number; message: string; severity?: "error" | "info" };
   const [toasts, setToasts] = createSignal<Toast[]>([]);
   let toastSeq = 0;
+  const initialTheme = (): UiTheme => {
+    try {
+      const raw = window.localStorage.getItem(UI_THEME_KEY);
+      const theme = normalizeUiTheme(raw);
+      document.documentElement.setAttribute("data-theme", theme);
+      return theme;
+    } catch {
+      document.documentElement.setAttribute("data-theme", "dark");
+      return "dark";
+    }
+  };
+
+  const [uiTheme, setUiTheme] = createSignal<UiTheme>(initialTheme());
+
   const showToast = (message: string, severity: Toast["severity"] = "error") => {
     const id = ++toastSeq;
     setToasts((ts) => [...ts, { id, message, severity }]);
@@ -717,7 +732,7 @@ export default function App() {
       dropStream();
       if (mentionCloseTimerRef.current !== null) window.clearTimeout(mentionCloseTimerRef.current);
       if (mentionDebounceTimerRef.current !== null) window.clearTimeout(mentionDebounceTimerRef.current);
-      if (streamEngine.sessionEventFlushTimer !== null) window.clearTimeout(streamEngine.sessionEventFlushTimer);
+
       scheduleScrollToBottom(); // flushes scrollRaf reference via sessionManager
       closeMentionMenu();
       closeSlashMenu();
@@ -799,6 +814,12 @@ export default function App() {
               setManagementInitialRole(roleName);
               setShowManagement(true);
             }}
+            uiTheme={uiTheme}
+            setUiTheme={(th) => {
+              setUiTheme(th);
+              window.localStorage.setItem(UI_THEME_KEY, th);
+              document.documentElement.setAttribute("data-theme", th);
+            }}
           />
         </Suspense>
       </Show>
@@ -838,7 +859,7 @@ export default function App() {
       <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
         <For each={toasts()}>
           {(t) => (
-            <div class={`pointer-events-auto max-w-xs rounded-lg px-4 py-2 text-xs shadow-lg ${t.severity === "info" ? "bg-zinc-800 text-zinc-300" : "bg-rose-900/90 text-rose-200"}`}>
+            <div class={`pointer-events-auto max-w-xs rounded-lg px-4 py-2 text-xs shadow-lg ${t.severity === "info" ? "theme-surface theme-text" : "bg-rose-900/90 text-rose-200"}`}>
               {t.message}
             </div>
           )}

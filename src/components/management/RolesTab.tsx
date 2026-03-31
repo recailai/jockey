@@ -206,7 +206,7 @@ export function RolesTab(props: {
               return (
                 <div
                   onClick={() => openEdit(role)}
-                  class={`group flex w-full flex-col gap-0.5 border-b border-white/[0.03] px-3 py-2.5 text-left transition-colors duration-100 cursor-default ${isSelected() ? "bg-zinc-800/50" : "hover:bg-zinc-900/50"}`}
+                  class={`group flex w-full flex-col gap-0.5 border-b border-white/[0.03] px-3 py-2.5 text-left transition-colors duration-100 cursor-default ${isSelected() ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-surface-muted)]"}`}
                 >
                   <div class="flex items-center justify-between min-w-0 gap-1">
                     <span class={`truncate font-mono text-[10px] font-semibold ${isSelected() ? "text-zinc-100" : "text-zinc-300"}`}>{role.roleName}</span>
@@ -243,7 +243,7 @@ export function RolesTab(props: {
         <Show when={creating()}>
           <div class="space-y-4">
             <h3 class="font-mono text-xs font-bold text-zinc-300 uppercase tracking-widest">New Role</h3>
-            <div class="space-y-2 rounded-lg border border-white/[0.04] bg-zinc-950/40 p-4">
+            <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
               <FieldRow label="Name">
                 <div class="flex flex-col gap-1 w-full">
                   <TextInput
@@ -354,7 +354,7 @@ export function RolesTab(props: {
                   </Show>
                 </div>
 
-                <div class="space-y-2 rounded-lg border border-white/[0.04] bg-zinc-950/40 p-4">
+                <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
                   <FieldRow label="Prompt">
                     <TextInput value={ePrompt()} onInput={setEPrompt} placeholder="System prompt" multiline rows={4} />
                   </FieldRow>

@@ -95,7 +95,7 @@ export function McpRegistryTab(props: { roles: Role[] }) {
             {(srv) => (
               <button
                 onClick={() => { setSelectedId(srv.id); setCreating(false); }}
-                class={`group flex w-full flex-col gap-0.5 border-b border-white/[0.03] px-3 py-2.5 text-left transition-colors duration-100 ${selectedId() === srv.id ? "bg-zinc-800/50" : "hover:bg-zinc-900/50"} ${!srv.enabled ? "opacity-40" : ""}`}
+                class={`group flex w-full flex-col gap-0.5 border-b border-white/[0.03] px-3 py-2.5 text-left transition-colors duration-100 ${selectedId() === srv.id ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-surface-muted)]"} ${!srv.enabled ? "opacity-40" : ""}`}
               >
                 <div class="flex items-center gap-1.5 min-w-0">
                   <span class={`h-1.5 w-1.5 shrink-0 rounded-full ${srv.enabled ? "bg-emerald-400" : "bg-zinc-700"}`} />
@@ -118,7 +118,7 @@ export function McpRegistryTab(props: { roles: Role[] }) {
         <Show when={creating()}>
           <div class="space-y-4">
             <h3 class="font-mono text-xs font-bold text-zinc-300 uppercase tracking-widest">Register MCP Server</h3>
-            <div class="space-y-2 rounded-lg border border-white/[0.04] bg-zinc-950/40 p-4">
+            <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
               <FieldRow label="Name">
                 <TextInput value={fName()} onInput={setFName} placeholder="e.g. filesystem" />
               </FieldRow>
@@ -166,7 +166,7 @@ export function McpRegistryTab(props: { roles: Role[] }) {
                 </div>
               </div>
 
-              <div class="space-y-2 rounded-lg border border-white/[0.04] bg-zinc-950/40 p-4">
+              <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
                 <FieldRow label="URI">
                   <span class="break-all font-mono text-[10px] text-zinc-300">{srv().uri}</span>
                 </FieldRow>

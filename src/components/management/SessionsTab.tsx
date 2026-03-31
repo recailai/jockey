@@ -13,11 +13,11 @@ function ContextValue(props: { raw: string }) {
   };
   return (
     <Show when={parsed()} fallback={
-      <span class="font-mono text-[10px] text-zinc-300 whitespace-pre-wrap break-all">{props.raw}</span>
+      <span class="font-mono text-[10px] theme-text whitespace-pre-wrap break-all">{props.raw}</span>
     }>
       {(v) => (
         <Show when={Array.isArray(v())} fallback={
-          <pre class="whitespace-pre-wrap break-all font-mono text-[10px] text-zinc-300 leading-relaxed">
+          <pre class="whitespace-pre-wrap break-all font-mono text-[10px] theme-text leading-relaxed">
             {JSON.stringify(v(), null, 2)}
           </pre>
         }>
@@ -26,7 +26,7 @@ function ContextValue(props: { raw: string }) {
               {(item) => (
                 <li class="flex items-start gap-1.5">
                   <span class="mt-[3px] h-1 w-1 shrink-0 rounded-full bg-amber-400/60" />
-                  <span class="font-mono text-[10px] text-zinc-300 break-all">
+                  <span class="font-mono text-[10px] theme-text break-all">
                     {typeof item === "string" ? item : JSON.stringify(item)}
                   </span>
                 </li>
@@ -90,19 +90,19 @@ function SessionContextSection(props: { sessionId: string }) {
     <div>
       {/* Section header */}
       <div class="mb-2 flex items-center justify-between">
-        <span class="font-mono text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+        <span class="font-mono text-[10px] font-semibold uppercase tracking-widest theme-muted">
           Context
           <Show when={!loading() && entries().length > 0}>
-            <span class="ml-1.5 text-zinc-700">({entries().length})</span>
+            <span class="ml-1.5 theme-muted opacity-60">({entries().length})</span>
           </Show>
           <Show when={loading()}>
-            <span class="ml-1.5 text-zinc-700 italic">loading…</span>
+            <span class="ml-1.5 theme-muted italic opacity-60">loading…</span>
           </Show>
         </span>
         <div class="flex items-center gap-1.5">
           <button
             onClick={reload}
-            class="font-mono text-[9px] text-zinc-600 hover:text-zinc-400 transition-colors"
+            class="font-mono text-[9px] theme-muted hover:theme-text transition-colors"
             title="Refresh"
           >↻</button>
           <button
@@ -114,12 +114,12 @@ function SessionContextSection(props: { sessionId: string }) {
 
       {/* Add row */}
       <Show when={addingNew()}>
-        <div class="mb-2 flex flex-col gap-1.5 rounded-md border border-amber-500/20 bg-zinc-900/40 p-2">
+        <div class="mb-2 flex flex-col gap-1.5 rounded-md border border-amber-500/20 bg-[var(--ui-surface-muted)] p-2">
           <input
             value={newKey()}
             onInput={(e) => setNewKey(e.currentTarget.value)}
             placeholder="key"
-            class="h-6 w-full rounded border border-zinc-700 bg-zinc-950 px-2 font-mono text-[10px] text-zinc-200 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
+            class="h-6 w-full rounded border border-theme theme-surface px-2 font-mono text-[10px] theme-text placeholder:text-[var(--ui-muted)] focus:border-[var(--ui-border-strong)] focus:outline-none"
           />
           <textarea
             value={newValue()}
@@ -138,7 +138,7 @@ function SessionContextSection(props: { sessionId: string }) {
 
       {/* Empty */}
       <Show when={!loading() && entries().length === 0 && !addingNew()}>
-        <p class="font-mono text-[10px] text-zinc-700 italic">no context entries</p>
+        <p class="font-mono text-[10px] theme-muted italic opacity-60">no context entries</p>
       </Show>
 
       {/* Entries */}
@@ -148,14 +148,14 @@ function SessionContextSection(props: { sessionId: string }) {
             {(entry) => {
               const isEditing = () => editingKey() === entry.key;
               return (
-                <div class="group rounded border border-white/[0.03] bg-zinc-950/30 px-3 py-2 hover:border-white/[0.07] hover:bg-zinc-900/30 transition-colors">
+                <div class="group rounded border theme-border theme-panel px-3 py-2 hover:border-[var(--ui-border-strong)] hover:bg-[var(--ui-accent-soft)] transition-colors">
                   <div class="mb-1 flex items-center justify-between gap-2">
                     <span class="font-mono text-[9px] font-semibold text-amber-400/80 truncate">{entry.key}</span>
                     <div class="flex items-center gap-2 shrink-0">
                       <Show when={!isEditing()}>
                         <button
                           onClick={() => { setEditingKey(entry.key); setEditValue(entry.value); }}
-                          class="opacity-0 group-hover:opacity-100 font-mono text-[9px] text-zinc-600 hover:text-zinc-400 transition-all"
+                          class="opacity-0 group-hover:opacity-100 font-mono text-[9px] theme-muted hover:theme-text transition-all"
                         >edit</button>
                       </Show>
                       <button
@@ -274,15 +274,15 @@ export function SessionsTab(props: {
             value={search()}
             onInput={(e) => setSearch(e.currentTarget.value)}
             placeholder="Filter sessions…"
-            class="h-7 w-full rounded-md border border-zinc-800 bg-zinc-950/60 px-2.5 font-mono text-[10px] text-zinc-300 placeholder:text-zinc-700 focus:border-zinc-600 focus:outline-none"
+            class="h-7 w-full rounded-md border theme-border theme-surface px-2.5 font-mono text-[10px] theme-text placeholder:text-[var(--ui-muted)] focus:border-[var(--ui-border-strong)] focus:outline-none"
           />
         </div>
         <div class="flex-1 overflow-y-auto">
           <Show when={loading()}>
-            <p class="p-4 font-mono text-[10px] text-zinc-700">Loading…</p>
+            <p class="p-4 font-mono text-[10px] theme-muted opacity-60">Loading…</p>
           </Show>
           <Show when={!loading() && filtered().length === 0}>
-            <p class="p-4 font-mono text-[10px] text-zinc-700">No sessions found.</p>
+            <p class="p-4 font-mono text-[10px] theme-muted opacity-60">No sessions found.</p>
           </Show>
           <For each={filtered()}>
             {(s) => {
@@ -296,7 +296,7 @@ export function SessionsTab(props: {
                     if (isClosed()) { void handleReopen(s); } else { setSelectedId(s.id); }
                   }}
                   disabled={isReopening()}
-                  class={`group flex w-full flex-col gap-0.5 border-b border-white/[0.03] px-3 py-2.5 text-left transition-colors duration-100 ${selectedId() === s.id && !isClosed() ? "bg-zinc-800/50" : "hover:bg-zinc-900/50"} ${isClosed() ? "opacity-60 hover:opacity-100" : ""}`}
+                  class={`group flex w-full flex-col gap-0.5 border-b theme-border px-3 py-2.5 text-left transition-colors duration-100 ${selectedId() === s.id && !isClosed() ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-accent-soft)]"} ${isClosed() ? "opacity-60 hover:opacity-100" : ""}`}
                   title={isClosed() ? "Click to reopen" : undefined}
                 >
                   <div class="flex items-center gap-1.5 min-w-0">
@@ -306,19 +306,19 @@ export function SessionsTab(props: {
                     <Show when={isClosed()}>
                       <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-zinc-600" />
                     </Show>
-                    <span class={`truncate font-mono text-[10px] font-semibold ${isClosed() ? "text-zinc-500" : selectedId() === s.id ? "text-zinc-100" : "text-zinc-300"}`}>{s.title}</span>
+                    <span class={`truncate font-mono text-[10px] font-semibold ${isClosed() ? "theme-muted" : selectedId() === s.id ? "theme-text" : "theme-muted"}`}>{s.title}</span>
                     <Show when={isReopening()}>
-                      <span class="ml-auto font-mono text-[9px] text-zinc-600 shrink-0">opening…</span>
+                      <span class="ml-auto font-mono text-[9px] theme-muted shrink-0">opening…</span>
                     </Show>
                   </div>
                   <div class="flex items-center gap-1.5">
                     <Show when={s.runtimeKind}>
                       <span class={`font-mono text-[9px] ${color()}`}>{s.runtimeKind}</span>
-                      <span class="text-zinc-700">·</span>
+                      <span class="theme-muted opacity-40">·</span>
                     </Show>
-                    <span class="font-mono text-[9px] text-zinc-600">{s.messageCount} msgs</span>
-                    <span class="text-zinc-700">·</span>
-                    <span class="font-mono text-[9px] text-zinc-700">{fmtRelative(s.updatedAt || s.createdAt)}</span>
+                    <span class="font-mono text-[9px] theme-muted">{s.messageCount} msgs</span>
+                    <span class="theme-muted opacity-40">·</span>
+                    <span class="font-mono text-[9px] theme-muted opacity-60">{fmtRelative(s.updatedAt || s.createdAt)}</span>
                   </div>
                 </button>
               );
@@ -337,8 +337,8 @@ export function SessionsTab(props: {
               {/* Header */}
               <div class="flex items-start justify-between gap-4">
                 <div>
-                  <h2 class="font-mono text-sm font-bold text-zinc-100">{s().title}</h2>
-                  <p class="mt-0.5 font-mono text-[10px] text-zinc-600">{s().id}</p>
+                  <h2 class="font-mono text-sm font-bold theme-text">{s().title}</h2>
+                  <p class="mt-0.5 font-mono text-[10px] theme-muted">{s().id}</p>
                 </div>
                 <div class="flex gap-2 shrink-0">
                   <Show when={activeIds().has(s().id)}>
@@ -355,7 +355,7 @@ export function SessionsTab(props: {
               </div>
 
               {/* Metadata */}
-              <div class="space-y-2 rounded-lg border border-white/[0.04] bg-zinc-950/40 p-4">
+              <div class="space-y-2 rounded-lg border theme-border theme-surface p-4">
                 <FieldRow label="Role">
                   <span class="font-mono text-xs text-zinc-200">{s().activeRole}</span>
                 </FieldRow>
@@ -365,26 +365,26 @@ export function SessionsTab(props: {
                   </span>
                 </FieldRow>
                 <FieldRow label="Directory">
-                  <span class="break-all font-mono text-[10px] text-zinc-400">{s().cwd ?? "—"}</span>
+                  <span class="break-all font-mono text-[10px] theme-muted">{s().cwd ?? "—"}</span>
                 </FieldRow>
                 <FieldRow label="Messages">
                   <span class="font-mono text-xs text-zinc-200">{s().messageCount}</span>
                 </FieldRow>
                 <FieldRow label="Created">
-                  <span class="font-mono text-[10px] text-zinc-500">{s().createdAt ? fmtDate(s().createdAt) : "—"}</span>
+                  <span class="font-mono text-[10px] theme-muted">{s().createdAt ? fmtDate(s().createdAt) : "—"}</span>
                 </FieldRow>
                 <FieldRow label="Updated">
-                  <span class="font-mono text-[10px] text-zinc-500">{s().updatedAt ? fmtDate(s().updatedAt) : "—"}</span>
+                  <span class="font-mono text-[10px] theme-muted">{s().updatedAt ? fmtDate(s().updatedAt) : "—"}</span>
                 </FieldRow>
                 <Show when={s().closedAt}>
                   <FieldRow label="Closed">
-                    <span class="font-mono text-[10px] text-zinc-600">{fmtDate(s().closedAt!)}</span>
+                    <span class="font-mono text-[10px] theme-muted opacity-60">{fmtDate(s().closedAt!)}</span>
                   </FieldRow>
                 </Show>
               </div>
 
               {/* Context — full CRUD, scoped to this session */}
-              <div class="rounded-lg border border-white/[0.04] bg-zinc-950/40 p-4">
+              <div class="rounded-lg border theme-border theme-surface p-4">
                 <SessionContextSection sessionId={s().id} />
               </div>
             </div>
