@@ -1,6 +1,6 @@
 mod context_bundle;
 mod prompt_builder;
-mod session_runtime;
+pub(crate) mod session_runtime;
 
 use crate::chat::session_runtime::load_role_runtime_data;
 use crate::commands::apply_chat_command;

@@ -5,6 +5,8 @@ mod context_cmd;
 mod fallback_cmd;
 mod query_cmd;
 mod role_templates;
+pub(crate) mod runtime_cmd;
+pub(crate) mod session_context_cmd;
 mod shell_cmd;
 
 use crate::db::get_state;

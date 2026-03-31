@@ -4,7 +4,7 @@ mod runtime_state;
 mod session;
 mod worker;
 
-pub use adapter::{clear_adapter_cache, probe_runtime, set_app_data_dir};
+pub use adapter::{app_data_dir, clear_adapter_cache, probe_runtime, set_app_data_dir};
 pub use runtime_state::{
     list_available_commands, list_discovered_config_options, list_discovered_models,
 };

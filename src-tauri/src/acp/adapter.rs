@@ -25,6 +25,10 @@ pub fn set_app_data_dir(path: PathBuf) {
     let _ = APP_DATA_DIR.set(path);
 }
 
+pub fn app_data_dir() -> Option<PathBuf> {
+    APP_DATA_DIR.get().cloned()
+}
+
 fn app_data_adapter_bin(binary: &str) -> Option<PathBuf> {
     let base = APP_DATA_DIR.get()?;
     let candidate = base

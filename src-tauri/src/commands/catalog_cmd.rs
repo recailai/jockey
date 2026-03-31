@@ -19,6 +19,47 @@ fn required_app_session_id(app_session_id: Option<&str>) -> Result<&str, String>
         .ok_or_else(|| "app session id required".to_string())
 }
 
+fn normalize_selected_model_for_runtime(
+    state: &AppState,
+    runtime: &str,
+    selected_model: &str,
+) -> String {
+    let selected = selected_model.trim();
+    if selected.is_empty() {
+        return selected.to_string();
+    }
+    let selected_lc = selected.to_ascii_lowercase();
+    let models = list_models_for_runtime(state, runtime).unwrap_or_default();
+    if models.is_empty() {
+        return selected.to_string();
+    }
+    if runtime == "claude-code" && matches!(selected_lc.as_str(), "sonnet" | "haiku" | "opus") {
+        let mut candidates: Vec<String> = models
+            .iter()
+            .filter(|m| {
+                let m_lc = m.to_ascii_lowercase();
+                m_lc.starts_with("claude-")
+                    && (m_lc.contains(&format!("-{}-", selected_lc))
+                        || m_lc.ends_with(&format!("-{}", selected_lc)))
+            })
+            .cloned()
+            .collect();
+        if !candidates.is_empty() {
+            candidates.sort();
+            if let Some(best) = candidates.last() {
+                return best.clone();
+            }
+        }
+    }
+    if let Some(exact) = models
+        .iter()
+        .find(|m| m.trim().eq_ignore_ascii_case(selected))
+    {
+        return exact.clone();
+    }
+    selected.to_string()
+}
+
 pub(crate) fn handle_catalog_command(
     tokens: &[&str],
     state: &AppState,
@@ -76,6 +117,8 @@ pub(crate) fn handle_catalog_command(
             let selected_model = sanitize_dynamic_item_name(model)
                 .ok_or_else(|| format!("invalid model name: {}", model))?;
             let runtime = load_role_runtime_kind(state, role_name)?;
+            let selected_model =
+                normalize_selected_model_for_runtime(state, &runtime, &selected_model);
             let _ = upsert_dynamic_catalog_item(state, "model", &selected_model)?;
             save_app_session_role_model_override(
                 state,
@@ -99,6 +142,8 @@ pub(crate) fn handle_catalog_command(
             let selected_model = sanitize_dynamic_item_name(model)
                 .ok_or_else(|| format!("invalid model name: {}", model))?;
             let runtime = resolve_model_runtime(result.runtime_kind.as_deref());
+            let selected_model =
+                normalize_selected_model_for_runtime(state, &runtime, &selected_model);
             let _ = upsert_dynamic_catalog_item(state, "model", &selected_model)?;
             save_app_session_role_model_override(
                 state,

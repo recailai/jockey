@@ -1,10 +1,41 @@
+use agent_client_protocol as acp;
+use std::sync::OnceLock;
+
 use crate::db::app_session_role::load_app_session_role_state;
 use crate::db::context::{list_shared_context_internal, sanitize_dynamic_item_name};
 use crate::db::role::load_role;
 use crate::db::session_context::app_session_role_scope;
+use crate::runtime_kind::RuntimeKind;
 use crate::types::AppState;
 
 use super::RecentRoleChat;
+
+static CONDUCTOR_MCP_BINARY: OnceLock<Option<String>> = OnceLock::new();
+
+pub(crate) fn set_conductor_mcp_path(path: Option<String>) {
+    let _ = CONDUCTOR_MCP_BINARY.set(path);
+}
+
+fn inject_conductor_mcp(mcp_servers: &mut Vec<acp::McpServer>) {
+    let bin = match CONDUCTOR_MCP_BINARY.get().and_then(|o| o.as_deref()) {
+        Some(p) => p,
+        None => return,
+    };
+    let already = mcp_servers.iter().any(|s| match s {
+        acp::McpServer::Stdio(s) => s.name == "unionai-conductor",
+        _ => false,
+    });
+    if already {
+        return;
+    }
+    let db_env = crate::acp::app_data_dir()
+        .map(|d| d.join("unionai.sqlite3").to_string_lossy().to_string())
+        .unwrap_or_default();
+    mcp_servers.push(acp::McpServer::Stdio(
+        acp::McpServerStdio::new("unionai-conductor", bin)
+            .env(vec![acp::EnvVariable::new("UNIONAI_DB_PATH", &db_env)]),
+    ));
+}
 
 pub(super) struct RoleRuntimeData {
     pub(super) runtime: String,
@@ -36,6 +67,71 @@ fn parse_config_map(raw: &str) -> Vec<(String, String)> {
             })
         })
         .unwrap_or_default()
+}
+
+fn pick_canonical_discovered_model(
+    runtime_key: &str,
+    selected_model: &str,
+    discovered: &[String],
+) -> String {
+    let selected = selected_model.trim();
+    if selected.is_empty() || discovered.is_empty() {
+        return selected.to_string();
+    }
+    let selected_lc = selected.to_ascii_lowercase();
+
+    if runtime_key == "claude-code" && matches!(selected_lc.as_str(), "sonnet" | "haiku" | "opus")
+    {
+        let mut candidates: Vec<&String> = discovered
+            .iter()
+            .filter(|m| {
+                let m_lc = m.to_ascii_lowercase();
+                m_lc.starts_with("claude-")
+                    && (m_lc.contains(&format!("-{}-", selected_lc))
+                        || m_lc.ends_with(&format!("-{}", selected_lc)))
+            })
+            .collect();
+        if !candidates.is_empty() {
+            candidates.sort_by(|a, b| a.cmp(b));
+            if let Some(best) = candidates.last() {
+                return (*best).clone();
+            }
+        }
+    }
+
+    if let Some(exact) = discovered
+        .iter()
+        .find(|m| m.trim().eq_ignore_ascii_case(selected))
+    {
+        return exact.clone();
+    }
+
+    let mut fuzzy: Vec<&String> = discovered
+        .iter()
+        .filter(|m| m.to_ascii_lowercase().contains(&selected_lc))
+        .collect();
+    if fuzzy.is_empty() {
+        return selected.to_string();
+    }
+    fuzzy.sort_by(|a, b| {
+        let a_lc = a.to_ascii_lowercase();
+        let b_lc = b.to_ascii_lowercase();
+        let a_score = (a_lc.starts_with("claude-") as u8, a_lc.len());
+        let b_score = (b_lc.starts_with("claude-") as u8, b_lc.len());
+        a_score.cmp(&b_score).then_with(|| a.cmp(b))
+    });
+    fuzzy
+        .last()
+        .map(|m| (*m).clone())
+        .unwrap_or_else(|| selected.to_string())
+}
+
+fn normalize_model_for_runtime(runtime: &str, selected_model: &str) -> String {
+    let normalized_runtime = RuntimeKind::from_str(runtime)
+        .map(|k| k.runtime_key())
+        .unwrap_or(runtime);
+    let discovered = crate::acp::list_discovered_models(normalized_runtime);
+    pick_canonical_discovered_model(normalized_runtime, selected_model, &discovered)
 }
 
 pub(super) fn load_role_runtime_data(
@@ -122,7 +218,8 @@ pub(super) fn load_role_runtime_data(
                     .map(|(_, v)| v.clone())
             });
         if let Some(model) = model {
-            role_config.push(("model".to_string(), model));
+            let normalized_model = normalize_model_for_runtime(&runtime, &model);
+            role_config.push(("model".to_string(), normalized_model));
         }
     }
 
@@ -161,6 +258,8 @@ pub(super) fn load_role_runtime_data(
             }
         });
     }
+
+    inject_conductor_mcp(&mut mcp_servers);
 
     Ok(RoleRuntimeData {
         runtime,

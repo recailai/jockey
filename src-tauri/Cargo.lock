@@ -4557,6 +4557,7 @@ dependencies = [
  "agent-client-protocol",
  "async-trait",
  "dashmap",
+ "dirs",
  "futures",
  "libc",
  "rusqlite",

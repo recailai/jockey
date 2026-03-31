@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* Safelist: dynamic classes used via RUNTIME_COLOR map and status dots — must not be purged */
-@source inline("text-blue-300 text-orange-300 text-purple-300 text-zinc-300 text-zinc-500 bg-emerald-400 bg-amber-400 bg-zinc-500 bg-rose-500 border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 bg-zinc-800 text-zinc-300 bg-rose-900/90 text-rose-200");
+@source inline("text-blue-300 text-orange-300 text-purple-300 text-zinc-300 text-zinc-500 bg-emerald-400 bg-amber-400 bg-zinc-500 bg-rose-500 border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 bg-zinc-800 text-zinc-300 bg-rose-900/90 text-rose-200 group/pre group-hover/pre:opacity-100");
 
 /* ─── Theme tokens ────────────────────────────────────────────────────────────
    Each theme defines:

@@ -295,6 +295,17 @@ pub(super) struct LiveConnection {
 impl Drop for LiveConnection {
     fn drop(&mut self) {
         if let Some(pid) = self.child_pid {
+            // kill_on_drop only targets the direct child process and may leave
+            // grandchildren around (some ACP adapters fork a second binary).
+            // We spawn each adapter in its own process group, so terminate
+            // the whole group on connection drop to avoid orphan leaks.
+            unsafe {
+                let pgid = -(pid as i32);
+                let _ = libc::kill(pgid, libc::SIGTERM);
+                let _ = libc::kill(pgid, libc::SIGKILL);
+                let _ = libc::kill(pid as i32, libc::SIGTERM);
+                let _ = libc::kill(pid as i32, libc::SIGKILL);
+            }
             unregister_child_pid(pid);
         }
     }
