@@ -1,15 +1,15 @@
 mod context_bundle;
 mod prompt_builder;
-mod session_runtime;
+pub(crate) mod session_runtime;
 
+use crate::chat::session_runtime::load_role_runtime_data;
 use crate::commands::apply_chat_command;
 use crate::db::context::{list_shared_context_internal, set_shared_context_internal};
 use crate::db::get_state;
 use crate::db::session_context::app_session_scope;
 use crate::parser::parse_route_input;
-use crate::chat::session_runtime::load_role_runtime_data;
 use crate::types::*;
-use crate::{acp, build_unionai_tool_prompt, clip_text, now_ms};
+use crate::{acp, build_jockeyui_tool_prompt, clip_text, now_ms};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Instant;
@@ -21,7 +21,7 @@ const RECENT_ROLE_TURNS_PER_ROLE: usize = 3;
 const RECENT_ROLE_CHAT_TEXT_MAX: usize = 5000;
 
 pub(crate) fn chat_log(event: &str, payload: serde_json::Value) {
-    eprintln!("[unionai.chat] {} {} {}", now_ms(), event, payload);
+    eprintln!("[jockeyui.chat] {} {} {}", now_ms(), event, payload);
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -59,7 +59,10 @@ fn normalize_recent_chat_text(raw: &str) -> String {
     clip_text(&compact, RECENT_ROLE_CHAT_TEXT_MAX)
 }
 
-pub(super) fn load_recent_role_chats(state: &AppState, app_session_id: &str) -> Vec<RecentRoleChat> {
+pub(super) fn load_recent_role_chats(
+    state: &AppState,
+    app_session_id: &str,
+) -> Vec<RecentRoleChat> {
     let scope = app_session_scope(app_session_id);
     let entries = list_shared_context_internal(state, &scope).unwrap_or_default();
     entries
@@ -184,8 +187,14 @@ pub(crate) async fn assistant_chat(
 
     if text.starts_with("/app_") {
         let route_started = Instant::now();
-        let command_result =
-            apply_chat_command(app, state, text, input.runtime_kind.clone(), Some(app_session_id.clone())).await?;
+        let command_result = apply_chat_command(
+            app,
+            state,
+            text,
+            input.runtime_kind.clone(),
+            Some(app_session_id.clone()),
+        )
+        .await?;
         chat_log(
             "route.command",
             json!({
@@ -214,17 +223,17 @@ pub(crate) async fn assistant_chat(
     let mut role_targets = if explicit_role_targets {
         routed.role_names.clone()
     } else {
-        vec!["UnionAIAssistant".to_string()]
+        vec!["JockeyAssistant".to_string()]
     };
     if role_targets.is_empty() {
-        role_targets.push("UnionAIAssistant".to_string());
+        role_targets.push("JockeyAssistant".to_string());
     }
     let mut message = routed.message.clone();
     if message.is_empty() {
         message = "Please answer based on the attached context.".to_string();
     }
 
-    let tool_prompt = build_unionai_tool_prompt();
+    let tool_prompt = build_jockeyui_tool_prompt();
     let bundle = context_bundle::build_context_bundle(&state, &app_session_id, &routed).await;
     let cwd = bundle.cwd.clone();
     let attachment_pairs = bundle.attachment_pairs;
@@ -235,9 +244,10 @@ pub(crate) async fn assistant_chat(
     let shared_ctx = get_state(&state).shared_context.clone();
 
     let mut role_outputs: Vec<(String, String)> = Vec::new();
+    let mut any_acp_error = false;
 
     for role_name in role_targets {
-        let is_union_assistant = role_name == "UnionAIAssistant";
+        let is_union_assistant = role_name == "JockeyAssistant";
         let pool_clone = db_pool.clone();
         let ctx_clone = shared_ctx.clone();
         let role_name_clone = role_name.clone();
@@ -374,6 +384,9 @@ pub(crate) async fn assistant_chat(
                 &app_session_id,
             );
         }
+        if !llm.ok {
+            any_acp_error = true;
+        }
         role_outputs.push((role_name.clone(), final_output));
     }
 
@@ -391,7 +404,7 @@ pub(crate) async fn assistant_chat(
     };
 
     Ok(AssistantChatResponse {
-        ok: true,
+        ok: !any_acp_error,
         reply,
         runtime_kind: Some(assistant),
         session_id: None,

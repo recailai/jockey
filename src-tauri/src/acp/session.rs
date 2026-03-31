@@ -3,6 +3,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::Emitter;
@@ -10,15 +11,19 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use super::adapter::{acp_log, build_stdio_adapter, clip, friendly_error_message};
-use super::client::UnionAiClient;
+use super::client::JockeyUiClient;
 use super::runtime_state::{
-    remember_runtime_available_commands, remember_runtime_config_options,
-    remember_runtime_models, remember_runtime_modes,
+    remember_runtime_available_commands, remember_runtime_config_options, remember_runtime_models,
+    remember_runtime_modes,
 };
 use super::worker::{
     register_child_pid, worker_tx, AcpEvent, AcpPromptResult, DeltaSlot, LiveConnection,
     RuntimeKind, WorkerMsg,
 };
+
+const INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const SESSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+static LIVE_CONNECTION_SEQ: AtomicU64 = AtomicU64::new(1);
 use crate::db::app_session_role::{load_app_session_role_cli_id, save_app_session_role_cli_id};
 use crate::types::AppState;
 
@@ -142,7 +147,7 @@ pub(super) async fn cold_start(
     acp_log("spawn.ok", json!({ "binary": binary, "pid": child.id() }));
 
     let (conn, io_future) = acp::ClientSideConnection::new(
-        UnionAiClient {
+        JockeyUiClient {
             delta_slot: delta_slot.clone(),
             auto_approve,
         },
@@ -153,17 +158,20 @@ pub(super) async fn cold_start(
         },
     );
 
+    let (health_tx, health_rx) = tokio::sync::watch::channel(true);
     let io_handle = tokio::task::spawn_local(async move {
         if let Err(e) = io_future.await {
             acp_log("io_task.error", json!({ "error": e.to_string() }));
         }
+        let _ = health_tx.send(false);
     });
 
     let t = Instant::now();
-    let init_resp = conn
-        .initialize(
+    let init_resp = tokio::time::timeout(
+        INIT_TIMEOUT,
+        conn.initialize(
             acp::InitializeRequest::new(acp::ProtocolVersion::V1)
-                .client_info(acp::Implementation::new("unionai", "0.1.0").title("UnionAI"))
+                .client_info(acp::Implementation::new("jockeyui", "0.1.0").title("JockeyUI"))
                 .client_capabilities(
                     acp::ClientCapabilities::new()
                         .fs(acp::FileSystemCapabilities::new()
@@ -171,9 +179,11 @@ pub(super) async fn cold_start(
                             .write_text_file(true))
                         .terminal(true),
                 ),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+        ),
+    )
+    .await
+    .map_err(|_| format!("timeout: initialize exceeded {}s", INIT_TIMEOUT.as_secs()))?
+    .map_err(|e| e.to_string())?;
     acp_log(
         "stage.ok",
         json!({ "stage": "initialize", "latencyMs": t.elapsed().as_millis() }),
@@ -198,7 +208,19 @@ pub(super) async fn cold_start(
             if !mcp_servers.is_empty() {
                 load_req = load_req.mcp_servers(mcp_servers.clone());
             }
-            match conn.load_session(load_req).await {
+            match tokio::time::timeout(SESSION_TIMEOUT, conn.load_session(load_req))
+                .await
+                .map_err(|_| {
+                    acp::Error::new(
+                        acp::ErrorCode::InternalError.into(),
+                        format!(
+                            "timeout: load_session exceeded {}s",
+                            SESSION_TIMEOUT.as_secs()
+                        ),
+                    )
+                })
+                .and_then(|r| r)
+            {
                 Ok(resp) => {
                     acp_log(
                         "session.load.ok",
@@ -220,7 +242,15 @@ pub(super) async fn cold_start(
                     if !mcp_servers.is_empty() {
                         req = req.mcp_servers(mcp_servers);
                     }
-                    let resp = conn.new_session(req).await.map_err(|e| e.to_string())?;
+                    let resp = tokio::time::timeout(SESSION_TIMEOUT, conn.new_session(req))
+                        .await
+                        .map_err(|_| {
+                            format!(
+                                "timeout: new_session exceeded {}s",
+                                SESSION_TIMEOUT.as_secs()
+                            )
+                        })?
+                        .map_err(|e| e.to_string())?;
                     SessionStartResult {
                         session_id: resp.session_id,
                         config_options: resp.config_options,
@@ -234,7 +264,15 @@ pub(super) async fn cold_start(
             if !mcp_servers.is_empty() {
                 req = req.mcp_servers(mcp_servers);
             }
-            let resp = conn.new_session(req).await.map_err(|e| e.to_string())?;
+            let resp = tokio::time::timeout(SESSION_TIMEOUT, conn.new_session(req))
+                .await
+                .map_err(|_| {
+                    format!(
+                        "timeout: new_session exceeded {}s",
+                        SESSION_TIMEOUT.as_secs()
+                    )
+                })?
+                .map_err(|e| e.to_string())?;
             SessionStartResult {
                 session_id: resp.session_id,
                 config_options: resp.config_options,
@@ -247,7 +285,15 @@ pub(super) async fn cold_start(
         if !mcp_servers.is_empty() {
             req = req.mcp_servers(mcp_servers);
         }
-        let resp = conn.new_session(req).await.map_err(|e| e.to_string())?;
+        let resp = tokio::time::timeout(SESSION_TIMEOUT, conn.new_session(req))
+            .await
+            .map_err(|_| {
+                format!(
+                    "timeout: new_session exceeded {}s",
+                    SESSION_TIMEOUT.as_secs()
+                )
+            })?
+            .map_err(|e| e.to_string())?;
         SessionStartResult {
             session_id: resp.session_id,
             config_options: resp.config_options,
@@ -314,6 +360,7 @@ pub(super) async fn cold_start(
     );
 
     Ok(LiveConnection {
+        instance_id: LIVE_CONNECTION_SEQ.fetch_add(1, Ordering::Relaxed),
         conn: Rc::new(conn),
         session_id,
         cwd: abs_cwd.to_string(),
@@ -323,6 +370,7 @@ pub(super) async fn cold_start(
         child_pid: child.id(),
         _child: child,
         _io_task: io_handle,
+        health_rx,
     })
 }
 
@@ -368,14 +416,18 @@ pub async fn execute_runtime(
         Ok(Some(a)) => a,
         Ok(None) => {
             return AcpPromptResult {
+                ok: false,
                 output: format!("unsupported runtime kind: {}", normalized),
+                error_code: Some("UNSUPPORTED_RUNTIME".to_string()),
                 deltas: vec![],
                 meta: json!({ "mode": "unsupported-runtime", "runtime": normalized }),
             }
         }
         Err(e) => {
             return AcpPromptResult {
+                ok: false,
                 output: friendly_error_message(&normalized, &e),
+                error_code: Some("ADAPTER_UNAVAILABLE".to_string()),
                 deltas: vec![],
                 meta: json!({ "mode": "adapter-unavailable", "runtime": normalized, "error": e }),
             }
@@ -447,12 +499,15 @@ pub async fn execute_runtime(
     macro_rules! flush_delta_batch {
         () => {
             if !delta_batch.is_empty() {
-                let _ = app.emit("acp/delta", AcpDeltaPayload {
-                    role: &role_owned,
-                    runtime_kind: adapter.runtime_key,
-                    app_session_id: &app_session_id_owned,
-                    delta: &delta_batch,
-                });
+                let _ = app.emit(
+                    "acp/delta",
+                    AcpDeltaPayload {
+                        role: &role_owned,
+                        runtime_kind: adapter.runtime_key,
+                        app_session_id: &app_session_id_owned,
+                        delta: &delta_batch,
+                    },
+                );
                 delta_batch.clear();
             }
         };
@@ -606,10 +661,9 @@ pub async fn execute_runtime(
                         adapter.runtime_key, role_name, delta_count
                     )
                 } else {
-                    format!(
-                        "{} completed for role {} with no text output ({} event(s)).",
-                        adapter.runtime_key, role_name, delta_count
-                    )
+                    // Non-command prompts that produce no text output (e.g. cancelled
+                    // or tool-only turns) should be silently ignored by the frontend.
+                    String::new()
                 }
             } else {
                 full_output
@@ -627,7 +681,9 @@ pub async fn execute_runtime(
             );
 
             AcpPromptResult {
+                ok: true,
                 output,
+                error_code: None,
                 deltas: vec![],
                 meta: json!({
                     "mode": "live",
@@ -639,8 +695,11 @@ pub async fn execute_runtime(
         }
         Err(e) => {
             let friendly = friendly_error_message(adapter.runtime_key, &e);
+            let code = error_code_from_raw(&e);
             AcpPromptResult {
+                ok: false,
                 output: friendly.clone(),
+                error_code: Some(code),
                 deltas: vec![],
                 meta: json!({ "mode": "acp-error", "runtime": adapter.runtime_key, "error": e, "friendlyMessage": friendly }),
             }
@@ -861,6 +920,27 @@ pub async fn set_config_option(
     rx.await.map_err(|_| "worker disconnected".to_string())?
 }
 
+fn error_code_from_raw(raw: &str) -> String {
+    let l = raw.to_ascii_lowercase();
+    if l.contains("429")
+        || l.contains("rate limit")
+        || l.contains("quota")
+        || l.contains("too many requests")
+    {
+        "RATE_LIMITED".to_string()
+    } else if l.contains("epipe") || l.contains("broken pipe") || l.contains("transport closed") {
+        "PROCESS_CRASHED".to_string()
+    } else if l.contains("timeout") {
+        "TIMEOUT".to_string()
+    } else if l.contains("binary not found") || l.contains("adapter unavailable") {
+        "ADAPTER_UNAVAILABLE".to_string()
+    } else if l.contains("missing --experimental-acp") {
+        "INCOMPATIBLE_VERSION".to_string()
+    } else {
+        "ACP_ERROR".to_string()
+    }
+}
+
 fn mock_execute(role: &str, prompt: &str, ctx: &[(String, String)]) -> AcpPromptResult {
     let snap = ctx
         .iter()
@@ -869,7 +949,9 @@ fn mock_execute(role: &str, prompt: &str, ctx: &[(String, String)]) -> AcpPrompt
         .join("; ");
     let out = format!("{role} prompt: {prompt}. Context: {snap}.");
     AcpPromptResult {
+        ok: true,
         output: out.clone(),
+        error_code: None,
         deltas: out
             .as_bytes()
             .chunks(28)

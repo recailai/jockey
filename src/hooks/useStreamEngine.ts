@@ -1,6 +1,7 @@
 import { produce } from "solid-js/store";
 import { now } from "../components/types";
-import { MAX_THOUGHT_CHARS } from "../lib/sessionHelpers";
+import type { AppMessage } from "../components/types";
+import { MAX_THOUGHT_CHARS, MAX_MESSAGES } from "../lib/sessionHelpers";
 import type { SessionManager } from "./useSessionManager";
 
 export function useStreamEngine(sessionManager: SessionManager) {
@@ -170,7 +171,7 @@ export function useStreamEngine(sessionManager: SessionManager) {
     });
   };
 
-  let pendingSessionEvents: string[] = [];
+  let pendingSessionEvents: Array<{ sid: string; line: string }> = [];
   let sessionEventFlushTimer: number | null = null;
 
   const scheduleSessionEventFlush = () => {
@@ -178,7 +179,30 @@ export function useStreamEngine(sessionManager: SessionManager) {
     sessionEventFlushTimer = window.setTimeout(() => {
       sessionEventFlushTimer = null;
       if (pendingSessionEvents.length === 0) return;
-      pushMessage("event", pendingSessionEvents.join("\n"));
+      const bySid = new Map<string, string[]>();
+      for (const { sid, line } of pendingSessionEvents) {
+        const key = sid || "__active__";
+        const arr = bySid.get(key) ?? [];
+        arr.push(line);
+        bySid.set(key, arr);
+      }
+      for (const [sid, lines] of bySid) {
+        const text = lines.join("\n");
+        if (sid === "__active__") {
+          pushMessage("event", text);
+        } else {
+          const idx = sessions.findIndex((s) => s.id === sid);
+          if (idx === -1) {
+            pushMessage("event", text);
+          } else {
+            const msg = { id: `${now()}-${Math.random().toString(36).slice(2)}`, roleName: "event", text, at: now() };
+            setSessions(idx, "messages", produce((msgs: AppMessage[]) => {
+              if (msgs.length >= MAX_MESSAGES) msgs.splice(0, msgs.length - MAX_MESSAGES + 1);
+              msgs.push(msg);
+            }));
+          }
+        }
+      }
       pendingSessionEvents = [];
     }, 120);
   };
@@ -197,7 +221,7 @@ export function useStreamEngine(sessionManager: SessionManager) {
     normalizeToolLocations,
     scheduleSessionEventFlush,
     get pendingSessionEvents() { return pendingSessionEvents; },
-    set pendingSessionEvents(v: string[]) { pendingSessionEvents = v; },
+    set pendingSessionEvents(v: Array<{ sid: string; line: string }>) { pendingSessionEvents = v; },
     get sessionEventFlushTimer() { return sessionEventFlushTimer; },
     set sessionEventFlushTimer(v: number | null) { sessionEventFlushTimer = v; },
   };

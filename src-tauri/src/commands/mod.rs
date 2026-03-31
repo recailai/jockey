@@ -5,6 +5,8 @@ mod context_cmd;
 mod fallback_cmd;
 mod query_cmd;
 mod role_templates;
+pub(crate) mod runtime_cmd;
+pub(crate) mod session_context_cmd;
 mod shell_cmd;
 
 use crate::db::get_state;
@@ -30,12 +32,8 @@ pub(crate) fn enrich_command_message(base: &str, payload: &Value) -> String {
     format!("{base}\n{detail}")
 }
 
-type ExternalCommandHandler = fn(
-    &[&str],
-    &AppState,
-    Option<&str>,
-    &mut ChatCommandResult,
-) -> Result<bool, String>;
+type ExternalCommandHandler =
+    fn(&[&str], &AppState, Option<&str>, &mut ChatCommandResult) -> Result<bool, String>;
 
 fn dispatch_external_handlers(
     app: &AppHandle,

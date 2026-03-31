@@ -50,13 +50,13 @@ pub(super) async fn shutdown_terminals() {
     }
 }
 
-pub(super) struct UnionAiClient {
+pub(super) struct JockeyUiClient {
     pub(super) delta_slot: DeltaSlot,
     pub(super) auto_approve: bool,
 }
 
 #[async_trait::async_trait(?Send)]
-impl acp::Client for UnionAiClient {
+impl acp::Client for JockeyUiClient {
     async fn request_permission(
         &self,
         args: acp::RequestPermissionRequest,
@@ -87,7 +87,10 @@ impl acp::Client for UnionAiClient {
             if let Some(tx) = guard.as_ref() {
                 if tx.try_send(event).is_err() {
                     use super::adapter::acp_log;
-                    acp_log("permission.channel.drop", serde_json::json!({ "requestId": request_id }));
+                    acp_log(
+                        "permission.channel.drop",
+                        serde_json::json!({ "requestId": request_id }),
+                    );
                 }
             }
         }
@@ -232,7 +235,10 @@ impl acp::Client for UnionAiClient {
                 if tx.try_send(event).is_err() {
                     // Channel full or disconnected — log once per overflow to aid debugging
                     use super::adapter::acp_log;
-                    acp_log("delta.channel.drop", serde_json::json!({ "capacity": super::worker::DELTA_CHANNEL_CAPACITY }));
+                    acp_log(
+                        "delta.channel.drop",
+                        serde_json::json!({ "capacity": super::worker::DELTA_CHANNEL_CAPACITY }),
+                    );
                 }
             }
         }

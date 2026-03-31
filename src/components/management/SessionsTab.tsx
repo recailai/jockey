@@ -4,7 +4,7 @@ import { RUNTIME_COLOR } from "../types";
 import { Badge, EmptyState, FieldRow, ActionButton } from "./primitives";
 import type { ContextEntry, StoredSession } from "./primitives";
 import { fmtDate, fmtRelative } from "./primitives";
-import { appSessionApi, commandApi } from "../../lib/tauriApi";
+import { appSessionApi, contextApi } from "../../lib/tauriApi";
 
 // ─── value renderer ──────────────────────────────────────────────────────────
 function ContextValue(props: { raw: string }) {
@@ -45,18 +45,45 @@ function SessionContextSection(props: { sessionId: string }) {
   const [loading, setLoading] = createSignal(false);
   const [editingKey, setEditingKey] = createSignal<string | null>(null);
   const [editValue, setEditValue] = createSignal("");
+  const [editingItemKey, setEditingItemKey] = createSignal<string | null>(null);
+  const [editingItemValue, setEditingItemValue] = createSignal("");
   const [addingNew, setAddingNew] = createSignal(false);
   const [newKey, setNewKey] = createSignal("");
   const [newValue, setNewValue] = createSignal("");
   let reqSeq = 0;
+  const rootScope = () => `session:${props.sessionId}`;
+
+  const iconBtn = (title: string, onClick: () => void, icon: "edit" | "delete" | "save" | "cancel") => (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      class={`rounded p-1 theme-muted transition-colors hover:theme-text ${
+        icon === "delete" ? "hover:text-rose-400" : icon === "save" ? "hover:text-emerald-400" : ""
+      }`}
+    >
+      <Show when={icon === "edit"}>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+      </Show>
+      <Show when={icon === "delete"}>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+      </Show>
+      <Show when={icon === "save"}>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+      </Show>
+      <Show when={icon === "cancel"}>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </Show>
+    </button>
+  );
 
   const reload = () => {
     const sid = props.sessionId;
     const seq = ++reqSeq;
     if (!sid) { setEntries([]); return; }
     setLoading(true);
-    commandApi.apply<{ entries?: ContextEntry[] }>("/app_context list", sid)
-      .then((res) => { if (seq === reqSeq) setEntries(res.payload.entries ?? []); })
+    contextApi.list(sid)
+      .then((rows) => { if (seq === reqSeq) setEntries(rows); })
       .catch(() => { if (seq === reqSeq) setEntries([]); })
       .finally(() => { if (seq === reqSeq) setLoading(false); });
   };
@@ -66,15 +93,17 @@ function SessionContextSection(props: { sessionId: string }) {
     reload();
   });
 
-  const handleSet = async (key: string, value: string) => {
-    if (!key.trim() || !value.trim()) return;
-    await commandApi.apply(`/app_context set ${key} ${value}`, props.sessionId).catch(() => {});
+  const handleSet = async (scope: string, key: string, value: string) => {
+    if (!scope.trim() || !key.trim() || !value.trim()) return;
+    await contextApi.set(props.sessionId, scope, key, value).catch(() => {});
     setEditingKey(null);
+    setEditingItemKey(null);
     reload();
   };
 
-  const handleDelete = async (key: string) => {
-    await commandApi.apply(`/app_context delete ${key}`, props.sessionId).catch(() => {});
+  const handleDelete = async (scope: string, key: string) => {
+    await contextApi.remove(props.sessionId, scope, key).catch(() => {});
+    setEditingItemKey(null);
     reload();
   };
 
@@ -82,8 +111,17 @@ function SessionContextSection(props: { sessionId: string }) {
     const k = newKey().trim();
     const v = newValue().trim();
     if (!k || !v) return;
-    await handleSet(k, v);
+    await handleSet(rootScope(), k, v);
     setNewKey(""); setNewValue(""); setAddingNew(false);
+  };
+
+  const parseList = (raw: string): unknown[] | null => {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
   };
 
   return (
@@ -107,8 +145,11 @@ function SessionContextSection(props: { sessionId: string }) {
           >↻</button>
           <button
             onClick={() => { setAddingNew(true); setNewKey(""); setNewValue(""); }}
-            class="font-mono text-[9px] text-amber-500/70 hover:text-amber-400 transition-colors"
-          >+ add</button>
+            class="rounded p-1 text-amber-500/70 transition-colors hover:text-amber-400"
+            title="Add entry"
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
         </div>
       </div>
 
@@ -153,18 +194,71 @@ function SessionContextSection(props: { sessionId: string }) {
                     <span class="font-mono text-[9px] font-semibold text-amber-400/80 truncate">{entry.key}</span>
                     <div class="flex items-center gap-2 shrink-0">
                       <Show when={!isEditing()}>
-                        <button
-                          onClick={() => { setEditingKey(entry.key); setEditValue(entry.value); }}
-                          class="opacity-0 group-hover:opacity-100 font-mono text-[9px] theme-muted hover:theme-text transition-all"
-                        >edit</button>
+                        <span class="opacity-0 group-hover:opacity-100 transition-all">
+                          {iconBtn("Edit entry", () => { setEditingKey(entry.key); setEditValue(entry.value); }, "edit")}
+                        </span>
                       </Show>
-                      <button
-                        onClick={() => void handleDelete(entry.key)}
-                        class="opacity-0 group-hover:opacity-100 font-mono text-[9px] text-rose-600 hover:text-rose-400 transition-all"
-                      >del</button>
+                      <span class="opacity-0 group-hover:opacity-100 transition-all">
+                        {iconBtn("Delete entry", () => void handleDelete(entry.scope, entry.key), "delete")}
+                      </span>
                     </div>
                   </div>
-                  <Show when={isEditing()} fallback={<ContextValue raw={entry.value} />}>
+                  <Show when={isEditing()} fallback={
+                    <Show when={parseList(entry.value)} fallback={<ContextValue raw={entry.value} />}>
+                      {(arr) => (
+                        <ul class="space-y-1.5">
+                          <For each={arr() as unknown[]}>
+                            {(item, idx) => {
+                              const itemKey = `${entry.scope}::${entry.key}::${idx()}`;
+                              const itemRaw = typeof item === "string" ? item : JSON.stringify(item);
+                              const isItemEditing = () => editingItemKey() === itemKey;
+                              return (
+                                <li class="rounded border theme-border theme-surface px-2 py-1.5">
+                                  <Show when={isItemEditing()} fallback={
+                                    <div class="flex items-start gap-2">
+                                      <span class="mt-1 h-1 w-1 shrink-0 rounded-full bg-amber-400/60" />
+                                      <span class="flex-1 font-mono text-[10px] theme-text whitespace-pre-wrap break-all">{itemRaw}</span>
+                                      <div class="flex items-center gap-0.5">
+                                        {iconBtn("Edit item", () => { setEditingItemKey(itemKey); setEditingItemValue(itemRaw); }, "edit")}
+                                        {iconBtn("Delete item", () => {
+                                          const arrValue = parseList(entry.value);
+                                          if (!arrValue) return;
+                                          arrValue.splice(idx(), 1);
+                                          void handleSet(entry.scope, entry.key, JSON.stringify(arrValue));
+                                        }, "delete")}
+                                      </div>
+                                    </div>
+                                  }>
+                                    <div class="space-y-1">
+                                      <textarea
+                                        value={editingItemValue()}
+                                        onInput={(e) => setEditingItemValue(e.currentTarget.value)}
+                                        rows={2}
+                                        class="w-full resize-none rounded border theme-border theme-surface px-2 py-1 font-mono text-[10px] theme-text focus:border-[var(--ui-border-strong)] focus:outline-none"
+                                      />
+                                      <div class="flex items-center gap-1">
+                                        {iconBtn("Save item", () => {
+                                          const arrValue = parseList(entry.value);
+                                          if (!arrValue) return;
+                                          try {
+                                            arrValue[idx()] = JSON.parse(editingItemValue());
+                                          } catch {
+                                            arrValue[idx()] = editingItemValue();
+                                          }
+                                          void handleSet(entry.scope, entry.key, JSON.stringify(arrValue));
+                                        }, "save")}
+                                        {iconBtn("Cancel", () => setEditingItemKey(null), "cancel")}
+                                      </div>
+                                    </div>
+                                  </Show>
+                                </li>
+                              );
+                            }}
+                          </For>
+                        </ul>
+                      )}
+                    </Show>
+                  }>
                     <textarea
                       value={editValue()}
                       onInput={(e) => setEditValue(e.currentTarget.value)}
@@ -172,9 +266,9 @@ function SessionContextSection(props: { sessionId: string }) {
                       class="w-full resize-none rounded border theme-border theme-surface px-2 py-1 font-mono text-[10px] theme-text focus:border-[var(--ui-border-strong)] focus:outline-none"
                       onKeyDown={(e) => { if (e.key === "Escape") setEditingKey(null); }}
                     />
-                    <div class="mt-1 flex gap-1.5">
-                      <ActionButton label="Save" variant="primary" onClick={() => void handleSet(entry.key, editValue())} />
-                      <ActionButton label="Cancel" variant="ghost" onClick={() => setEditingKey(null)} />
+                    <div class="mt-1 flex items-center gap-1.5">
+                      {iconBtn("Save entry", () => void handleSet(entry.scope, entry.key, editValue()), "save")}
+                      {iconBtn("Cancel", () => setEditingKey(null), "cancel")}
                     </div>
                   </Show>
                 </div>

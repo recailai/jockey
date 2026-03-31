@@ -24,7 +24,9 @@ pub(crate) fn handle_context_command(
             let entries = if scope.is_empty() {
                 list_shared_context_prefix_internal(state, &prefix)?
                     .into_iter()
-                    .filter(|entry| entry.scope == prefix || entry.scope.starts_with(&scoped_prefix))
+                    .filter(|entry| {
+                        entry.scope == prefix || entry.scope.starts_with(&scoped_prefix)
+                    })
                     .collect()
             } else {
                 if !(scope == prefix || scope.starts_with(&scoped_prefix)) {

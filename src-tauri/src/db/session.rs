@@ -289,11 +289,29 @@ pub(crate) async fn run_workflow(
             &summary,
         )?;
         // Batch AdapterResult + StepOutput + StepCompleted into one transaction
-        record_session_events_batch(state.inner(), &[
-            (&session_id, "AdapterResult", Some(role_name.as_str()), acp_result.meta.clone()),
-            (&session_id, "StepOutput",    Some(role_name.as_str()), json!({ "output": &output })),
-            (&session_id, "StepCompleted", Some(role_name.as_str()), json!({ "summary": &summary })),
-        ])?;
+        record_session_events_batch(
+            state.inner(),
+            &[
+                (
+                    &session_id,
+                    "AdapterResult",
+                    Some(role_name.as_str()),
+                    acp_result.meta.clone(),
+                ),
+                (
+                    &session_id,
+                    "StepOutput",
+                    Some(role_name.as_str()),
+                    json!({ "output": &output }),
+                ),
+                (
+                    &session_id,
+                    "StepCompleted",
+                    Some(role_name.as_str()),
+                    json!({ "summary": &summary }),
+                ),
+            ],
+        )?;
 
         prompt = format!("{}\n\n{} handoff summary: {}", prompt, role_name, summary);
         let done_update = SessionUpdateEvent {

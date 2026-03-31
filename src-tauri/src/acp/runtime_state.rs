@@ -61,7 +61,6 @@ pub fn list_discovered_models(runtime_key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-
 pub(super) fn remember_runtime_config_options(
     app_session_id: &str,
     runtime_key: &str,
@@ -71,7 +70,10 @@ pub(super) fn remember_runtime_config_options(
     if options.is_empty() {
         return;
     }
-    runtime_config_options().insert(session_runtime_key(app_session_id, runtime_key, role_name), options);
+    runtime_config_options().insert(
+        session_runtime_key(app_session_id, runtime_key, role_name),
+        options,
+    );
 }
 
 pub fn list_discovered_config_options(
@@ -91,10 +93,17 @@ pub(super) fn remember_runtime_available_commands(
     role_name: &str,
     commands: Vec<Value>,
 ) {
-    runtime_available_commands().insert(session_runtime_key(app_session_id, runtime_key, role_name), commands);
+    runtime_available_commands().insert(
+        session_runtime_key(app_session_id, runtime_key, role_name),
+        commands,
+    );
 }
 
-pub fn list_available_commands(app_session_id: &str, runtime_key: &str, role_name: &str) -> Vec<Value> {
+pub fn list_available_commands(
+    app_session_id: &str,
+    runtime_key: &str,
+    role_name: &str,
+) -> Vec<Value> {
     runtime_available_commands()
         .get(&session_runtime_key(app_session_id, runtime_key, role_name))
         .map(|v| v.clone())

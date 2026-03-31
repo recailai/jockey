@@ -1,4 +1,4 @@
-use crate::assistant::{assistant_catalog, normalize_runtime_key};
+use crate::assistant::{cached_assistant_catalog, normalize_runtime_key};
 use crate::types::{AppState, ChatCommandResult};
 use serde_json::json;
 
@@ -10,7 +10,7 @@ pub(crate) fn handle_assistant_command(
 ) -> Result<bool, String> {
     match tokens {
         ["/app_assistant", "list"] => {
-            let assistants = assistant_catalog();
+            let assistants = cached_assistant_catalog();
             result.message = "assistant list".to_string();
             result.payload = json!({ "assistants": assistants });
             Ok(true)

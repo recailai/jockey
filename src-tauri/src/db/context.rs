@@ -176,7 +176,11 @@ pub(crate) fn dynamic_catalog_contains(
     })
 }
 
-pub(crate) fn list_enabled_feature_flags(state: &AppState, scope: &str, prefix: &str) -> Vec<String> {
+pub(crate) fn list_enabled_feature_flags(
+    state: &AppState,
+    scope: &str,
+    prefix: &str,
+) -> Vec<String> {
     list_shared_context_internal(state, scope)
         .unwrap_or_default()
         .into_iter()

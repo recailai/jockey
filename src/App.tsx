@@ -1,15 +1,9 @@
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { For, Show, Suspense, createSignal, lazy, onCleanup, onMount } from "solid-js";
-import { produce } from "solid-js/store";
 
 import SessionTabs from "./components/SessionTabs";
 import MessageWindow from "./components/MessageWindow";
 import ChatInput from "./components/ChatInput";
-import type {
-  Role, AppPlanEntry,
-  AcpStreamEvent, AcpDeltaEvent, SessionUpdateEvent, WorkflowStateEvent,
-  AppMessage, AppSession, AppToolCall,
-} from "./components/types";
+import type { AppMessage, AppSession } from "./components/types";
 import {
   now, DEFAULT_BACKEND_ROLE, DEFAULT_ROLE_ALIAS,
 } from "./components/types";
@@ -18,12 +12,15 @@ import { type UiTheme, normalizeUiTheme, UI_THEME_KEY } from "./lib/theme";
 import { useSessionManager } from "./hooks/useSessionManager";
 import { useStreamEngine } from "./hooks/useStreamEngine";
 import { useAgentContext } from "./hooks/useAgentContext";
+import { useAppBootstrap } from "./hooks/useAppBootstrap";
+import { useAcpEventListeners } from "./hooks/useAcpEventListeners";
 import { useCompletions } from "./hooks/useCompletions";
 import {
   uniqueName, isDefaultSessionTitle, makeDefaultSession, deriveSessionTitleFromMessage,
 } from "./lib/sessionHelpers";
 import { appSessionApi, assistantApi } from "./lib/tauriApi";
 import { parseAgentControlCommand, resolveRoute, type ResolveRouteResult } from "./lib/chatPipeline";
+import { mutateSessionWithProduce } from "./lib/acpEventBridge";
 
 const ConfigDrawer = lazy(() => import("./components/ConfigDrawer"));
 const ManagementPanel = lazy(() => import("./components/ManagementPanel"));
@@ -85,7 +82,7 @@ export default function App() {
     roles, assistants, skills,
     normalizeRuntimeKey, commandCacheKey,
     bumpRunToken, getCanceledRunToken,
-    isCustomRole, activeBackendRole, runtimeForRole,
+    isCustomRole, activeBackendRole,
     refreshRoles, refreshSkills,
     fetchConfigOptions,
     parseAgentCommands,
@@ -110,6 +107,19 @@ export default function App() {
     refreshInputCompletions,
     applyMentionCandidate, applySlashCandidate,
   } = completions;
+  const { registerAcpEventListeners } = useAcpEventListeners();
+
+  const { bootstrapApp } = useAppBootstrap({
+    setSessions,
+    setActiveSessionId: (id) => setActiveSessionId(id),
+    assistants,
+    refreshAssistants,
+    refreshRoles,
+    refreshSkills,
+    fetchConfigOptions,
+    pushMessage,
+    showToast,
+  });
 
   const queuedInputsFor = (sid: string | null): string[] => {
     if (!sid) return [];
@@ -221,13 +231,12 @@ export default function App() {
     const cmd = parseAgentControlCommand(text, isCommand, inRoleContext);
     if (!cmd) return false;
     const role = activeBackendRole();
-    const runtime = runtimeForRole(role);
     try {
       if (cmd === "cancel") {
-        if (runtime && originSessionId) await assistantApi.cancelSession(runtime, role, originSessionId);
+        if (originSessionId) await assistantApi.cancelSession(role, originSessionId);
         pushMessage("event", `cancelled ${role}`);
       } else {
-        if (runtime && originSessionId) await assistantApi.setMode(runtime, role, cmd, originSessionId);
+        if (originSessionId) await assistantApi.setMode(role, cmd, originSessionId);
         pushMessage("event", `${role} mode → ${cmd}`);
       }
     } catch (e) {
@@ -272,7 +281,7 @@ export default function App() {
     const sendRoleLabel = route.sendRoleLabel;
     const isCommand = route.isCommand;
     const inRoleContext = route.inRoleContext;
-    const isUnionAiCommand = route.isUnionAiCommand;
+    const isAppCommand = route.isAppCommand;
     const routedText = route.routedText;
 
     if (!silent) {
@@ -288,7 +297,8 @@ export default function App() {
       buildOriginStreamOps(originSessionId, sendRoleLabel);
 
     let streamStarted = false;
-    if ((!isUnionAiCommand) && s?.runtimeKind) {
+    let finalStatus: "done" | "error" = "done";
+    if ((!isAppCommand) && s?.runtimeKind) {
       startOriginStream();
       streamStarted = true;
     }
@@ -303,6 +313,14 @@ export default function App() {
       if (res.runtimeKind) setPreferredAssistant(res.runtimeKind);
       if (text.startsWith("/app_role")) void refreshRoles();
 
+      if (!res.ok) {
+        if (streamStarted) dropOriginStream();
+        showToast(res.reply);
+        appendOriginMessage({ id: `${now()}-err`, roleName: "event", text: res.reply, at: now() });
+        finalStatus = "error";
+        return;
+      }
+
       if (streamStarted) {
         completeOriginStream(res.reply);
       } else {
@@ -315,9 +333,7 @@ export default function App() {
       const errMsg = String(e);
       if (!errMsg.toLowerCase().includes("cancel")) showToast(errMsg);
       appendOriginMessage({ id: `${now()}-err`, roleName: "event", text: errMsg, at: now() });
-      patchOriginSession({ submitting: false, status: "error" });
-      if (originSessionId) acceptingStreams.delete(originSessionId);
-      runNextQueued(originSessionId);
+      finalStatus = "error";
       return;
     } finally {
       if (originSessionId) acceptingStreams.delete(originSessionId);
@@ -326,7 +342,7 @@ export default function App() {
         runNextQueued(originSessionId);
         return;
       }
-      patchOriginSession({ submitting: false, status: "done" });
+      patchOriginSession({ submitting: false, status: finalStatus });
       runNextQueued(originSessionId);
     }
   };
@@ -486,230 +502,38 @@ export default function App() {
   };
 
   onMount(() => {
-    const handlers: UnlistenFn[] = [];
+    const handlers: Array<() => void> = [];
     let startupRaf: number | null = null;
-    const boot = async () => {
-      let loaded: AppSession[] = [];
-      try {
-        const raw = await appSessionApi.list();
-        loaded = raw.map((r) => {
-          const s = makeDefaultSession(r.title);
-          s.id = r.id;
-          if (r.activeRole) s.activeRole = r.activeRole;
-          if (r.runtimeKind !== undefined) s.runtimeKind = r.runtimeKind;
-          if (r.cwd !== undefined) s.cwd = r.cwd ?? null;
-          s.messages = r.messages ?? [];
-          return s;
-        });
-      } catch (e) {
-        showToast(`Failed to restore sessions: ${String(e)}`);
-      }
-
-      if (loaded.length === 0) {
-        try {
-          const created = await appSessionApi.create("Session_1");
-          const s = makeDefaultSession("Session_1");
-          s.id = created.id;
-          loaded = [s];
-        } catch {
-          loaded = [makeDefaultSession("Session_1")];
-        }
-      }
-
-      setSessions(loaded);
-      setActiveSessionId(loaded[0].id);
-
-      await Promise.all([
-        refreshAssistants(),
-        refreshRoles(),
-        refreshSkills(),
-      ]);
-
-      const availableAssistant = assistants().find((a) => a.available)?.key ?? null;
-
-      sessions.forEach((s, i) => {
-        if (!s.runtimeKind && availableAssistant) {
-          setSessions(i, "runtimeKind", availableAssistant);
-          void appSessionApi.update(s.id, { runtimeKind: availableAssistant }).catch(() => { });
-        }
-      });
-
-      pushMessage("system", "Welcome to UnionAI. Agent sessions are warming up in the background.");
-
-      assistants().filter((a) => a.available).forEach((a) => {
-        void fetchConfigOptions(a.key);
-      });
-    };
     startupRaf = window.requestAnimationFrame(() => {
       startupRaf = null;
-      void boot();
+      void bootstrapApp();
     });
 
-    void Promise.all([
-      listen<AcpDeltaEvent & { appSessionId?: string }>("acp/delta", (ev) => {
-        const sid = ev.payload.appSessionId;
-        if (!sid || !acceptingStreams.has(sid)) return;
-        const sess = sessions.find((s) => s.id === sid);
-        if (!sess?.streamingMessage) return;
-        appendStream(sid, ev.payload.delta);
-      }),
-      listen<SessionUpdateEvent>("session/update", (ev) => {
-        if (!ev.payload.delta) return;
-        streamEngine.pendingSessionEvents.push(`[${ev.payload.roleName}] ${ev.payload.delta}`);
+    const pushMessageToSession = (sid: string, role: string, text: string) => {
+      appendMessageToSession(sid, { id: `${now()}-${Math.random().toString(36).slice(2)}`, roleName: role, text, at: now() });
+    };
+
+    void registerAcpEventListeners({
+      acceptingStreams,
+      sessions,
+      appendStream,
+      pushMessageToSession,
+      pushMessage,
+      onSessionDeltaLine: (sid, line) => {
+        streamEngine.pendingSessionEvents.push({ sid, line });
         scheduleSessionEventFlush();
-      }),
-      listen<WorkflowStateEvent>("workflow/state_changed", (ev) => {
-        const p = ev.payload;
-        pushMessage("event", `[workflow] ${p.status} ${p.activeRole ?? ""} ${p.message}`);
-      }),
-      listen<{ role: string; runtimeKind?: string; appSessionId?: string; event: AcpStreamEvent }>("acp/stream", (ev) => {
-        const e = ev.payload.event;
-        const sid = ev.payload.appSessionId;
-        if (!sid || !acceptingStreams.has(sid)) return;
-        const patchSession = (patch: Partial<AppSession>) => updateSession(sid, patch);
-        switch (e.kind) {
-          case "statusUpdate":
-            if (e.text) patchSession({ agentState: e.text });
-            break;
-          case "thoughtDelta":
-            if (e.text) {
-              patchSession({ agentState: `Thinking: ${e.text.slice(0, 120)}` });
-              if (sid) appendThought(sid, e.text);
-            }
-            break;
-          case "toolCall":
-            if (e.toolCallId) {
-              const content = Array.isArray(e.content) ? e.content : undefined;
-              const locations = normalizeToolLocations(e.locations as unknown[] | undefined);
-              const tc: AppToolCall = {
-                toolCallId: e.toolCallId!,
-                title: e.title ?? "",
-                kind: e.toolKind ?? "unknown",
-                status: e.status ?? "pending",
-                content,
-                contentJson: content && content.length > 0 ? JSON.stringify(content, null, 2) : undefined,
-                locations,
-                rawInput: e.rawInput,
-                rawOutput: e.rawOutput,
-                rawInputJson: e.rawInput !== undefined ? JSON.stringify(e.rawInput, null, 2) : undefined,
-                rawOutputJson: e.rawOutput !== undefined ? JSON.stringify(e.rawOutput, null, 2) : undefined,
-              };
-              setSessions((s) => s.id === sid, produce((s) => {
-                s.toolCalls[e.toolCallId!] = tc;
-                const existing = s.streamSegments.findIndex(seg => seg.kind === "tool" && seg.tc.toolCallId === e.toolCallId);
-                if (existing >= 0) {
-                  s.streamSegments[existing] = { kind: "tool" as const, tc };
-                } else {
-                  s.streamSegments.push({ kind: "tool" as const, tc });
-                }
-              }));
-              patchSession({ agentState: `${e.toolKind ?? "tool"}: ${e.title ?? e.toolCallId}` });
-              scheduleScrollToBottom();
-            }
-            break;
-          case "toolCallUpdate":
-            if (e.toolCallId) {
-              setSessions((s) => s.id === sid, produce((s) => {
-                const isNew = !s.toolCalls[e.toolCallId!];
-                const existing = s.toolCalls[e.toolCallId!] ?? {
-                  toolCallId: e.toolCallId!,
-                  title: e.title ?? "",
-                  kind: e.toolKind ?? "unknown",
-                  status: "pending",
-                };
-                const newContent = Array.isArray(e.content) ? e.content : existing.content;
-                const newLocations = normalizeToolLocations(e.locations as unknown[] | undefined) ?? existing.locations;
-                const contentJson = newContent !== existing.content
-                  ? (newContent && newContent.length > 0 ? JSON.stringify(newContent, null, 2) : undefined)
-                  : existing.contentJson;
-                const newRawInput = e.rawInput !== undefined ? e.rawInput : existing.rawInput;
-                const newRawOutput = e.rawOutput !== undefined ? e.rawOutput : existing.rawOutput;
-                const updated: AppToolCall = {
-                  ...existing,
-                  kind: e.toolKind ?? existing.kind,
-                  status: e.status ?? existing.status,
-                  title: e.title ?? existing.title,
-                  content: newContent,
-                  contentJson,
-                  locations: newLocations,
-                  rawInput: newRawInput,
-                  rawOutput: newRawOutput,
-                  rawInputJson: e.rawInput !== undefined ? JSON.stringify(newRawInput, null, 2) : existing.rawInputJson,
-                  rawOutputJson: e.rawOutput !== undefined ? JSON.stringify(newRawOutput, null, 2) : existing.rawOutputJson,
-                };
-                s.toolCalls[e.toolCallId!] = updated;
-                if (isNew) {
-                  s.streamSegments.push({ kind: "tool", tc: updated });
-                } else {
-                  for (let i = s.streamSegments.length - 1; i >= 0; i--) {
-                    const seg = s.streamSegments[i];
-                    if (seg.kind === "tool" && seg.tc.toolCallId === e.toolCallId) {
-                      s.streamSegments[i] = { kind: "tool", tc: updated };
-                      break;
-                    }
-                  }
-                }
-              }));
-              if (e.status || e.title) {
-                patchSession({
-                  agentState: `${e.toolKind ?? "tool"} ${e.status ?? "updated"}: ${e.title ?? e.toolCallId}`,
-                });
-              }
-              scheduleScrollToBottom();
-            }
-            break;
-          case "plan":
-            if (e.entries) patchSession({ currentPlan: e.entries as AppPlanEntry[] });
-            break;
-          case "permissionRequest":
-            if (e.requestId) {
-              patchSession({
-                pendingPermission: {
-                  requestId: e.requestId,
-                  title: e.title ?? "Permission Required",
-                  description: e.description ?? null,
-                  options: (e.options as Array<{ optionId: string; title?: string }>) ?? [],
-                },
-              });
-            }
-            break;
-          case "permissionExpired":
-            // Clear the pending permission UI if the request timed out on the backend
-            if (e.requestId && activeSession()?.pendingPermission?.requestId === e.requestId) {
-              patchSession({ pendingPermission: null });
-            }
-            break;
-          case "modeUpdate":
-            if (e.modeId) patchSession({ currentMode: e.modeId });
-            break;
-          case "availableModes":
-            if (e.modes) patchSession({ agentModes: e.modes });
-            if (e.current !== undefined) patchSession({ currentMode: e.current ?? null });
-            break;
-          case "availableCommands":
-            if (e.commands) {
-              const roleName = ev.payload.role;
-              if (roleName) {
-                const parsed = parseAgentCommands(e.commands as unknown[]);
-                const runtimeKey = ev.payload.runtimeKind
-                  || roles().find((r: Role) => r.roleName === roleName)?.runtimeKind
-                  || "";
-                const normalizedRuntime = runtimeKey ? normalizeRuntimeKey(runtimeKey) : "";
-                if (!normalizedRuntime) break;
-                const key = commandCacheKey(normalizedRuntime, roleName);
-                setSessions((s) => s.id === sid, produce((s) => {
-                  const next = new Map(s.agentCommands);
-                  next.set(key, parsed);
-                  s.agentCommands = next;
-                }));
-              }
-            }
-            break;
-          default:
-            break;
-        }
-      }),
-    ]).then((hs) => handlers.push(...hs));
+      },
+      updateSession,
+      mutateSession: (sessionId, recipe) =>
+        mutateSessionWithProduce(sessionId, setSessions, recipe),
+      appendThought,
+      normalizeToolLocations,
+      parseAgentCommands,
+      normalizeRuntimeKey,
+      roles,
+      commandCacheKey,
+      scheduleScrollToBottom,
+    }).then((hs) => handlers.push(...hs));
 
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
@@ -809,6 +633,7 @@ export default function App() {
             sendRaw={sendRaw}
             refreshRoles={refreshRoles}
             refreshSkills={refreshSkills}
+            refreshAssistants={refreshAssistants}
             pushMessage={pushMessage}
             fetchConfigOptions={fetchConfigOptions}
             onOpenManagement={(tab, roleName) => {

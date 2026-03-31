@@ -45,7 +45,7 @@ export type AcpConfigOption = {
   currentValue: string;
   options: ConfigOptionValue[] | ConfigOptionGroup[];
 };
-export type AssistantRuntime = { key: string; label: string; binary: string; available: boolean; version: string | null };
+export type AssistantRuntime = { key: string; label: string; binary: string; available: boolean; version: string | null; installHint: string | null };
 export type ChatCommandResult = { ok: boolean; message: string; runtimeKind: string | null; sessionId: string | null; payload: Record<string, unknown> };
 export type AssistantChatResponse = { ok: boolean; reply: string; runtimeKind: string | null; sessionId: string | null; commandResult: ChatCommandResult | null };
 export type SessionUpdateEvent = { sessionId: string; roleName: string; delta: string; done: boolean };
@@ -88,8 +88,8 @@ export const RUNTIME_COLOR: Record<string, string> = {
   mock: "text-zinc-400",
 };
 export const INTERACTIVE_MOTION = "motion-safe:transition-colors motion-safe:transition-transform motion-safe:duration-150 motion-safe:ease-out active:scale-[0.98]";
-export const DEFAULT_BACKEND_ROLE = "UnionAIAssistant";
-export const DEFAULT_ROLE_ALIAS = "UnionAI";
+export const DEFAULT_BACKEND_ROLE = "JockeyAssistant";
+export const DEFAULT_ROLE_ALIAS = "JockeyUI";
 export const MESSAGE_RENDER_WINDOW = 280;
 
 export const now = (): number => Date.now();

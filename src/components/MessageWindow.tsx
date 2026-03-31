@@ -16,7 +16,13 @@ type MessageWindowProps = {
   onListUnmounted?: (id: string) => void;
 };
 
-const renderMd = (text: string) => marked.parse(text, { async: false }) as string;
+const COPY_BTN = `<button data-copy-code class="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded text-[10px] font-mono opacity-0 group-hover/pre:opacity-100 transition-opacity cursor-pointer theme-muted hover:theme-text" style="background:var(--ui-panel)">Copy</button>`;
+
+function injectCopyButtons(html: string): string {
+  return html.replace(/<pre>/g, `<pre class="group/pre relative">${COPY_BTN}`);
+}
+
+const renderMd = (text: string) => injectCopyButtons(marked.parse(text, { async: false }) as string);
 
 // Module-level LRU-style cache for completed (non-streaming) message markdown.
 // Keyed by message id so re-renders never re-parse the same static content.
@@ -75,7 +81,24 @@ export default function MessageWindow(props: MessageWindowProps) {
   };
 
   function handleContainerClick(e: MouseEvent) {
-    const a = (e.target as HTMLElement).closest("a");
+    const target = e.target as HTMLElement;
+
+    const copyBtn = target.closest("[data-copy-code]");
+    if (copyBtn) {
+      e.preventDefault();
+      const pre = copyBtn.closest("pre");
+      if (pre) {
+        const code = pre.querySelector("code");
+        const text = (code ?? pre).textContent ?? "";
+        navigator.clipboard.writeText(text).then(() => {
+          copyBtn.textContent = "✓";
+          setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
+        });
+      }
+      return;
+    }
+
+    const a = target.closest("a");
     if (!a) return;
     const href = a.getAttribute("href");
     if (!href || !href.startsWith("http")) return;
@@ -199,9 +222,6 @@ export default function MessageWindow(props: MessageWindowProps) {
                 <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.runtimeKind ?? ""] ?? "text-zinc-300"}`}>
                   {props.activeSession()?.activeRole ?? "Agent"}
                 </span>
-                <svg class="h-3.5 w-3.5 animate-spin theme-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-                  <path d="M12 2a10 10 0 0 1 7.07 2.93" /><path d="M22 12a10 10 0 0 1-2.93 7.07" /><path d="M12 22a10 10 0 0 1-7.07-2.93" /><path d="M2 12a10 10 0 0 1 2.93-7.07" />
-                </svg>
               </div>
               <Show when={(props.activeSession()?.streamSegments ?? []).length > 0} fallback={
                 <>
@@ -220,6 +240,12 @@ export default function MessageWindow(props: MessageWindowProps) {
                   {props.activeSession()?.thoughtText}
                 </div>
               </Show>
+              <div class="flex items-center gap-2 mt-2 pt-1.5">
+                <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                  <path d="M12 2a10 10 0 0 1 7.07 2.93" stroke="var(--ui-accent, #818cf8)" /><path d="M22 12a10 10 0 0 1-2.93 7.07" stroke="var(--ui-accent, #818cf8)" opacity="0.6" /><path d="M12 22a10 10 0 0 1-7.07-2.93" stroke="var(--ui-accent, #818cf8)" opacity="0.3" /><path d="M2 12a10 10 0 0 1 2.93-7.07" stroke="var(--ui-accent, #818cf8)" opacity="0.1" />
+                </svg>
+                <span class="text-[10px] theme-muted italic">{props.activeSession()?.agentState || "running"}</span>
+              </div>
             </div>
           </div>
         )}
@@ -243,7 +269,7 @@ export default function MessageWindow(props: MessageWindowProps) {
           </div>
         )}
       </Show>
-      <Show when={props.activeSession()?.submitting}>
+      <Show when={props.activeSession()?.submitting && !props.activeSession()?.streamingMessage}>
         <div class="flex items-center gap-2 px-1 text-xs theme-muted opacity-80 mt-2">
           <span class="h-2 w-2 rounded-full bg-white/60 animate-pulse" />
           <span>{props.activeSession()?.agentState || "Agent is thinking..."}</span>

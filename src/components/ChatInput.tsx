@@ -65,7 +65,7 @@ export default function ChatInput(props: ChatInputProps) {
             type="button"
             onClick={() => props.patchActiveSession({ activeRole: DEFAULT_ROLE_ALIAS })}
             class={`shrink-0 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-bold tracking-wide transition-all ${props.isCustomRole() ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 shadow-[0_0_10px_rgba(99,102,241,0.1)]" : "border theme-border theme-muted hover:text-primary theme-surface-muted"}`}
-            title={props.isCustomRole() ? "Click to return to UnionAI" : "UnionAI mode"}
+            title={props.isCustomRole() ? "Click to return to JockeyUI" : "JockeyUI mode"}
           >
             {props.activeSession()?.activeRole ?? DEFAULT_ROLE_ALIAS}
             <svg class="opacity-40" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6" /></svg>

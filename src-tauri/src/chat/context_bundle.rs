@@ -1,8 +1,8 @@
 use crate::db::get_state;
 use crate::db::skill::load_skills_by_names;
 use crate::fs_context::{attach_dir_context, attach_file_context};
-use crate::types::{AppState, ParsedRouteInput, ATTACH_MAX_TOTAL_BYTES};
 use crate::resolve_chat_cwd;
+use crate::types::{AppState, ParsedRouteInput, ATTACH_MAX_TOTAL_BYTES};
 use tauri::State;
 
 use super::{load_recent_role_chats, RecentRoleChat};
@@ -28,7 +28,8 @@ pub(super) async fn build_context_bundle(
     let mut attach_notes = Vec::new();
 
     {
-        let per_file_budget = attach_budget / (routed.file_refs.len() + routed.dir_refs.len()).max(1);
+        let per_file_budget =
+            attach_budget / (routed.file_refs.len() + routed.dir_refs.len()).max(1);
         let per_file_budget = per_file_budget.min(ATTACH_MAX_TOTAL_BYTES);
         let file_futs: Vec<_> = routed
             .file_refs

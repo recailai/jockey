@@ -1,4 +1,5 @@
 use crate::db::{get_state, with_db};
+use crate::error::AppError;
 use crate::now_ms;
 use crate::types::*;
 use rusqlite::{params, OptionalExtension};
@@ -24,13 +25,13 @@ pub(crate) fn list_app_skills(state: State<'_, AppState>) -> Result<Vec<AppSkill
                 "SELECT id, name, description, content, created_at, updated_at
                  FROM app_skills ORDER BY updated_at DESC",
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| AppError::db(e.to_string()).to_string())?;
         let rows = stmt
             .query_map([], skill_from_row)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| AppError::db(e.to_string()).to_string())?;
         let mut out = Vec::new();
         for row in rows {
-            out.push(row.map_err(|e| e.to_string())?);
+            out.push(row.map_err(|e| AppError::db(e.to_string()).to_string())?);
         }
         Ok(out)
     })
@@ -44,12 +45,17 @@ pub(crate) fn upsert_app_skill(
     let now = now_ms();
     let name = input.name.trim().to_string();
     if name.is_empty() {
-        return Err("skill name cannot be empty".to_string());
+        return Err(AppError::validation("skill name cannot be empty").to_string());
     }
     if name.chars().any(|c| c.is_whitespace()) {
-        return Err("skill name cannot contain spaces".to_string());
+        return Err(AppError::validation("skill name cannot contain spaces").to_string());
     }
-    let input_id = input.id.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let input_id = input
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     with_db(get_state(&state), |conn| {
         let existing_id_by_name: Option<String> = conn
             .query_row(
@@ -58,7 +64,7 @@ pub(crate) fn upsert_app_skill(
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| AppError::db(e.to_string()).to_string())?;
         if let Some(edit_id) = input_id {
             let created_at: i64 = conn
                 .query_row(
@@ -67,18 +73,24 @@ pub(crate) fn upsert_app_skill(
                     |row| row.get(0),
                 )
                 .optional()
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("skill not found: {}", edit_id))?;
+                .map_err(|e| AppError::db(e.to_string()).to_string())?
+                .ok_or_else(|| {
+                    AppError::not_found(format!("skill not found: {}", edit_id)).to_string()
+                })?;
             if let Some(existing_id) = existing_id_by_name {
                 if existing_id != edit_id {
-                    return Err(format!("skill name already exists: {}", name));
+                    return Err(AppError::already_exists(format!(
+                        "skill name already exists: {}",
+                        name
+                    ))
+                    .to_string());
                 }
             }
             conn.execute(
                 "UPDATE app_skills SET name = ?1, description = ?2, content = ?3, updated_at = ?4 WHERE id = ?5",
                 params![&name, &input.description, &input.content, now, &edit_id],
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| AppError::db(e.to_string()).to_string())?;
             return Ok(AppSkill {
                 id: edit_id,
                 name,
@@ -89,7 +101,10 @@ pub(crate) fn upsert_app_skill(
             });
         }
         if existing_id_by_name.is_some() {
-            return Err(format!("skill name already exists: {}", name));
+            return Err(
+                AppError::already_exists(format!("skill name already exists: {}", name))
+                    .to_string(),
+            );
         }
         let id = Uuid::new_v4().to_string();
         conn.execute(
@@ -97,7 +112,7 @@ pub(crate) fn upsert_app_skill(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![&id, &name, &input.description, &input.content, now, now,],
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| AppError::db(e.to_string()).to_string())?;
         Ok(AppSkill {
             id,
             name,
@@ -113,7 +128,7 @@ pub(crate) fn upsert_app_skill(
 pub(crate) fn delete_app_skill(state: State<'_, AppState>, id: String) -> Result<(), String> {
     with_db(get_state(&state), |conn| {
         conn.execute("DELETE FROM app_skills WHERE id = ?1", params![&id])
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| AppError::db(e.to_string()).to_string())?;
         Ok(())
     })
 }
@@ -133,10 +148,12 @@ pub(crate) fn load_skills_by_names(state: &AppState, names: &[String]) -> Vec<Ap
             "SELECT id, name, description, content, created_at, updated_at
              FROM app_skills WHERE name IN ({placeholders})"
         );
-        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| AppError::db(e.to_string()).to_string())?;
         let rows = stmt
             .query_map(rusqlite::params_from_iter(names.iter()), skill_from_row)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| AppError::db(e.to_string()).to_string())?;
         let mut out = Vec::new();
         for row in rows {
             if let Ok(s) = row {

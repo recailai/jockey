@@ -75,6 +75,7 @@ type ConfigDrawerProps = {
   sendRaw: (text: string, silent?: boolean) => Promise<void>;
   refreshRoles: () => Promise<void>;
   refreshSkills: () => Promise<void>;
+  refreshAssistants: () => Promise<void>;
   pushMessage: (role: string, text: string) => void;
   fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
   onOpenManagement?: (tab?: "roles" | "skills" | "sessions" | "workflows" | "mcp", roleName?: string) => void;
@@ -129,6 +130,7 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
               pushMessage={props.pushMessage}
               fetchConfigOptions={props.fetchConfigOptions}
               refreshRoles={props.refreshRoles}
+              refreshAssistants={props.refreshAssistants}
             />
 
             {/* Roles & Skills — managed in the Management panel */}
@@ -165,7 +167,7 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
   );
 }
 
-const UNION_ASSISTANT_ROLE = "UnionAIAssistant";
+const UNION_ASSISTANT_ROLE = "JockeyAssistant";
 
 type AssistantSectionProps = {
   assistants: Accessor<AssistantRuntime[]>;
@@ -174,38 +176,60 @@ type AssistantSectionProps = {
   pushMessage: (role: string, text: string) => void;
   fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
   refreshRoles: () => Promise<void>;
+  refreshAssistants: () => Promise<void>;
 };
 
 function AssistantSection(props: AssistantSectionProps) {
   const [showConfig, setShowConfig] = createSignal(false);
+  const [refreshing, setRefreshing] = createSignal(false);
+
+  const handleRefresh = () => {
+    setRefreshing(true);
+    props.refreshAssistants().finally(() => setRefreshing(false));
+  };
 
   return (
     <div>
       <div class="mb-2 flex items-center justify-between">
         <span class="text-[10px] font-medium uppercase tracking-widest theme-muted">Assistant</span>
-        <button
-          onClick={() => setShowConfig((v) => !v)}
-          class={`min-h-6 rounded border theme-border px-2 py-0.5 text-[10px] theme-muted hover:border-[var(--ui-border-strong)] hover:theme-text ${INTERACTIVE_MOTION}`}
-        >
-          {showConfig() ? "close" : "config"}
-        </button>
+        <div class="flex items-center gap-1.5">
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing()}
+            class={`min-h-6 rounded border theme-border px-2 py-0.5 text-[10px] theme-muted hover:border-[var(--ui-border-strong)] hover:theme-text disabled:opacity-40 ${INTERACTIVE_MOTION}`}
+            title="Re-detect installed agents"
+          >
+            {refreshing() ? "…" : "↻"}
+          </button>
+          <button
+            onClick={() => setShowConfig((v) => !v)}
+            class={`min-h-6 rounded border theme-border px-2 py-0.5 text-[10px] theme-muted hover:border-[var(--ui-border-strong)] hover:theme-text ${INTERACTIVE_MOTION}`}
+          >
+            {showConfig() ? "close" : "config"}
+          </button>
+        </div>
       </div>
       <div class="space-y-0.5">
         <For each={props.assistants()}>
           {(a) => (
-            <button
-              class={`flex min-h-7 w-full items-center gap-2 rounded-md px-2.5 py-1 text-left text-xs ${INTERACTIVE_MOTION} ${
-                props.activeSession()?.runtimeKind === a.key
-                  ? "theme-text"
-                  : "theme-muted"
-              } ${!a.available ? "opacity-40" : ""}`}
-              style={props.activeSession()?.runtimeKind === a.key ? { background: "var(--ui-surface-muted)" } : undefined}
-              onClick={() => a.available && props.patchActiveSession({ runtimeKind: a.key })}
-            >
-              <span class={`h-1.5 w-1.5 shrink-0 rounded-full ${a.available ? "bg-emerald-400" : "bg-rose-500"}`} />
-              <span class="flex-1 font-medium">{a.label}</span>
-              <Show when={a.version}><span class="text-[10px] theme-muted">v{a.version}</span></Show>
-            </button>
+            <div>
+              <button
+                class={`flex min-h-7 w-full items-center gap-2 rounded-md px-2.5 py-1 text-left text-xs ${INTERACTIVE_MOTION} ${
+                  props.activeSession()?.runtimeKind === a.key
+                    ? "theme-text"
+                    : "theme-muted"
+                } ${!a.available ? "opacity-40" : ""}`}
+                style={props.activeSession()?.runtimeKind === a.key ? { background: "var(--ui-surface-muted)" } : undefined}
+                onClick={() => a.available && props.patchActiveSession({ runtimeKind: a.key })}
+              >
+                <span class={`h-1.5 w-1.5 shrink-0 rounded-full ${a.available ? "bg-emerald-400" : "bg-rose-500"}`} />
+                <span class="flex-1 font-medium">{a.label}</span>
+                <Show when={a.version}><span class="text-[10px] theme-muted">v{a.version}</span></Show>
+              </button>
+              <Show when={!a.available && a.installHint}>
+                <div class="ml-6 mt-0.5 mb-1 font-mono text-[9px] theme-muted select-all">{a.installHint}</div>
+              </Show>
+            </div>
           )}
         </For>
       </div>
@@ -253,7 +277,7 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
   const modeOpt = createMemo(() => configOptions().find((o) => o.category === "mode" || o.id === "mode"));
   const otherOpts = createMemo(() => configOptions().filter((o) => o.id !== "model" && o.id !== "mode" && o.category !== "model" && o.category !== "mode"));
 
-  // Load existing UnionAIAssistant role on mount
+  // Load existing JockeyAssistant role on mount
   const initRole = async () => {
     try {
       const roles = await roleApi.list();
@@ -267,12 +291,12 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
     } catch {}
   };
 
-  const refreshOptions = async (runtime: string) => {
+  const refreshOptions = async (_runtime: string) => {
     const reqSeq = ++optionsReqSeq;
     const sid = props.activeSession()?.id ?? "";
     setOptionsLoading(true);
     try {
-      const cachedRaw = await assistantApi.listDiscoveredConfig(runtime, UNION_ASSISTANT_ROLE, sid);
+      const cachedRaw = await assistantApi.listDiscoveredConfig(UNION_ASSISTANT_ROLE, sid);
       if (reqSeq !== optionsReqSeq) return;
       setConfigOptions(configApi.asOptions(cachedRaw));
     } catch {
@@ -283,7 +307,7 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
       if (reqSeq === optionsReqSeq) setOptionsLoading(false);
       return;
     }
-    void assistantApi.prewarmRoleConfig(runtime, UNION_ASSISTANT_ROLE, sid).then((raw) => {
+    void assistantApi.prewarmRoleConfig(UNION_ASSISTANT_ROLE, sid).then((raw) => {
       if (reqSeq !== optionsReqSeq) return;
       setConfigOptions(configApi.asOptions(raw));
     }).catch(() => {
@@ -392,7 +416,7 @@ function RolesSection(props: {
   setShowDrawer: Setter<boolean>;
 }) {
   const [expanded, setExpanded] = createSignal(true);
-  const userRoles = () => props.roles().filter((r) => r.roleName !== "UnionAIAssistant");
+  const userRoles = () => props.roles().filter((r) => r.roleName !== "JockeyAssistant");
 
   const openRole = (roleName: string) => {
     props.setShowDrawer(false);

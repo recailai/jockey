@@ -1,23 +1,29 @@
 [package]
-name = "unionai"
+name = "jockeyui"
+default-run = "jockeyui"
 version = "0.1.0"
-description = "UnionAI desktop orchestrator"
-authors = ["unionai"]
+description = "JockeyUI desktop orchestrator"
+authors = ["jockeyui"]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/locustbaby/unionai"
+repository = "https://github.com/recailai/jockeyui"
 
 [lib]
-name = "unionai_lib"
+name = "jockeyui_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[[bin]]
+name = "jockeyui-mcp"
+path = "src/bin/jockeyui-mcp.rs"
+
 [dependencies]
 agent-client-protocol = "0.10.2"
 async-trait = "0.1.89"
 dashmap = "6.1.0"
+dirs = "6"
 futures = "0.3"
 libc = "0.2"
 rusqlite = { version = "0.37.0", features = ["bundled"] }

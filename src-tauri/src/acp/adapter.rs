@@ -15,10 +15,18 @@ fn adapter_cache(
     ADAPTER_CACHE.get_or_init(DashMap::new)
 }
 
+pub fn clear_adapter_cache() {
+    adapter_cache().clear();
+}
+
 static APP_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 pub fn set_app_data_dir(path: PathBuf) {
     let _ = APP_DATA_DIR.set(path);
+}
+
+pub fn app_data_dir() -> Option<PathBuf> {
+    APP_DATA_DIR.get().cloned()
 }
 
 fn app_data_adapter_bin(binary: &str) -> Option<PathBuf> {
@@ -196,9 +204,13 @@ pub(super) fn friendly_error_message(runtime: &str, raw: &str) -> String {
         );
     }
     if l.contains("binary not found") || l.contains("adapter unavailable") {
-        return format!(
-            "[{runtime}] Agent not found. Install: npx -y @zed-industries/{runtime}@latest"
-        );
+        let hint = RuntimeKind::from_str(runtime)
+            .map(|k| k.install_hint())
+            .unwrap_or("");
+        if hint.is_empty() {
+            return format!("[{runtime}] Agent not found.");
+        }
+        return format!("[{runtime}] Agent not found. Install with:\n  {hint}");
     }
     format!("[{runtime}] {raw}")
 }
@@ -244,5 +256,5 @@ fn supports_arg_in_help(binary: &str, arg_flag: &str) -> bool {
 }
 
 pub(super) fn acp_log(event: &str, payload: Value) {
-    eprintln!("[unionai.acp] {} {} {}", now_ms(), event, payload);
+    eprintln!("[jockeyui.acp] {} {} {}", now_ms(), event, payload);
 }

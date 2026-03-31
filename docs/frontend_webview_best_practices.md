@@ -1,4 +1,4 @@
-# UnionAI Frontend Best Practices (Tauri WebView)
+# JockeyUI Frontend Best Practices (Tauri WebView)
 
 本文只覆盖前端实现实践，重点解决以下问题：
 - WebView 页面级滚动导致的白色 gap

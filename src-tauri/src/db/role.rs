@@ -1,6 +1,7 @@
 use crate::db::{get_state, with_db};
-use crate::types::*;
+use crate::error::AppError;
 use crate::now_ms;
+use crate::types::*;
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use tauri::State;
@@ -8,16 +9,18 @@ use uuid::Uuid;
 
 fn validate_role_name(role_name: &str) -> Result<(), String> {
     if role_name.is_empty() {
-        return Err("role name required".to_string());
+        return Err(AppError::validation("role name required").to_string());
     }
     if role_name.chars().any(|c| c.is_whitespace()) {
-        return Err("role name cannot contain spaces".to_string());
+        return Err(AppError::validation("role name cannot contain spaces").to_string());
     }
     if !role_name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        return Err("role name only allows letters, numbers, - and _".to_string());
+        return Err(
+            AppError::validation("role name only allows letters, numbers, - and _").to_string(),
+        );
     }
     Ok(())
 }
@@ -44,10 +47,14 @@ pub(crate) fn upsert_role(
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| AppError::db(e.to_string()).to_string())?;
         if let Some((id, existing_name)) = name_hit {
             if existing_name != role_name {
-                return Err(format!("role name already exists: {}", existing_name));
+                return Err(AppError::already_exists(format!(
+                    "role name already exists: {}",
+                    existing_name
+                ))
+                .to_string());
             }
             return Ok(Some(id));
         }
@@ -57,7 +64,7 @@ pub(crate) fn upsert_role(
             |row| row.get::<_, String>(0),
         )
         .optional()
-        .map_err(|e| e.to_string())
+        .map_err(|e| AppError::db(e.to_string()).to_string())
     })?;
 
     let id = existing_id.unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -92,7 +99,7 @@ pub(crate) fn upsert_role(
                 now,
             ],
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| AppError::db(e.to_string()).to_string())?;
         Ok(())
     })?;
 
@@ -170,13 +177,13 @@ pub(crate) fn list_all_roles(state: &AppState) -> Result<Vec<Role>, String> {
                 "SELECT id, role_name, runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, auto_approve, created_at, updated_at
                  FROM roles ORDER BY role_name ASC",
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| AppError::db(e.to_string()).to_string())?;
         let rows = stmt
             .query_map([], role_from_row)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| AppError::db(e.to_string()).to_string())?;
         let mut roles = Vec::new();
         for row in rows {
-            roles.push(row.map_err(|e| e.to_string())?);
+            roles.push(row.map_err(|e| AppError::db(e.to_string()).to_string())?);
         }
         Ok(roles)
     })
@@ -191,16 +198,50 @@ pub(crate) fn list_roles(state: State<'_, AppState>) -> Result<Vec<Role>, String
 pub(crate) fn delete_role_cmd(state: State<'_, AppState>, role_name: String) -> Result<(), String> {
     let role_name = role_name.trim().to_string();
     if role_name.is_empty() {
-        return Err("role name required".to_string());
+        return Err(AppError::validation("role name required").to_string());
     }
     with_db(get_state(&state), |conn| {
-        conn.execute("DELETE FROM roles WHERE role_name = ?1", params![&role_name])
-            .map_err(|e| e.to_string())?;
+        let active_using_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM app_sessions WHERE closed_at IS NULL AND active_role = ?1",
+                params![&role_name],
+                |row| row.get(0),
+            )
+            .map_err(|e| AppError::db(e.to_string()).to_string())?;
+        if active_using_count > 0 {
+            return Err(AppError::invalid_input(format!(
+                "role is active in {active_using_count} open session(s); switch role first",
+            ))
+            .to_string());
+        }
+
+        let mapped_open_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(1)
+                 FROM app_session_roles r
+                 JOIN app_sessions s ON s.id = r.app_session_id
+                 WHERE s.closed_at IS NULL AND r.role_name = ?1",
+                params![&role_name],
+                |row| row.get(0),
+            )
+            .map_err(|e| AppError::db(e.to_string()).to_string())?;
+        if mapped_open_count > 0 {
+            return Err(AppError::invalid_input(format!(
+                "role is bound in {mapped_open_count} open session(s); reset/switch role first",
+            ))
+            .to_string());
+        }
+
+        conn.execute(
+            "DELETE FROM roles WHERE role_name = ?1",
+            params![&role_name],
+        )
+        .map_err(|e| AppError::db(e.to_string()).to_string())?;
         conn.execute(
             "DELETE FROM app_session_roles WHERE role_name = ?1",
             params![&role_name],
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| AppError::db(e.to_string()).to_string())?;
         Ok(())
     })
 }
@@ -211,7 +252,7 @@ pub(crate) fn load_role(state: &AppState, role_name: &str) -> Result<Option<Role
             "SELECT id, role_name, runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, auto_approve, created_at, updated_at FROM roles WHERE role_name = ?1",
             params![role_name],
             role_from_row,
-        ).optional().map_err(|e| e.to_string())
+        ).optional().map_err(|e| AppError::db(e.to_string()).to_string())
     })
 }
 
@@ -219,19 +260,17 @@ pub(crate) fn load_role_runtime_kind(state: &AppState, role_name: &str) -> Resul
     with_db(state, |conn| {
         let runtime = conn
             .query_row(
-            "SELECT runtime_kind FROM roles WHERE role_name = ?1",
-            params![role_name],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
-        runtime.ok_or_else(|| format!("role not found: {role_name}"))
+                "SELECT runtime_kind FROM roles WHERE role_name = ?1",
+                params![role_name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| AppError::db(e.to_string()).to_string())?;
+        runtime
+            .ok_or_else(|| AppError::not_found(format!("role not found: {role_name}")).to_string())
     })
 }
 
-pub(crate) fn resolve_role_runtime(
-    state: &AppState,
-    role_name: &str,
-) -> Result<String, String> {
+pub(crate) fn resolve_role_runtime(state: &AppState, role_name: &str) -> Result<String, String> {
     load_role_runtime_kind(state, role_name)
 }

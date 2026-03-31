@@ -106,6 +106,7 @@ pub(crate) struct AssistantRuntime {
     pub(crate) binary: String,
     pub(crate) available: bool,
     pub(crate) version: Option<String>,
+    pub(crate) install_hint: Option<String>,
 }
 
 #[derive(Deserialize)]

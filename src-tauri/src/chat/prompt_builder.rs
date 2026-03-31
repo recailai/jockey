@@ -5,9 +5,15 @@ pub(super) fn build_prepared_prompt(
     context_pairs: &[(String, String)],
     message: &str,
 ) -> String {
-    let ctx_bytes: usize = context_pairs.iter().map(|(k, v)| k.len() + v.len() + 4).sum();
-    let estimated = if is_union_assistant { tool_prompt.len() + 10 } else { 0 }
-        + ctx_bytes
+    let ctx_bytes: usize = context_pairs
+        .iter()
+        .map(|(k, v)| k.len() + v.len() + 4)
+        .sum();
+    let estimated = if is_union_assistant {
+        tool_prompt.len() + 10
+    } else {
+        0
+    } + ctx_bytes
         + message.len()
         + 64;
     let mut prepared = String::with_capacity(estimated);

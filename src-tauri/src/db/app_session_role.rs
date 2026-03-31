@@ -7,9 +7,6 @@ pub(crate) struct AppSessionRoleState {
     pub(crate) runtime_kind: Option<String>,
     pub(crate) acp_session_id: Option<String>,
     pub(crate) model_override: Option<String>,
-    pub(crate) mode_override: Option<String>,
-    pub(crate) mcp_servers_json: Option<String>,
-    pub(crate) config_options_json: Option<String>,
 }
 
 fn ensure_app_session_role_row(
@@ -20,8 +17,8 @@ fn ensure_app_session_role_row(
 ) -> Result<(), String> {
     conn.execute(
         "INSERT INTO app_session_roles (
-            app_session_id, role_name, runtime_kind, acp_session_id, model_override, mode_override, mcp_servers_json, config_options_json
-         ) VALUES (?1, ?2, ?3, NULL, NULL, NULL, NULL, NULL)
+            app_session_id, role_name, runtime_kind
+         ) VALUES (?1, ?2, ?3)
          ON CONFLICT(app_session_id, role_name) DO UPDATE SET runtime_kind = excluded.runtime_kind",
         params![app_session_id, role_name, runtime_kind],
     )
@@ -39,7 +36,7 @@ pub(crate) fn load_app_session_role_state(
     }
     with_db(state, |conn| {
         conn.query_row(
-            "SELECT runtime_kind, acp_session_id, model_override, mode_override, mcp_servers_json, config_options_json
+            "SELECT runtime_kind, acp_session_id, model_override
              FROM app_session_roles
              WHERE app_session_id = ?1 AND role_name = ?2",
             params![app_session_id, role_name],
@@ -48,9 +45,6 @@ pub(crate) fn load_app_session_role_state(
                     runtime_kind: row.get(0)?,
                     acp_session_id: row.get(1)?,
                     model_override: row.get(2)?,
-                    mode_override: row.get(3)?,
-                    mcp_servers_json: row.get(4)?,
-                    config_options_json: row.get(5)?,
                 })
             },
         )
