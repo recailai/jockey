@@ -146,7 +146,7 @@ export default function App() {
     if (queue.length > 1) {
       appendMessageToSession(sid, { id: `${now()}-${Math.random().toString(36).slice(2)}`, roleName: "event", text: `queued messages merged: ${queue.length}`, at: now() });
     }
-    void sendRaw(merged);
+    void sendRaw(merged, false, sid);
   };
 
   const cancelCurrentRun = async () => {
@@ -208,9 +208,7 @@ export default function App() {
     fetchAndCacheAgentCommands(targetRole.runtimeKind, targetRole.roleName);
   };
 
-  const maybeAutoTitleActiveSession = (text: string) => {
-    const sid = activeSessionId();
-    if (!sid) return;
+  const maybeAutoTitleSession = (sid: string, text: string) => {
     const sess = sessions.find((x) => x.id === sid);
     if (!sess) return;
     if (!isDefaultSessionTitle(sess.title)) return;
@@ -248,9 +246,9 @@ export default function App() {
     return true;
   };
 
-  const sendRaw = async (text: string, silent = false) => {
+  const sendRaw = async (text: string, silent = false, targetSessionId?: string | null) => {
     const runToken = bumpRunToken();
-    const originSessionId = activeSessionId();
+    const originSessionId = targetSessionId ?? activeSessionId();
     closeMentionMenu();
     closeSlashMenu();
 
@@ -258,12 +256,13 @@ export default function App() {
       patchSessionById(originSessionId, patch);
     };
 
-    const s = activeSession();
+    const s = sessions.find((x) => x.id === originSessionId) ?? activeSession();
+    const sessionIsCustomRole = s ? s.activeRole !== DEFAULT_ROLE_ALIAS && s.activeRole !== DEFAULT_BACKEND_ROLE : false;
     const route = resolveRoute({
       text,
       activeRole: s?.activeRole ?? DEFAULT_ROLE_ALIAS,
       roleNames: roles().map((r) => r.roleName),
-      isCustomRole: isCustomRole(),
+      isCustomRole: sessionIsCustomRole,
       defaultRoleAlias: DEFAULT_ROLE_ALIAS,
       defaultBackendRole: DEFAULT_BACKEND_ROLE,
     });
@@ -271,7 +270,9 @@ export default function App() {
       pushMessage("event", route.error);
       return;
     }
-    applyRouteState(route);
+    if (originSessionId === activeSessionId()) {
+      applyRouteState(route);
+    }
     if (route.prefetchRole) {
       prefetchRoleResources(route.prefetchRole);
     }
@@ -285,8 +286,12 @@ export default function App() {
     const routedText = route.routedText;
 
     if (!silent) {
-      pushMessage("user", text);
-      maybeAutoTitleActiveSession(text);
+      if (originSessionId) {
+        appendMessageToSession(originSessionId, { id: `${now()}-${Math.random().toString(36).slice(2)}`, roleName: "user", text, at: now() });
+        maybeAutoTitleSession(originSessionId, text);
+      } else {
+        pushMessage("user", text);
+      }
     }
     patchOriginSession({ submitting: true, status: "running", agentState: undefined, thoughtText: "" });
 
@@ -310,7 +315,7 @@ export default function App() {
         appSessionId: originSessionId ?? null,
       });
       if (runToken <= getCanceledRunToken()) return;
-      if (res.runtimeKind) setPreferredAssistant(res.runtimeKind);
+      if (res.runtimeKind && originSessionId === activeSessionId()) setPreferredAssistant(res.runtimeKind);
       if (text.startsWith("/app_role")) void refreshRoles();
 
       if (!res.ok) {

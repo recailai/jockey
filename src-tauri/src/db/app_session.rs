@@ -132,7 +132,7 @@ pub(crate) fn list_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSes
         query_sessions(
             conn,
             "SELECT id, title, active_role, runtime_kind, cwd, created_at, last_active_at, closed_at
-             FROM app_sessions WHERE closed_at IS NULL ORDER BY last_active_at DESC LIMIT 50",
+             FROM app_sessions WHERE closed_at IS NULL ORDER BY created_at ASC LIMIT 50",
         )
     })
 }
@@ -243,7 +243,6 @@ pub(crate) fn update_app_session(
     id: String,
     update: AppSessionUpdate,
 ) -> Result<(), String> {
-    let now = now_ms();
     with_db(get_state(&state), |conn| {
         if let Some(ref title) = update.title {
             let title = validate_session_title(title)?;
@@ -251,22 +250,22 @@ pub(crate) fn update_app_session(
                 return Err(format!("session name already exists: {}", title));
             }
             conn.execute(
-                "UPDATE app_sessions SET title = ?1, last_active_at = ?2 WHERE id = ?3",
-                params![title, now, &id],
+                "UPDATE app_sessions SET title = ?1 WHERE id = ?2",
+                params![title, &id],
             )
             .map_err(|e| e.to_string())?;
         }
         if let Some(ref role) = update.active_role {
             conn.execute(
-                "UPDATE app_sessions SET active_role = ?1, last_active_at = ?2 WHERE id = ?3",
-                params![role, now, &id],
+                "UPDATE app_sessions SET active_role = ?1 WHERE id = ?2",
+                params![role, &id],
             )
             .map_err(|e| e.to_string())?;
         }
         if let Some(runtime) = update.runtime_kind {
             conn.execute(
-                "UPDATE app_sessions SET runtime_kind = ?1, last_active_at = ?2 WHERE id = ?3",
-                params![runtime, now, &id],
+                "UPDATE app_sessions SET runtime_kind = ?1 WHERE id = ?2",
+                params![runtime, &id],
             )
             .map_err(|e| e.to_string())?;
         }

@@ -12,7 +12,7 @@ use super::super::runtime_state::{
 use super::super::session::cold_start;
 use super::notify::{notify_connection_death, notify_prewarm};
 use super::pool::{
-    pool_key, slot_map, child_pids, LiveConnection, SlotHandle, CANCEL_HANDLES,
+    pool_key, child_pids, CANCEL_HANDLES, CONN_MAP, PROMPT_IN_PROGRESS,
     DELTA_CHANNEL_CAPACITY,
 };
 use super::types::{AcpEvent, ConnectionDeathEvent, PrewarmStatus};
@@ -22,7 +22,8 @@ const PROMPT_LIVENESS_INTERVAL: std::time::Duration = std::time::Duration::from_
 // ── Connection lifecycle ──────────────────────────────────────────────────────
 
 pub(crate) async fn shutdown_worker_state() {
-    let cancel_handles = CANCEL_HANDLES.with(|m| {
+    // Cancel all in-progress prompts
+    let cancel_items = CANCEL_HANDLES.with(|m| {
         let mut map = m.borrow_mut();
         let items = map
             .iter()
@@ -31,28 +32,17 @@ pub(crate) async fn shutdown_worker_state() {
         map.clear();
         items
     });
-    for (_key, conn, session_id) in cancel_handles {
+    for (_key, conn, session_id) in cancel_items {
         let _ = conn.cancel(acp::CancelNotification::new(session_id)).await;
     }
 
-    let slots: Vec<(String, Arc<SlotHandle>)> = slot_map()
-        .iter()
-        .map(|entry| (entry.key().clone(), entry.value().clone()))
-        .collect();
-    let mut dropped = 0usize;
-    let mut timed_out = 0usize;
-    for (_key, slot) in &slots {
-        match tokio::time::timeout(std::time::Duration::from_millis(1200), slot.conn.lock()).await {
-            Ok(mut guard) => {
-                *guard = None;
-                dropped += 1;
-            }
-            Err(_) => {
-                timed_out += 1;
-            }
-        }
-    }
-    slot_map().clear();
+    // Drop all live connections
+    CONN_MAP.with(|m| {
+        m.borrow_mut().clear();
+    });
+    PROMPT_IN_PROGRESS.with(|m| {
+        m.borrow_mut().clear();
+    });
 
     use super::super::runtime_state::clear_all as clear_runtime_state;
     clear_runtime_state();
@@ -81,7 +71,7 @@ pub(crate) async fn shutdown_worker_state() {
 
     acp_log(
         "shutdown.complete",
-        json!({ "slots": slots.len(), "dropped": dropped, "timedOut": timed_out, "forceKilled": remaining_pids.len() }),
+        json!({ "forceKilled": remaining_pids.len() }),
     );
 }
 
@@ -91,21 +81,14 @@ pub(crate) async fn reset_worker_session(
     app_session_id: &str,
 ) -> Result<(), String> {
     let key = pool_key(app_session_id, runtime_key, role_name);
-    let handle = CANCEL_HANDLES.with(|m| m.borrow_mut().remove(&key));
-    if let Some(h) = handle {
-        let _ = h
-            .conn
-            .cancel(acp::CancelNotification::new(h.session_id))
-            .await;
+
+    let cancel = CANCEL_HANDLES.with(|m| m.borrow_mut().remove(&key));
+    if let Some(h) = cancel {
+        let _ = h.conn.cancel(acp::CancelNotification::new(h.session_id)).await;
     }
 
-    if let Some((_, slot)) = slot_map().remove(&key) {
-        let mut guard =
-            tokio::time::timeout(std::time::Duration::from_millis(1200), slot.conn.lock())
-                .await
-                .map_err(|_| "timeout resetting active ACP session".to_string())?;
-        *guard = None;
-    }
+    CONN_MAP.with(|m| m.borrow_mut().remove(&key));
+    PROMPT_IN_PROGRESS.with(|m| m.borrow_mut().remove(&key));
 
     use super::super::runtime_state::clear_session as clear_session_runtime_state;
     clear_session_runtime_state(app_session_id, runtime_key, role_name);
@@ -118,21 +101,14 @@ pub(crate) async fn reconnect_worker_session(
     app_session_id: &str,
 ) -> Result<(), String> {
     let key = pool_key(app_session_id, runtime_key, role_name);
-    let handle = CANCEL_HANDLES.with(|m| m.borrow_mut().remove(&key));
-    if let Some(h) = handle {
-        let _ = h
-            .conn
-            .cancel(acp::CancelNotification::new(h.session_id))
-            .await;
+
+    let cancel = CANCEL_HANDLES.with(|m| m.borrow_mut().remove(&key));
+    if let Some(h) = cancel {
+        let _ = h.conn.cancel(acp::CancelNotification::new(h.session_id)).await;
     }
 
-    if let Some((_, slot)) = slot_map().remove(&key) {
-        let mut guard =
-            tokio::time::timeout(std::time::Duration::from_millis(1200), slot.conn.lock())
-                .await
-                .map_err(|_| "timeout reconnecting ACP session".to_string())?;
-        *guard = None;
-    }
+    CONN_MAP.with(|m| m.borrow_mut().remove(&key));
+    PROMPT_IN_PROGRESS.with(|m| m.borrow_mut().remove(&key));
 
     use super::super::runtime_state::clear_session as clear_session_runtime_state;
     clear_session_runtime_state(app_session_id, runtime_key, role_name);
@@ -145,23 +121,27 @@ pub(crate) async fn reconnect_worker_session(
 
 // ── Connection helpers ────────────────────────────────────────────────────────
 
-pub(crate) async fn evict_if_cwd_changed(
-    guard: &mut Option<LiveConnection>,
-    resolved: &str,
-    runtime_key: &str,
-    role_name: &str,
-) {
-    if guard.as_ref().map(|c| c.cwd != resolved).unwrap_or(false) {
+/// Evict the connection if the working directory has changed.
+pub(crate) fn evict_if_cwd_changed(key: &str, resolved: &str, runtime_key: &str, role_name: &str) {
+    let should_evict = CONN_MAP.with(|m| {
+        m.borrow()
+            .get(key)
+            .map(|c| c.cwd != resolved)
+            .unwrap_or(false)
+    });
+    if should_evict {
         acp_log(
             "pool.evict",
             json!({ "runtime": runtime_key, "role": role_name, "reason": "cwd_change" }),
         );
-        *guard = None;
+        CONN_MAP.with(|m| m.borrow_mut().remove(key));
     }
 }
 
+/// Ensure a live connection exists for the given key; cold-start if missing.
+/// Returns `true` if a cold start was performed.
 pub(crate) async fn ensure_connection(
-    guard: &mut Option<LiveConnection>,
+    key: &str,
     runtime_key: &'static str,
     binary: &str,
     args: &[String],
@@ -173,7 +153,8 @@ pub(crate) async fn ensure_connection(
     mcp_servers: Vec<acp::McpServer>,
     resume_session_id: Option<String>,
 ) -> Result<bool, String> {
-    if guard.is_some() {
+    let already_live = CONN_MAP.with(|m| m.borrow().contains_key(key));
+    if already_live {
         acp_log(
             "pool.reuse",
             json!({ "runtime": runtime_key, "role": role_name }),
@@ -197,30 +178,38 @@ pub(crate) async fn ensure_connection(
         "pool.cold_start",
         json!({ "runtime": runtime_key, "role": role_name, "sessionId": conn.session_id.to_string() }),
     );
-    *guard = Some(conn);
+    CONN_MAP.with(|m| m.borrow_mut().insert(key.to_string(), conn));
     Ok(true)
 }
 
 pub(crate) async fn apply_cold_start_config(
-    conn: &LiveConnection,
+    key: &str,
     session_id: &acp::SessionId,
     delta_tx: &mpsc::Sender<AcpEvent>,
     role_mode: &Option<String>,
     role_config_options: &[(String, String)],
-    _app_session_id: &str,
     runtime_key: &str,
-    _role_name: &str,
 ) {
-    if !conn.available_modes.is_empty() {
+    // Borrow conn fields we need
+    let (available_modes, current_mode) = CONN_MAP.with(|m| {
+        m.borrow()
+            .get(key)
+            .map(|c| (c.available_modes.clone(), c.current_mode.clone()))
+            .unwrap_or_default()
+    });
+
+    if !available_modes.is_empty() {
         let _ = delta_tx.try_send(AcpEvent::AvailableModes {
-            modes: conn.available_modes.clone(),
-            current: conn.current_mode.clone(),
+            modes: available_modes,
+            current: current_mode,
         });
     }
 
+    let conn_rc = CONN_MAP.with(|m| m.borrow().get(key).map(|c| c.conn.clone()));
+    let Some(conn_rc) = conn_rc else { return };
+
     if let Some(mode) = role_mode {
-        if let Err(e) = conn
-            .conn
+        if let Err(e) = conn_rc
             .set_session_mode(acp::SetSessionModeRequest::new(
                 session_id.clone(),
                 acp::SessionModeId::from(mode.clone()),
@@ -240,26 +229,25 @@ pub(crate) async fn apply_cold_start_config(
         .filter_map(|v| v.get("id").and_then(|i| i.as_str()).map(|s| s.to_string()))
         .collect();
 
-    for (key, value) in role_config_options {
-        if !supported_keys.is_empty() && !supported_keys.contains(key.as_str()) {
+    for (k, value) in role_config_options {
+        if !supported_keys.is_empty() && !supported_keys.contains(k.as_str()) {
             acp_log(
                 "config.set_option.skipped",
-                json!({ "key": key, "runtime": runtime_key, "reason": "not supported by runtime" }),
+                json!({ "key": k, "runtime": runtime_key, "reason": "not supported by runtime" }),
             );
             continue;
         }
-        if let Err(e) = conn
-            .conn
+        if let Err(e) = conn_rc
             .set_session_config_option(acp::SetSessionConfigOptionRequest::new(
                 session_id.clone(),
-                acp::SessionConfigId::from(key.clone()),
+                acp::SessionConfigId::from(k.clone()),
                 acp::SessionConfigValueId::from(value.clone()),
             ))
             .await
         {
             acp_log(
                 "config.set_option.error",
-                json!({ "key": key, "error": e.to_string() }),
+                json!({ "key": k, "error": e.to_string() }),
             );
         }
     }
@@ -284,11 +272,12 @@ pub(crate) fn build_prompt_blocks(
     blocks
 }
 
+/// Spawn a task that watches the health channel and evicts the connection when
+/// the agent process dies.
 pub(crate) fn spawn_connection_health_watch(
-    slot: Arc<SlotHandle>,
-    wk: String,
-    death: ConnectionDeathEvent,
+    key: String,
     instance_id: u64,
+    death: ConnectionDeathEvent,
     mut hrx: tokio::sync::watch::Receiver<bool>,
 ) {
     tokio::task::spawn_local(async move {
@@ -300,25 +289,19 @@ pub(crate) fn spawn_connection_health_watch(
                 break;
             }
         }
-        acp_log("health.process_died", json!({ "key": &wk }));
+        acp_log("health.process_died", json!({ "key": &key }));
 
-        let mut should_notify = false;
-        {
-            let mut g = slot.conn.lock().await;
-            let is_same_connection = g
-                .as_ref()
-                .map(|live| live.instance_id == instance_id)
-                .unwrap_or(false);
-            if is_same_connection {
-                *g = None;
-                should_notify = true;
-            }
-        }
+        // Only evict if the connection in the map is still the same instance.
+        let is_same = CONN_MAP.with(|m| {
+            m.borrow()
+                .get(&key)
+                .map(|c| c.instance_id == instance_id)
+                .unwrap_or(false)
+        });
 
-        if should_notify {
-            CANCEL_HANDLES.with(|m| {
-                m.borrow_mut().remove(&wk);
-            });
+        if is_same {
+            CONN_MAP.with(|m| m.borrow_mut().remove(&key));
+            CANCEL_HANDLES.with(|m| m.borrow_mut().remove(&key));
             notify_connection_death(death);
         }
     });
@@ -328,7 +311,7 @@ pub(crate) fn spawn_connection_health_watch(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_execute(
-    slot: Arc<SlotHandle>,
+    key: String,
     runtime_key: &'static str,
     binary: String,
     args: Vec<String>,
@@ -346,19 +329,19 @@ pub(crate) async fn handle_execute(
     role_config_options: Vec<(String, String)>,
     resume_session_id: Option<String>,
 ) {
-    let mut guard = slot.conn.lock().await;
     let resolved = resolve_cwd(&cwd);
 
-    evict_if_cwd_changed(&mut guard, &resolved, runtime_key, &role_name).await;
+    evict_if_cwd_changed(&key, &resolved, runtime_key, &role_name);
 
-    if guard.is_none() {
+    let conn_exists = CONN_MAP.with(|m| m.borrow().contains_key(&key));
+    if !conn_exists {
         let _ = delta_tx.try_send(AcpEvent::StatusUpdate {
             text: "Connecting to agent runtime...".to_string(),
         });
     }
 
     let is_cold = match ensure_connection(
-        &mut guard,
+        &key,
         runtime_key,
         &binary,
         &args,
@@ -379,54 +362,63 @@ pub(crate) async fn handle_execute(
         }
     };
 
-    let session_id = guard
-        .as_ref()
-        .map(|c| c.session_id.clone())
-        .unwrap_or_else(|| acp::SessionId::from(String::new()));
-    let delta_slot = guard
-        .as_ref()
-        .map(|c| c.delta_slot.clone())
-        .unwrap_or_else(|| Arc::new(Mutex::new(None)));
+    let session_id = CONN_MAP.with(|m| {
+        m.borrow()
+            .get(&key)
+            .map(|c| c.session_id.clone())
+            .unwrap_or_else(|| acp::SessionId::from(String::new()))
+    });
+    let delta_slot = CONN_MAP.with(|m| {
+        m.borrow()
+            .get(&key)
+            .map(|c| c.delta_slot.clone())
+            .unwrap_or_else(|| Arc::new(Mutex::new(None)))
+    });
 
     if let Ok(mut slot_guard) = delta_slot.lock() {
         *slot_guard = Some(delta_tx.clone());
     }
 
-    // Extract everything we need from the guard before releasing the mutex.
-    // Holding `slot.conn` locked across the entire prompt() call prevents any
-    // concurrent operation on the same slot (SetMode, health eviction, a second
-    // message arriving) from making progress — which is the root cause of the
-    // "stuck message" and "same-role deadlock" bugs.
-    let conn_rc = guard.as_ref().unwrap().conn.clone();
-    let mut health_rx = guard.as_ref().unwrap().health_rx.clone();
-    let instance_id = guard.as_ref().unwrap().instance_id;
+    let conn_rc = CONN_MAP.with(|m| m.borrow().get(&key).map(|c| c.conn.clone()));
+    let health_rx = CONN_MAP.with(|m| m.borrow().get(&key).map(|c| c.health_rx.clone()));
+    let instance_id = CONN_MAP.with(|m| m.borrow().get(&key).map(|c| c.instance_id));
+
+    let (Some(conn_rc), Some(mut health_rx), Some(instance_id)) = (conn_rc, health_rx, instance_id) else {
+        let _ = result_tx.send(Err("connection disappeared after cold start".to_string()));
+        return;
+    };
 
     if is_cold {
-        let conn = guard.as_ref().unwrap();
+        let health_rx_clone = CONN_MAP.with(|m| m.borrow().get(&key).map(|c| c.health_rx.clone()));
         apply_cold_start_config(
-            conn,
+            &key,
             &session_id,
             &delta_tx,
             &role_mode,
             &role_config_options,
-            &app_session_id,
             runtime_key,
-            &role_name,
         )
         .await;
 
-        let wk = pool_key(&app_session_id, runtime_key, &role_name);
         let death = ConnectionDeathEvent {
             runtime_key: runtime_key.to_string(),
             role_name: role_name.clone(),
             app_session_id: app_session_id.clone(),
         };
-        spawn_connection_health_watch(slot.clone(), wk, death, instance_id, conn.health_rx.clone());
-    } else if let Some(conn) = guard.as_ref() {
-        if !conn.available_modes.is_empty() {
+        if let Some(hrx) = health_rx_clone {
+            spawn_connection_health_watch(key.clone(), instance_id, death, hrx);
+        }
+    } else {
+        let (available_modes, current_mode) = CONN_MAP.with(|m| {
+            m.borrow()
+                .get(&key)
+                .map(|c| (c.available_modes.clone(), c.current_mode.clone()))
+                .unwrap_or_default()
+        });
+        if !available_modes.is_empty() {
             let _ = delta_tx.try_send(AcpEvent::AvailableModes {
-                modes: conn.available_modes.clone(),
-                current: conn.current_mode.clone(),
+                modes: available_modes,
+                current: current_mode,
             });
         }
     }
@@ -434,11 +426,10 @@ pub(crate) async fn handle_execute(
     let blocks = build_prompt_blocks(prompt, &context);
 
     // Install cancel handle so the Cancel message handler can send ACP cancel
-    // without waiting for the conn mutex.
-    let cancel_key = pool_key(&app_session_id, runtime_key, &role_name);
+    // without touching CONN_MAP.
     CANCEL_HANDLES.with(|m| {
         m.borrow_mut().insert(
-            cancel_key.clone(),
+            key.clone(),
             super::pool::CancelHandle {
                 conn: conn_rc.clone(),
                 session_id: session_id.clone(),
@@ -446,14 +437,19 @@ pub(crate) async fn handle_execute(
         );
     });
 
-    // Release the conn mutex before awaiting prompt() so that other tasks
-    // (SetMode, health watch eviction, a queued second message) can acquire
-    // it while the AI is thinking.
-    drop(guard);
-
-    // Serialize prompt() calls on this slot: ACP sessions are single-request
-    // streams; a second prompt must wait until the first completes.
-    let _prompt_guard = slot.prompt_lock.lock().await;
+    // Serialize prompt() calls per slot via PROMPT_IN_PROGRESS.
+    // Since everything runs on a single-threaded LocalSet, we poll until clear.
+    loop {
+        let in_progress = PROMPT_IN_PROGRESS.with(|m| {
+            m.borrow().get(&key).copied().unwrap_or(false)
+        });
+        if !in_progress {
+            break;
+        }
+        // Yield to let the current prompt complete
+        tokio::task::yield_now().await;
+    }
+    PROMPT_IN_PROGRESS.with(|m| m.borrow_mut().insert(key.clone(), true));
 
     let prompt_started = Instant::now();
     let prompt_fut = conn_rc.prompt(acp::PromptRequest::new(session_id.clone(), blocks));
@@ -477,9 +473,8 @@ pub(crate) async fn handle_execute(
         }
     };
 
-    CANCEL_HANDLES.with(|m| {
-        m.borrow_mut().remove(&cancel_key);
-    });
+    CANCEL_HANDLES.with(|m| { m.borrow_mut().remove(&key); });
+    PROMPT_IN_PROGRESS.with(|m| { m.borrow_mut().remove(&key); });
 
     if let Ok(mut slot_guard) = delta_slot.lock() {
         *slot_guard = None;
@@ -503,11 +498,15 @@ pub(crate) async fn handle_execute(
                 "pool.invalidate",
                 json!({ "runtime": runtime_key, "error": e.to_string() }),
             );
-            // Re-acquire the slot mutex only to invalidate the connection.
-            let mut guard = slot.conn.lock().await;
-            // Only clear if this is still the same connection instance we used.
-            if guard.as_ref().map(|c| c.instance_id == instance_id).unwrap_or(false) {
-                *guard = None;
+            // Invalidate connection only if still the same instance.
+            let is_same = CONN_MAP.with(|m| {
+                m.borrow()
+                    .get(&key)
+                    .map(|c| c.instance_id == instance_id)
+                    .unwrap_or(false)
+            });
+            if is_same {
+                CONN_MAP.with(|m| m.borrow_mut().remove(&key));
             }
             let _ = result_tx.send(Err(e.to_string()));
         }
@@ -524,9 +523,14 @@ pub(crate) async fn handle_execute(
             let _ = conn_rc
                 .cancel(acp::CancelNotification::new(session_id.clone()))
                 .await;
-            let mut guard = slot.conn.lock().await;
-            if guard.as_ref().map(|c| c.instance_id == instance_id).unwrap_or(false) {
-                *guard = None;
+            let is_same = CONN_MAP.with(|m| {
+                m.borrow()
+                    .get(&key)
+                    .map(|c| c.instance_id == instance_id)
+                    .unwrap_or(false)
+            });
+            if is_same {
+                CONN_MAP.with(|m| m.borrow_mut().remove(&key));
             }
             let _ = result_tx.send(Err(reason.to_string()));
         }
@@ -537,7 +541,7 @@ pub(crate) async fn handle_execute(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_prewarm(
-    slot: Arc<SlotHandle>,
+    key: String,
     runtime_key: &'static str,
     binary: String,
     args: Vec<String>,
@@ -552,13 +556,15 @@ pub(crate) async fn handle_prewarm(
     result_tx: Option<oneshot::Sender<(Vec<Value>, Vec<String>, String)>>,
     resume_session_id: Option<String>,
 ) {
-    let mut guard = slot.conn.lock().await;
-    if guard.is_some() {
+    let already_live = CONN_MAP.with(|m| m.borrow().contains_key(&key));
+    if already_live {
         if let Some(tx) = result_tx {
-            let session_id = guard
-                .as_ref()
-                .map(|c| c.session_id.to_string())
-                .unwrap_or_default();
+            let session_id = CONN_MAP.with(|m| {
+                m.borrow()
+                    .get(&key)
+                    .map(|c| c.session_id.to_string())
+                    .unwrap_or_default()
+            });
             let _ = tx.send((
                 list_discovered_config_options(runtime_key),
                 list_discovered_modes(runtime_key),
@@ -567,6 +573,7 @@ pub(crate) async fn handle_prewarm(
         }
         return;
     }
+
     let resolved = resolve_cwd(&cwd);
     acp_log(
         "prewarm.start",
@@ -578,6 +585,7 @@ pub(crate) async fn handle_prewarm(
         &app_session_id,
         PrewarmStatus::Started,
     );
+
     match cold_start(
         runtime_key,
         &role_name,
@@ -603,38 +611,40 @@ pub(crate) async fn handle_prewarm(
                 &app_session_id,
                 PrewarmStatus::Ready,
             );
+
             let session_id = conn.session_id.clone();
             let session_id_str = session_id.to_string();
+            let instance_id = conn.instance_id;
+            let health_rx_clone = conn.health_rx.clone();
+
             let dummy_tx = {
                 let (tx, _rx) = mpsc::channel::<AcpEvent>(DELTA_CHANNEL_CAPACITY);
                 tx
             };
+
+            CONN_MAP.with(|m| m.borrow_mut().insert(key.clone(), conn));
+
             apply_cold_start_config(
-                &conn,
+                &key,
                 &session_id,
                 &dummy_tx,
                 &role_mode,
                 &role_config_options,
-                &app_session_id,
                 runtime_key,
-                &role_name,
             )
             .await;
+
             // Install a temporary drain channel so notifications sent after session/new
             // (e.g. AvailableCommandsUpdate via setTimeout) are captured rather than dropped.
             let (drain_tx, mut drain_rx) = mpsc::channel::<AcpEvent>(DELTA_CHANNEL_CAPACITY);
-            {
-                if let Ok(mut slot_guard) = conn.delta_slot.lock() {
-                    *slot_guard = Some(drain_tx);
+            let delta_slot = CONN_MAP.with(|m| {
+                m.borrow().get(&key).map(|c| c.delta_slot.clone())
+            });
+            if let Some(ds) = delta_slot {
+                if let Ok(mut sg) = ds.lock() {
+                    *sg = Some(drain_tx);
                 }
             }
-            let instance_id = conn.instance_id;
-            let health_rx_clone = conn.health_rx.clone();
-            *guard = Some(conn);
-            // Release the conn mutex before the 300 ms drain so that an Execute
-            // message arriving during prewarm can acquire the slot immediately
-            // instead of blocking until the drain deadline.
-            drop(guard);
 
             // Drain for up to 300 ms to collect any immediate notifications.
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(300);
@@ -672,25 +682,28 @@ pub(crate) async fn handle_prewarm(
                     _ => break,
                 }
             }
-            // Drop drain channel then clear the delta_slot via the live connection.
             drop(drain_rx);
-            {
-                let g = slot.conn.lock().await;
-                if let Some(live) = g.as_ref() {
-                    if live.instance_id == instance_id {
-                        if let Ok(mut slot_guard) = live.delta_slot.lock() {
-                            *slot_guard = None;
-                        }
-                    }
+
+            // Clear the drain channel from the delta_slot
+            let delta_slot = CONN_MAP.with(|m| {
+                m.borrow()
+                    .get(&key)
+                    .filter(|c| c.instance_id == instance_id)
+                    .map(|c| c.delta_slot.clone())
+            });
+            if let Some(ds) = delta_slot {
+                if let Ok(mut sg) = ds.lock() {
+                    *sg = None;
                 }
             }
-            let wk = pool_key(&app_session_id, runtime_key, &role_name);
+
             let death = ConnectionDeathEvent {
                 runtime_key: runtime_key.to_string(),
                 role_name: role_name.clone(),
                 app_session_id: app_session_id.clone(),
             };
-            spawn_connection_health_watch(slot.clone(), wk, death, instance_id, health_rx_clone);
+            spawn_connection_health_watch(key, instance_id, death, health_rx_clone);
+
             if let Some(tx) = result_tx {
                 let _ = tx.send((
                     list_discovered_config_options(runtime_key),

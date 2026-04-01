@@ -11,8 +11,8 @@ pub use types::{AcpEvent, AcpPromptResult, ConnectionDeathEvent, PrewarmEvent};
 
 pub(crate) use permission::permission_requests;
 pub(crate) use pool::{
-    get_slot_handle, pool_key, register_child_pid, DeltaSlot,
-    LiveConnection, CANCEL_HANDLES, DELTA_CHANNEL_CAPACITY,
+    pool_key, register_child_pid, DeltaSlot,
+    LiveConnection, CANCEL_HANDLES, CONN_MAP, DELTA_CHANNEL_CAPACITY,
 };
 pub(crate) use types::WorkerMsg;
 
@@ -79,10 +79,10 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 role_config_options,
                 resume_session_id,
             } => {
-                let slot = get_slot_handle(runtime_key, &role_name, &app_session_id);
+                let key = pool_key(&app_session_id, runtime_key, &role_name);
                 tokio::task::spawn_local(async move {
                     handle_execute(
-                        slot,
+                        key,
                         runtime_key,
                         binary,
                         args,
@@ -118,10 +118,10 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 result_tx,
                 resume_session_id,
             } => {
-                let slot = get_slot_handle(runtime_key, &role_name, &app_session_id);
+                let key = pool_key(&app_session_id, runtime_key, &role_name);
                 tokio::task::spawn_local(async move {
                     handle_prewarm(
-                        slot,
+                        key,
                         runtime_key,
                         binary,
                         args,
@@ -145,8 +145,6 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 app_session_id,
             } => {
                 let key = pool_key(&app_session_id, runtime_key, &role_name);
-                // Read the cancel handle from thread-local WITHOUT locking the
-                // conn mutex.  Safe because we're on the worker's LocalSet.
                 let handle = CANCEL_HANDLES.with(|m| {
                     m.borrow()
                         .get(&key)
@@ -157,8 +155,6 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                         "cancel.sending",
                         json!({ "runtime": runtime_key, "role": role_name }),
                     );
-                    // cancel() is a JSON-RPC notification — fire-and-forget.
-                    // spawn_local so run_worker loop continues immediately.
                     tokio::task::spawn_local(async move {
                         let _ = conn
                             .cancel(agent_client_protocol::CancelNotification::new(session_id))
@@ -203,13 +199,19 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 result_tx,
             } => {
                 use agent_client_protocol as acp;
-                let slot = get_slot_handle(runtime_key, &role_name, &app_session_id);
+                let key = pool_key(&app_session_id, runtime_key, &role_name);
                 tokio::task::spawn_local(async move {
-                    let guard = slot.conn.lock().await;
-                    let result = if let Some(live) = guard.as_ref() {
-                        live.conn
-                            .set_session_mode(acp::SetSessionModeRequest::new(
-                                live.session_id.clone(),
+                    let result = CONN_MAP.with(|m| {
+                        let map = m.borrow();
+                        if let Some(live) = map.get(&key) {
+                            Some((live.conn.clone(), live.session_id.clone()))
+                        } else {
+                            None
+                        }
+                    });
+                    let result = if let Some((conn, session_id)) = result {
+                        conn.set_session_mode(acp::SetSessionModeRequest::new(
+                                session_id,
                                 acp::SessionModeId::from(mode_id),
                             ))
                             .await
@@ -230,13 +232,19 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 result_tx,
             } => {
                 use agent_client_protocol as acp;
-                let slot = get_slot_handle(runtime_key, &role_name, &app_session_id);
+                let key = pool_key(&app_session_id, runtime_key, &role_name);
                 tokio::task::spawn_local(async move {
-                    let guard = slot.conn.lock().await;
-                    let result = if let Some(live) = guard.as_ref() {
-                        live.conn
-                            .set_session_config_option(acp::SetSessionConfigOptionRequest::new(
-                                live.session_id.clone(),
+                    let result = CONN_MAP.with(|m| {
+                        let map = m.borrow();
+                        if let Some(live) = map.get(&key) {
+                            Some((live.conn.clone(), live.session_id.clone()))
+                        } else {
+                            None
+                        }
+                    });
+                    let result = if let Some((conn, session_id)) = result {
+                        conn.set_session_config_option(acp::SetSessionConfigOptionRequest::new(
+                                session_id,
                                 acp::SessionConfigId::from(config_id),
                                 acp::SessionConfigValueId::from(value),
                             ))
