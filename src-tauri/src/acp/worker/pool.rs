@@ -1,5 +1,5 @@
 use agent_client_protocol as acp;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use serde_json::Value;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -15,30 +15,6 @@ pub(crate) type DeltaSlot = Arc<Mutex<Option<mpsc::Sender<AcpEvent>>>>;
 
 pub(crate) fn pool_key(app_session_id: &str, runtime_key: &str, role_name: &str) -> String {
     format!("{app_session_id}:{runtime_key}:{role_name}")
-}
-
-// ── SlotHandle: per-session connection slot ───────────────────────────────────
-
-pub(crate) struct SlotHandle {
-    pub(crate) conn: tokio::sync::Mutex<Option<LiveConnection>>,
-    /// Serializes concurrent prompt() calls on the same slot.
-    /// `conn` is released before prompt() so that SetMode / health eviction
-    /// can run while the AI is thinking; this separate lock prevents two
-    /// prompts from racing on the same ACP session.
-    pub(crate) prompt_lock: tokio::sync::Mutex<()>,
-}
-
-/// A lightweight handle for sending ACP cancel without holding the conn mutex.
-/// Stored in a thread-local map keyed by pool_key, only accessed on the worker
-/// thread's LocalSet — so `Rc` is fine.
-pub(crate) struct CancelHandle {
-    pub(crate) conn: Rc<acp::ClientSideConnection>,
-    pub(crate) session_id: acp::SessionId,
-}
-
-thread_local! {
-    pub(crate) static CANCEL_HANDLES: RefCell<std::collections::HashMap<String, CancelHandle>> =
-        RefCell::new(std::collections::HashMap::new());
 }
 
 // ── LiveConnection ────────────────────────────────────────────────────────────
@@ -79,22 +55,45 @@ impl Drop for LiveConnection {
 }
 
 // SAFETY: LiveConnection is only ever created and accessed on the single-threaded
-// worker LocalSet (see `run_worker`).  The DashMap / tokio::sync::Mutex wrappers
-// require Send+Sync at the type level, but no actual cross-thread access occurs.
+// worker LocalSet (see `run_worker`). No actual cross-thread access occurs.
 // The Rc<ClientSideConnection> is the only non-Send field; it is safe because:
 // 1. cold_start() runs on the worker LocalSet and produces the Rc.
 // 2. handle_execute/handle_prewarm run on the same LocalSet.
-// 3. The DashMap is only mutated from run_worker (also on that thread).
+// 3. The connection map is thread-local to that worker thread.
 unsafe impl Send for LiveConnection {}
 unsafe impl Sync for LiveConnection {}
 
-// ── Global state: slot map & child PIDs ──────────────────────────────────────
+// ── CancelHandle: lightweight per-prompt cancel token ────────────────────────
 
-static SLOT_MAP: OnceLock<Arc<DashMap<String, Arc<SlotHandle>>>> = OnceLock::new();
-
-pub(crate) fn slot_map() -> &'static Arc<DashMap<String, Arc<SlotHandle>>> {
-    SLOT_MAP.get_or_init(|| Arc::new(DashMap::new()))
+/// A lightweight handle for sending ACP cancel without holding the conn mutex.
+/// Stored in a thread-local map keyed by pool_key, only accessed on the worker
+/// thread's LocalSet — so `Rc` is fine.
+pub(crate) struct CancelHandle {
+    pub(crate) conn: Rc<acp::ClientSideConnection>,
+    pub(crate) session_id: acp::SessionId,
 }
+
+// ── Thread-local connection map (worker-thread only) ──────────────────────────
+//
+// Each entry is a `LiveConnection` directly — no Arc<SlotHandle> wrapping.
+// All access happens on the single worker thread's LocalSet, so thread-safety
+// is guaranteed by the single-threaded execution model.
+
+thread_local! {
+    /// The primary connection store: pool_key → LiveConnection.
+    pub(crate) static CONN_MAP: RefCell<std::collections::HashMap<String, LiveConnection>> =
+        RefCell::new(std::collections::HashMap::new());
+
+    /// Per-prompt cancel handles: pool_key → CancelHandle.
+    pub(crate) static CANCEL_HANDLES: RefCell<std::collections::HashMap<String, CancelHandle>> =
+        RefCell::new(std::collections::HashMap::new());
+
+    /// Per-slot prompt serialization: pool_key → bool (true = prompt in progress).
+    pub(crate) static PROMPT_IN_PROGRESS: RefCell<std::collections::HashMap<String, bool>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+// ── Global state: child PIDs (still shared for cross-thread shutdown) ─────────
 
 static CHILD_PIDS: OnceLock<DashSet<u32>> = OnceLock::new();
 pub(crate) fn child_pids() -> &'static DashSet<u32> {
@@ -107,21 +106,4 @@ pub(crate) fn register_child_pid(pid: u32) {
 
 pub(crate) fn unregister_child_pid(pid: u32) {
     child_pids().remove(&pid);
-}
-
-pub(crate) fn get_slot_handle(
-    runtime_key: &str,
-    role_name: &str,
-    app_session_id: &str,
-) -> Arc<SlotHandle> {
-    let key = pool_key(app_session_id, runtime_key, role_name);
-    slot_map()
-        .entry(key)
-        .or_insert_with(|| {
-            Arc::new(SlotHandle {
-                conn: tokio::sync::Mutex::new(None),
-                prompt_lock: tokio::sync::Mutex::new(()),
-            })
-        })
-        .clone()
 }

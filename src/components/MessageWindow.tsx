@@ -1,5 +1,5 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { For, Index, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Index, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { Accessor } from "solid-js";
 import { marked } from "marked";
 import type { AppSession, AppMessage, AppToolCall, AppSegment } from "./types";
@@ -357,9 +357,14 @@ function StreamSegmentList(props: { segments: AppSegment[] }) {
   const groups = createMemo(() => collectToolGroups(props.segments));
   return (
     <Index each={groups()}>{(g) => (
-      g().kind === "text"
-        ? <div class="md-prose" innerHTML={renderMd((g() as { kind: "text"; text: string }).text)} />
-        : <ToolCallGroup tools={(g() as { kind: "tools"; tools: AppToolCall[] }).tools} streaming={true} />
+      <Switch>
+        <Match when={g().kind === "text"}>
+          <div class="md-prose" innerHTML={renderMd((g() as { kind: "text"; text: string }).text)} />
+        </Match>
+        <Match when={g().kind === "tools"}>
+          <ToolCallGroup tools={(g() as { kind: "tools"; tools: AppToolCall[] }).tools} streaming={true} />
+        </Match>
+      </Switch>
     )}</Index>
   );
 }

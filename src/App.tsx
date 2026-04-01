@@ -134,7 +134,6 @@ export default function App() {
   const HISTORY_MAX = 200;
 
   const runNextQueued = (preferredSessionId?: string | null) => {
-    if (preferredSessionId && preferredSessionId !== activeSessionId()) return;
     const sid = preferredSessionId ?? activeSessionId();
     if (!sid) return;
     const s = sessions.find((x) => x.id === sid);
