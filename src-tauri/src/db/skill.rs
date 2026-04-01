@@ -17,9 +17,8 @@ fn skill_from_row(row: &rusqlite::Row) -> rusqlite::Result<AppSkill> {
     })
 }
 
-#[tauri::command]
-pub(crate) fn list_app_skills(state: State<'_, AppState>) -> Result<Vec<AppSkill>, String> {
-    with_db(get_state(&state), |conn| {
+pub(crate) fn list_skills_internal(state: &AppState) -> Result<Vec<AppSkill>, String> {
+    with_db(state, |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, description, content, created_at, updated_at
@@ -38,8 +37,12 @@ pub(crate) fn list_app_skills(state: State<'_, AppState>) -> Result<Vec<AppSkill
 }
 
 #[tauri::command]
-pub(crate) fn upsert_app_skill(
-    state: State<'_, AppState>,
+pub(crate) fn list_app_skills(state: State<'_, AppState>) -> Result<Vec<AppSkill>, String> {
+    list_skills_internal(get_state(&state))
+}
+
+pub(crate) fn upsert_skill_internal(
+    state: &AppState,
     input: AppSkillUpsert,
 ) -> Result<AppSkill, String> {
     let now = now_ms();
@@ -56,7 +59,7 @@ pub(crate) fn upsert_app_skill(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    with_db(get_state(&state), |conn| {
+    with_db(state, |conn| {
         let existing_id_by_name: Option<String> = conn
             .query_row(
                 "SELECT id FROM app_skills WHERE lower(name) = lower(?1)",
@@ -124,13 +127,25 @@ pub(crate) fn upsert_app_skill(
     })
 }
 
-#[tauri::command]
-pub(crate) fn delete_app_skill(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    with_db(get_state(&state), |conn| {
-        conn.execute("DELETE FROM app_skills WHERE id = ?1", params![&id])
+pub(crate) fn delete_skill_internal(state: &AppState, id: &str) -> Result<(), String> {
+    with_db(state, |conn| {
+        conn.execute("DELETE FROM app_skills WHERE id = ?1", params![id])
             .map_err(|e| AppError::db(e.to_string()).to_string())?;
         Ok(())
     })
+}
+
+#[tauri::command]
+pub(crate) fn upsert_app_skill(
+    state: State<'_, AppState>,
+    input: AppSkillUpsert,
+) -> Result<AppSkill, String> {
+    upsert_skill_internal(get_state(&state), input)
+}
+
+#[tauri::command]
+pub(crate) fn delete_app_skill(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    delete_skill_internal(get_state(&state), &id)
 }
 
 pub(crate) fn load_skills_by_names(state: &AppState, names: &[String]) -> Vec<AppSkill> {

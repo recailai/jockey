@@ -1,6 +1,6 @@
 export type UiTheme = "dark" | "light";
 
-export const UI_THEME_KEY = "jockeyui.ui.theme";
+export const UI_THEME_KEY = "jockey.ui.theme";
 
 export const UI_THEMES: Array<{ key: UiTheme; label: string; swatch: string }> = [
   { key: "dark", label: "Midnight Aura", swatch: "#08081e" },

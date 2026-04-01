@@ -1,12 +1,12 @@
 {
-  "name": "jockeyui",
+  "name": "jockey",
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
   "description": "A high-performance multi-agent orchestration platform built with Tauri, Rust, and SolidJS",
   "repository": {
     "type": "git",
-    "url": "https://github.com/recailai/jockeyui.git"
+    "url": "https://github.com/recailai/jockey.git"
   },
   "packageManager": "pnpm@10.32.1",
   "type": "module",

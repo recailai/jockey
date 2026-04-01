@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "JockeyUI",
+  "productName": "Jockey",
   "version": "0.1.0",
-  "identifier": "com.jockeyui.app",
+  "identifier": "com.jockey.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "JockeyUI",
+        "title": "Jockey",
         "width": 1440,
         "height": 900,
         "minWidth": 1100,

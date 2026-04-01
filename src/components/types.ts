@@ -1,11 +1,12 @@
 export type Role = {
   id: string; roleName: string; runtimeKind: string;
   systemPrompt: string; model: string | null; mode: string | null;
-  mcpServersJson: string; configOptionsJson: string; autoApprove: boolean;
+  mcpServersJson: string; configOptionsJson: string; configOptionDefsJson: string; autoApprove: boolean;
 };
 export type RoleUpsertInput = {
   roleName: string; runtimeKind: string; systemPrompt: string;
   model: string | null; mode: string | null; mcpServersJson: string; configOptionsJson: string;
+  configOptionDefsJson?: string | null;
   autoApprove: boolean;
 };
 export type AppToolCall = {
@@ -88,8 +89,8 @@ export const RUNTIME_COLOR: Record<string, string> = {
   mock: "text-zinc-400",
 };
 export const INTERACTIVE_MOTION = "motion-safe:transition-colors motion-safe:transition-transform motion-safe:duration-150 motion-safe:ease-out active:scale-[0.98]";
-export const DEFAULT_BACKEND_ROLE = "JockeyAssistant";
-export const DEFAULT_ROLE_ALIAS = "JockeyUI";
+export const DEFAULT_BACKEND_ROLE = "Jockey";
+export const DEFAULT_ROLE_ALIAS = "Jockey";
 export const MESSAGE_RENDER_WINDOW = 280;
 
 export const now = (): number => Date.now();

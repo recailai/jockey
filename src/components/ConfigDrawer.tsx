@@ -78,6 +78,7 @@ type ConfigDrawerProps = {
   refreshAssistants: () => Promise<void>;
   pushMessage: (role: string, text: string) => void;
   fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
+  fetchModes: (runtimeKey: string, roleName?: string) => Promise<string[]>;
   onOpenManagement?: (tab?: "roles" | "skills" | "sessions" | "workflows" | "mcp", roleName?: string) => void;
   uiTheme: Accessor<UiTheme>;
   setUiTheme: (th: UiTheme) => void;
@@ -129,6 +130,7 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
               patchActiveSession={props.patchActiveSession}
               pushMessage={props.pushMessage}
               fetchConfigOptions={props.fetchConfigOptions}
+              fetchModes={props.fetchModes}
               refreshRoles={props.refreshRoles}
               refreshAssistants={props.refreshAssistants}
             />
@@ -167,7 +169,7 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
   );
 }
 
-const UNION_ASSISTANT_ROLE = "JockeyAssistant";
+const UNION_ASSISTANT_ROLE = "Jockey";
 
 type AssistantSectionProps = {
   assistants: Accessor<AssistantRuntime[]>;
@@ -175,6 +177,7 @@ type AssistantSectionProps = {
   patchActiveSession: (patch: Partial<AppSession>) => void;
   pushMessage: (role: string, text: string) => void;
   fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
+  fetchModes: (runtimeKey: string, roleName?: string) => Promise<string[]>;
   refreshRoles: () => Promise<void>;
   refreshAssistants: () => Promise<void>;
 };
@@ -238,6 +241,7 @@ function AssistantSection(props: AssistantSectionProps) {
           activeSession={props.activeSession}
           pushMessage={props.pushMessage}
           fetchConfigOptions={props.fetchConfigOptions}
+          fetchModes={props.fetchModes}
           refreshRoles={props.refreshRoles}
           onClose={() => setShowConfig(false)}
         />
@@ -250,6 +254,7 @@ type AssistantConfigPanelProps = {
   activeSession: Accessor<AppSession | null>;
   pushMessage: (role: string, text: string) => void;
   fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
+  fetchModes: (runtimeKey: string, roleName?: string) => Promise<string[]>;
   refreshRoles: () => Promise<void>;
   onClose: () => void;
 };
@@ -273,11 +278,11 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
     if (val) map[id] = val; else delete map[id];
     setConfigOptionsJson(JSON.stringify(map));
   };
-  const modelOpt = createMemo(() => configOptions().find((o) => o.category === "model" || o.id === "model"));
-  const modeOpt = createMemo(() => configOptions().find((o) => o.category === "mode" || o.id === "mode"));
-  const otherOpts = createMemo(() => configOptions().filter((o) => o.id !== "model" && o.id !== "mode" && o.category !== "model" && o.category !== "mode"));
+  const modelOpt = createMemo(() => configOptions().find((o) => o.category?.toLowerCase() === "model" || o.id.toLowerCase() === "model"));
+  const modeOpt = createMemo(() => configOptions().find((o) => o.category?.toLowerCase() === "mode" || o.id.toLowerCase() === "mode"));
+  const otherOpts = createMemo(() => configOptions().filter((o) => o.id.toLowerCase() !== "model" && o.id.toLowerCase() !== "mode" && o.category?.toLowerCase() !== "model" && o.category?.toLowerCase() !== "mode"));
 
-  // Load existing JockeyAssistant role on mount
+  // Load existing Jockey role on mount
   const initRole = async () => {
     try {
       const roles = await roleApi.list();
@@ -291,14 +296,30 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
     } catch {}
   };
 
+  const mergeModesIntoOptions = (opts: AcpConfigOption[], modes: string[]): AcpConfigOption[] => {
+    if (modes.length === 0 || opts.some((o) => o.category === "mode" || o.id === "mode")) return opts;
+    const modeOpt: AcpConfigOption = {
+      id: "mode",
+      name: "Mode",
+      category: "mode",
+      type: "select",
+      currentValue: "",
+      options: modes.map((m) => ({ value: m, name: m })),
+    };
+    return [modeOpt, ...opts];
+  };
+
   const refreshOptions = async (_runtime: string) => {
     const reqSeq = ++optionsReqSeq;
     const sid = props.activeSession()?.id ?? "";
     setOptionsLoading(true);
     try {
-      const cachedRaw = await assistantApi.listDiscoveredConfig(UNION_ASSISTANT_ROLE, sid);
+      const [cachedRaw, cachedModes] = await Promise.all([
+        assistantApi.listDiscoveredConfig(UNION_ASSISTANT_ROLE),
+        props.fetchModes(runtimeKind(), UNION_ASSISTANT_ROLE),
+      ]);
       if (reqSeq !== optionsReqSeq) return;
-      setConfigOptions(configApi.asOptions(cachedRaw));
+      setConfigOptions(mergeModesIntoOptions(configApi.asOptions(cachedRaw), cachedModes));
     } catch {
       if (reqSeq !== optionsReqSeq) return;
       setConfigOptions([]);
@@ -307,9 +328,12 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
       if (reqSeq === optionsReqSeq) setOptionsLoading(false);
       return;
     }
-    void assistantApi.prewarmRoleConfig(UNION_ASSISTANT_ROLE, sid).then((raw) => {
+    void assistantApi.prewarmRoleConfig(UNION_ASSISTANT_ROLE, sid).then(async (result) => {
       if (reqSeq !== optionsReqSeq) return;
-      setConfigOptions(configApi.asOptions(raw));
+      const modes = result.modes.length > 0
+        ? result.modes
+        : await props.fetchModes(runtimeKind(), UNION_ASSISTANT_ROLE);
+      setConfigOptions(mergeModesIntoOptions(configApi.asOptions(result.configOptions), modes));
     }).catch(() => {
     }).finally(() => {
       if (reqSeq !== optionsReqSeq) return;
@@ -416,7 +440,7 @@ function RolesSection(props: {
   setShowDrawer: Setter<boolean>;
 }) {
   const [expanded, setExpanded] = createSignal(true);
-  const userRoles = () => props.roles().filter((r) => r.roleName !== "JockeyAssistant");
+  const userRoles = () => props.roles().filter((r) => r.roleName !== "Jockey");
 
   const openRole = (roleName: string) => {
     props.setShowDrawer(false);

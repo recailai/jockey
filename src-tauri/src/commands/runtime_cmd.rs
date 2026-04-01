@@ -1,5 +1,8 @@
 use crate::acp;
 use crate::assistant::normalize_runtime_key;
+use crate::db::app_session_role::{
+    save_app_session_role_config_option_override, save_app_session_role_mode_override,
+};
 use crate::db::{get_state, with_db};
 use crate::resolve_chat_cwd;
 use crate::types::AppState;
@@ -9,7 +12,9 @@ use tauri::State;
 const RUNTIME_PROBE_PREFIX: &str = "runtime:";
 
 fn normalize_runtime_or_self(runtime: &str) -> String {
-    normalize_runtime_key(runtime).unwrap_or(runtime).to_string()
+    normalize_runtime_key(runtime)
+        .unwrap_or(runtime)
+        .to_string()
 }
 
 fn resolve_runtime_probe(role_name: &str) -> Option<String> {
@@ -17,6 +22,15 @@ fn resolve_runtime_probe(role_name: &str) -> Option<String> {
         .strip_prefix(RUNTIME_PROBE_PREFIX)
         .and_then(normalize_runtime_key)
         .map(|v| v.to_string())
+}
+
+fn resolve_runtime_for_role(state: &AppState, role_name: &str) -> Result<String, String> {
+    if let Some(probe_runtime) = resolve_runtime_probe(role_name) {
+        return Ok(probe_runtime);
+    }
+    Ok(normalize_runtime_or_self(
+        &crate::db::role::load_role_runtime_kind(state, role_name)?,
+    ))
 }
 
 fn resolve_runtime_for_session_role(
@@ -29,7 +43,7 @@ fn resolve_runtime_for_session_role(
         return Err("app session id required".to_string());
     }
 
-    if role_name == "JockeyAssistant" {
+    if role_name == "Jockey" {
         let session_runtime = with_db(state, |conn| {
             conn.query_row(
                 "SELECT runtime_kind FROM app_sessions WHERE id = ?1",
@@ -93,6 +107,25 @@ pub(crate) async fn reset_acp_session(
 }
 
 #[tauri::command]
+pub(crate) async fn reconnect_acp_session(
+    state: State<'_, AppState>,
+    role_name: String,
+    app_session_id: String,
+) -> Result<(), String> {
+    if app_session_id.trim().is_empty() {
+        return Err("app session id required".to_string());
+    }
+    let runtime = resolve_runtime_for_session_role(get_state(&state), &app_session_id, &role_name)?;
+    acp::reconnect_session(&runtime, &role_name, Some(app_session_id.as_str())).await?;
+    crate::db::app_session_role::clear_app_session_role_cli_id(
+        get_state(&state),
+        &app_session_id,
+        &role_name,
+    )?;
+    Ok(())
+}
+
+#[tauri::command]
 pub(crate) async fn set_acp_mode(
     state: State<'_, AppState>,
     role_name: String,
@@ -109,7 +142,15 @@ pub(crate) async fn set_acp_mode(
         &mode_id,
         Some(app_session_id.as_str()),
     )
-    .await
+    .await?;
+    save_app_session_role_mode_override(
+        get_state(&state),
+        &app_session_id,
+        &role_name,
+        &runtime,
+        Some(&mode_id),
+    )?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -131,7 +172,16 @@ pub(crate) async fn set_acp_config_option(
         &value,
         Some(app_session_id.as_str()),
     )
-    .await
+    .await?;
+    save_app_session_role_config_option_override(
+        get_state(&state),
+        &app_session_id,
+        &role_name,
+        &runtime,
+        &config_id,
+        &value,
+    )?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -155,17 +205,35 @@ pub(crate) fn list_available_commands_cmd(
 pub(crate) fn list_discovered_config_options_cmd(
     state: State<'_, AppState>,
     role_name: String,
-    app_session_id: String,
+    _app_session_id: String,
 ) -> Vec<serde_json::Value> {
-    if app_session_id.trim().is_empty() {
-        return vec![];
+    let runtime = match resolve_runtime_for_role(get_state(&state), &role_name) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let discovered = acp::list_discovered_config_options(&runtime);
+    if !discovered.is_empty() {
+        return discovered;
     }
-    let runtime =
-        match resolve_runtime_for_session_role(get_state(&state), &app_session_id, &role_name) {
-            Ok(v) => v,
-            Err(_) => return vec![],
-        };
-    acp::list_discovered_config_options(&app_session_id, &runtime, &role_name)
+    crate::db::role::load_role(get_state(&state), &role_name)
+        .ok()
+        .flatten()
+        .and_then(|r| {
+            serde_json::from_str::<Vec<serde_json::Value>>(&r.config_option_defs_json).ok()
+        })
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub(crate) fn list_discovered_modes_cmd(
+    state: State<'_, AppState>,
+    role_name: String,
+) -> Vec<String> {
+    let runtime = match resolve_runtime_for_role(get_state(&state), &role_name) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    acp::list_discovered_modes(&runtime)
 }
 
 #[tauri::command]
@@ -173,20 +241,30 @@ pub(crate) async fn prewarm_role_config_cmd(
     state: State<'_, AppState>,
     role_name: String,
     app_session_id: String,
-) -> Result<Vec<serde_json::Value>, String> {
+) -> Result<serde_json::Value, String> {
     if app_session_id.trim().is_empty() {
         return Err("app session id required".to_string());
     }
     let runtime = resolve_runtime_for_session_role(get_state(&state), &app_session_id, &role_name)?;
     let cwd = crate::db::app_session::get_app_session_cwd(get_state(&state), &app_session_id)
         .unwrap_or_else(resolve_chat_cwd);
-    Ok(acp::prewarm_role_for_config(
+    let (opts, modes) = acp::prewarm_role_for_config(
         &runtime,
         &role_name,
         &cwd,
         Some((get_state(&state), &app_session_id)),
     )
-    .await)
+    .await;
+    if !opts.is_empty() {
+        if let Ok(serialized) = serde_json::to_string(&opts) {
+            let _ = crate::db::role::update_role_config_option_defs_if_changed(
+                get_state(&state),
+                &role_name,
+                &serialized,
+            );
+        }
+    }
+    Ok(serde_json::json!({ "configOptions": opts, "modes": modes }))
 }
 
 #[tauri::command]

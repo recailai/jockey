@@ -2,10 +2,10 @@ mod acp;
 mod assistant;
 mod chat;
 mod commands;
-pub mod conductor_mcp;
 mod db;
 mod error;
 mod fs_context;
+pub mod jockey_mcp;
 mod parser;
 mod runtime_kind;
 mod types;
@@ -63,19 +63,13 @@ pub(crate) fn clip_text(input: &str, max_chars: usize) -> String {
     input.chars().take(max_chars).collect::<String>()
 }
 
-pub(crate) fn build_jockeyui_tool_prompt() -> &'static str {
-    "You are JockeyUI assistant. Answer the user's question directly and concisely.\n\
+pub(crate) fn build_jockey_tool_prompt() -> &'static str {
+    "You are Jockey assistant. Answer the user's question directly and concisely.\n\
 IMPORTANT: Do NOT use any tools, read files, run commands, or explore the filesystem.\n\
 \n\
-App commands (prefix /app_) control JockeyUI itself. Suggest them on their own line — not auto-executed.\n\
-  /app_help\n\
-  /app_assistant list | /app_assistant select <runtime>\n\
-  /app_model list | /app_model add <model> | /app_model remove <model>\n\
-  /app_model select <model> | /app_model select role <name> <model> | /app_model get | /app_model clear\n\
-  /app_mcp list | /app_mcp add <name> | /app_mcp remove <name> | /app_mcp enable <name> | /app_mcp disable <name>\n\
-  /app_role list | /app_role bind <role> <runtime> [prompt] | /app_role prompt <role> <prompt>\n\
-Workspace selection is managed by the app automatically.\n\
-Only output app commands when the user explicitly asks to perform a JockeyUI action."
+App commands (prefix /app_) — only suggest when the user explicitly asks for Jockey management:\n\
+  /app_help | /app_assistant list | /app_assistant select <runtime>\n\
+Do NOT suggest role, model, or MCP commands — those are managed via the UI sidebar."
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -98,13 +92,7 @@ pub fn run() {
             fs::create_dir_all(&app_dir)?;
             acp::set_app_data_dir(app_dir.clone());
 
-            let mcp_bin = std::env::current_exe()
-                .ok()
-                .and_then(|exe| exe.parent().map(|d| d.join("jockeyui-mcp")))
-                .filter(|p| p.exists())
-                .map(|p| p.to_string_lossy().to_string());
-            chat::session_runtime::set_conductor_mcp_path(mcp_bin);
-            let db_path = app_dir.join("jockeyui.sqlite3");
+            let db_path = app_dir.join("jockey.sqlite3");
             // Per-connection PRAGMAs run by the pool on every new connection.
             const CONN_INIT_SQL: &str =
                 "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;";
@@ -145,6 +133,26 @@ pub fn run() {
             }
 
             seed_default_dynamic_catalog(&state).map_err(std::io::Error::other)?;
+
+            let bridge_state = std::sync::Arc::new(AppState {
+                db: state.db.clone(),
+                shared_context: state.shared_context.clone(),
+            });
+            let bridge_state_clone = bridge_state.clone();
+            let bridge_app = app.handle().clone();
+            tauri::async_runtime::block_on(async move {
+                match jockey_mcp::bridge::start_bridge(bridge_state_clone.clone()).await {
+                    Ok(port) => {
+                        eprintln!("[jockey-mcp] listening on 127.0.0.1:{port}");
+                        db::global_mcp::seed_builtin_jockey_mcp(&bridge_state_clone, port);
+                    }
+                    Err(e) => {
+                        eprintln!("[jockey-mcp] failed to start: {e}");
+                        let _ = bridge_app.emit("jockey-mcp/error", &e);
+                    }
+                }
+            });
+
             app.manage(state);
 
             let (death_tx, mut death_rx) = tokio::sync::mpsc::unbounded_channel::<acp::ConnectionDeathEvent>();
@@ -153,6 +161,15 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 while let Some(event) = death_rx.recv().await {
                     let _ = death_app.emit("acp/connection-lost", &event);
+                }
+            });
+
+            let (prewarm_tx, mut prewarm_rx) = tokio::sync::mpsc::unbounded_channel::<acp::PrewarmEvent>();
+            acp::set_prewarm_event_sender(prewarm_tx);
+            let prewarm_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while let Some(event) = prewarm_rx.recv().await {
+                    let _ = prewarm_app.emit("acp/prewarm", &event);
                 }
             });
 
@@ -265,8 +282,11 @@ pub fn run() {
                             Ok(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
                         }).unwrap_or_default();
 
+                        let mut active_role_names: std::collections::HashSet<String> =
+                            std::collections::HashSet::new();
                         for (session_id, role_name, runtime_kind) in session_roles {
                             if runtime_kind == "mock" { continue; }
+                            active_role_names.insert(role_name.clone());
                             let db_clone = app_state.db.clone();
                             let ctx_clone = app_state.shared_context.clone();
                             let sid_clone = session_id.clone();
@@ -284,6 +304,41 @@ pub fn run() {
                                 ).await;
                             });
                         }
+
+                        let all_roles: Vec<(String, String)> = with_db(app_state, |conn| {
+                            let mut stmt = conn
+                                .prepare("SELECT role_name, runtime_kind FROM roles ORDER BY role_name ASC")
+                                .map_err(|e| e.to_string())?;
+                            let rows = stmt
+                                .query_map([], |row| {
+                                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                                })
+                                .map_err(|e| e.to_string())?;
+                            Ok(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+                        })
+                        .unwrap_or_default();
+
+                        for (role_name, runtime_kind) in all_roles {
+                            if runtime_kind == "mock" {
+                                continue;
+                            }
+                            if active_role_names.contains(&role_name) {
+                                continue;
+                            }
+                            let db_clone = app_state.db.clone();
+                            let ctx_clone = app_state.shared_context.clone();
+                            let rn_clone = role_name.clone();
+                            let rk_clone = runtime_kind.clone();
+                            tokio::spawn(async move {
+                                let tmp = AppState {
+                                    db: db_clone,
+                                    shared_context: ctx_clone,
+                                };
+                                let cwd = resolve_chat_cwd();
+                                acp::refresh_role_config_defs(&rk_clone, &rn_clone, &cwd, &tmp)
+                                    .await;
+                            });
+                        }
                     }
                 });
             }
@@ -296,6 +351,7 @@ pub fn run() {
             db::role::list_roles,
             db::workflow::create_workflow,
             db::workflow::list_workflows,
+            db::workflow::delete_workflow,
             db::session::list_sessions,
             db::session::list_session_events,
             db::session::start_workflow,
@@ -306,12 +362,14 @@ pub fn run() {
             chat::assistant_chat,
             commands::runtime_cmd::cancel_acp_session,
             commands::runtime_cmd::reset_acp_session,
+            commands::runtime_cmd::reconnect_acp_session,
             commands::runtime_cmd::set_acp_mode,
             commands::runtime_cmd::set_acp_config_option,
             commands::session_context_cmd::list_session_context_entries_cmd,
             commands::session_context_cmd::set_session_context_entry_cmd,
             commands::session_context_cmd::delete_session_context_entry_cmd,
             commands::runtime_cmd::list_discovered_config_options_cmd,
+            commands::runtime_cmd::list_discovered_modes_cmd,
             commands::runtime_cmd::list_available_commands_cmd,
             commands::runtime_cmd::respond_permission,
             commands::runtime_cmd::prewarm_role_config_cmd,
@@ -324,7 +382,10 @@ pub fn run() {
             db::app_session::append_app_message,
             db::skill::list_app_skills,
             db::skill::upsert_app_skill,
-            db::skill::delete_app_skill
+            db::skill::delete_app_skill,
+            db::global_mcp::list_global_mcp_servers_cmd,
+            db::global_mcp::upsert_global_mcp_server_cmd,
+            db::global_mcp::delete_global_mcp_server_cmd
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

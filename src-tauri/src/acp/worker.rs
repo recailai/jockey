@@ -12,10 +12,13 @@ use super::adapter::{acp_log, resolve_cwd};
 use super::client::shutdown_terminals;
 use super::runtime_state::{
     clear_all as clear_runtime_state, clear_session as clear_session_runtime_state,
-    list_discovered_config_options, remember_runtime_available_commands,
+    list_discovered_config_options, list_discovered_modes, remember_runtime_available_commands,
+    remember_runtime_modes,
 };
 use super::session::cold_start;
 pub use crate::runtime_kind::RuntimeKind;
+
+const PROMPT_LIVENESS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,10 +28,43 @@ pub struct ConnectionDeathEvent {
     pub app_session_id: String,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrewarmEvent {
+    pub runtime_key: String,
+    pub role_name: String,
+    pub app_session_id: String,
+    pub status: PrewarmStatus,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PrewarmStatus {
+    Started,
+    Ready,
+    Failed { error: String },
+}
+
 static DEATH_TX: OnceLock<mpsc::UnboundedSender<ConnectionDeathEvent>> = OnceLock::new();
+static PREWARM_TX: OnceLock<mpsc::UnboundedSender<PrewarmEvent>> = OnceLock::new();
 
 pub fn set_death_event_sender(tx: mpsc::UnboundedSender<ConnectionDeathEvent>) {
     let _ = DEATH_TX.set(tx);
+}
+
+pub fn set_prewarm_event_sender(tx: mpsc::UnboundedSender<PrewarmEvent>) {
+    let _ = PREWARM_TX.set(tx);
+}
+
+fn notify_prewarm(runtime_key: &str, role_name: &str, app_session_id: &str, status: PrewarmStatus) {
+    if let Some(tx) = PREWARM_TX.get() {
+        let _ = tx.send(PrewarmEvent {
+            runtime_key: runtime_key.to_string(),
+            role_name: role_name.to_string(),
+            app_session_id: app_session_id.to_string(),
+            status,
+        });
+    }
 }
 
 fn notify_connection_death(event: ConnectionDeathEvent) {
@@ -161,7 +197,7 @@ pub(super) enum WorkerMsg {
         mcp_servers: Vec<acp::McpServer>,
         role_mode: Option<String>,
         role_config_options: Vec<(String, String)>,
-        result_tx: Option<oneshot::Sender<(Vec<Value>, String)>>,
+        result_tx: Option<oneshot::Sender<(Vec<Value>, Vec<String>, String)>>,
         resume_session_id: Option<String>,
     },
     Cancel {
@@ -170,6 +206,12 @@ pub(super) enum WorkerMsg {
         app_session_id: String,
     },
     Reset {
+        runtime_key: &'static str,
+        role_name: String,
+        app_session_id: String,
+        result_tx: oneshot::Sender<Result<(), String>>,
+    },
+    Reconnect {
         runtime_key: &'static str,
         role_name: String,
         app_session_id: String,
@@ -405,6 +447,36 @@ async fn reset_worker_session(
     Ok(())
 }
 
+async fn reconnect_worker_session(
+    runtime_key: &'static str,
+    role_name: &str,
+    app_session_id: &str,
+) -> Result<(), String> {
+    let key = pool_key(app_session_id, runtime_key, role_name);
+    let handle = CANCEL_HANDLES.with(|m| m.borrow_mut().remove(&key));
+    if let Some(h) = handle {
+        let _ = h
+            .conn
+            .cancel(acp::CancelNotification::new(h.session_id))
+            .await;
+    }
+
+    if let Some((_, slot)) = slot_map().remove(&key) {
+        let mut guard =
+            tokio::time::timeout(std::time::Duration::from_millis(1200), slot.conn.lock())
+                .await
+                .map_err(|_| "timeout reconnecting ACP session".to_string())?;
+        *guard = None;
+    }
+
+    clear_session_runtime_state(app_session_id, runtime_key, role_name);
+    acp_log(
+        "reconnect.ok",
+        json!({ "runtime": runtime_key, "role": role_name, "appSession": app_session_id }),
+    );
+    Ok(())
+}
+
 async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
     while let Some(msg) = rx.recv().await {
         match msg {
@@ -525,6 +597,18 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 tokio::task::spawn_local(async move {
                     let result =
                         reset_worker_session(runtime_key, &role_name, &app_session_id).await;
+                    let _ = result_tx.send(result);
+                });
+            }
+            WorkerMsg::Reconnect {
+                runtime_key,
+                role_name,
+                app_session_id,
+                result_tx,
+            } => {
+                tokio::task::spawn_local(async move {
+                    let result =
+                        reconnect_worker_session(runtime_key, &role_name, &app_session_id).await;
                     let _ = result_tx.send(result);
                 });
             }
@@ -652,6 +736,9 @@ async fn apply_cold_start_config(
     delta_tx: &mpsc::Sender<AcpEvent>,
     role_mode: &Option<String>,
     role_config_options: &[(String, String)],
+    _app_session_id: &str,
+    runtime_key: &str,
+    _role_name: &str,
 ) {
     if !conn.available_modes.is_empty() {
         let _ = delta_tx.try_send(AcpEvent::AvailableModes {
@@ -675,7 +762,21 @@ async fn apply_cold_start_config(
             );
         }
     }
+
+    let discovered = list_discovered_config_options(runtime_key);
+    let supported_keys: std::collections::HashSet<String> = discovered
+        .iter()
+        .filter_map(|v| v.get("id").and_then(|i| i.as_str()).map(|s| s.to_string()))
+        .collect();
+
     for (key, value) in role_config_options {
+        if !supported_keys.is_empty() && !supported_keys.contains(key.as_str()) {
+            acp_log(
+                "config.set_option.skipped",
+                json!({ "key": key, "runtime": runtime_key, "reason": "not supported by runtime" }),
+            );
+            continue;
+        }
         if let Err(e) = conn
             .conn
             .set_session_config_option(acp::SetSessionConfigOptionRequest::new(
@@ -801,20 +902,30 @@ async fn handle_execute(
         }
     };
 
-    let conn = guard.as_mut().unwrap();
-    let session_id = conn.session_id.clone();
+    let session_id = guard
+        .as_ref()
+        .map(|c| c.session_id.clone())
+        .unwrap_or_else(|| acp::SessionId::from(String::new()));
+    let delta_slot = guard
+        .as_ref()
+        .map(|c| c.delta_slot.clone())
+        .unwrap_or_else(|| Arc::new(Mutex::new(None)));
 
-    if let Ok(mut slot) = conn.delta_slot.lock() {
+    if let Ok(mut slot) = delta_slot.lock() {
         *slot = Some(delta_tx.clone());
     }
 
     if is_cold {
+        let conn = guard.as_ref().unwrap();
         apply_cold_start_config(
             conn,
             &session_id,
             &delta_tx,
             &role_mode,
             &role_config_options,
+            &app_session_id,
+            runtime_key,
+            &role_name,
         )
         .await;
 
@@ -826,6 +937,13 @@ async fn handle_execute(
         };
         let instance_id = conn.instance_id;
         spawn_connection_health_watch(slot.clone(), wk, death, instance_id, conn.health_rx.clone());
+    } else if let Some(conn) = guard.as_ref() {
+        if !conn.available_modes.is_empty() {
+            let _ = delta_tx.try_send(AcpEvent::AvailableModes {
+                modes: conn.available_modes.clone(),
+                current: conn.current_mode.clone(),
+            });
+        }
     }
 
     let blocks = build_prompt_blocks(prompt, &context);
@@ -833,33 +951,51 @@ async fn handle_execute(
     // Install cancel handle so the Cancel message handler can send ACP cancel
     // without waiting for the conn mutex (which we hold right now).
     let cancel_key = pool_key(&app_session_id, runtime_key, &role_name);
+    let conn_rc = guard.as_ref().unwrap().conn.clone();
     CANCEL_HANDLES.with(|m| {
         m.borrow_mut().insert(
             cancel_key.clone(),
             CancelHandle {
-                conn: conn.conn.clone(),
+                conn: conn_rc.clone(),
                 session_id: session_id.clone(),
             },
         );
     });
 
     let prompt_started = Instant::now();
-    let prompt_result = conn
-        .conn
-        .prompt(acp::PromptRequest::new(session_id.clone(), blocks))
-        .await;
+    let mut health_rx = guard.as_ref().unwrap().health_rx.clone();
 
-    // Clear cancel handle — prompt is done.
+    let prompt_fut = conn_rc.prompt(acp::PromptRequest::new(session_id.clone(), blocks));
+    tokio::pin!(prompt_fut);
+
+    let prompt_result: Result<Result<acp::PromptResponse, acp::Error>, &str> = loop {
+        tokio::select! {
+            res = &mut prompt_fut => {
+                break Ok(res);
+            }
+            changed = health_rx.changed() => {
+                if changed.is_err() || !*health_rx.borrow() {
+                    break Err("agent process exited while prompt was in progress");
+                }
+            }
+            _ = tokio::time::sleep(PROMPT_LIVENESS_INTERVAL) => {
+                if !*health_rx.borrow() {
+                    break Err("agent process is no longer alive");
+                }
+            }
+        }
+    };
+
     CANCEL_HANDLES.with(|m| {
         m.borrow_mut().remove(&cancel_key);
     });
 
-    if let Ok(mut slot) = conn.delta_slot.lock() {
+    if let Ok(mut slot) = delta_slot.lock() {
         *slot = None;
     }
 
     match prompt_result {
-        Ok(resp) => {
+        Ok(Ok(resp)) => {
             acp_log(
                 "stage.ok",
                 json!({
@@ -871,13 +1007,29 @@ async fn handle_execute(
             );
             let _ = result_tx.send(Ok((String::new(), session_id.to_string())));
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             acp_log(
                 "pool.invalidate",
                 json!({ "runtime": runtime_key, "error": e.to_string() }),
             );
             *guard = None;
             let _ = result_tx.send(Err(e.to_string()));
+        }
+        Err(reason) => {
+            acp_log(
+                "pool.prompt.process_died",
+                json!({
+                    "runtime": runtime_key,
+                    "role": role_name,
+                    "elapsedSec": prompt_started.elapsed().as_secs(),
+                    "reason": reason
+                }),
+            );
+            let _ = conn_rc
+                .cancel(acp::CancelNotification::new(session_id.clone()))
+                .await;
+            *guard = None;
+            let _ = result_tx.send(Err(reason.to_string()));
         }
     }
 }
@@ -895,7 +1047,7 @@ async fn handle_prewarm(
     mcp_servers: Vec<acp::McpServer>,
     role_mode: Option<String>,
     role_config_options: Vec<(String, String)>,
-    result_tx: Option<oneshot::Sender<(Vec<Value>, String)>>,
+    result_tx: Option<oneshot::Sender<(Vec<Value>, Vec<String>, String)>>,
     resume_session_id: Option<String>,
 ) {
     let mut guard = slot.conn.lock().await;
@@ -906,7 +1058,8 @@ async fn handle_prewarm(
                 .map(|c| c.session_id.to_string())
                 .unwrap_or_default();
             let _ = tx.send((
-                list_discovered_config_options(&app_session_id, runtime_key, &role_name),
+                list_discovered_config_options(runtime_key),
+                list_discovered_modes(runtime_key),
                 session_id,
             ));
         }
@@ -916,6 +1069,12 @@ async fn handle_prewarm(
     acp_log(
         "prewarm.start",
         json!({ "runtime": runtime_key, "role": role_name }),
+    );
+    notify_prewarm(
+        runtime_key,
+        &role_name,
+        &app_session_id,
+        PrewarmStatus::Started,
     );
     match cold_start(
         runtime_key,
@@ -936,6 +1095,12 @@ async fn handle_prewarm(
                 "prewarm.ok",
                 json!({ "runtime": runtime_key, "role": role_name, "sessionId": conn.session_id.to_string() }),
             );
+            notify_prewarm(
+                runtime_key,
+                &role_name,
+                &app_session_id,
+                PrewarmStatus::Ready,
+            );
             let session_id = conn.session_id.clone();
             let session_id_str = session_id.to_string();
             let dummy_tx = {
@@ -948,6 +1113,9 @@ async fn handle_prewarm(
                 &dummy_tx,
                 &role_mode,
                 &role_config_options,
+                &app_session_id,
+                runtime_key,
+                &role_name,
             )
             .await;
             // Install a temporary drain channel so notifications sent after session/new
@@ -981,6 +1149,17 @@ async fn handle_prewarm(
                             commands,
                         );
                     }
+                    Ok(Some(AcpEvent::AvailableModes { modes, .. })) => {
+                        remember_runtime_modes(
+                            runtime_key,
+                            modes
+                                .iter()
+                                .filter_map(|m| {
+                                    m.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())
+                                })
+                                .collect(),
+                        );
+                    }
                     Ok(Some(_)) => {}
                     _ => break,
                 }
@@ -1009,7 +1188,8 @@ async fn handle_prewarm(
             }
             if let Some(tx) = result_tx {
                 let _ = tx.send((
-                    list_discovered_config_options(&app_session_id, runtime_key, &role_name),
+                    list_discovered_config_options(runtime_key),
+                    list_discovered_modes(runtime_key),
                     session_id_str,
                 ));
             }
@@ -1019,8 +1199,14 @@ async fn handle_prewarm(
                 "prewarm.error",
                 json!({ "runtime": runtime_key, "role": role_name, "error": e }),
             );
+            notify_prewarm(
+                runtime_key,
+                &role_name,
+                &app_session_id,
+                PrewarmStatus::Failed { error: e.clone() },
+            );
             if let Some(tx) = result_tx {
-                let _ = tx.send((vec![], String::new()));
+                let _ = tx.send((vec![], vec![], String::new()));
             }
         }
     }

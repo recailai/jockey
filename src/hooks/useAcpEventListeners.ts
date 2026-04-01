@@ -8,6 +8,7 @@ import type {
   SessionUpdateEvent,
   WorkflowStateEvent,
 } from "../components/types";
+import { now } from "../components/types";
 import {
   appendAcpDelta,
   applyAcpStreamEvent,
@@ -60,7 +61,66 @@ export function useAcpEventListeners() {
       scheduleScrollToBottom,
     } = input;
 
-    return Promise.all([
+    type PrewarmStage = "warming" | "ready" | "failed";
+    type PrewarmRuntimeState = { stage: PrewarmStage; error?: string };
+    type PrewarmScopeState = {
+      messageId: string;
+      runtimes: Map<string, PrewarmRuntimeState>;
+    };
+    const prewarmState = new Map<string, PrewarmScopeState>();
+
+    const renderPrewarmText = (runtimes: Map<string, PrewarmRuntimeState>): string => {
+      const warming: string[] = [];
+      const ready: string[] = [];
+      const failed: string[] = [];
+      for (const [runtimeKey, state] of runtimes) {
+        if (state.stage === "warming") warming.push(runtimeKey);
+        if (state.stage === "ready") ready.push(runtimeKey);
+        if (state.stage === "failed") failed.push(`${runtimeKey}: ${state.error ?? "unknown error"}`);
+      }
+      const parts: string[] = [];
+      if (warming.length > 0) parts.push(`warming ${warming.join(", ")}`);
+      if (ready.length > 0) parts.push(`ready ${ready.join(", ")}`);
+      if (failed.length > 0) parts.push(`failed ${failed.join("; ")}`);
+      return parts.length > 0 ? `Runtime warmup: ${parts.join(" | ")}` : "Runtime warmup: idle";
+    };
+
+    const upsertPrewarmMessage = (appSessionId: string, runtimeKey: string, state: PrewarmRuntimeState) => {
+      const scopeKey = appSessionId || "__global__";
+      const scope = prewarmState.get(scopeKey) ?? {
+        messageId: `runtime-warmup-${scopeKey}`,
+        runtimes: new Map<string, PrewarmRuntimeState>(),
+      };
+      scope.runtimes.set(runtimeKey, state);
+      prewarmState.set(scopeKey, scope);
+      const text = renderPrewarmText(scope.runtimes);
+
+      if (!appSessionId) {
+        pushMessage("event", text);
+        return;
+      }
+
+      mutateSession(appSessionId, (s) => {
+        const idx = s.messages.findIndex((m) => m.id === scope.messageId);
+        if (idx === -1) {
+          s.messages.push({
+            id: scope.messageId,
+            roleName: "event",
+            text,
+            at: now(),
+          });
+          return;
+        }
+        s.messages[idx].text = text;
+        s.messages[idx].at = now();
+      });
+      scheduleScrollToBottom();
+    };
+
+    const listeners = await Promise.all([
+      listen<string>("jockey-mcp/error", (ev) => {
+        pushMessage("event", `Jockey MCP bridge failed: ${ev.payload}`);
+      }),
       listen<{ runtimeKey: string; roleName: string; appSessionId: string }>(
         "acp/connection-lost",
         (ev) => {
@@ -70,6 +130,20 @@ export function useAcpEventListeners() {
             pushMessageToSession(sid, "event", msg);
           } else {
             pushMessage("event", msg);
+          }
+        },
+      ),
+      listen<{ runtimeKey: string; roleName: string; appSessionId: string; status: string | { failed: { error: string } } }>(
+        "acp/prewarm",
+        (ev) => {
+          const { runtimeKey, appSessionId, status } = ev.payload;
+          if (status === "started") {
+            upsertPrewarmMessage(appSessionId, runtimeKey, { stage: "warming" });
+          } else if (status === "ready") {
+            upsertPrewarmMessage(appSessionId, runtimeKey, { stage: "ready" });
+          } else if (typeof status === "object" && status && "failed" in status) {
+            const err = (status as { failed: { error: string } }).failed.error;
+            upsertPrewarmMessage(appSessionId, runtimeKey, { stage: "failed", error: err });
           }
         },
       ),
@@ -113,6 +187,12 @@ export function useAcpEventListeners() {
         },
       ),
     ]);
+
+    listeners.push(() => {
+      prewarmState.clear();
+    });
+
+    return listeners;
   };
 
   return { registerAcpEventListeners };

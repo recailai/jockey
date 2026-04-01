@@ -25,6 +25,7 @@ const INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const SESSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 static LIVE_CONNECTION_SEQ: AtomicU64 = AtomicU64::new(1);
 use crate::db::app_session_role::{load_app_session_role_cli_id, save_app_session_role_cli_id};
+use crate::db::role::update_role_config_option_defs_if_changed;
 use crate::types::AppState;
 
 pub(super) fn collect_models_from_select_options(
@@ -92,8 +93,8 @@ pub(super) fn extract_mode_ids(modes: &[Value]) -> Vec<String> {
 
 pub(super) async fn cold_start(
     runtime_key: &'static str,
-    role_name: &str,
-    app_session_id: &str,
+    _role_name: &str,
+    _app_session_id: &str,
     binary: &str,
     args: &[String],
     env_pairs: &[(String, String)],
@@ -171,7 +172,7 @@ pub(super) async fn cold_start(
         INIT_TIMEOUT,
         conn.initialize(
             acp::InitializeRequest::new(acp::ProtocolVersion::V1)
-                .client_info(acp::Implementation::new("jockeyui", "0.1.0").title("JockeyUI"))
+                .client_info(acp::Implementation::new("jockey", "0.1.0").title("Jockey"))
                 .client_capabilities(
                     acp::ClientCapabilities::new()
                         .fs(acp::FileSystemCapabilities::new()
@@ -318,7 +319,7 @@ pub(super) async fn cold_start(
                 "ids": serialized.iter().filter_map(|v| v.get("id").and_then(|i| i.as_str()).map(|s| s.to_string())).collect::<Vec<_>>()
             }),
         );
-        remember_runtime_config_options(app_session_id, runtime_key, role_name, serialized);
+        remember_runtime_config_options(runtime_key, serialized);
     } else {
         acp_log("config_options.none", json!({ "runtime": runtime_key }));
     }
@@ -553,9 +554,7 @@ pub async fn execute_runtime(
                     Some(ref evt @ AcpEvent::ConfigUpdate { ref options }) => {
                         delta_count += 1;
                         remember_runtime_config_options(
-                            &app_session_id_owned,
                             adapter.runtime_key,
-                            &role_owned,
                             options.clone(),
                         );
                         let _ = app.emit("acp/stream", AcpStreamPayload {
@@ -707,20 +706,63 @@ pub async fn execute_runtime(
     }
 }
 
+fn mcp_server_name(server: &acp::McpServer) -> Option<&str> {
+    match server {
+        acp::McpServer::Http(s) => Some(s.name.as_str()),
+        acp::McpServer::Sse(s) => Some(s.name.as_str()),
+        acp::McpServer::Stdio(s) => Some(s.name.as_str()),
+        _ => None,
+    }
+}
+
+fn merge_mcp_servers(base: &mut Vec<acp::McpServer>, extras: Vec<acp::McpServer>) {
+    let mut existing_names: HashSet<String> = base
+        .iter()
+        .filter_map(mcp_server_name)
+        .map(|name| name.trim().to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect();
+    for server in extras {
+        let Some(name) = mcp_server_name(&server)
+            .map(|raw| raw.trim().to_ascii_lowercase())
+            .filter(|n| !n.is_empty())
+        else {
+            base.push(server);
+            continue;
+        };
+        if existing_names.insert(name) {
+            base.push(server);
+        }
+    }
+}
+
+fn load_role_mcp_servers(state: &AppState, role_name: &str) -> Vec<acp::McpServer> {
+    let mut servers = crate::db::global_mcp::load_all_global_mcp_as_acp(state);
+    let role_servers = crate::db::role::load_role(state, role_name)
+        .ok()
+        .flatten()
+        .map(|r| crate::db::global_mcp::parse_mcp_server_list_json_compat(&r.mcp_servers_json))
+        .unwrap_or_default();
+    merge_mcp_servers(&mut servers, role_servers);
+    servers
+}
+
 async fn send_prewarm(
     runtime_kind: &str,
     role_name: &str,
     cwd: &str,
     resume_session_id: Option<String>,
     app_session_id: Option<&str>,
-) -> Option<oneshot::Receiver<(Vec<serde_json::Value>, String)>> {
+    mcp_servers: Vec<acp::McpServer>,
+) -> Option<oneshot::Receiver<(Vec<serde_json::Value>, Vec<String>, String)>> {
     let adapter = match build_stdio_adapter(runtime_kind) {
         Ok(Some(a)) => a,
         _ => return None,
     };
     let resolved_session_id = app_session_id
         .filter(|id| !id.trim().is_empty())
-        .map(|id| id.to_string())?;
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| format!("role-refresh:{}:{role_name}", adapter.runtime_key));
     let (tx, rx) = oneshot::channel();
     let _ = worker_tx().send(WorkerMsg::Prewarm {
         runtime_key: adapter.runtime_key,
@@ -731,7 +773,7 @@ async fn send_prewarm(
         app_session_id: resolved_session_id,
         cwd: cwd.to_string(),
         auto_approve: true,
-        mcp_servers: vec![],
+        mcp_servers,
         role_mode: None,
         role_config_options: vec![],
         result_tx: Some(tx),
@@ -751,19 +793,38 @@ pub async fn prewarm_role(
         .as_ref()
         .and_then(|(s, sid)| load_app_session_role_cli_id(s, sid, runtime_key, role_name));
     let app_session_id = state.as_ref().map(|(_, sid)| *sid);
+    let mcp_servers = state
+        .as_ref()
+        .map(|(s, _)| load_role_mcp_servers(s, role_name))
+        .unwrap_or_default();
     let Some(rx) = send_prewarm(
         runtime_kind,
         role_name,
         cwd,
         resume_session_id,
         app_session_id,
+        mcp_servers,
     )
     .await
     else {
         return;
     };
     if let Some((s, app_sid)) = state {
-        if let Ok((_opts, sid)) = rx.await {
+        if let Ok((opts, _modes, sid)) = rx.await {
+            if !opts.is_empty() {
+                match serde_json::to_string(&opts) {
+                    Ok(serialized) => {
+                        if let Err(e) =
+                            update_role_config_option_defs_if_changed(s, role_name, &serialized)
+                        {
+                            eprintln!("[prewarm] failed to persist config option defs for {role_name}: {e}");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[prewarm] failed to serialize config option defs for {role_name}: {e}");
+                    }
+                }
+            }
             if !sid.is_empty() {
                 let _ = save_app_session_role_cli_id(s, app_sid, runtime_key, role_name, &sid);
             }
@@ -776,30 +837,59 @@ pub async fn prewarm_role_for_config(
     role_name: &str,
     cwd: &str,
     state: Option<(&AppState, &str)>,
-) -> Vec<serde_json::Value> {
+) -> (Vec<serde_json::Value>, Vec<String>) {
     let runtime_key = normalize_runtime_key(runtime_kind).unwrap_or(runtime_kind);
     let resume_session_id = state
         .as_ref()
         .and_then(|(s, sid)| load_app_session_role_cli_id(s, sid, runtime_key, role_name));
     let app_session_id = state.as_ref().map(|(_, sid)| *sid);
+    let mcp_servers = state
+        .as_ref()
+        .map(|(s, _)| load_role_mcp_servers(s, role_name))
+        .unwrap_or_default();
     let Some(rx) = send_prewarm(
         runtime_kind,
         role_name,
         cwd,
         resume_session_id,
         app_session_id,
+        mcp_servers,
     )
     .await
     else {
-        return vec![];
+        return (vec![], vec![]);
     };
-    let (opts, sid) = rx.await.unwrap_or_default();
+    let (opts, modes, sid) = rx.await.unwrap_or_default();
     if let Some((s, app_sid)) = state {
+        if !opts.is_empty() {
+            if let Ok(serialized) = serde_json::to_string(&opts) {
+                let _ = update_role_config_option_defs_if_changed(s, role_name, &serialized);
+            }
+        }
         if !sid.is_empty() {
             let _ = save_app_session_role_cli_id(s, app_sid, runtime_key, role_name, &sid);
         }
     }
-    opts
+    (opts, modes)
+}
+
+pub async fn refresh_role_config_defs(
+    runtime_kind: &str,
+    role_name: &str,
+    cwd: &str,
+    state: &AppState,
+) -> (Vec<serde_json::Value>, Vec<String>) {
+    let mcp_servers = load_role_mcp_servers(state, role_name);
+    let Some(rx) = send_prewarm(runtime_kind, role_name, cwd, None, None, mcp_servers).await else {
+        return (vec![], vec![]);
+    };
+    let (opts, modes, _sid) = rx.await.unwrap_or_default();
+    if !opts.is_empty() {
+        if let Ok(serialized) = serde_json::to_string(&opts) {
+            let _ = update_role_config_option_defs_if_changed(state, role_name, &serialized);
+        }
+    }
+    (opts, modes)
 }
 
 pub async fn prewarm_role_with_session_id(
@@ -811,18 +901,25 @@ pub async fn prewarm_role_with_session_id(
     app_session_id: &str,
 ) {
     let runtime_key = normalize_runtime_key(runtime_kind).unwrap_or(runtime_kind);
+    let mcp_servers = load_role_mcp_servers(state, role_name);
     let Some(rx) = send_prewarm(
         runtime_kind,
         role_name,
         cwd,
         resume_session_id,
         Some(app_session_id),
+        mcp_servers,
     )
     .await
     else {
         return;
     };
-    if let Ok((_opts, sid)) = rx.await {
+    if let Ok((opts, _modes, sid)) = rx.await {
+        if !opts.is_empty() {
+            if let Ok(serialized) = serde_json::to_string(&opts) {
+                let _ = update_role_config_option_defs_if_changed(state, role_name, &serialized);
+            }
+        }
         if !sid.is_empty() {
             let _ =
                 save_app_session_role_cli_id(state, app_session_id, runtime_key, role_name, &sid);
@@ -864,6 +961,27 @@ pub async fn reset_session(
         .ok_or_else(|| "app session id required".to_string())?;
     let (tx, rx) = oneshot::channel();
     let _ = worker_tx().send(WorkerMsg::Reset {
+        runtime_key,
+        role_name: role_name.to_string(),
+        app_session_id: resolved_session_id,
+        result_tx: tx,
+    });
+    rx.await.map_err(|_| "worker disconnected".to_string())?
+}
+
+pub async fn reconnect_session(
+    runtime_kind: &str,
+    role_name: &str,
+    app_session_id: Option<&str>,
+) -> Result<(), String> {
+    let runtime_key =
+        normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
+    let resolved_session_id = app_session_id
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| id.to_string())
+        .ok_or_else(|| "app session id required".to_string())?;
+    let (tx, rx) = oneshot::channel();
+    let _ = worker_tx().send(WorkerMsg::Reconnect {
         runtime_key,
         role_name: role_name.to_string(),
         app_session_id: resolved_session_id,

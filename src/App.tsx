@@ -84,11 +84,12 @@ export default function App() {
     bumpRunToken, getCanceledRunToken,
     isCustomRole, activeBackendRole,
     refreshRoles, refreshSkills,
-    fetchConfigOptions,
+    fetchConfigOptions, fetchModes,
     parseAgentCommands,
     fetchAndCacheAgentCommands,
     setPreferredAssistant, refreshAssistants,
     resetActiveAgentContext,
+    reconnectActiveAgent,
     cancelCurrentRun: cancelCurrentRunBase,
   } = agentContext;
 
@@ -590,6 +591,7 @@ export default function App() {
         activeSession={activeSession}
         patchActiveSession={patchActiveSession}
         onResetAgentContext={resetActiveAgentContext}
+        onReconnectAgent={reconnectActiveAgent}
         onListMounted={(id, el) => { listRefMap.set(id, el); scheduleScrollToBottom(); }}
         onListUnmounted={(id) => { listRefMap.delete(id); }}
       />
@@ -636,6 +638,7 @@ export default function App() {
             refreshAssistants={refreshAssistants}
             pushMessage={pushMessage}
             fetchConfigOptions={fetchConfigOptions}
+            fetchModes={fetchModes}
             onOpenManagement={(tab, roleName) => {
               setManagementInitialTab(tab ?? "sessions");
               setManagementInitialRole(roleName);

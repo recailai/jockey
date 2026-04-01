@@ -85,6 +85,15 @@ export const roleApi = {
   remove: (roleName: string) => call<void>("delete_role_cmd", { roleName }),
 };
 
+export type GlobalMcpEntry = { name: string; configJson: string; isBuiltin: boolean };
+
+export const globalMcpApi = {
+  list: () => call<GlobalMcpEntry[]>("list_global_mcp_servers_cmd"),
+  upsert: (name: string, configJson: string) =>
+    call<void>("upsert_global_mcp_server_cmd", { name, configJson }),
+  remove: (name: string) => call<void>("delete_global_mcp_server_cmd", { name }),
+};
+
 export const skillApi = {
   list: () => call<AppSkill[]>("list_app_skills"),
   upsert: (input: { id?: string; name: string; description: string; content: string }) =>
@@ -109,10 +118,14 @@ export const assistantApi = {
     call<void>("set_acp_mode", { roleName, modeId, appSessionId }),
   resetSession: (roleName: string, appSessionId: string) =>
     call<void>("reset_acp_session", { roleName, appSessionId }),
+  reconnectSession: (roleName: string, appSessionId: string) =>
+    call<void>("reconnect_acp_session", { roleName, appSessionId }),
   prewarmRoleConfig: (roleName: string, appSessionId: string) =>
-    call<unknown[]>("prewarm_role_config_cmd", { roleName, appSessionId }),
-  listDiscoveredConfig: (roleName: string, appSessionId: string) =>
-    call<unknown[]>("list_discovered_config_options_cmd", { roleName, appSessionId }),
+    call<{ configOptions: unknown[]; modes: string[] }>("prewarm_role_config_cmd", { roleName, appSessionId }),
+  listDiscoveredConfig: (roleName: string) =>
+    call<unknown[]>("list_discovered_config_options_cmd", { roleName, appSessionId: "" }),
+  listDiscoveredModes: (roleName: string) =>
+    call<string[]>("list_discovered_modes_cmd", { roleName }),
   listAvailableCommands: (roleName: string, appSessionId: string) =>
     call<unknown[]>("list_available_commands_cmd", { roleName, appSessionId }),
   respondPermission: (requestId: string, optionId: string, cancelled: boolean) =>

@@ -20,10 +20,13 @@ pub(super) fn build_prepared_prompt(
     if is_union_assistant {
         prepared.push_str("Tools:\n");
         prepared.push_str(tool_prompt);
-        if let Some(sp) = role_system_prompt {
-            prepared.push_str("\n\nSystem:\n");
-            prepared.push_str(sp);
+    }
+    if let Some(sp) = role_system_prompt {
+        if !prepared.is_empty() {
+            prepared.push_str("\n\n");
         }
+        prepared.push_str("System:\n");
+        prepared.push_str(sp);
     }
     let is_slash_cmd = message.starts_with('/');
     if !is_slash_cmd {
