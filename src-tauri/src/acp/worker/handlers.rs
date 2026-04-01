@@ -1,375 +1,27 @@
 use agent_client_protocol::{self as acp, Agent as _};
-use dashmap::{DashMap, DashSet};
-use serde::Serialize;
 use serde_json::{json, Value};
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
 
-use super::adapter::{acp_log, resolve_cwd};
-use super::client::shutdown_terminals;
-use super::runtime_state::{
-    clear_all as clear_runtime_state, clear_session as clear_session_runtime_state,
+use super::super::adapter::{acp_log, resolve_cwd};
+use super::super::runtime_state::{
     list_discovered_config_options, list_discovered_modes, remember_runtime_available_commands,
     remember_runtime_modes,
 };
-use super::session::cold_start;
-pub use crate::runtime_kind::RuntimeKind;
+use super::super::session::cold_start;
+use super::notify::{notify_connection_death, notify_prewarm};
+use super::pool::{
+    pool_key, slot_map, child_pids, LiveConnection, SlotHandle, CANCEL_HANDLES,
+    DELTA_CHANNEL_CAPACITY,
+};
+use super::types::{AcpEvent, ConnectionDeathEvent, PrewarmStatus};
 
 const PROMPT_LIVENESS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConnectionDeathEvent {
-    pub runtime_key: String,
-    pub role_name: String,
-    pub app_session_id: String,
-}
+// ── Connection lifecycle ──────────────────────────────────────────────────────
 
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PrewarmEvent {
-    pub runtime_key: String,
-    pub role_name: String,
-    pub app_session_id: String,
-    pub status: PrewarmStatus,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum PrewarmStatus {
-    Started,
-    Ready,
-    Failed { error: String },
-}
-
-static DEATH_TX: OnceLock<mpsc::UnboundedSender<ConnectionDeathEvent>> = OnceLock::new();
-static PREWARM_TX: OnceLock<mpsc::UnboundedSender<PrewarmEvent>> = OnceLock::new();
-
-pub fn set_death_event_sender(tx: mpsc::UnboundedSender<ConnectionDeathEvent>) {
-    let _ = DEATH_TX.set(tx);
-}
-
-pub fn set_prewarm_event_sender(tx: mpsc::UnboundedSender<PrewarmEvent>) {
-    let _ = PREWARM_TX.set(tx);
-}
-
-fn notify_prewarm(runtime_key: &str, role_name: &str, app_session_id: &str, status: PrewarmStatus) {
-    if let Some(tx) = PREWARM_TX.get() {
-        let _ = tx.send(PrewarmEvent {
-            runtime_key: runtime_key.to_string(),
-            role_name: role_name.to_string(),
-            app_session_id: app_session_id.to_string(),
-            status,
-        });
-    }
-}
-
-fn notify_connection_death(event: ConnectionDeathEvent) {
-    if let Some(tx) = DEATH_TX.get() {
-        let _ = tx.send(event);
-    }
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcpPromptResult {
-    pub ok: bool,
-    pub output: String,
-    pub error_code: Option<String>,
-    pub deltas: Vec<String>,
-    pub meta: Value,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum AcpEvent {
-    TextDelta {
-        text: String,
-    },
-    ThoughtDelta {
-        text: String,
-    },
-    ToolCall {
-        tool_call_id: String,
-        title: String,
-        tool_kind: String,
-        status: String,
-        content: Option<Vec<Value>>,
-        locations: Option<Vec<Value>>,
-        raw_input: Option<Value>,
-        raw_output: Option<Value>,
-    },
-    ToolCallUpdate {
-        tool_call_id: String,
-        tool_kind: Option<String>,
-        status: Option<String>,
-        title: Option<String>,
-        content: Option<Vec<Value>>,
-        locations: Option<Vec<Value>>,
-        raw_input: Option<Value>,
-        raw_output: Option<Value>,
-    },
-    Plan {
-        entries: Vec<Value>,
-    },
-    PermissionRequest {
-        request_id: String,
-        title: String,
-        description: Option<String>,
-        options: Vec<Value>,
-    },
-    ModeUpdate {
-        mode_id: String,
-    },
-    ConfigUpdate {
-        options: Vec<Value>,
-    },
-    SessionInfo {
-        title: Option<String>,
-    },
-    StatusUpdate {
-        text: String,
-    },
-    AvailableCommands {
-        commands: Vec<Value>,
-    },
-    AvailableModes {
-        modes: Vec<Value>,
-        current: Option<String>,
-    },
-    PermissionExpired {
-        request_id: String,
-    },
-}
-
-static PERMISSION_REQUESTS: OnceLock<
-    DashMap<String, oneshot::Sender<acp::RequestPermissionOutcome>>,
-> = OnceLock::new();
-pub(super) fn permission_requests(
-) -> &'static DashMap<String, oneshot::Sender<acp::RequestPermissionOutcome>> {
-    PERMISSION_REQUESTS.get_or_init(DashMap::new)
-}
-
-pub fn respond_to_permission(request_id: &str, outcome: acp::RequestPermissionOutcome) {
-    if let Some((_, tx)) = permission_requests().remove(request_id) {
-        let _ = tx.send(outcome);
-    }
-}
-
-pub(super) const DELTA_CHANNEL_CAPACITY: usize = 512;
-pub(super) type DeltaSlot = Arc<Mutex<Option<mpsc::Sender<AcpEvent>>>>;
-
-pub(super) enum WorkerMsg {
-    Execute {
-        runtime_key: &'static str,
-        binary: String,
-        args: Vec<String>,
-        env: Vec<(String, String)>,
-        role_name: String,
-        app_session_id: String,
-        prompt: String,
-        context: Vec<(String, String)>,
-        cwd: String,
-        delta_tx: mpsc::Sender<AcpEvent>,
-        result_tx: oneshot::Sender<Result<(String, String), String>>,
-        auto_approve: bool,
-        mcp_servers: Vec<acp::McpServer>,
-        role_mode: Option<String>,
-        role_config_options: Vec<(String, String)>,
-        resume_session_id: Option<String>,
-    },
-    Prewarm {
-        runtime_key: &'static str,
-        binary: String,
-        args: Vec<String>,
-        env: Vec<(String, String)>,
-        role_name: String,
-        app_session_id: String,
-        cwd: String,
-        auto_approve: bool,
-        mcp_servers: Vec<acp::McpServer>,
-        role_mode: Option<String>,
-        role_config_options: Vec<(String, String)>,
-        result_tx: Option<oneshot::Sender<(Vec<Value>, Vec<String>, String)>>,
-        resume_session_id: Option<String>,
-    },
-    Cancel {
-        runtime_key: &'static str,
-        role_name: String,
-        app_session_id: String,
-    },
-    Reset {
-        runtime_key: &'static str,
-        role_name: String,
-        app_session_id: String,
-        result_tx: oneshot::Sender<Result<(), String>>,
-    },
-    Reconnect {
-        runtime_key: &'static str,
-        role_name: String,
-        app_session_id: String,
-        result_tx: oneshot::Sender<Result<(), String>>,
-    },
-    SetMode {
-        runtime_key: &'static str,
-        role_name: String,
-        app_session_id: String,
-        mode_id: String,
-        result_tx: oneshot::Sender<Result<(), String>>,
-    },
-    SetConfigOption {
-        runtime_key: &'static str,
-        role_name: String,
-        app_session_id: String,
-        config_id: String,
-        value: String,
-        result_tx: oneshot::Sender<Result<(), String>>,
-    },
-    Shutdown {
-        done_tx: oneshot::Sender<()>,
-    },
-}
-
-static WORKER_TX: OnceLock<mpsc::UnboundedSender<WorkerMsg>> = OnceLock::new();
-pub(super) fn worker_tx() -> &'static mpsc::UnboundedSender<WorkerMsg> {
-    WORKER_TX.get_or_init(|| {
-        let (tx, rx) = mpsc::unbounded_channel::<WorkerMsg>();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("acp worker runtime");
-            let local = tokio::task::LocalSet::new();
-            local.block_on(&rt, run_worker(rx));
-        });
-        tx
-    })
-}
-
-pub async fn shutdown() {
-    let Some(tx) = WORKER_TX.get() else {
-        shutdown_terminals().await;
-        return;
-    };
-    let (done_tx, done_rx) = oneshot::channel();
-    if tx.send(WorkerMsg::Shutdown { done_tx }).is_err() {
-        shutdown_terminals().await;
-        return;
-    }
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), done_rx).await;
-}
-
-fn pool_key(app_session_id: &str, runtime_key: &str, role_name: &str) -> String {
-    format!("{app_session_id}:{runtime_key}:{role_name}")
-}
-
-pub(super) struct SlotHandle {
-    pub(super) conn: tokio::sync::Mutex<Option<LiveConnection>>,
-    /// Serializes concurrent prompt() calls on the same slot.
-    /// `conn` is released before prompt() so that SetMode / health eviction
-    /// can run while the AI is thinking; this separate lock prevents two
-    /// prompts from racing on the same ACP session.
-    pub(super) prompt_lock: tokio::sync::Mutex<()>,
-}
-
-/// A lightweight handle for sending ACP cancel without holding the conn mutex.
-/// Stored in a thread-local map keyed by pool_key, only accessed on the worker
-/// thread's LocalSet — so `Rc` is fine.
-struct CancelHandle {
-    conn: Rc<acp::ClientSideConnection>,
-    session_id: acp::SessionId,
-}
-
-thread_local! {
-    static CANCEL_HANDLES: RefCell<std::collections::HashMap<String, CancelHandle>> =
-        RefCell::new(std::collections::HashMap::new());
-}
-
-static SLOT_MAP: OnceLock<Arc<DashMap<String, Arc<SlotHandle>>>> = OnceLock::new();
-
-fn slot_map() -> &'static Arc<DashMap<String, Arc<SlotHandle>>> {
-    SLOT_MAP.get_or_init(|| Arc::new(DashMap::new()))
-}
-
-static CHILD_PIDS: OnceLock<DashSet<u32>> = OnceLock::new();
-fn child_pids() -> &'static DashSet<u32> {
-    CHILD_PIDS.get_or_init(DashSet::new)
-}
-
-pub(super) fn register_child_pid(pid: u32) {
-    child_pids().insert(pid);
-}
-
-pub(super) fn unregister_child_pid(pid: u32) {
-    child_pids().remove(&pid);
-}
-
-fn get_slot_handle(runtime_key: &str, role_name: &str, app_session_id: &str) -> Arc<SlotHandle> {
-    let key = pool_key(app_session_id, runtime_key, role_name);
-    slot_map()
-        .entry(key)
-        .or_insert_with(|| {
-            Arc::new(SlotHandle {
-                conn: tokio::sync::Mutex::new(None),
-                prompt_lock: tokio::sync::Mutex::new(()),
-            })
-        })
-        .clone()
-}
-
-pub(super) struct LiveConnection {
-    pub(super) instance_id: u64,
-    pub(super) conn: Rc<acp::ClientSideConnection>,
-    pub(super) session_id: acp::SessionId,
-    pub(super) cwd: String,
-    pub(super) delta_slot: DeltaSlot,
-    #[allow(dead_code)]
-    pub(super) available_modes: Vec<Value>,
-    #[allow(dead_code)]
-    pub(super) current_mode: Option<String>,
-    pub(super) child_pid: Option<u32>,
-    pub(super) _child: tokio::process::Child,
-    pub(super) _io_task: tokio::task::JoinHandle<()>,
-    pub(super) health_rx: tokio::sync::watch::Receiver<bool>,
-}
-
-impl Drop for LiveConnection {
-    fn drop(&mut self) {
-        if let Some(pid) = self.child_pid {
-            // kill_on_drop only targets the direct child process and may leave
-            // grandchildren around (some ACP adapters fork a second binary).
-            // We spawn each adapter in its own process group, so terminate
-            // the whole group on connection drop to avoid orphan leaks.
-            unsafe {
-                let pgid = -(pid as i32);
-                let _ = libc::kill(pgid, libc::SIGTERM);
-                let _ = libc::kill(pgid, libc::SIGKILL);
-                let _ = libc::kill(pid as i32, libc::SIGTERM);
-                let _ = libc::kill(pid as i32, libc::SIGKILL);
-            }
-            unregister_child_pid(pid);
-        }
-    }
-}
-
-// SAFETY: LiveConnection is only ever created and accessed on the single-threaded
-// worker LocalSet (see `run_worker`).  The DashMap / tokio::sync::Mutex wrappers
-// require Send+Sync at the type level, but no actual cross-thread access occurs.
-// The Rc<ClientSideConnection> is the only non-Send field; it is safe because:
-// 1. cold_start() runs on the worker LocalSet and produces the Rc.
-// 2. handle_execute/handle_prewarm run on the same LocalSet.
-// 3. The DashMap is only mutated from run_worker (also on that thread).
-unsafe impl Send for LiveConnection {}
-unsafe impl Sync for LiveConnection {}
-
-async fn shutdown_worker_state() {
+pub(crate) async fn shutdown_worker_state() {
     let cancel_handles = CANCEL_HANDLES.with(|m| {
         let mut map = m.borrow_mut();
         let items = map
@@ -401,7 +53,11 @@ async fn shutdown_worker_state() {
         }
     }
     slot_map().clear();
+
+    use super::super::runtime_state::clear_all as clear_runtime_state;
     clear_runtime_state();
+
+    use super::permission::permission_requests;
     let request_ids: Vec<String> = permission_requests()
         .iter()
         .map(|entry| entry.key().clone())
@@ -411,6 +67,8 @@ async fn shutdown_worker_state() {
             let _ = tx.send(acp::RequestPermissionOutcome::Cancelled);
         }
     }
+
+    use super::super::client::shutdown_terminals;
     shutdown_terminals().await;
 
     let remaining_pids: Vec<u32> = child_pids().iter().map(|r| *r).collect();
@@ -427,7 +85,7 @@ async fn shutdown_worker_state() {
     );
 }
 
-async fn reset_worker_session(
+pub(crate) async fn reset_worker_session(
     runtime_key: &'static str,
     role_name: &str,
     app_session_id: &str,
@@ -449,11 +107,12 @@ async fn reset_worker_session(
         *guard = None;
     }
 
+    use super::super::runtime_state::clear_session as clear_session_runtime_state;
     clear_session_runtime_state(app_session_id, runtime_key, role_name);
     Ok(())
 }
 
-async fn reconnect_worker_session(
+pub(crate) async fn reconnect_worker_session(
     runtime_key: &'static str,
     role_name: &str,
     app_session_id: &str,
@@ -475,6 +134,7 @@ async fn reconnect_worker_session(
         *guard = None;
     }
 
+    use super::super::runtime_state::clear_session as clear_session_runtime_state;
     clear_session_runtime_state(app_session_id, runtime_key, role_name);
     acp_log(
         "reconnect.ok",
@@ -483,204 +143,9 @@ async fn reconnect_worker_session(
     Ok(())
 }
 
-async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
-    while let Some(msg) = rx.recv().await {
-        match msg {
-            WorkerMsg::Execute {
-                runtime_key,
-                binary,
-                args,
-                env,
-                role_name,
-                app_session_id,
-                prompt,
-                context,
-                cwd,
-                delta_tx,
-                result_tx,
-                auto_approve,
-                mcp_servers,
-                role_mode,
-                role_config_options,
-                resume_session_id,
-            } => {
-                let slot = get_slot_handle(runtime_key, &role_name, &app_session_id);
-                tokio::task::spawn_local(async move {
-                    handle_execute(
-                        slot,
-                        runtime_key,
-                        binary,
-                        args,
-                        env,
-                        role_name,
-                        app_session_id,
-                        prompt,
-                        context,
-                        cwd,
-                        delta_tx,
-                        result_tx,
-                        auto_approve,
-                        mcp_servers,
-                        role_mode,
-                        role_config_options,
-                        resume_session_id,
-                    )
-                    .await;
-                });
-            }
-            WorkerMsg::Prewarm {
-                runtime_key,
-                binary,
-                args,
-                env,
-                role_name,
-                app_session_id,
-                cwd,
-                auto_approve,
-                mcp_servers,
-                role_mode,
-                role_config_options,
-                result_tx,
-                resume_session_id,
-            } => {
-                let slot = get_slot_handle(runtime_key, &role_name, &app_session_id);
-                tokio::task::spawn_local(async move {
-                    handle_prewarm(
-                        slot,
-                        runtime_key,
-                        binary,
-                        args,
-                        env,
-                        role_name,
-                        app_session_id,
-                        cwd,
-                        auto_approve,
-                        mcp_servers,
-                        role_mode,
-                        role_config_options,
-                        result_tx,
-                        resume_session_id,
-                    )
-                    .await;
-                });
-            }
-            WorkerMsg::Cancel {
-                runtime_key,
-                role_name,
-                app_session_id,
-            } => {
-                let key = pool_key(&app_session_id, runtime_key, &role_name);
-                // Read the cancel handle from thread-local WITHOUT locking the
-                // conn mutex.  Safe because we're on the worker's LocalSet.
-                let handle = CANCEL_HANDLES.with(|m| {
-                    m.borrow()
-                        .get(&key)
-                        .map(|h| (h.conn.clone(), h.session_id.clone()))
-                });
-                if let Some((conn, session_id)) = handle {
-                    acp_log(
-                        "cancel.sending",
-                        json!({ "runtime": runtime_key, "role": role_name }),
-                    );
-                    // cancel() is a JSON-RPC notification — fire-and-forget.
-                    // spawn_local so run_worker loop continues immediately.
-                    tokio::task::spawn_local(async move {
-                        let _ = conn.cancel(acp::CancelNotification::new(session_id)).await;
-                    });
-                } else {
-                    acp_log(
-                        "cancel.no_active_session",
-                        json!({ "runtime": runtime_key, "role": role_name }),
-                    );
-                }
-            }
-            WorkerMsg::Reset {
-                runtime_key,
-                role_name,
-                app_session_id,
-                result_tx,
-            } => {
-                tokio::task::spawn_local(async move {
-                    let result =
-                        reset_worker_session(runtime_key, &role_name, &app_session_id).await;
-                    let _ = result_tx.send(result);
-                });
-            }
-            WorkerMsg::Reconnect {
-                runtime_key,
-                role_name,
-                app_session_id,
-                result_tx,
-            } => {
-                tokio::task::spawn_local(async move {
-                    let result =
-                        reconnect_worker_session(runtime_key, &role_name, &app_session_id).await;
-                    let _ = result_tx.send(result);
-                });
-            }
-            WorkerMsg::SetMode {
-                runtime_key,
-                role_name,
-                app_session_id,
-                mode_id,
-                result_tx,
-            } => {
-                let slot = get_slot_handle(runtime_key, &role_name, &app_session_id);
-                tokio::task::spawn_local(async move {
-                    let guard = slot.conn.lock().await;
-                    let result = if let Some(live) = guard.as_ref() {
-                        live.conn
-                            .set_session_mode(acp::SetSessionModeRequest::new(
-                                live.session_id.clone(),
-                                acp::SessionModeId::from(mode_id),
-                            ))
-                            .await
-                            .map(|_| ())
-                            .map_err(|e| e.to_string())
-                    } else {
-                        Err("no active session".to_string())
-                    };
-                    let _ = result_tx.send(result);
-                });
-            }
-            WorkerMsg::SetConfigOption {
-                runtime_key,
-                role_name,
-                app_session_id,
-                config_id,
-                value,
-                result_tx,
-            } => {
-                let slot = get_slot_handle(runtime_key, &role_name, &app_session_id);
-                tokio::task::spawn_local(async move {
-                    let guard = slot.conn.lock().await;
-                    let result = if let Some(live) = guard.as_ref() {
-                        live.conn
-                            .set_session_config_option(acp::SetSessionConfigOptionRequest::new(
-                                live.session_id.clone(),
-                                acp::SessionConfigId::from(config_id),
-                                acp::SessionConfigValueId::from(value),
-                            ))
-                            .await
-                            .map(|_| ())
-                            .map_err(|e| e.to_string())
-                    } else {
-                        Err("no active session".to_string())
-                    };
-                    let _ = result_tx.send(result);
-                });
-            }
-            WorkerMsg::Shutdown { done_tx } => {
-                acp_log("shutdown.start", json!({}));
-                shutdown_worker_state().await;
-                let _ = done_tx.send(());
-                break;
-            }
-        }
-    }
-}
+// ── Connection helpers ────────────────────────────────────────────────────────
 
-async fn evict_if_cwd_changed(
+pub(crate) async fn evict_if_cwd_changed(
     guard: &mut Option<LiveConnection>,
     resolved: &str,
     runtime_key: &str,
@@ -695,7 +160,7 @@ async fn evict_if_cwd_changed(
     }
 }
 
-async fn ensure_connection(
+pub(crate) async fn ensure_connection(
     guard: &mut Option<LiveConnection>,
     runtime_key: &'static str,
     binary: &str,
@@ -736,7 +201,7 @@ async fn ensure_connection(
     Ok(true)
 }
 
-async fn apply_cold_start_config(
+pub(crate) async fn apply_cold_start_config(
     conn: &LiveConnection,
     session_id: &acp::SessionId,
     delta_tx: &mpsc::Sender<AcpEvent>,
@@ -800,7 +265,10 @@ async fn apply_cold_start_config(
     }
 }
 
-fn build_prompt_blocks(prompt: String, context: &[(String, String)]) -> Vec<acp::ContentBlock> {
+pub(crate) fn build_prompt_blocks(
+    prompt: String,
+    context: &[(String, String)],
+) -> Vec<acp::ContentBlock> {
     let mut blocks: Vec<acp::ContentBlock> =
         vec![acp::ContentBlock::Text(acp::TextContent::new(prompt))];
     if !context.is_empty() {
@@ -816,7 +284,7 @@ fn build_prompt_blocks(prompt: String, context: &[(String, String)]) -> Vec<acp:
     blocks
 }
 
-fn spawn_connection_health_watch(
+pub(crate) fn spawn_connection_health_watch(
     slot: Arc<SlotHandle>,
     wk: String,
     death: ConnectionDeathEvent,
@@ -856,7 +324,10 @@ fn spawn_connection_health_watch(
     });
 }
 
-async fn handle_execute(
+// ── handle_execute ────────────────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn handle_execute(
     slot: Arc<SlotHandle>,
     runtime_key: &'static str,
     binary: String,
@@ -917,8 +388,8 @@ async fn handle_execute(
         .map(|c| c.delta_slot.clone())
         .unwrap_or_else(|| Arc::new(Mutex::new(None)));
 
-    if let Ok(mut slot) = delta_slot.lock() {
-        *slot = Some(delta_tx.clone());
+    if let Ok(mut slot_guard) = delta_slot.lock() {
+        *slot_guard = Some(delta_tx.clone());
     }
 
     // Extract everything we need from the guard before releasing the mutex.
@@ -968,7 +439,7 @@ async fn handle_execute(
     CANCEL_HANDLES.with(|m| {
         m.borrow_mut().insert(
             cancel_key.clone(),
-            CancelHandle {
+            super::pool::CancelHandle {
                 conn: conn_rc.clone(),
                 session_id: session_id.clone(),
             },
@@ -1010,8 +481,8 @@ async fn handle_execute(
         m.borrow_mut().remove(&cancel_key);
     });
 
-    if let Ok(mut slot) = delta_slot.lock() {
-        *slot = None;
+    if let Ok(mut slot_guard) = delta_slot.lock() {
+        *slot_guard = None;
     }
 
     match prompt_result {
@@ -1062,7 +533,10 @@ async fn handle_execute(
     }
 }
 
-async fn handle_prewarm(
+// ── handle_prewarm ────────────────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn handle_prewarm(
     slot: Arc<SlotHandle>,
     runtime_key: &'static str,
     binary: String,
@@ -1148,8 +622,7 @@ async fn handle_prewarm(
             .await;
             // Install a temporary drain channel so notifications sent after session/new
             // (e.g. AvailableCommandsUpdate via setTimeout) are captured rather than dropped.
-            let (drain_tx, mut drain_rx) =
-                mpsc::channel::<super::worker::AcpEvent>(DELTA_CHANNEL_CAPACITY);
+            let (drain_tx, mut drain_rx) = mpsc::channel::<AcpEvent>(DELTA_CHANNEL_CAPACITY);
             {
                 if let Ok(mut slot_guard) = conn.delta_slot.lock() {
                     *slot_guard = Some(drain_tx);
