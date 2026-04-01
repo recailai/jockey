@@ -272,6 +272,11 @@ fn pool_key(app_session_id: &str, runtime_key: &str, role_name: &str) -> String 
 
 pub(super) struct SlotHandle {
     pub(super) conn: tokio::sync::Mutex<Option<LiveConnection>>,
+    /// Serializes concurrent prompt() calls on the same slot.
+    /// `conn` is released before prompt() so that SetMode / health eviction
+    /// can run while the AI is thinking; this separate lock prevents two
+    /// prompts from racing on the same ACP session.
+    pub(super) prompt_lock: tokio::sync::Mutex<()>,
 }
 
 /// A lightweight handle for sending ACP cancel without holding the conn mutex.
@@ -313,6 +318,7 @@ fn get_slot_handle(runtime_key: &str, role_name: &str, app_session_id: &str) -> 
         .or_insert_with(|| {
             Arc::new(SlotHandle {
                 conn: tokio::sync::Mutex::new(None),
+                prompt_lock: tokio::sync::Mutex::new(()),
             })
         })
         .clone()
@@ -915,6 +921,15 @@ async fn handle_execute(
         *slot = Some(delta_tx.clone());
     }
 
+    // Extract everything we need from the guard before releasing the mutex.
+    // Holding `slot.conn` locked across the entire prompt() call prevents any
+    // concurrent operation on the same slot (SetMode, health eviction, a second
+    // message arriving) from making progress — which is the root cause of the
+    // "stuck message" and "same-role deadlock" bugs.
+    let conn_rc = guard.as_ref().unwrap().conn.clone();
+    let mut health_rx = guard.as_ref().unwrap().health_rx.clone();
+    let instance_id = guard.as_ref().unwrap().instance_id;
+
     if is_cold {
         let conn = guard.as_ref().unwrap();
         apply_cold_start_config(
@@ -935,7 +950,6 @@ async fn handle_execute(
             role_name: role_name.clone(),
             app_session_id: app_session_id.clone(),
         };
-        let instance_id = conn.instance_id;
         spawn_connection_health_watch(slot.clone(), wk, death, instance_id, conn.health_rx.clone());
     } else if let Some(conn) = guard.as_ref() {
         if !conn.available_modes.is_empty() {
@@ -949,9 +963,8 @@ async fn handle_execute(
     let blocks = build_prompt_blocks(prompt, &context);
 
     // Install cancel handle so the Cancel message handler can send ACP cancel
-    // without waiting for the conn mutex (which we hold right now).
+    // without waiting for the conn mutex.
     let cancel_key = pool_key(&app_session_id, runtime_key, &role_name);
-    let conn_rc = guard.as_ref().unwrap().conn.clone();
     CANCEL_HANDLES.with(|m| {
         m.borrow_mut().insert(
             cancel_key.clone(),
@@ -962,9 +975,16 @@ async fn handle_execute(
         );
     });
 
-    let prompt_started = Instant::now();
-    let mut health_rx = guard.as_ref().unwrap().health_rx.clone();
+    // Release the conn mutex before awaiting prompt() so that other tasks
+    // (SetMode, health watch eviction, a queued second message) can acquire
+    // it while the AI is thinking.
+    drop(guard);
 
+    // Serialize prompt() calls on this slot: ACP sessions are single-request
+    // streams; a second prompt must wait until the first completes.
+    let _prompt_guard = slot.prompt_lock.lock().await;
+
+    let prompt_started = Instant::now();
     let prompt_fut = conn_rc.prompt(acp::PromptRequest::new(session_id.clone(), blocks));
     tokio::pin!(prompt_fut);
 
@@ -1012,7 +1032,12 @@ async fn handle_execute(
                 "pool.invalidate",
                 json!({ "runtime": runtime_key, "error": e.to_string() }),
             );
-            *guard = None;
+            // Re-acquire the slot mutex only to invalidate the connection.
+            let mut guard = slot.conn.lock().await;
+            // Only clear if this is still the same connection instance we used.
+            if guard.as_ref().map(|c| c.instance_id == instance_id).unwrap_or(false) {
+                *guard = None;
+            }
             let _ = result_tx.send(Err(e.to_string()));
         }
         Err(reason) => {
@@ -1028,7 +1053,10 @@ async fn handle_execute(
             let _ = conn_rc
                 .cancel(acp::CancelNotification::new(session_id.clone()))
                 .await;
-            *guard = None;
+            let mut guard = slot.conn.lock().await;
+            if guard.as_ref().map(|c| c.instance_id == instance_id).unwrap_or(false) {
+                *guard = None;
+            }
             let _ = result_tx.send(Err(reason.to_string()));
         }
     }
@@ -1127,7 +1155,14 @@ async fn handle_prewarm(
                     *slot_guard = Some(drain_tx);
                 }
             }
+            let instance_id = conn.instance_id;
+            let health_rx_clone = conn.health_rx.clone();
             *guard = Some(conn);
+            // Release the conn mutex before the 300 ms drain so that an Execute
+            // message arriving during prewarm can acquire the slot immediately
+            // instead of blocking until the drain deadline.
+            drop(guard);
+
             // Drain for up to 300 ms to collect any immediate notifications.
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(300);
             loop {
@@ -1164,28 +1199,25 @@ async fn handle_prewarm(
                     _ => break,
                 }
             }
-            // Drop drain_rx first so the channel is closed, then clear the slot.
+            // Drop drain channel then clear the delta_slot via the live connection.
             drop(drain_rx);
-            if let Some(live) = guard.as_ref() {
-                if let Ok(mut slot_guard) = live.delta_slot.lock() {
-                    *slot_guard = None;
+            {
+                let g = slot.conn.lock().await;
+                if let Some(live) = g.as_ref() {
+                    if live.instance_id == instance_id {
+                        if let Ok(mut slot_guard) = live.delta_slot.lock() {
+                            *slot_guard = None;
+                        }
+                    }
                 }
             }
-            if let Some(live) = guard.as_ref() {
-                let wk = pool_key(&app_session_id, runtime_key, &role_name);
-                let death = ConnectionDeathEvent {
-                    runtime_key: runtime_key.to_string(),
-                    role_name: role_name.clone(),
-                    app_session_id: app_session_id.clone(),
-                };
-                spawn_connection_health_watch(
-                    slot.clone(),
-                    wk,
-                    death,
-                    live.instance_id,
-                    live.health_rx.clone(),
-                );
-            }
+            let wk = pool_key(&app_session_id, runtime_key, &role_name);
+            let death = ConnectionDeathEvent {
+                runtime_key: runtime_key.to_string(),
+                role_name: role_name.clone(),
+                app_session_id: app_session_id.clone(),
+            };
+            spawn_connection_health_watch(slot.clone(), wk, death, instance_id, health_rx_clone);
             if let Some(tx) = result_tx {
                 let _ = tx.send((
                     list_discovered_config_options(runtime_key),
