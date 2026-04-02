@@ -1,6 +1,3 @@
-use agent_client_protocol as acp;
-use std::sync::OnceLock;
-
 use crate::db::app_session_role::load_app_session_role_state;
 use crate::db::context::{list_shared_context_internal, sanitize_dynamic_item_name};
 use crate::db::role::load_role;
@@ -9,33 +6,6 @@ use crate::runtime_kind::RuntimeKind;
 use crate::types::AppState;
 
 use super::RecentRoleChat;
-
-static CONDUCTOR_MCP_BINARY: OnceLock<Option<String>> = OnceLock::new();
-
-pub(crate) fn set_conductor_mcp_path(path: Option<String>) {
-    let _ = CONDUCTOR_MCP_BINARY.set(path);
-}
-
-fn inject_conductor_mcp(mcp_servers: &mut Vec<acp::McpServer>) {
-    let bin = match CONDUCTOR_MCP_BINARY.get().and_then(|o| o.as_deref()) {
-        Some(p) => p,
-        None => return,
-    };
-    let already = mcp_servers.iter().any(|s| match s {
-        acp::McpServer::Stdio(s) => s.name == "jockeyui-conductor",
-        _ => false,
-    });
-    if already {
-        return;
-    }
-    let db_env = crate::acp::app_data_dir()
-        .map(|d| d.join("jockeyui.sqlite3").to_string_lossy().to_string())
-        .unwrap_or_default();
-    mcp_servers.push(acp::McpServer::Stdio(
-        acp::McpServerStdio::new("jockeyui-conductor", bin)
-            .env(vec![acp::EnvVariable::new("JOCKEYUI_DB_PATH", &db_env)]),
-    ));
-}
 
 pub(super) struct RoleRuntimeData {
     pub(super) runtime: String,
@@ -69,19 +39,34 @@ fn parse_config_map(raw: &str) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
+fn normalize_runtime_key(runtime: &str) -> String {
+    RuntimeKind::from_str(runtime)
+        .map(|k| k.runtime_key().to_string())
+        .unwrap_or_else(|| runtime.trim().to_ascii_lowercase())
+}
+
+fn is_claude_family_alias(model_lc: &str) -> bool {
+    matches!(model_lc, "sonnet" | "haiku" | "opus") || model_lc.starts_with("claude-")
+}
+
 fn pick_canonical_discovered_model(
     runtime_key: &str,
     selected_model: &str,
     discovered: &[String],
 ) -> String {
     let selected = selected_model.trim();
-    if selected.is_empty() || discovered.is_empty() {
-        return selected.to_string();
+    if selected.is_empty() {
+        return String::new();
     }
     let selected_lc = selected.to_ascii_lowercase();
+    if runtime_key != "claude-code" && is_claude_family_alias(&selected_lc) {
+        return String::new();
+    }
+    if discovered.is_empty() {
+        return selected.to_string();
+    }
 
-    if runtime_key == "claude-code" && matches!(selected_lc.as_str(), "sonnet" | "haiku" | "opus")
-    {
+    if runtime_key == "claude-code" && matches!(selected_lc.as_str(), "sonnet" | "haiku" | "opus") {
         let mut candidates: Vec<&String> = discovered
             .iter()
             .filter(|m| {
@@ -134,6 +119,73 @@ fn normalize_model_for_runtime(runtime: &str, selected_model: &str) -> String {
     pick_canonical_discovered_model(normalized_runtime, selected_model, &discovered)
 }
 
+fn sanitize_model_for_runtime(runtime: &str, selected_model: &str) -> Option<String> {
+    let normalized = normalize_model_for_runtime(runtime, selected_model);
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn resolve_model(
+    role_data: Option<&crate::types::Role>,
+    role_state: Option<&crate::db::app_session_role::AppSessionRoleState>,
+    runtime_key: &str,
+    runtime: &str,
+    context_pairs: &[(String, String)],
+) -> Option<String> {
+    let state_runtime_matches = |r: &crate::db::app_session_role::AppSessionRoleState| -> bool {
+        let sr = r.runtime_kind.as_deref().map(normalize_runtime_key);
+        sr.as_deref() == Some(runtime_key) || sr.is_none()
+    };
+
+    let model_override = role_state
+        .filter(|r| {
+            r.runtime_kind
+                .as_deref()
+                .map(normalize_runtime_key)
+                .as_deref()
+                == Some(runtime_key)
+        })
+        .and_then(|r| r.model_override.clone());
+
+    if let Some(model) = model_override.and_then(|m| sanitize_model_for_runtime(runtime, &m)) {
+        return Some(model);
+    }
+
+    let session_cfg_model = role_state
+        .filter(|r| state_runtime_matches(r))
+        .and_then(|r| r.config_options_json.as_deref())
+        .and_then(|raw| {
+            parse_config_map(raw)
+                .into_iter()
+                .find(|(k, _)| k == "model")
+                .map(|(_, v)| v)
+        });
+    if let Some(model) = session_cfg_model.and_then(|m| sanitize_model_for_runtime(runtime, &m)) {
+        return Some(model);
+    }
+
+    let role_cfg_model = role_data
+        .map(|r| parse_config_map(&r.config_options_json))
+        .and_then(|cfg| cfg.into_iter().find(|(k, _)| k == "model").map(|(_, v)| v));
+    if let Some(model) = role_cfg_model.and_then(|m| sanitize_model_for_runtime(runtime, &m)) {
+        return Some(model);
+    }
+
+    let role_model = role_data.and_then(|r| r.model.clone());
+    if let Some(model) = role_model.and_then(|m| sanitize_model_for_runtime(runtime, &m)) {
+        return Some(model);
+    }
+
+    context_pairs
+        .iter()
+        .find(|(k, _)| k == "model")
+        .and_then(|(_, v)| sanitize_model_for_runtime(runtime, v))
+}
+
 pub(super) fn load_role_runtime_data(
     state: &AppState,
     app_session_id: &str,
@@ -144,7 +196,7 @@ pub(super) fn load_role_runtime_data(
     let role_state = load_app_session_role_state(state, app_session_id, role_name)?;
     let role_data = load_role(state, role_name)?;
 
-    let runtime = if role_name == "JockeyAssistant" {
+    let runtime = if role_name == "Jockey" {
         assistant_runtime.to_string()
     } else {
         if role_state.is_none() && role_data.is_none() {
@@ -164,7 +216,7 @@ pub(super) fn load_role_runtime_data(
 
     let mut context_log = None;
 
-    if role_name != "JockeyAssistant" {
+    if role_name != "Jockey" {
         let role_prompt = role_data
             .as_ref()
             .map(|r| r.system_prompt.clone())
@@ -200,38 +252,87 @@ pub(super) fn load_role_runtime_data(
         }
     }
     let auto_approve = role_data.as_ref().map(|r| r.auto_approve).unwrap_or(true);
-    let role_mode = role_data.as_ref().and_then(|r| r.mode.clone());
+    let runtime_key = normalize_runtime_key(&runtime);
+    let role_mode = role_state
+        .as_ref()
+        .and_then(|r| {
+            let state_runtime = r.runtime_kind.as_deref().map(normalize_runtime_key);
+            if state_runtime.as_deref() == Some(runtime_key.as_str()) || state_runtime.is_none() {
+                r.mode_override.clone()
+            } else {
+                None
+            }
+        })
+        .or_else(|| role_data.as_ref().and_then(|r| r.mode.clone()));
     let mut role_config: Vec<(String, String)> = role_data
         .as_ref()
         .map(|r| parse_config_map(&r.config_options_json))
         .unwrap_or_default();
-
-    if !role_config.iter().any(|(k, _)| k == "model") {
-        let model = role_state
-            .as_ref()
-            .and_then(|r| r.model_override.clone())
-            .or_else(|| role_data.as_ref().and_then(|r| r.model.clone()))
-            .or_else(|| {
-                context_pairs
-                    .iter()
-                    .find(|(k, _)| k == "model")
-                    .map(|(_, v)| v.clone())
-            });
-        if let Some(model) = model {
-            let normalized_model = normalize_model_for_runtime(&runtime, &model);
-            role_config.push(("model".to_string(), normalized_model));
+    if let Some(session_cfg) = role_state.as_ref().and_then(|r| {
+        let state_runtime = r.runtime_kind.as_deref().map(normalize_runtime_key);
+        if state_runtime.as_deref() == Some(runtime_key.as_str()) || state_runtime.is_none() {
+            r.config_options_json.as_deref()
+        } else {
+            None
         }
+    }) {
+        for (key, value) in parse_config_map(session_cfg) {
+            if value.trim().is_empty() {
+                role_config.retain(|(k, _)| k != &key);
+                continue;
+            }
+            if let Some(existing) = role_config.iter_mut().find(|(k, _)| k == &key) {
+                existing.1 = value;
+            } else {
+                role_config.push((key, value));
+            }
+        }
+    }
+
+    role_config.retain(|(k, _)| k != "model");
+    if let Some(model) = resolve_model(
+        role_data.as_ref(),
+        role_state.as_ref(),
+        &runtime_key,
+        &runtime,
+        &context_pairs,
+    ) {
+        role_config.push(("model".to_string(), model));
     }
 
     let role_system_prompt = role_data
         .as_ref()
         .map(|r| r.system_prompt.clone())
         .filter(|s| !s.is_empty());
-    let mut mcp_servers = role_data
-        .as_ref()
-        .map(|r| &r.mcp_servers_json)
-        .and_then(|raw| serde_json::from_str::<Vec<agent_client_protocol::McpServer>>(raw).ok())
-        .unwrap_or_default();
+    let mut mcp_servers: Vec<agent_client_protocol::McpServer> = {
+        let mut servers = crate::db::global_mcp::load_all_global_mcp_as_acp(state);
+        let role_servers = role_data
+            .as_ref()
+            .map(|r| &r.mcp_servers_json)
+            .map(|raw| crate::db::global_mcp::parse_mcp_server_list_json_compat(raw))
+            .unwrap_or_default();
+        let existing_names: std::collections::HashSet<String> = servers
+            .iter()
+            .map(|s| match s {
+                agent_client_protocol::McpServer::Http(h) => h.name.clone(),
+                agent_client_protocol::McpServer::Sse(e) => e.name.clone(),
+                agent_client_protocol::McpServer::Stdio(d) => d.name.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        for s in role_servers {
+            let name = match &s {
+                agent_client_protocol::McpServer::Http(h) => h.name.as_str(),
+                agent_client_protocol::McpServer::Sse(e) => e.name.as_str(),
+                agent_client_protocol::McpServer::Stdio(d) => d.name.as_str(),
+                _ => "",
+            };
+            if !name.is_empty() && !existing_names.contains(name) {
+                servers.push(s);
+            }
+        }
+        servers
+    };
 
     // Respect per-session MCP feature flags when present (mcp:<name>=enabled/disabled).
     // If no flag is set for this scope, keep default role/session MCP server list.
@@ -259,7 +360,24 @@ pub(super) fn load_role_runtime_data(
         });
     }
 
-    inject_conductor_mcp(&mut mcp_servers);
+    let mcp_names: Vec<&str> = mcp_servers
+        .iter()
+        .map(|s| match s {
+            agent_client_protocol::McpServer::Http(h) => h.name.as_str(),
+            agent_client_protocol::McpServer::Sse(e) => e.name.as_str(),
+            agent_client_protocol::McpServer::Stdio(d) => d.name.as_str(),
+            _ => "",
+        })
+        .filter(|n| !n.is_empty())
+        .collect();
+    let meta_header = format!(
+        "[Jockey context]\nrole: {role_name}\nruntime: {runtime}\nmcp_servers: {mcp}\n\nWhen calling jockey MCP tools that require a roleName parameter, use \"{role_name}\" unless the user specifies otherwise.",
+        mcp = if mcp_names.is_empty() { "none".to_string() } else { mcp_names.join(", ") },
+    );
+    let role_system_prompt = Some(match role_system_prompt {
+        Some(sp) => format!("{meta_header}\n\n{sp}"),
+        None => meta_header,
+    });
 
     Ok(RoleRuntimeData {
         runtime,

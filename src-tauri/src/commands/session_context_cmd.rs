@@ -1,6 +1,6 @@
 use crate::db::context::{clear_shared_context_internal, set_shared_context_internal};
-use crate::db::session_context::{app_session_scope, list_shared_context_prefix_internal};
 use crate::db::get_state;
+use crate::db::session_context::{app_session_scope, list_shared_context_prefix_internal};
 use crate::types::{AppState, ContextEntry};
 use tauri::State;
 

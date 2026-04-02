@@ -1,5 +1,5 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { For, Index, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Index, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { Accessor } from "solid-js";
 import { marked } from "marked";
 import type { AppSession, AppMessage, AppToolCall, AppSegment } from "./types";
@@ -12,6 +12,7 @@ type MessageWindowProps = {
   activeSession: Accessor<AppSession | null>;
   patchActiveSession: (patch: Partial<AppSession>) => void;
   onResetAgentContext?: () => void;
+  onReconnectAgent?: () => void;
   onListMounted?: (id: string, el: HTMLElement) => void;
   onListUnmounted?: (id: string) => void;
 };
@@ -308,6 +309,15 @@ export default function MessageWindow(props: MessageWindowProps) {
               </svg>
               Reset context
             </button>
+            <button
+              class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] theme-text hover:bg-[var(--ui-accent-soft)] transition-colors"
+              onClick={() => { closeCtxMenu(); props.onReconnectAgent?.(); }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-zinc-500">
+                <path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>
+              </svg>
+              Reconnect agent
+            </button>
           </div>
         )}
       </Show>
@@ -347,9 +357,14 @@ function StreamSegmentList(props: { segments: AppSegment[] }) {
   const groups = createMemo(() => collectToolGroups(props.segments));
   return (
     <Index each={groups()}>{(g) => (
-      g().kind === "text"
-        ? <div class="md-prose" innerHTML={renderMd((g() as { kind: "text"; text: string }).text)} />
-        : <ToolCallGroup tools={(g() as { kind: "tools"; tools: AppToolCall[] }).tools} streaming={true} />
+      <Switch>
+        <Match when={g().kind === "text"}>
+          <div class="md-prose" innerHTML={renderMd((g() as { kind: "text"; text: string }).text)} />
+        </Match>
+        <Match when={g().kind === "tools"}>
+          <ToolCallGroup tools={(g() as { kind: "tools"; tools: AppToolCall[] }).tools} streaming={true} />
+        </Match>
+      </Switch>
     )}</Index>
   );
 }

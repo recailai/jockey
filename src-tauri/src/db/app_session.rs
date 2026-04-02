@@ -132,7 +132,7 @@ pub(crate) fn list_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSes
         query_sessions(
             conn,
             "SELECT id, title, active_role, runtime_kind, cwd, created_at, last_active_at, closed_at
-             FROM app_sessions WHERE closed_at IS NULL ORDER BY last_active_at DESC LIMIT 50",
+             FROM app_sessions WHERE closed_at IS NULL ORDER BY created_at ASC LIMIT 50",
         )
     })
 }
@@ -173,17 +173,16 @@ pub(crate) fn append_app_message(
     })
 }
 
-#[tauri::command]
-pub(crate) fn create_app_session(
-    state: State<'_, AppState>,
-    title: Option<String>,
+pub(crate) fn create_app_session_internal(
+    state: &AppState,
+    title: Option<&str>,
 ) -> Result<AppSession, String> {
     let now = now_ms();
-    let title = validate_session_title(title.as_deref().unwrap_or("Session_1"))?;
+    let title = validate_session_title(title.unwrap_or("Session_1"))?;
     let session = AppSession {
         id: Uuid::new_v4().to_string(),
         title,
-        active_role: "JockeyUI".to_string(),
+        active_role: "Jockey".to_string(),
         runtime_kind: None,
         cwd: Some(default_chat_cwd()),
         messages: Vec::new(),
@@ -191,7 +190,7 @@ pub(crate) fn create_app_session(
         last_active_at: now,
         closed_at: None,
     };
-    with_db(get_state(&state), |conn| {
+    with_db(state, |conn| {
         if active_session_title_exists(conn, &session.title, None)? {
             return Err(format!("session name already exists: {}", session.title));
         }
@@ -214,13 +213,36 @@ pub(crate) fn create_app_session(
     Ok(session)
 }
 
+pub(crate) fn close_app_session_internal(state: &AppState, id: &str) -> Result<(), String> {
+    let now = now_ms();
+    with_db(state, |conn| {
+        let changed = conn
+            .execute(
+                "UPDATE app_sessions SET closed_at = ?1 WHERE id = ?2 AND closed_at IS NULL",
+                params![now, id],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err(format!("session not found or already closed: {id}"));
+        }
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub(crate) fn create_app_session(
+    state: State<'_, AppState>,
+    title: Option<String>,
+) -> Result<AppSession, String> {
+    create_app_session_internal(get_state(&state), title.as_deref())
+}
+
 #[tauri::command]
 pub(crate) fn update_app_session(
     state: State<'_, AppState>,
     id: String,
     update: AppSessionUpdate,
 ) -> Result<(), String> {
-    let now = now_ms();
     with_db(get_state(&state), |conn| {
         if let Some(ref title) = update.title {
             let title = validate_session_title(title)?;
@@ -228,22 +250,22 @@ pub(crate) fn update_app_session(
                 return Err(format!("session name already exists: {}", title));
             }
             conn.execute(
-                "UPDATE app_sessions SET title = ?1, last_active_at = ?2 WHERE id = ?3",
-                params![title, now, &id],
+                "UPDATE app_sessions SET title = ?1 WHERE id = ?2",
+                params![title, &id],
             )
             .map_err(|e| e.to_string())?;
         }
         if let Some(ref role) = update.active_role {
             conn.execute(
-                "UPDATE app_sessions SET active_role = ?1, last_active_at = ?2 WHERE id = ?3",
-                params![role, now, &id],
+                "UPDATE app_sessions SET active_role = ?1 WHERE id = ?2",
+                params![role, &id],
             )
             .map_err(|e| e.to_string())?;
         }
         if let Some(runtime) = update.runtime_kind {
             conn.execute(
-                "UPDATE app_sessions SET runtime_kind = ?1, last_active_at = ?2 WHERE id = ?3",
-                params![runtime, now, &id],
+                "UPDATE app_sessions SET runtime_kind = ?1 WHERE id = ?2",
+                params![runtime, &id],
             )
             .map_err(|e| e.to_string())?;
         }

@@ -34,21 +34,32 @@ pub(crate) fn upsert_role(
     mode: Option<String>,
     mcp_servers_json: Option<String>,
     config_options_json: Option<String>,
+    config_option_defs_json: Option<String>,
     auto_approve: Option<bool>,
 ) -> Result<Role, String> {
     let role_name = role_name.trim().to_string();
     validate_role_name(&role_name)?;
     let now = now_ms();
-    let existing_id = with_db(state, |conn| {
-        let name_hit: Option<(String, String)> = conn
+    let existing = with_db(state, |conn| {
+        let name_hit: Option<(String, String, Option<String>, Option<String>, Option<String>, Option<bool>)> = conn
             .query_row(
-                "SELECT id, role_name FROM roles WHERE lower(role_name) = lower(?1) LIMIT 1",
+                "SELECT id, role_name, mcp_servers_json, config_options_json, config_option_defs_json, auto_approve
+                 FROM roles WHERE lower(role_name) = lower(?1) LIMIT 1",
                 params![&role_name],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<bool>>(5)?,
+                    ))
+                },
             )
             .optional()
             .map_err(|e| AppError::db(e.to_string()).to_string())?;
-        if let Some((id, existing_name)) = name_hit {
+        if let Some((id, existing_name, mcp, cfg, cfg_defs, approve)) = name_hit {
             if existing_name != role_name {
                 return Err(AppError::already_exists(format!(
                     "role name already exists: {}",
@@ -56,26 +67,36 @@ pub(crate) fn upsert_role(
                 ))
                 .to_string());
             }
-            return Ok(Some(id));
+            return Ok(Some((id, mcp, cfg, cfg_defs, approve)));
         }
-        conn.query_row(
-            "SELECT id FROM roles WHERE role_name = ?1",
-            params![&role_name],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|e| AppError::db(e.to_string()).to_string())
+        Ok(None)
     })?;
 
-    let id = existing_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let mcp = mcp_servers_json.unwrap_or_else(|| "[]".to_string());
-    let cfg = config_options_json.unwrap_or_else(|| "{}".to_string());
-    let approve = auto_approve.unwrap_or(true);
+    let id = existing
+        .as_ref()
+        .map(|(id, _, _, _, _)| id.clone())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let mcp = mcp_servers_json
+        .or_else(|| existing.as_ref().and_then(|(_, mcp, _, _, _)| mcp.clone()))
+        .unwrap_or_else(|| "[]".to_string());
+    let cfg = config_options_json
+        .or_else(|| existing.as_ref().and_then(|(_, _, cfg, _, _)| cfg.clone()))
+        .unwrap_or_else(|| "{}".to_string());
+    let cfg_defs = config_option_defs_json
+        .or_else(|| {
+            existing
+                .as_ref()
+                .and_then(|(_, _, _, defs, _)| defs.clone())
+        })
+        .unwrap_or_else(|| "[]".to_string());
+    let approve = auto_approve
+        .or_else(|| existing.as_ref().and_then(|(_, _, _, _, v)| *v))
+        .unwrap_or(true);
 
     with_db(state, |conn| {
         conn.execute(
-            "INSERT INTO roles (id, role_name, runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, auto_approve, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "INSERT INTO roles (id, role_name, runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, config_option_defs_json, auto_approve, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(role_name) DO UPDATE SET
                runtime_kind = excluded.runtime_kind,
                system_prompt = excluded.system_prompt,
@@ -83,6 +104,7 @@ pub(crate) fn upsert_role(
                mode = excluded.mode,
                mcp_servers_json = excluded.mcp_servers_json,
                config_options_json = excluded.config_options_json,
+               config_option_defs_json = excluded.config_option_defs_json,
                auto_approve = excluded.auto_approve,
                updated_at = excluded.updated_at",
             params![
@@ -94,6 +116,7 @@ pub(crate) fn upsert_role(
                 &mode,
                 &mcp,
                 &cfg,
+                &cfg_defs,
                 approve,
                 now,
                 now,
@@ -112,6 +135,7 @@ pub(crate) fn upsert_role(
         mode,
         mcp_servers_json: mcp,
         config_options_json: cfg,
+        config_option_defs_json: cfg_defs,
         auto_approve: approve,
         created_at: now,
         updated_at: now,
@@ -128,6 +152,7 @@ pub(crate) struct RoleInput {
     pub(crate) mode: Option<String>,
     pub(crate) mcp_servers_json: Option<String>,
     pub(crate) config_options_json: Option<String>,
+    pub(crate) config_option_defs_json: Option<String>,
     pub(crate) auto_approve: Option<bool>,
 }
 
@@ -145,6 +170,7 @@ pub(crate) async fn upsert_role_cmd(
         input.mode,
         input.mcp_servers_json,
         input.config_options_json,
+        input.config_option_defs_json,
         input.auto_approve,
     )?;
     Ok(role)
@@ -164,9 +190,12 @@ fn role_from_row(row: &rusqlite::Row) -> rusqlite::Result<Role> {
         config_options_json: row
             .get::<_, Option<String>>(7)?
             .unwrap_or_else(|| "{}".to_string()),
-        auto_approve: row.get::<_, Option<bool>>(8)?.unwrap_or(true),
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        config_option_defs_json: row
+            .get::<_, Option<String>>(8)?
+            .unwrap_or_else(|| "[]".to_string()),
+        auto_approve: row.get::<_, Option<bool>>(9)?.unwrap_or(true),
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
     })
 }
 
@@ -174,7 +203,7 @@ pub(crate) fn list_all_roles(state: &AppState) -> Result<Vec<Role>, String> {
     with_db(state, |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, role_name, runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, auto_approve, created_at, updated_at
+                "SELECT id, role_name, runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, config_option_defs_json, auto_approve, created_at, updated_at
                  FROM roles ORDER BY role_name ASC",
             )
             .map_err(|e| AppError::db(e.to_string()).to_string())?;
@@ -194,13 +223,12 @@ pub(crate) fn list_roles(state: State<'_, AppState>) -> Result<Vec<Role>, String
     list_all_roles(get_state(&state))
 }
 
-#[tauri::command]
-pub(crate) fn delete_role_cmd(state: State<'_, AppState>, role_name: String) -> Result<(), String> {
+pub(crate) fn delete_role_internal(state: &AppState, role_name: &str) -> Result<(), String> {
     let role_name = role_name.trim().to_string();
     if role_name.is_empty() {
         return Err(AppError::validation("role name required").to_string());
     }
-    with_db(get_state(&state), |conn| {
+    with_db(state, |conn| {
         let active_using_count: i64 = conn
             .query_row(
                 "SELECT COUNT(1) FROM app_sessions WHERE closed_at IS NULL AND active_role = ?1",
@@ -214,7 +242,6 @@ pub(crate) fn delete_role_cmd(state: State<'_, AppState>, role_name: String) -> 
             ))
             .to_string());
         }
-
         let mapped_open_count: i64 = conn
             .query_row(
                 "SELECT COUNT(1)
@@ -227,11 +254,10 @@ pub(crate) fn delete_role_cmd(state: State<'_, AppState>, role_name: String) -> 
             .map_err(|e| AppError::db(e.to_string()).to_string())?;
         if mapped_open_count > 0 {
             return Err(AppError::invalid_input(format!(
-                "role is bound in {mapped_open_count} open session(s); reset/switch role first",
+                "role \"{role_name}\" is used in {mapped_open_count} open session(s) — close those sessions first, then delete the role",
             ))
             .to_string());
         }
-
         conn.execute(
             "DELETE FROM roles WHERE role_name = ?1",
             params![&role_name],
@@ -246,13 +272,61 @@ pub(crate) fn delete_role_cmd(state: State<'_, AppState>, role_name: String) -> 
     })
 }
 
+#[tauri::command]
+pub(crate) fn delete_role_cmd(state: State<'_, AppState>, role_name: String) -> Result<(), String> {
+    delete_role_internal(get_state(&state), &role_name)
+}
+
 pub(crate) fn load_role(state: &AppState, role_name: &str) -> Result<Option<Role>, String> {
     with_db(state, |conn| {
         conn.query_row(
-            "SELECT id, role_name, runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, auto_approve, created_at, updated_at FROM roles WHERE role_name = ?1",
+            "SELECT id, role_name, runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, config_option_defs_json, auto_approve, created_at, updated_at FROM roles WHERE role_name = ?1",
             params![role_name],
             role_from_row,
         ).optional().map_err(|e| AppError::db(e.to_string()).to_string())
+    })
+}
+
+pub(crate) fn update_role_config_option_defs_if_changed(
+    state: &AppState,
+    role_name: &str,
+    config_option_defs_json: &str,
+) -> Result<bool, String> {
+    with_db(state, |conn| {
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT config_option_defs_json FROM roles WHERE role_name = ?1",
+                params![role_name],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|e| AppError::db(e.to_string()).to_string())?
+            .flatten();
+
+        let changed = match existing {
+            Some(current) => {
+                let current_v = serde_json::from_str::<serde_json::Value>(&current).ok();
+                let next_v =
+                    serde_json::from_str::<serde_json::Value>(config_option_defs_json).ok();
+                match (current_v, next_v) {
+                    (Some(a), Some(b)) => a != b,
+                    _ => current != config_option_defs_json,
+                }
+            }
+            None => false,
+        };
+        if !changed {
+            return Ok(false);
+        }
+
+        conn.execute(
+            "UPDATE roles
+             SET config_option_defs_json = ?1, updated_at = ?2
+             WHERE role_name = ?3",
+            params![config_option_defs_json, now_ms(), role_name],
+        )
+        .map_err(|e| AppError::db(e.to_string()).to_string())?;
+        Ok(true)
     })
 }
 

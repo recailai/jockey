@@ -19,6 +19,7 @@ pub(crate) struct Role {
     pub(crate) mode: Option<String>,
     pub(crate) mcp_servers_json: String,
     pub(crate) config_options_json: String,
+    pub(crate) config_option_defs_json: String,
     pub(crate) auto_approve: bool,
     pub(crate) created_at: i64,
     pub(crate) updated_at: i64,

@@ -76,7 +76,7 @@ export function useAppBootstrap(input: UseAppBootstrapInput) {
       }
     }
 
-    pushMessage("system", "Welcome to JockeyUI. Agent sessions are warming up in the background.");
+    pushMessage("system", "Welcome to Jockey.");
 
     assistants()
       .filter((a) => a.available)

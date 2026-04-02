@@ -1,6 +1,6 @@
 use crate::db::app_session::{get_app_session_cwd, set_app_session_cwd};
 use crate::types::{AppState, ChatCommandResult};
-use crate::{build_jockeyui_tool_prompt, resolve_chat_cwd};
+use crate::{build_jockey_tool_prompt, resolve_chat_cwd};
 use serde_json::json;
 
 pub(crate) fn handle_shell_command(
@@ -12,7 +12,7 @@ pub(crate) fn handle_shell_command(
     match tokens {
         ["/app_help"] => {
             result.message = "command list".to_string();
-            result.payload = json!({ "help": build_jockeyui_tool_prompt() });
+            result.payload = json!({ "help": build_jockey_tool_prompt() });
             Ok(true)
         }
         ["/app_cd"] => {

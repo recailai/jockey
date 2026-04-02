@@ -1,6 +1,7 @@
 pub(crate) mod app_session;
 pub(crate) mod app_session_role;
 pub(crate) mod context;
+pub(crate) mod global_mcp;
 pub(crate) mod pool;
 pub(crate) mod role;
 pub(crate) mod session;
@@ -15,8 +16,45 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use tauri::State;
 
-/// Create the full v2 schema from scratch.  No migration logic — users must
-/// delete their old DB file before upgrading.
+fn is_safe_identifier(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    column_def: &str,
+) -> Result<(), String> {
+    if !is_safe_identifier(table) {
+        return Err(format!("invalid table name: {table}"));
+    }
+    if !is_safe_identifier(column) {
+        return Err(format!("invalid column name: {column}"));
+    }
+    let pragma = format!("PRAGMA table_info({table})");
+    let mut stmt = conn.prepare(&pragma).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| e.to_string())?;
+    let mut exists = false;
+    for row in rows {
+        let name = row.map_err(|e| e.to_string())?;
+        if name == column {
+            exists = true;
+            break;
+        }
+    }
+    if !exists {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {column_def}"),
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "
@@ -29,6 +67,7 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           mode TEXT,
           mcp_servers_json TEXT DEFAULT '[]',
           config_options_json TEXT DEFAULT '{}',
+          config_option_defs_json TEXT DEFAULT '[]',
           auto_approve INTEGER DEFAULT 1,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
@@ -73,7 +112,7 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         CREATE TABLE IF NOT EXISTS app_sessions (
           id TEXT PRIMARY KEY,
           title TEXT NOT NULL,
-          active_role TEXT NOT NULL DEFAULT 'JockeyUI',
+          active_role TEXT NOT NULL DEFAULT 'Jockey',
           runtime_kind TEXT,
           cwd TEXT,
           created_at INTEGER NOT NULL,
@@ -128,10 +167,28 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_app_session_messages_session_id
           ON app_session_messages(session_id, id ASC);
 
-        PRAGMA user_version = 3;
+        CREATE TABLE IF NOT EXISTS global_mcp_servers (
+          name TEXT PRIMARY KEY,
+          config_json TEXT NOT NULL,
+          is_builtin INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        PRAGMA user_version = 4;
         ",
     )
     .map_err(|e| e.to_string())?;
+    ensure_column(
+        conn,
+        "roles",
+        "config_option_defs_json",
+        "TEXT DEFAULT '[]'",
+    )?;
+    ensure_column(conn, "app_session_roles", "model_override", "TEXT")?;
+    ensure_column(conn, "app_session_roles", "mode_override", "TEXT")?;
+    ensure_column(conn, "app_session_roles", "mcp_servers_json", "TEXT")?;
+    ensure_column(conn, "app_session_roles", "config_options_json", "TEXT")?;
 
     Ok(())
 }

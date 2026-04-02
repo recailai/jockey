@@ -25,10 +25,6 @@ pub fn set_app_data_dir(path: PathBuf) {
     let _ = APP_DATA_DIR.set(path);
 }
 
-pub fn app_data_dir() -> Option<PathBuf> {
-    APP_DATA_DIR.get().cloned()
-}
-
 fn app_data_adapter_bin(binary: &str) -> Option<PathBuf> {
     let base = APP_DATA_DIR.get()?;
     let candidate = base
@@ -191,7 +187,19 @@ pub(super) fn friendly_error_message(runtime: &str, raw: &str) -> String {
         );
     }
     if l.contains("timeout") {
-        return format!("[{runtime}] No response within timeout — please retry.");
+        return format!("[{runtime}] Operation timed out — please retry.");
+    }
+    if l.contains("agent process exited") || l.contains("no longer alive") {
+        return format!(
+            "[{runtime}] Agent process exited unexpectedly. It will restart on next message."
+        );
+    }
+    if l.contains("model is not supported when using codex with a chatgpt account")
+        || (l.contains("not supported") && l.contains("codex") && l.contains("chatgpt account"))
+    {
+        return format!(
+            "[{runtime}] Selected model is incompatible with this Codex account. Clear the model override or choose a supported GPT model."
+        );
     }
     if l.contains("missing --experimental-acp")
         || l.contains("unsupported: missing --experimental-acp")
@@ -245,16 +253,15 @@ pub(super) fn clip(s: &str, n: usize) -> String {
 }
 
 fn supports_arg_in_help(binary: &str, arg_flag: &str) -> bool {
-    let output = match std::process::Command::new(binary).arg("--help").output() {
-        Ok(out) => out,
-        Err(_) => return false,
+    let Ok(output) = std::process::Command::new(binary).arg("--help").output() else {
+        return false;
     };
-    let mut text = String::new();
-    text.push_str(&String::from_utf8_lossy(&output.stdout).to_ascii_lowercase());
-    text.push_str(&String::from_utf8_lossy(&output.stderr).to_ascii_lowercase());
-    text.contains(&arg_flag.to_ascii_lowercase())
+    let arg_lc = arg_flag.to_ascii_lowercase();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+    stdout.contains(&arg_lc) || stderr.contains(&arg_lc)
 }
 
 pub(super) fn acp_log(event: &str, payload: Value) {
-    eprintln!("[jockeyui.acp] {} {} {}", now_ms(), event, payload);
+    eprintln!("[jockey.acp] {} {} {}", now_ms(), event, payload);
 }

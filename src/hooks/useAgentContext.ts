@@ -27,7 +27,7 @@ export function useAgentContext(
   const [assistants, setAssistants] = createSignal<AssistantRuntime[]>([]);
   const [skills, setSkills] = createSignal<AppSkill[]>([]);
 
-  const runtimeConfigCache = new Map<string, AcpConfigOption[]>();
+  const runtimeConfigCache = new Map<string, { options: AcpConfigOption[]; modes: string[] }>();
 
   const normalizeRuntimeKey = (runtimeKey: string): string => {
     const k = runtimeKey.trim().toLowerCase();
@@ -36,8 +36,6 @@ export function useAgentContext(
     if (k === "codex" || k === "codex-acp") return "codex-cli";
     return k;
   };
-  const runtimeProbeRole = (runtimeKey: string): string => `runtime:${runtimeKey}`;
-
   const commandCacheKey = (runtimeKey: string, roleName: string) => `${runtimeKey}:${roleName}`;
 
   let runTokenSeq = 0;
@@ -85,33 +83,53 @@ export function useAgentContext(
 
   const fetchConfigOptions = async (runtimeKey: string, roleName?: string): Promise<AcpConfigOption[]> => {
     try {
-      const sid = activeSessionId();
-      if (!sid) return [];
-      const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
-      if (roleName) {
-        const cachedRaw = await assistantApi.listDiscoveredConfig(roleName, sid);
-        const cached = cachedRaw as AcpConfigOption[];
-        if (cached.length > 0) {
-          void assistantApi.prewarmRoleConfig(roleName, sid).catch(() => {});
-          return cached;
+      const resolvedRole = roleName ?? normalizeRuntimeKey(runtimeKey);
+      const roleStoredOptions = (): AcpConfigOption[] => {
+        const role = roles().find((r) => r.roleName === resolvedRole);
+        if (!role) return [];
+        try {
+          const parsed = JSON.parse(role.configOptionDefsJson || "[]");
+          return Array.isArray(parsed) ? (parsed as AcpConfigOption[]) : [];
+        } catch {
+          return [];
         }
-        const raw = await assistantApi.prewarmRoleConfig(roleName, sid);
-        return raw as AcpConfigOption[];
+      };
+      const sid = activeSessionId();
+      if (!sid) return roleStoredOptions();
+      const hit = runtimeConfigCache.get(resolvedRole);
+      if (hit) {
+        void assistantApi.prewarmRoleConfig(resolvedRole, sid).catch(() => {});
+        return hit.options;
       }
-      const hit = runtimeConfigCache.get(normalizedRuntime);
-      if (hit) return hit;
-      const probeRole = runtimeProbeRole(normalizedRuntime);
-      const cachedRaw = await assistantApi.listDiscoveredConfig(probeRole, sid);
-      const cached = cachedRaw as AcpConfigOption[];
-      if (cached.length > 0) {
-        runtimeConfigCache.set(normalizedRuntime, cached);
-        void assistantApi.prewarmRoleConfig(probeRole, sid).catch(() => {});
-        return cached;
+      const cached = await assistantApi.listDiscoveredConfig(resolvedRole);
+      if ((cached as AcpConfigOption[]).length > 0) {
+        runtimeConfigCache.set(resolvedRole, { options: cached as AcpConfigOption[], modes: [] });
+        void assistantApi.prewarmRoleConfig(resolvedRole, sid).catch(() => {});
+        return cached as AcpConfigOption[];
       }
-      const raw = await assistantApi.prewarmRoleConfig(probeRole, sid);
-      const opts = raw as AcpConfigOption[];
-      if (opts.length > 0) runtimeConfigCache.set(normalizedRuntime, opts);
-      return opts;
+      const result = await assistantApi.prewarmRoleConfig(resolvedRole, sid);
+      const opts = result.configOptions as AcpConfigOption[];
+      runtimeConfigCache.set(resolvedRole, { options: opts, modes: result.modes });
+      return opts.length > 0 ? opts : roleStoredOptions();
+    } catch {
+      const resolvedRole = roleName ?? normalizeRuntimeKey(runtimeKey);
+      const role = roles().find((r) => r.roleName === resolvedRole);
+      if (!role) return [];
+      try {
+        const parsed = JSON.parse(role.configOptionDefsJson || "[]");
+        return Array.isArray(parsed) ? (parsed as AcpConfigOption[]) : [];
+      } catch {
+        return [];
+      }
+    }
+  };
+
+  const fetchModes = async (runtimeKey: string, roleName?: string): Promise<string[]> => {
+    try {
+      const resolvedRole = roleName ?? normalizeRuntimeKey(runtimeKey);
+      const hit = runtimeConfigCache.get(resolvedRole);
+      if (hit?.modes.length) return hit.modes;
+      return await assistantApi.listDiscoveredModes(resolvedRole);
     } catch { return []; }
   };
 
@@ -221,6 +239,43 @@ export function useAgentContext(
     }
   };
 
+  const reconnectActiveAgent = async () => {
+    const sid = activeSessionId();
+    const role = activeBackendRole();
+    if (!sid) {
+      showToast("No active session to reconnect.", "info");
+      return;
+    }
+    if (activeSession()?.submitting) {
+      showToast("Stop current run before reconnecting.", "info");
+      return;
+    }
+    try {
+      await assistantApi.reconnectSession(role, sid);
+      setSessions((s) => s.id === sid, produce((s) => {
+        const next = new Map(s.agentCommands);
+        for (const key of next.keys()) {
+          if (key.endsWith(`:${role}`)) next.delete(key);
+        }
+        s.agentCommands = next;
+      }));
+      updateSession(sid, {
+        discoveredConfigOptions: [],
+        toolCalls: {},
+        streamSegments: [],
+        currentPlan: null,
+        pendingPermission: null,
+        thoughtText: "",
+        agentState: undefined,
+        currentMode: null,
+        agentModes: [],
+      });
+      pushMessage("event", `[${role}] Reconnected — MCP changes will apply on next message.`);
+    } catch (e) {
+      showToast(`Failed to reconnect ${role}: ${String(e)}`);
+    }
+  };
+
   const cancelCurrentRun = async (runNextQueued: () => void) => {
     const sid = activeSessionId();
     const sess = sid ? sessions.find((s) => s.id === sid) : null;
@@ -257,12 +312,14 @@ export function useAgentContext(
     refreshRoles,
     refreshSkills,
     fetchConfigOptions,
+    fetchModes,
     parseAgentCommands,
     hydrateAgentCommandsForSession,
     fetchAndCacheAgentCommands,
     setPreferredAssistant,
     refreshAssistants,
     resetActiveAgentContext,
+    reconnectActiveAgent,
     cancelCurrentRun,
     slashCliCacheRef,
   };

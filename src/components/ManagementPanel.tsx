@@ -125,7 +125,7 @@ export default function ManagementPanel(props: ManagementPanelProps) {
               />
             </Show>
             <Show when={activeTab() === "mcp"}>
-              <McpRegistryTab roles={props.roles()} refreshRoles={props.refreshRoles} pushMessage={props.pushMessage} />
+              <McpRegistryTab pushMessage={props.pushMessage} />
             </Show>
             <Show when={activeTab() === "skills"}>
               <SkillRegistryTab skills={props.skills()} refreshSkills={props.refreshSkills} />

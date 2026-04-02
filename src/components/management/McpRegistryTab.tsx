@@ -1,21 +1,20 @@
-import { For, Show, createMemo, createSignal } from "solid-js";
-import type { Role } from "../types";
+import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 import { Badge, EmptyState, FieldRow, TextInput, InlineSelect, ActionButton, PanelSection } from "./primitives";
 import type { AcpMcpServer } from "./primitives";
 import { mcpTransport, parseCommandArgs } from "./primitives";
-import { roleApi } from "../../lib/tauriApi";
+import { globalMcpApi, type GlobalMcpEntry } from "../../lib/tauriApi";
 
-type McpEntry = { key: string; server: AcpMcpServer; roleName: string; index: number };
+type McpEntry = { key: string; server: AcpMcpServer; isBuiltin: boolean };
 
-function parseRoleMcpServers(role: Role): McpEntry[] {
+function parseEntry(entry: GlobalMcpEntry): McpEntry | null {
   try {
-    const arr = JSON.parse(role.mcpServersJson || "[]") as AcpMcpServer[];
-    return arr.map((s, i) => ({ key: `${role.id}-${i}`, server: s, roleName: role.roleName, index: i }));
-  } catch { return []; }
+    const server = JSON.parse(entry.configJson) as AcpMcpServer;
+    return { key: entry.name, server, isBuiltin: entry.isBuiltin };
+  } catch { return null; }
 }
 
-export function McpRegistryTab(props: { roles: Role[]; refreshRoles: () => Promise<void>; pushMessage: (role: string, text: string) => void }) {
-  const allEntries = createMemo(() => props.roles.flatMap(parseRoleMcpServers));
+export function McpRegistryTab(props: { pushMessage: (role: string, text: string) => void }) {
+  const [entries, setEntries] = createSignal<McpEntry[]>([]);
   const [selectedKey, setSelectedKey] = createSignal<string | null>(null);
   const [creating, setCreating] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
@@ -27,11 +26,21 @@ export function McpRegistryTab(props: { roles: Role[]; refreshRoles: () => Promi
   const [fUrl, setFUrl] = createSignal("");
   const [fEnvText, setFEnvText] = createSignal("");
   const [fHeadersText, setFHeadersText] = createSignal("");
-  const [fRole, setFRole] = createSignal("");
   const parsedArgs = createMemo(() => parseCommandArgs(fArgs().trim()));
   const argsInvalid = createMemo(() => fTransport() === "stdio" && !!fArgs().trim() && parsedArgs() === null);
 
-  const selected = createMemo(() => allEntries().find((e) => e.key === selectedKey()) ?? null);
+  const selected = createMemo(() => entries().find((e) => e.key === selectedKey()) ?? null);
+
+  async function refresh() {
+    try {
+      const raw = await globalMcpApi.list();
+      setEntries(raw.map(parseEntry).filter((e): e is McpEntry => e !== null));
+    } catch (e) {
+      props.pushMessage("event", `Failed to load MCP registry: ${String(e)}`);
+    }
+  }
+
+  onMount(() => { void refresh(); });
 
   const transportBadge = (t: string) => ({
     stdio: "bg-amber-500/15 text-amber-300",
@@ -39,20 +48,12 @@ export function McpRegistryTab(props: { roles: Role[]; refreshRoles: () => Promi
     sse: "bg-violet-500/15 text-violet-300",
   }[t] ?? "bg-[var(--ui-surface-muted)] theme-muted");
 
-  const roleOptions = createMemo(() =>
-    props.roles.filter((r) => r.roleName !== "JockeyAssistant").map((r) => ({ value: r.roleName, label: r.roleName }))
-  );
-
   function parseEnvPairs(text: string): Array<{ name: string; value: string }> {
     return text.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
       const eq = l.indexOf("=");
       if (eq < 0) return { name: l, value: "" };
       return { name: l.slice(0, eq), value: l.slice(eq + 1) };
     });
-  }
-
-  function parseHeaderPairs(text: string): Array<{ name: string; value: string }> {
-    return parseEnvPairs(text);
   }
 
   function isSensitiveKey(name: string): boolean {
@@ -83,48 +84,30 @@ export function McpRegistryTab(props: { roles: Role[]; refreshRoles: () => Promi
     }
     const url = fUrl().trim();
     if (!url) return null;
-    return { type: t, name, url, headers: parseHeaderPairs(fHeadersText()) };
+    return { type: t, name, url, headers: parseEnvPairs(fHeadersText()) };
   }
 
   async function handleAdd() {
     const server = buildServer();
-    const roleName = fRole().trim();
-    if (!server || !roleName) return;
-    const role = props.roles.find((r) => r.roleName === roleName);
-    if (!role) return;
+    if (!server) return;
+    const name = fName().trim();
     setSaving(true);
     try {
-      const existing: AcpMcpServer[] = JSON.parse(role.mcpServersJson || "[]");
-      existing.push(server);
-      await roleApi.upsert({
-        roleName: role.roleName, runtimeKind: role.runtimeKind,
-        systemPrompt: role.systemPrompt, model: role.model ?? null,
-        mode: role.mode ?? null, mcpServersJson: JSON.stringify(existing),
-        configOptionsJson: role.configOptionsJson, autoApprove: role.autoApprove,
-      });
-      await props.refreshRoles();
+      await globalMcpApi.upsert(name, JSON.stringify(server));
+      await refresh();
       setCreating(false);
+      setSelectedKey(name);
       setFName(""); setFCommand(""); setFArgs(""); setFUrl(""); setFEnvText(""); setFHeadersText("");
-      setFRole("");
     } catch (e) { props.pushMessage("event", `Failed to add MCP server: ${String(e)}`); }
     finally { setSaving(false); }
   }
 
   async function handleRemove(entry: McpEntry) {
+    if (entry.isBuiltin) return;
     try {
-      const role = props.roles.find((r) => r.roleName === entry.roleName);
-      if (!role) return;
-      const existing: AcpMcpServer[] = JSON.parse(role.mcpServersJson || "[]");
-      if (entry.index < 0 || entry.index >= existing.length) return;
-      existing.splice(entry.index, 1);
-      await roleApi.upsert({
-        roleName: role.roleName, runtimeKind: role.runtimeKind,
-        systemPrompt: role.systemPrompt, model: role.model ?? null,
-        mode: role.mode ?? null, mcpServersJson: JSON.stringify(existing),
-        configOptionsJson: role.configOptionsJson, autoApprove: role.autoApprove,
-      });
+      await globalMcpApi.remove(entry.key);
       if (selectedKey() === entry.key) setSelectedKey(null);
-      await props.refreshRoles();
+      await refresh();
     } catch (e) {
       props.pushMessage("event", `Failed to remove MCP server: ${String(e)}`);
     }
@@ -142,10 +125,10 @@ export function McpRegistryTab(props: { roles: Role[]; refreshRoles: () => Promi
           />
         </div>
         <div class="flex-1 overflow-y-auto space-y-0.5 py-1">
-          <Show when={allEntries().length === 0}>
-            <EmptyState icon="◈" title="No MCP servers" sub="Add an MCP server to a role" />
+          <Show when={entries().length === 0}>
+            <EmptyState icon="◈" title="No MCP servers" sub="Add an MCP server to the registry" />
           </Show>
-          <For each={allEntries()}>
+          <For each={entries()}>
             {(entry) => (
               <button
                 onClick={() => { setSelectedKey(entry.key); setCreating(false); }}
@@ -154,10 +137,12 @@ export function McpRegistryTab(props: { roles: Role[]; refreshRoles: () => Promi
                 <div class="flex items-center gap-1.5 min-w-0">
                   <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400" />
                   <span class="truncate font-mono text-[10px] font-semibold theme-text">{entry.server.name}</span>
+                  <Show when={entry.isBuiltin}>
+                    <Badge label="built-in" color="bg-zinc-500/20 text-zinc-400" />
+                  </Show>
                 </div>
                 <div class="flex items-center gap-1.5 pl-3">
                   <Badge label={mcpTransport(entry.server)} color={transportBadge(mcpTransport(entry.server))} />
-                  <span class="font-mono text-[9px] theme-muted truncate">{entry.roleName}</span>
                 </div>
               </button>
             )}
@@ -206,12 +191,9 @@ export function McpRegistryTab(props: { roles: Role[]; refreshRoles: () => Promi
                   <TextInput value={fHeadersText()} onInput={setFHeadersText} placeholder="Authorization=Bearer xxx (one per line)" multiline rows={2} monospace />
                 </FieldRow>
               </Show>
-              <FieldRow label="Role">
-                <InlineSelect value={fRole()} options={roleOptions()} onChange={setFRole} />
-              </FieldRow>
             </div>
             <div class="flex gap-2">
-              <ActionButton label={saving() ? "Adding…" : "Add"} variant="primary" disabled={saving() || !fName().trim() || !fRole() || argsInvalid()} onClick={() => void handleAdd()} />
+              <ActionButton label={saving() ? "Adding…" : "Add"} variant="primary" disabled={saving() || !fName().trim() || argsInvalid()} onClick={() => void handleAdd()} />
               <ActionButton label="Cancel" variant="ghost" onClick={() => setCreating(false)} />
             </div>
 
@@ -236,8 +218,13 @@ export function McpRegistryTab(props: { roles: Role[]; refreshRoles: () => Promi
                     <span class="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.4)]" />
                     <h2 class="font-mono text-sm font-bold theme-text">{s().name}</h2>
                     <Badge label={t()} color={transportBadge(t())} />
+                    <Show when={entry().isBuiltin}>
+                      <Badge label="built-in" color="bg-zinc-500/20 text-zinc-400" />
+                    </Show>
                   </div>
-                  <ActionButton label="Remove" variant="danger" onClick={() => void handleRemove(entry())} />
+                  <Show when={!entry().isBuiltin}>
+                    <ActionButton label="Remove" variant="danger" onClick={() => void handleRemove(entry())} />
+                  </Show>
                 </div>
 
                 <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
@@ -267,20 +254,17 @@ export function McpRegistryTab(props: { roles: Role[]; refreshRoles: () => Promi
                     <Show when={((s() as any).headers ?? []).length > 0}>
                       <FieldRow label="Headers">
                         <div class="flex flex-col gap-0.5">
-                            <For each={(s() as any).headers}>
-                              {(h: { name: string; value: string }) => (
-                                <span class="font-mono text-[10px] theme-muted">{h.name}: {isSensitiveKey(h.name) ? "********" : h.value}</span>
-                              )}
-                            </For>
-                          </div>
+                          <For each={(s() as any).headers}>
+                            {(h: { name: string; value: string }) => (
+                              <span class="font-mono text-[10px] theme-muted">{h.name}: {isSensitiveKey(h.name) ? "********" : h.value}</span>
+                            )}
+                          </For>
+                        </div>
                       </FieldRow>
                     </Show>
                   </Show>
                   <FieldRow label="Transport">
                     <Badge label={t()} color={transportBadge(t())} />
-                  </FieldRow>
-                  <FieldRow label="Role">
-                    <span class="font-mono text-[10px] theme-muted">{entry().roleName}</span>
                   </FieldRow>
                 </div>
 
@@ -295,7 +279,7 @@ export function McpRegistryTab(props: { roles: Role[]; refreshRoles: () => Promi
         </Show>
 
         <Show when={!creating() && !selected()}>
-          <EmptyState icon="◈" title="Select an MCP server" sub="Or add a new one to a role" />
+          <EmptyState icon="◈" title="Select an MCP server" sub="Or add a new one to the registry" />
         </Show>
       </div>
     </div>

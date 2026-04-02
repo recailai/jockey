@@ -16,7 +16,7 @@ export function RolesTab(props: {
   pushMessage: (role: string, text: string) => void;
   initialRoleName?: string;
 }) {
-  const UNION_ROLE = "JockeyAssistant";
+  const UNION_ROLE = "Jockey";
   const userRoles = createMemo(() => props.roles().filter((r) => r.roleName !== UNION_ROLE));
 
   // "creating" = create form open; selectedId = which role is being edited
@@ -48,6 +48,7 @@ export function RolesTab(props: {
   const [eMcpArgs, setEMcpArgs] = createSignal("");
   const [eMcpUrl, setEMcpUrl] = createSignal("");
   const [eCfgJson, setECfgJson] = createSignal("{}");
+  const [eConfigOpts, setEConfigOpts] = createSignal<AcpConfigOption[]>([]);
 
   const editingRole = createMemo(() =>
     selectedId() ? userRoles().find((r) => r.id === selectedId()) ?? null : null,
@@ -81,10 +82,8 @@ export function RolesTab(props: {
     try { setEMcpServers(JSON.parse(role.mcpServersJson || "[]")); } catch { setEMcpServers([]); }
     setEMcpAdding(false);
     setECfgJson(role.configOptionsJson || "{}");
-    const appSessionId = props.activeSession()?.id ?? "";
-    void assistantApi.listDiscoveredConfig(role.roleName, appSessionId).then((raw) => {
-      props.patchActiveSession({ discoveredConfigOptions: configApi.asOptions(raw) });
-    });
+    setEConfigOpts([]);
+    void props.fetchConfigOptions(role.runtimeKind, role.roleName).then(setEConfigOpts);
   };
 
   // Auto-open edit when panel is opened from sidebar with a pre-selected role name.
@@ -178,8 +177,8 @@ export function RolesTab(props: {
 
   const runtimeOptions = RUNTIMES.map((r) => ({ value: r, label: r }));
 
-  // Edit form config options
-  const editConfigOpts = createMemo(() => props.activeSession()?.discoveredConfigOptions ?? []);
+  // Edit form config options (local, not tied to global activeSession)
+  const editConfigOpts = createMemo(() => eConfigOpts());
   const editCfgMap = createMemo((): Record<string, string> => {
     try { return JSON.parse(eCfgJson() || "{}"); } catch { return {}; }
   });

@@ -1,23 +1,19 @@
 [package]
-name = "jockeyui"
-default-run = "jockeyui"
+name = "jockey"
+default-run = "jockey"
 version = "0.1.0"
-description = "JockeyUI desktop orchestrator"
-authors = ["jockeyui"]
+description = "Jockey desktop orchestrator"
+authors = ["jockey"]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/recailai/jockeyui"
+repository = "https://github.com/recailai/jockey"
 
 [lib]
-name = "jockeyui_lib"
+name = "jockey_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
-
-[[bin]]
-name = "jockeyui-mcp"
-path = "src/bin/jockeyui-mcp.rs"
 
 [dependencies]
 agent-client-protocol = "0.10.2"
@@ -29,11 +25,11 @@ libc = "0.2"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = { version = "2", features = ["macos-private-api", "devtools"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-window-state = "2"
-tokio = { version = "1.50.0", features = ["io-util", "macros", "process", "sync", "time", "rt"] }
+tokio = { version = "1.50.0", features = ["io-util", "macros", "net", "process", "sync", "time", "rt"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 uuid = { version = "1.18.1", features = ["v4", "serde"] }
 which = "6"
