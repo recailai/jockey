@@ -2,9 +2,9 @@ use serde_json::Value;
 use tokio::sync::oneshot;
 
 use super::super::adapter::build_stdio_adapter;
+use super::super::worker::RuntimeKind;
 use super::super::worker::{worker_tx, WorkerMsg};
 use super::mcp::load_role_mcp_servers;
-use super::super::worker::RuntimeKind;
 use crate::db::app_session_role::{load_app_session_role_cli_id, save_app_session_role_cli_id};
 use crate::db::role::update_role_config_option_defs_if_changed;
 use crate::types::AppState;
@@ -35,9 +35,7 @@ async fn send_prewarm(
         .app_session_id
         .filter(|id| !id.trim().is_empty())
         .map(|id| id.to_string())
-        .unwrap_or_else(|| {
-            format!("role-refresh:{}:{}", adapter.runtime_key, opts.role_name)
-        });
+        .unwrap_or_else(|| format!("role-refresh:{}:{}", adapter.runtime_key, opts.role_name));
     let (tx, rx) = oneshot::channel();
     let _ = worker_tx().send(WorkerMsg::Prewarm {
         runtime_key: adapter.runtime_key,
@@ -77,9 +75,7 @@ fn persist_prewarm_result(
                 }
             }
             Err(e) => {
-                eprintln!(
-                    "[prewarm] failed to serialize config option defs for {role_name}: {e}"
-                );
+                eprintln!("[prewarm] failed to serialize config option defs for {role_name}: {e}");
             }
         }
     }

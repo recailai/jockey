@@ -11,8 +11,8 @@ pub use types::{AcpEvent, AcpPromptResult, ConnectionDeathEvent, PrewarmEvent};
 
 pub(crate) use permission::permission_requests;
 pub(crate) use pool::{
-    pool_key, register_child_pid, DeltaSlot,
-    LiveConnection, CANCEL_HANDLES, CONN_MAP, DELTA_CHANNEL_CAPACITY,
+    pool_key, register_child_pid, DeltaSlot, LiveConnection, CANCEL_HANDLES, CONN_MAP,
+    DELTA_CHANNEL_CAPACITY,
 };
 pub(crate) use types::WorkerMsg;
 
@@ -24,8 +24,8 @@ use serde_json::json;
 use std::sync::OnceLock;
 use tokio::sync::{mpsc, oneshot};
 
-use agent_client_protocol::Agent as _;
 use super::adapter::acp_log;
+use agent_client_protocol::Agent as _;
 
 static WORKER_TX: OnceLock<mpsc::UnboundedSender<WorkerMsg>> = OnceLock::new();
 
@@ -211,12 +211,12 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                     });
                     let result = if let Some((conn, session_id)) = result {
                         conn.set_session_mode(acp::SetSessionModeRequest::new(
-                                session_id,
-                                acp::SessionModeId::from(mode_id),
-                            ))
-                            .await
-                            .map(|_| ())
-                            .map_err(|e| e.to_string())
+                            session_id,
+                            acp::SessionModeId::from(mode_id),
+                        ))
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
                     } else {
                         Err("no active session".to_string())
                     };
@@ -244,13 +244,13 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                     });
                     let result = if let Some((conn, session_id)) = result {
                         conn.set_session_config_option(acp::SetSessionConfigOptionRequest::new(
-                                session_id,
-                                acp::SessionConfigId::from(config_id),
-                                acp::SessionConfigValueId::from(value),
-                            ))
-                            .await
-                            .map(|_| ())
-                            .map_err(|e| e.to_string())
+                            session_id,
+                            acp::SessionConfigId::from(config_id),
+                            acp::SessionConfigValueId::from(value),
+                        ))
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
                     } else {
                         Err("no active session".to_string())
                     };

@@ -129,6 +129,63 @@ fn sanitize_model_for_runtime(runtime: &str, selected_model: &str) -> Option<Str
     }
 }
 
+fn resolve_model(
+    role_data: Option<&crate::types::Role>,
+    role_state: Option<&crate::db::app_session_role::AppSessionRoleState>,
+    runtime_key: &str,
+    runtime: &str,
+    context_pairs: &[(String, String)],
+) -> Option<String> {
+    let state_runtime_matches = |r: &crate::db::app_session_role::AppSessionRoleState| -> bool {
+        let sr = r.runtime_kind.as_deref().map(normalize_runtime_key);
+        sr.as_deref() == Some(runtime_key) || sr.is_none()
+    };
+
+    let model_override = role_state
+        .filter(|r| {
+            r.runtime_kind
+                .as_deref()
+                .map(normalize_runtime_key)
+                .as_deref()
+                == Some(runtime_key)
+        })
+        .and_then(|r| r.model_override.clone());
+
+    if let Some(model) = model_override.and_then(|m| sanitize_model_for_runtime(runtime, &m)) {
+        return Some(model);
+    }
+
+    let session_cfg_model = role_state
+        .filter(|r| state_runtime_matches(r))
+        .and_then(|r| r.config_options_json.as_deref())
+        .and_then(|raw| {
+            parse_config_map(raw)
+                .into_iter()
+                .find(|(k, _)| k == "model")
+                .map(|(_, v)| v)
+        });
+    if let Some(model) = session_cfg_model.and_then(|m| sanitize_model_for_runtime(runtime, &m)) {
+        return Some(model);
+    }
+
+    let role_cfg_model = role_data
+        .map(|r| parse_config_map(&r.config_options_json))
+        .and_then(|cfg| cfg.into_iter().find(|(k, _)| k == "model").map(|(_, v)| v));
+    if let Some(model) = role_cfg_model.and_then(|m| sanitize_model_for_runtime(runtime, &m)) {
+        return Some(model);
+    }
+
+    let role_model = role_data.and_then(|r| r.model.clone());
+    if let Some(model) = role_model.and_then(|m| sanitize_model_for_runtime(runtime, &m)) {
+        return Some(model);
+    }
+
+    context_pairs
+        .iter()
+        .find(|(k, _)| k == "model")
+        .and_then(|(_, v)| sanitize_model_for_runtime(runtime, v))
+}
+
 pub(super) fn load_role_runtime_data(
     state: &AppState,
     app_session_id: &str,
@@ -232,43 +289,15 @@ pub(super) fn load_role_runtime_data(
         }
     }
 
-    if let Some(idx) = role_config.iter().position(|(k, _)| k == "model") {
-        let current = role_config[idx].1.clone();
-        if let Some(normalized) = sanitize_model_for_runtime(&runtime, &current) {
-            role_config[idx].1 = normalized;
-        } else {
-            eprintln!("[model.sanitize.skipped] runtime={runtime} model={current}");
-            role_config.remove(idx);
-        }
-    }
-
-    let model_override = role_state.as_ref().and_then(|r| {
-        let state_runtime = r.runtime_kind.as_deref().map(normalize_runtime_key);
-        if state_runtime.as_deref() == Some(runtime_key.as_str()) {
-            r.model_override.clone()
-        } else {
-            None
-        }
-    });
-    if let Some(model) = model_override.and_then(|m| sanitize_model_for_runtime(&runtime, &m)) {
-        if let Some(idx) = role_config.iter().position(|(k, _)| k == "model") {
-            role_config[idx].1 = model;
-        } else {
-            role_config.push(("model".to_string(), model));
-        }
-    } else if !role_config.iter().any(|(k, _)| k == "model") {
-        let model = role_data
-            .as_ref()
-            .and_then(|r| r.model.clone())
-            .or_else(|| {
-                context_pairs
-                    .iter()
-                    .find(|(k, _)| k == "model")
-                    .map(|(_, v)| v.clone())
-            });
-        if let Some(model) = model.and_then(|m| sanitize_model_for_runtime(&runtime, &m)) {
-            role_config.push(("model".to_string(), model));
-        }
+    role_config.retain(|(k, _)| k != "model");
+    if let Some(model) = resolve_model(
+        role_data.as_ref(),
+        role_state.as_ref(),
+        &runtime_key,
+        &runtime,
+        &context_pairs,
+    ) {
+        role_config.push(("model".to_string(), model));
     }
 
     let role_system_prompt = role_data

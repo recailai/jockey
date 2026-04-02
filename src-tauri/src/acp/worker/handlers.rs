@@ -12,8 +12,7 @@ use super::super::runtime_state::{
 use super::super::session::cold_start;
 use super::notify::{notify_connection_death, notify_prewarm};
 use super::pool::{
-    pool_key, child_pids, CANCEL_HANDLES, CONN_MAP, PROMPT_IN_PROGRESS,
-    DELTA_CHANNEL_CAPACITY,
+    child_pids, pool_key, CANCEL_HANDLES, CONN_MAP, DELTA_CHANNEL_CAPACITY, PROMPT_LOCKS,
 };
 use super::types::{AcpEvent, ConnectionDeathEvent, PrewarmStatus};
 
@@ -40,7 +39,7 @@ pub(crate) async fn shutdown_worker_state() {
     CONN_MAP.with(|m| {
         m.borrow_mut().clear();
     });
-    PROMPT_IN_PROGRESS.with(|m| {
+    PROMPT_LOCKS.with(|m| {
         m.borrow_mut().clear();
     });
 
@@ -84,12 +83,13 @@ pub(crate) async fn reset_worker_session(
 
     let cancel = CANCEL_HANDLES.with(|m| m.borrow_mut().remove(&key));
     if let Some(h) = cancel {
-        let _ = h.conn.cancel(acp::CancelNotification::new(h.session_id)).await;
+        let _ = h
+            .conn
+            .cancel(acp::CancelNotification::new(h.session_id))
+            .await;
     }
 
     CONN_MAP.with(|m| m.borrow_mut().remove(&key));
-    PROMPT_IN_PROGRESS.with(|m| m.borrow_mut().remove(&key));
-
     use super::super::runtime_state::clear_session as clear_session_runtime_state;
     clear_session_runtime_state(app_session_id, runtime_key, role_name);
     Ok(())
@@ -104,12 +104,13 @@ pub(crate) async fn reconnect_worker_session(
 
     let cancel = CANCEL_HANDLES.with(|m| m.borrow_mut().remove(&key));
     if let Some(h) = cancel {
-        let _ = h.conn.cancel(acp::CancelNotification::new(h.session_id)).await;
+        let _ = h
+            .conn
+            .cancel(acp::CancelNotification::new(h.session_id))
+            .await;
     }
 
     CONN_MAP.with(|m| m.borrow_mut().remove(&key));
-    PROMPT_IN_PROGRESS.with(|m| m.borrow_mut().remove(&key));
-
     use super::super::runtime_state::clear_session as clear_session_runtime_state;
     clear_session_runtime_state(app_session_id, runtime_key, role_name);
     acp_log(
@@ -383,7 +384,8 @@ pub(crate) async fn handle_execute(
     let health_rx = CONN_MAP.with(|m| m.borrow().get(&key).map(|c| c.health_rx.clone()));
     let instance_id = CONN_MAP.with(|m| m.borrow().get(&key).map(|c| c.instance_id));
 
-    let (Some(conn_rc), Some(mut health_rx), Some(instance_id)) = (conn_rc, health_rx, instance_id) else {
+    let (Some(conn_rc), Some(mut health_rx), Some(instance_id)) = (conn_rc, health_rx, instance_id)
+    else {
         let _ = result_tx.send(Err("connection disappeared after cold start".to_string()));
         return;
     };
@@ -437,19 +439,13 @@ pub(crate) async fn handle_execute(
         );
     });
 
-    // Serialize prompt() calls per slot via PROMPT_IN_PROGRESS.
-    // Since everything runs on a single-threaded LocalSet, we poll until clear.
-    loop {
-        let in_progress = PROMPT_IN_PROGRESS.with(|m| {
-            m.borrow().get(&key).copied().unwrap_or(false)
-        });
-        if !in_progress {
-            break;
-        }
-        // Yield to let the current prompt complete
-        tokio::task::yield_now().await;
-    }
-    PROMPT_IN_PROGRESS.with(|m| m.borrow_mut().insert(key.clone(), true));
+    let prompt_lock = PROMPT_LOCKS.with(|m| {
+        let mut map = m.borrow_mut();
+        map.entry(key.clone())
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    });
+    let prompt_guard = prompt_lock.lock().await;
 
     let prompt_started = Instant::now();
     let prompt_fut = conn_rc.prompt(acp::PromptRequest::new(session_id.clone(), blocks));
@@ -473,8 +469,10 @@ pub(crate) async fn handle_execute(
         }
     };
 
-    CANCEL_HANDLES.with(|m| { m.borrow_mut().remove(&key); });
-    PROMPT_IN_PROGRESS.with(|m| { m.borrow_mut().remove(&key); });
+    CANCEL_HANDLES.with(|m| {
+        m.borrow_mut().remove(&key);
+    });
+    drop(prompt_guard);
 
     if let Ok(mut slot_guard) = delta_slot.lock() {
         *slot_guard = None;
@@ -637,9 +635,7 @@ pub(crate) async fn handle_prewarm(
             // Install a temporary drain channel so notifications sent after session/new
             // (e.g. AvailableCommandsUpdate via setTimeout) are captured rather than dropped.
             let (drain_tx, mut drain_rx) = mpsc::channel::<AcpEvent>(DELTA_CHANNEL_CAPACITY);
-            let delta_slot = CONN_MAP.with(|m| {
-                m.borrow().get(&key).map(|c| c.delta_slot.clone())
-            });
+            let delta_slot = CONN_MAP.with(|m| m.borrow().get(&key).map(|c| c.delta_slot.clone()));
             if let Some(ds) = delta_slot {
                 if let Ok(mut sg) = ds.lock() {
                     *sg = Some(drain_tx);

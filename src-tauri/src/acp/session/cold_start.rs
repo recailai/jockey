@@ -190,6 +190,32 @@ pub(crate) async fn cold_start(
         resumed: bool,
     }
 
+    async fn do_new_session(
+        conn: &acp::ClientSideConnection,
+        abs_cwd: &str,
+        mcp_servers: Vec<acp::McpServer>,
+    ) -> Result<SessionStartResult, String> {
+        let mut req = acp::NewSessionRequest::new(std::path::PathBuf::from(abs_cwd));
+        if !mcp_servers.is_empty() {
+            req = req.mcp_servers(mcp_servers);
+        }
+        let resp = tokio::time::timeout(SESSION_TIMEOUT, conn.new_session(req))
+            .await
+            .map_err(|_| {
+                format!(
+                    "timeout: new_session exceeded {}s",
+                    SESSION_TIMEOUT.as_secs()
+                )
+            })?
+            .map_err(|e| e.to_string())?;
+        Ok(SessionStartResult {
+            session_id: resp.session_id,
+            config_options: resp.config_options,
+            modes: resp.modes,
+            resumed: false,
+        })
+    }
+
     let start_result: SessionStartResult = if supports_load {
         if let Some(sid) = resume_session_id {
             let mut load_req = acp::LoadSessionRequest::new(
@@ -229,68 +255,14 @@ pub(crate) async fn cold_start(
                         "session.load.fallback",
                         json!({ "runtime": runtime_key, "error": e.to_string() }),
                     );
-                    let mut req = acp::NewSessionRequest::new(std::path::PathBuf::from(abs_cwd));
-                    if !mcp_servers.is_empty() {
-                        req = req.mcp_servers(mcp_servers);
-                    }
-                    let resp = tokio::time::timeout(SESSION_TIMEOUT, conn.new_session(req))
-                        .await
-                        .map_err(|_| {
-                            format!(
-                                "timeout: new_session exceeded {}s",
-                                SESSION_TIMEOUT.as_secs()
-                            )
-                        })?
-                        .map_err(|e| e.to_string())?;
-                    SessionStartResult {
-                        session_id: resp.session_id,
-                        config_options: resp.config_options,
-                        modes: resp.modes,
-                        resumed: false,
-                    }
+                    do_new_session(&conn, abs_cwd, mcp_servers).await?
                 }
             }
         } else {
-            let mut req = acp::NewSessionRequest::new(std::path::PathBuf::from(abs_cwd));
-            if !mcp_servers.is_empty() {
-                req = req.mcp_servers(mcp_servers);
-            }
-            let resp = tokio::time::timeout(SESSION_TIMEOUT, conn.new_session(req))
-                .await
-                .map_err(|_| {
-                    format!(
-                        "timeout: new_session exceeded {}s",
-                        SESSION_TIMEOUT.as_secs()
-                    )
-                })?
-                .map_err(|e| e.to_string())?;
-            SessionStartResult {
-                session_id: resp.session_id,
-                config_options: resp.config_options,
-                modes: resp.modes,
-                resumed: false,
-            }
+            do_new_session(&conn, abs_cwd, mcp_servers).await?
         }
     } else {
-        let mut req = acp::NewSessionRequest::new(std::path::PathBuf::from(abs_cwd));
-        if !mcp_servers.is_empty() {
-            req = req.mcp_servers(mcp_servers);
-        }
-        let resp = tokio::time::timeout(SESSION_TIMEOUT, conn.new_session(req))
-            .await
-            .map_err(|_| {
-                format!(
-                    "timeout: new_session exceeded {}s",
-                    SESSION_TIMEOUT.as_secs()
-                )
-            })?
-            .map_err(|e| e.to_string())?;
-        SessionStartResult {
-            session_id: resp.session_id,
-            config_options: resp.config_options,
-            modes: resp.modes,
-            resumed: false,
-        }
+        do_new_session(&conn, abs_cwd, mcp_servers).await?
     };
 
     let discovered_models =

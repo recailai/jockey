@@ -253,14 +253,13 @@ pub(super) fn clip(s: &str, n: usize) -> String {
 }
 
 fn supports_arg_in_help(binary: &str, arg_flag: &str) -> bool {
-    let output = match std::process::Command::new(binary).arg("--help").output() {
-        Ok(out) => out,
-        Err(_) => return false,
+    let Ok(output) = std::process::Command::new(binary).arg("--help").output() else {
+        return false;
     };
-    let mut text = String::new();
-    text.push_str(&String::from_utf8_lossy(&output.stdout).to_ascii_lowercase());
-    text.push_str(&String::from_utf8_lossy(&output.stderr).to_ascii_lowercase());
-    text.contains(&arg_flag.to_ascii_lowercase())
+    let arg_lc = arg_flag.to_ascii_lowercase();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+    stdout.contains(&arg_lc) || stderr.contains(&arg_lc)
 }
 
 pub(super) fn acp_log(event: &str, payload: Value) {

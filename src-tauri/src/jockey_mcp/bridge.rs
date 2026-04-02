@@ -11,7 +11,9 @@ use crate::db::global_mcp::{
     delete_global_mcp_server, list_global_mcp_servers, upsert_global_mcp_server,
 };
 use crate::db::role::{delete_role_internal, list_all_roles, load_role, upsert_role};
-use crate::db::skill::{delete_skill_internal, list_skills_internal, upsert_skill_internal};
+use crate::db::skill::{
+    delete_skill_internal, list_skills_internal, load_skill_by_name, upsert_skill_internal,
+};
 use crate::db::with_db;
 use crate::db::workflow::{
     create_workflow_internal, delete_workflow_internal, list_workflows_internal, load_workflow,
@@ -24,6 +26,7 @@ const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 static BRIDGE_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
 static BRIDGE_ERROR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static BRIDGE_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 pub fn bridge_port() -> Option<u16> {
     BRIDGE_PORT.get().copied()
@@ -33,7 +36,11 @@ pub fn bridge_error() -> Option<&'static str> {
     BRIDGE_ERROR.get().map(|s| s.as_str())
 }
 
-pub(crate) async fn start_bridge(state: Arc<AppState>) -> Result<u16, String> {
+pub fn bridge_token() -> Option<&'static str> {
+    BRIDGE_TOKEN.get().map(|s| s.as_str())
+}
+
+pub(crate) async fn start_bridge(state: Arc<AppState>) -> Result<(u16, String), String> {
     let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|e| {
         let msg = format!("bridge bind: {e}");
         let _ = BRIDGE_ERROR.set(msg.clone());
@@ -49,6 +56,14 @@ pub(crate) async fn start_bridge(state: Arc<AppState>) -> Result<u16, String> {
         .port();
     let _ = BRIDGE_PORT.set(port);
 
+    let token = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let _ = BRIDGE_TOKEN.set(token.clone());
+    let token_arc = std::sync::Arc::new(token.clone());
+
     tokio::spawn(async move {
         loop {
             let (stream, _) = match listener.accept().await {
@@ -56,9 +71,11 @@ pub(crate) async fn start_bridge(state: Arc<AppState>) -> Result<u16, String> {
                 Err(_) => continue,
             };
             let state = state.clone();
+            let tok = token_arc.clone();
             tokio::spawn(async move {
                 let result =
-                    tokio::time::timeout(REQUEST_TIMEOUT, handle_connection(stream, &state)).await;
+                    tokio::time::timeout(REQUEST_TIMEOUT, handle_connection(stream, &state, &tok))
+                        .await;
                 if result.is_err() {
                     eprintln!("[jockey-mcp] request timed out");
                 }
@@ -66,10 +83,10 @@ pub(crate) async fn start_bridge(state: Arc<AppState>) -> Result<u16, String> {
         }
     });
 
-    Ok(port)
+    Ok((port, token))
 }
 
-async fn handle_connection(stream: tokio::net::TcpStream, state: &AppState) {
+async fn handle_connection(stream: tokio::net::TcpStream, state: &AppState, token: &str) {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
 
@@ -80,6 +97,8 @@ async fn handle_connection(stream: tokio::net::TcpStream, state: &AppState) {
     let is_post = request_line.starts_with("POST ");
 
     let mut content_length: usize = 0;
+    let mut authorized = false;
+    let expected_header = format!("Bearer {token}");
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line).await {
@@ -95,6 +114,20 @@ async fn handle_connection(stream: tokio::net::TcpStream, state: &AppState) {
         {
             content_length = val.trim().parse().unwrap_or(0);
         }
+        if let Some(val) = line
+            .strip_prefix("Authorization:")
+            .or_else(|| line.strip_prefix("authorization:"))
+        {
+            if val.trim() == expected_header {
+                authorized = true;
+            }
+        }
+    }
+
+    if !authorized {
+        let resp = http_response(401, r#"{"error":"unauthorized"}"#);
+        let _ = writer.write_all(resp.as_bytes()).await;
+        return;
     }
 
     if !is_post {
@@ -117,7 +150,14 @@ async fn handle_connection(stream: tokio::net::TcpStream, state: &AppState) {
             return;
         }
     }
-    let body_str = String::from_utf8_lossy(&body);
+    let body_str = match String::from_utf8(body) {
+        Ok(s) => s,
+        Err(_) => {
+            let resp = http_response(400, r#"{"error":"invalid utf-8 body"}"#);
+            let _ = writer.write_all(resp.as_bytes()).await;
+            return;
+        }
+    };
 
     let response_body = handle_mcp_request(state, &body_str);
     let resp = http_response(200, &response_body);
@@ -128,6 +168,7 @@ fn http_response(status: u16, body: &str) -> String {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
+        401 => "Unauthorized",
         405 => "Method Not Allowed",
         413 => "Payload Too Large",
         _ => "Error",
@@ -483,10 +524,7 @@ pub(super) fn dispatch(state: &AppState, method: &str, params: Value) -> Result<
                 .get("name")
                 .and_then(|v| v.as_str())
                 .ok_or("name is required")?;
-            let skills = list_skills_internal(state)?;
-            let skill = skills
-                .into_iter()
-                .find(|s| s.name.eq_ignore_ascii_case(name))
+            let skill = load_skill_by_name(state, name)?
                 .ok_or_else(|| format!("skill not found: {name}"))?;
             Ok(json!({
                 "id": skill.id,

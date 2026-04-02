@@ -92,6 +92,10 @@ impl DbPool {
         })
     }
 
+    pub(crate) fn cache_key(&self) -> usize {
+        Arc::as_ptr(&self.inner) as usize
+    }
+
     fn return_conn(&self, conn: Connection) {
         let (lock, cvar) = &*self.inner;
         if let Ok(mut guard) = lock.lock() {

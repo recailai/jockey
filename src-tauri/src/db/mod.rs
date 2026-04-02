@@ -16,12 +16,22 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use tauri::State;
 
+fn is_safe_identifier(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 fn ensure_column(
     conn: &Connection,
     table: &str,
     column: &str,
     column_def: &str,
 ) -> Result<(), String> {
+    if !is_safe_identifier(table) {
+        return Err(format!("invalid table name: {table}"));
+    }
+    if !is_safe_identifier(column) {
+        return Err(format!("invalid column name: {column}"));
+    }
     let pragma = format!("PRAGMA table_info({table})");
     let mut stmt = conn.prepare(&pragma).map_err(|e| e.to_string())?;
     let rows = stmt

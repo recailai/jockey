@@ -174,14 +174,24 @@ pub(crate) fn summarize_text(input: &str) -> String {
 }
 
 pub(crate) fn chunk_text(input: &str, size: usize) -> Vec<String> {
-    if input.is_empty() {
+    if input.is_empty() || size == 0 {
         return vec![];
     }
-    input
-        .as_bytes()
-        .chunks(size)
-        .map(|b| String::from_utf8_lossy(b).into_owned())
-        .collect()
+    let mut chunks = Vec::new();
+    let mut buf = String::new();
+    let mut count = 0usize;
+    for ch in input.chars() {
+        buf.push(ch);
+        count += 1;
+        if count >= size {
+            chunks.push(std::mem::take(&mut buf));
+            count = 0;
+        }
+    }
+    if !buf.is_empty() {
+        chunks.push(buf);
+    }
+    chunks
 }
 
 pub(crate) async fn run_workflow(

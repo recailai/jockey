@@ -2,9 +2,10 @@ use agent_client_protocol as acp;
 use dashmap::DashSet;
 use serde_json::Value;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
 use super::types::AcpEvent;
 
@@ -38,10 +39,6 @@ pub(crate) struct LiveConnection {
 impl Drop for LiveConnection {
     fn drop(&mut self) {
         if let Some(pid) = self.child_pid {
-            // kill_on_drop only targets the direct child process and may leave
-            // grandchildren around (some ACP adapters fork a second binary).
-            // We spawn each adapter in its own process group, so terminate
-            // the whole group on connection drop to avoid orphan leaks.
             unsafe {
                 let pgid = -(pid as i32);
                 let _ = libc::kill(pgid, libc::SIGTERM);
@@ -88,9 +85,9 @@ thread_local! {
     pub(crate) static CANCEL_HANDLES: RefCell<std::collections::HashMap<String, CancelHandle>> =
         RefCell::new(std::collections::HashMap::new());
 
-    /// Per-slot prompt serialization: pool_key → bool (true = prompt in progress).
-    pub(crate) static PROMPT_IN_PROGRESS: RefCell<std::collections::HashMap<String, bool>> =
-        RefCell::new(std::collections::HashMap::new());
+    /// Per-slot prompt serialization: pool_key → async mutex.
+    pub(crate) static PROMPT_LOCKS: RefCell<HashMap<String, Arc<AsyncMutex<()>>>> =
+        RefCell::new(HashMap::new());
 }
 
 // ── Global state: child PIDs (still shared for cross-thread shutdown) ─────────

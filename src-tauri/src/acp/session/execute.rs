@@ -173,7 +173,9 @@ pub async fn execute_runtime(
                 continue;
             }
             _ = flush_interval.tick() => {
-                flush_delta_batch!();
+                if !delta_batch.is_empty() {
+                    flush_delta_batch!();
+                }
                 continue;
             }
             evt = delta_rx.recv() => {
@@ -386,4 +388,3 @@ pub(super) fn mock_execute(role: &str, prompt: &str, ctx: &[(String, String)]) -
         meta: json!({ "mode": "mock", "agentKind": RuntimeKind::Mock, "runtimeKey": "mock" }),
     }
 }
-

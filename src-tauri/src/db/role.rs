@@ -306,7 +306,8 @@ pub(crate) fn update_role_config_option_defs_if_changed(
         let changed = match existing {
             Some(current) => {
                 let current_v = serde_json::from_str::<serde_json::Value>(&current).ok();
-                let next_v = serde_json::from_str::<serde_json::Value>(config_option_defs_json).ok();
+                let next_v =
+                    serde_json::from_str::<serde_json::Value>(config_option_defs_json).ok();
                 match (current_v, next_v) {
                     (Some(a), Some(b)) => a != b,
                     _ => current != config_option_defs_json,

@@ -1,7 +1,7 @@
 use tokio::sync::oneshot;
 
-use super::super::worker::{worker_tx, WorkerMsg};
 use super::super::worker::RuntimeKind;
+use super::super::worker::{worker_tx, WorkerMsg};
 
 fn normalize_runtime_key(runtime_kind: &str) -> Option<&'static str> {
     RuntimeKind::from_str(runtime_kind).map(|k| k.runtime_key())

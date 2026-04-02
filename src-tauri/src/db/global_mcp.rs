@@ -2,10 +2,39 @@ use agent_client_protocol as acp;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::{OnceLock, RwLock};
 use tauri::State;
 
 use crate::db::{get_state, with_db};
+use crate::now_ms;
 use crate::types::AppState;
+
+static GLOBAL_MCP_CACHE: OnceLock<RwLock<HashMap<usize, Vec<GlobalMcpEntry>>>> = OnceLock::new();
+static GLOBAL_MCP_ACP_CACHE: OnceLock<RwLock<HashMap<usize, Vec<acp::McpServer>>>> =
+    OnceLock::new();
+
+fn global_mcp_cache() -> &'static RwLock<HashMap<usize, Vec<GlobalMcpEntry>>> {
+    GLOBAL_MCP_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn global_mcp_acp_cache() -> &'static RwLock<HashMap<usize, Vec<acp::McpServer>>> {
+    GLOBAL_MCP_ACP_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn cache_key(state: &AppState) -> usize {
+    state.db.cache_key()
+}
+
+fn invalidate_global_mcp_cache(state: &AppState) {
+    let key = cache_key(state);
+    if let Ok(mut w) = global_mcp_cache().write() {
+        w.remove(&key);
+    }
+    if let Ok(mut w) = global_mcp_acp_cache().write() {
+        w.remove(&key);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,15 +44,14 @@ pub(crate) struct GlobalMcpEntry {
     pub is_builtin: bool,
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 pub(crate) fn list_global_mcp_servers(state: &AppState) -> Result<Vec<GlobalMcpEntry>, String> {
-    with_db(state, |conn| {
+    let key = cache_key(state);
+    if let Ok(r) = global_mcp_cache().read() {
+        if let Some(cached) = r.get(&key) {
+            return Ok(cached.clone());
+        }
+    }
+    let result = with_db(state, |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT name, config_json, is_builtin FROM global_mcp_servers ORDER BY is_builtin DESC, name ASC",
@@ -43,7 +71,11 @@ pub(crate) fn list_global_mcp_servers(state: &AppState) -> Result<Vec<GlobalMcpE
             result.push(row.map_err(|e| e.to_string())?);
         }
         Ok(result)
-    })
+    })?;
+    if let Ok(mut w) = global_mcp_cache().write() {
+        w.insert(key, result.clone());
+    }
+    Ok(result)
 }
 
 fn validate_mcp_name(name: &str) -> Result<(), String> {
@@ -54,9 +86,7 @@ fn validate_mcp_name(name: &str) -> Result<(), String> {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        return Err(
-            "MCP server name only allows letters, numbers, - and _".to_string(),
-        );
+        return Err("MCP server name only allows letters, numbers, - and _".to_string());
     }
     Ok(())
 }
@@ -69,7 +99,7 @@ pub(crate) fn upsert_global_mcp_server(
 ) -> Result<(), String> {
     validate_mcp_name(name)?;
     let now = now_ms();
-    with_db(state, |conn| {
+    let result = with_db(state, |conn| {
         conn.execute(
             "INSERT INTO global_mcp_servers (name, config_json, is_builtin, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?4)
@@ -81,11 +111,13 @@ pub(crate) fn upsert_global_mcp_server(
         )
         .map_err(|e| e.to_string())?;
         Ok(())
-    })
+    });
+    invalidate_global_mcp_cache(state);
+    result
 }
 
 pub(crate) fn delete_global_mcp_server(state: &AppState, name: &str) -> Result<(), String> {
-    with_db(state, |conn| {
+    let result = with_db(state, |conn| {
         let deleted = conn
             .execute(
                 "DELETE FROM global_mcp_servers WHERE name = ?1 AND is_builtin = 0",
@@ -99,18 +131,30 @@ pub(crate) fn delete_global_mcp_server(state: &AppState, name: &str) -> Result<(
             ));
         }
         Ok(())
-    })
+    });
+    invalidate_global_mcp_cache(state);
+    result
 }
 
 pub(crate) fn load_all_global_mcp_as_acp(state: &AppState) -> Vec<acp::McpServer> {
-    list_global_mcp_servers(state)
+    let key = cache_key(state);
+    if let Ok(r) = global_mcp_acp_cache().read() {
+        if let Some(cached) = r.get(&key) {
+            return cached.clone();
+        }
+    }
+    let servers: Vec<acp::McpServer> = list_global_mcp_servers(state)
         .unwrap_or_default()
         .into_iter()
         .filter_map(|entry| {
             let json = inject_name_if_missing(&entry.config_json, &entry.name);
             parse_mcp_server_json_compat(&json)
         })
-        .collect()
+        .collect();
+    if let Ok(mut w) = global_mcp_acp_cache().write() {
+        w.insert(key, servers.clone());
+    }
+    servers
 }
 
 fn inject_name_if_missing(config_json: &str, name: &str) -> String {
@@ -214,12 +258,12 @@ pub(crate) fn delete_global_mcp_server_cmd(
     delete_global_mcp_server(get_state(&state), &name)
 }
 
-pub(crate) fn seed_builtin_jockey_mcp(state: &AppState, port: u16) {
+pub(crate) fn seed_builtin_jockey_mcp(state: &AppState, port: u16, token: &str) {
     let config = serde_json::json!({
         "type": "http",
         "name": "jockey",
         "url": format!("http://127.0.0.1:{port}"),
-        "headers": []
+        "headers": [{"name": "Authorization", "value": format!("Bearer {token}")}]
     });
     let _ = with_db(state, |conn| {
         let now = now_ms();
@@ -232,4 +276,5 @@ pub(crate) fn seed_builtin_jockey_mcp(state: &AppState, port: u16) {
         .map_err(|e| e.to_string())?;
         Ok(())
     });
+    invalidate_global_mcp_cache(state);
 }

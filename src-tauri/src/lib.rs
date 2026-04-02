@@ -74,17 +74,6 @@ Do NOT suggest role, model, or MCP commands — those are managed via the UI sid
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    if let Ok(path) = std::env::var("PATH") {
-        let home = std::env::var("HOME").unwrap_or_default();
-        let mut new_path = format!(
-            "/usr/local/bin:{}/.npm-global/bin:{}/.bun/bin:{}/.cargo/bin:{}",
-            home, home, home, path
-        );
-        if cfg!(target_os = "macos") {
-            new_path = format!("/opt/homebrew/bin:{}", new_path);
-        }
-        std::env::set_var("PATH", new_path);
-    }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| -> Result<(), Box<dyn std::error::Error>> {
@@ -140,11 +129,11 @@ pub fn run() {
             });
             let bridge_state_clone = bridge_state.clone();
             let bridge_app = app.handle().clone();
-            tauri::async_runtime::block_on(async move {
+            tauri::async_runtime::spawn(async move {
                 match jockey_mcp::bridge::start_bridge(bridge_state_clone.clone()).await {
-                    Ok(port) => {
+                    Ok((port, token)) => {
                         eprintln!("[jockey-mcp] listening on 127.0.0.1:{port}");
-                        db::global_mcp::seed_builtin_jockey_mcp(&bridge_state_clone, port);
+                        db::global_mcp::seed_builtin_jockey_mcp(&bridge_state_clone, port, &token);
                     }
                     Err(e) => {
                         eprintln!("[jockey-mcp] failed to start: {e}");
@@ -280,8 +269,9 @@ pub fn run() {
                                 ))
                             }).map_err(|e| e.to_string())?;
                             Ok(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
-                        }).unwrap_or_default();
+                        }).unwrap_or_else(|e| { eprintln!("[refresh] list session roles error: {e}"); vec![] });
 
+                        let refresh_sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
                         let mut active_role_names: std::collections::HashSet<String> =
                             std::collections::HashSet::new();
                         for (session_id, role_name, runtime_kind) in session_roles {
@@ -292,7 +282,9 @@ pub fn run() {
                             let sid_clone = session_id.clone();
                             let rn_clone = role_name.clone();
                             let rk_clone = runtime_kind.clone();
+                            let permit = refresh_sem.clone().acquire_owned().await.ok();
                             tokio::spawn(async move {
+                                let _permit = permit;
                                 let tmp = AppState { db: db_clone, shared_context: ctx_clone };
                                 let cwd = crate::db::app_session::get_app_session_cwd(&tmp, &sid_clone)
                                     .unwrap_or_else(resolve_chat_cwd);
@@ -316,7 +308,7 @@ pub fn run() {
                                 .map_err(|e| e.to_string())?;
                             Ok(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
                         })
-                        .unwrap_or_default();
+                        .unwrap_or_else(|e| { eprintln!("[refresh] list roles error: {e}"); vec![] });
 
                         for (role_name, runtime_kind) in all_roles {
                             if runtime_kind == "mock" {
@@ -329,7 +321,9 @@ pub fn run() {
                             let ctx_clone = app_state.shared_context.clone();
                             let rn_clone = role_name.clone();
                             let rk_clone = runtime_kind.clone();
+                            let permit = refresh_sem.clone().acquire_owned().await.ok();
                             tokio::spawn(async move {
+                                let _permit = permit;
                                 let tmp = AppState {
                                     db: db_clone,
                                     shared_context: ctx_clone,

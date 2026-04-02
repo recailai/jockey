@@ -148,6 +148,19 @@ pub(crate) fn delete_app_skill(state: State<'_, AppState>, id: String) -> Result
     delete_skill_internal(get_state(&state), &id)
 }
 
+pub(crate) fn load_skill_by_name(state: &AppState, name: &str) -> Result<Option<AppSkill>, String> {
+    with_db(state, |conn| {
+        conn.query_row(
+            "SELECT id, name, description, content, created_at, updated_at
+             FROM app_skills WHERE lower(name) = lower(?1)",
+            params![name],
+            skill_from_row,
+        )
+        .optional()
+        .map_err(|e| AppError::db(e.to_string()).to_string())
+    })
+}
+
 pub(crate) fn load_skills_by_names(state: &AppState, names: &[String]) -> Vec<AppSkill> {
     if names.is_empty() {
         return Vec::new();
