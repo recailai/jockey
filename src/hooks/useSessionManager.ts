@@ -33,15 +33,49 @@ export function useSessionManager() {
 
   let scrollRaf: number | null = null;
   const listRefMap = new Map<string, HTMLElement>();
+  // Per-session flag: true when user has scrolled up away from bottom
+  const userScrolledUpMap = new Map<string, boolean>();
+  const scrollListeners = new Map<string, () => void>();
 
-  const scheduleScrollToBottom = () => {
+  const BOTTOM_THRESHOLD = 60; // px from bottom counts as "at bottom"
+
+  const scheduleScrollToBottom = (force = false) => {
     if (scrollRaf !== null) return;
     scrollRaf = window.requestAnimationFrame(() => {
       scrollRaf = null;
       const id = activeSessionId();
       const el = id ? listRefMap.get(id) : null;
-      if (el) el.scrollTop = el.scrollHeight;
+      if (!el) return;
+      if (!force && userScrolledUpMap.get(id!)) return;
+      el.scrollTop = el.scrollHeight;
     });
+  };
+
+  const onListMounted = (id: string, el: HTMLElement) => {
+    listRefMap.set(id, el);
+    // Remove old listener if re-mounted
+    const old = scrollListeners.get(id);
+    if (old) el.removeEventListener("scroll", old);
+    const handler = () => {
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (distFromBottom <= BOTTOM_THRESHOLD) {
+        userScrolledUpMap.set(id, false);
+      } else {
+        userScrolledUpMap.set(id, true);
+      }
+    };
+    el.addEventListener("scroll", handler, { passive: true });
+    scrollListeners.set(id, handler);
+    scheduleScrollToBottom(true);
+  };
+
+  const onListUnmounted = (id: string) => {
+    const el = listRefMap.get(id);
+    const handler = scrollListeners.get(id);
+    if (el && handler) el.removeEventListener("scroll", handler);
+    listRefMap.delete(id);
+    scrollListeners.delete(id);
+    userScrolledUpMap.delete(id);
   };
 
   createEffect(() => {
@@ -94,6 +128,8 @@ export function useSessionManager() {
     pushMessage,
     listRefMap,
     scheduleScrollToBottom,
+    onListMounted,
+    onListUnmounted,
   };
 }
 

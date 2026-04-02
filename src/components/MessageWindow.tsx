@@ -44,6 +44,7 @@ function renderMdCached(id: string, text: string): string {
 export default function MessageWindow(props: MessageWindowProps) {
   let listEl: HTMLDivElement | undefined;
   let boundSessionId: string | null = null;
+  const [queueCollapsed, setQueueCollapsed] = createSignal(true);
 
   createEffect(() => {
     const id = props.activeSessionId();
@@ -278,19 +279,28 @@ export default function MessageWindow(props: MessageWindowProps) {
       </Show>
       <Show when={(props.activeSession()?.queuedMessages ?? []).length > 0}>
         <div class="mt-3 rounded-lg border theme-border backdrop-blur-sm overflow-hidden theme-panel">
-          <div class="flex items-center gap-2 px-3 py-1.5 border-b theme-border">
-            <span class="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse" />
+          <button
+            class="flex w-full items-center gap-2 px-3 py-1.5 hover:bg-[var(--ui-accent-soft)] transition-colors"
+            classList={{ "border-b theme-border": !queueCollapsed() }}
+            onClick={() => setQueueCollapsed(v => !v)}
+          >
+            <span class="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse shrink-0" />
             <span class="text-[10px] theme-muted font-medium uppercase tracking-wider">Queued</span>
             <span class="ml-auto text-[9px] theme-muted font-mono bg-[var(--ui-panel-2)] px-1.5 py-0.5 rounded-md">{props.activeSession()!.queuedMessages.length}</span>
-          </div>
-          <div class="px-2 py-1.5 space-y-1">
-            <For each={props.activeSession()!.queuedMessages}>{(text, i) => (
-              <div class="flex items-start gap-2 px-2 py-1 rounded-md hover:bg-[var(--ui-accent-soft)] transition-colors">
-                <span class="text-[9px] theme-muted font-mono mt-0.5 shrink-0 w-4 text-right">{i() + 1}</span>
-                <span class="text-[11px] theme-text font-mono break-all leading-relaxed">{text}</span>
-              </div>
-            )}</For>
-          </div>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="theme-muted transition-transform ml-1" classList={{ "rotate-180": !queueCollapsed() }}>
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+          <Show when={!queueCollapsed()}>
+            <div class="px-2 py-1.5 space-y-1">
+              <For each={props.activeSession()!.queuedMessages}>{(text, i) => (
+                <div class="flex items-start gap-2 px-2 py-1 rounded-md hover:bg-[var(--ui-accent-soft)] transition-colors">
+                  <span class="text-[9px] theme-muted font-mono mt-0.5 shrink-0 w-4 text-right">{i() + 1}</span>
+                  <span class="text-[11px] theme-text font-mono break-all leading-relaxed">{text}</span>
+                </div>
+              )}</For>
+            </div>
+          </Show>
         </div>
       </Show>
       <Show when={ctxMenu()}>

@@ -64,7 +64,8 @@ export default function App() {
     activeSession,
     updateSession, patchActiveSession,
     appendMessageToSession, pushMessage,
-    listRefMap, scheduleScrollToBottom,
+    scheduleScrollToBottom,
+    onListMounted, onListUnmounted,
   } = sessionManager;
 
   const streamEngine = useStreamEngine(sessionManager);
@@ -596,8 +597,8 @@ export default function App() {
         patchActiveSession={patchActiveSession}
         onResetAgentContext={resetActiveAgentContext}
         onReconnectAgent={reconnectActiveAgent}
-        onListMounted={(id, el) => { listRefMap.set(id, el); scheduleScrollToBottom(); }}
-        onListUnmounted={(id) => { listRefMap.delete(id); }}
+        onListMounted={onListMounted}
+        onListUnmounted={onListUnmounted}
       />
       </div>
 
