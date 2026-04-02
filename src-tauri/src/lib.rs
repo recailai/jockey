@@ -97,26 +97,10 @@ pub fn run() {
             };
 
             {
-                let existing = {
-                    let guard = state.db.get().map_err(|e| std::io::Error::other(e.to_string()))?;
-                    let mut stmt = guard.prepare(
-                        "SELECT scope, key, value FROM shared_context_snapshots ORDER BY updated_at DESC",
-                    )?;
-                    let rows = stmt.query_map([], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    })?;
-                    let mut entries = Vec::new();
-                    for row in rows {
-                        entries.push(row?);
-                    }
-                    entries
-                };
-
-                for (scope, key, value) in existing {
+                let guard = state.db.get().map_err(|e| std::io::Error::other(e.to_string()))?;
+                for (scope, key, value) in db::context::load_all_snapshots(&guard)
+                    .map_err(std::io::Error::other)?
+                {
                     state.shared_context.insert(shared_key(&scope, &key), value);
                 }
             }

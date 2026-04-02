@@ -216,6 +216,18 @@ pub(crate) async fn cold_start(
         })
     }
 
+    macro_rules! start_or_abort {
+        ($expr:expr) => {
+            match $expr {
+                Ok(v) => v,
+                Err(e) => {
+                    io_handle.abort();
+                    return Err(e);
+                }
+            }
+        };
+    }
+
     let start_result: SessionStartResult = if supports_load {
         if let Some(sid) = resume_session_id {
             let mut load_req = acp::LoadSessionRequest::new(
@@ -255,14 +267,14 @@ pub(crate) async fn cold_start(
                         "session.load.fallback",
                         json!({ "runtime": runtime_key, "error": e.to_string() }),
                     );
-                    do_new_session(&conn, abs_cwd, mcp_servers).await?
+                    start_or_abort!(do_new_session(&conn, abs_cwd, mcp_servers).await)
                 }
             }
         } else {
-            do_new_session(&conn, abs_cwd, mcp_servers).await?
+            start_or_abort!(do_new_session(&conn, abs_cwd, mcp_servers).await)
         }
     } else {
-        do_new_session(&conn, abs_cwd, mcp_servers).await?
+        start_or_abort!(do_new_session(&conn, abs_cwd, mcp_servers).await)
     };
 
     let discovered_models =

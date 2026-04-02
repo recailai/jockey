@@ -176,6 +176,26 @@ pub(crate) fn dynamic_catalog_contains(
     })
 }
 
+pub(crate) fn load_all_snapshots(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<(String, String, String)>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT scope, key, value FROM shared_context_snapshots ORDER BY updated_at DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut entries = Vec::new();
+    for row in rows {
+        entries.push(row?);
+    }
+    Ok(entries)
+}
+
 pub(crate) fn list_enabled_feature_flags(
     state: &AppState,
     scope: &str,

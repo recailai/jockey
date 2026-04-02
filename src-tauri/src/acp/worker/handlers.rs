@@ -1,6 +1,5 @@
 use agent_client_protocol::{self as acp, Agent as _};
 use serde_json::{json, Value};
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
 
@@ -282,14 +281,7 @@ pub(crate) fn spawn_connection_health_watch(
     mut hrx: tokio::sync::watch::Receiver<bool>,
 ) {
     tokio::task::spawn_local(async move {
-        loop {
-            if hrx.changed().await.is_err() {
-                break;
-            }
-            if !*hrx.borrow() {
-                break;
-            }
-        }
+        let _ = hrx.wait_for(|alive| !*alive).await;
         acp_log("health.process_died", json!({ "key": &key }));
 
         // Only evict if the connection in the map is still the same instance.
@@ -363,35 +355,30 @@ pub(crate) async fn handle_execute(
         }
     };
 
-    let session_id = CONN_MAP.with(|m| {
-        m.borrow()
-            .get(&key)
-            .map(|c| c.session_id.clone())
-            .unwrap_or_else(|| acp::SessionId::from(String::new()))
+    let conn_fields = CONN_MAP.with(|m| {
+        m.borrow().get(&key).map(|c| {
+            (
+                c.session_id.clone(),
+                c.delta_slot.clone(),
+                c.conn.clone(),
+                c.health_rx.clone(),
+                c.instance_id,
+            )
+        })
     });
-    let delta_slot = CONN_MAP.with(|m| {
-        m.borrow()
-            .get(&key)
-            .map(|c| c.delta_slot.clone())
-            .unwrap_or_else(|| Arc::new(Mutex::new(None)))
-    });
+    let (session_id, delta_slot, conn_rc, mut health_rx, instance_id) = match conn_fields {
+        Some(fields) => fields,
+        None => {
+            let _ = result_tx.send(Err("connection disappeared after cold start".to_string()));
+            return;
+        }
+    };
 
     if let Ok(mut slot_guard) = delta_slot.lock() {
         *slot_guard = Some(delta_tx.clone());
     }
 
-    let conn_rc = CONN_MAP.with(|m| m.borrow().get(&key).map(|c| c.conn.clone()));
-    let health_rx = CONN_MAP.with(|m| m.borrow().get(&key).map(|c| c.health_rx.clone()));
-    let instance_id = CONN_MAP.with(|m| m.borrow().get(&key).map(|c| c.instance_id));
-
-    let (Some(conn_rc), Some(mut health_rx), Some(instance_id)) = (conn_rc, health_rx, instance_id)
-    else {
-        let _ = result_tx.send(Err("connection disappeared after cold start".to_string()));
-        return;
-    };
-
     if is_cold {
-        let health_rx_clone = CONN_MAP.with(|m| m.borrow().get(&key).map(|c| c.health_rx.clone()));
         apply_cold_start_config(
             &key,
             &session_id,
@@ -407,9 +394,7 @@ pub(crate) async fn handle_execute(
             role_name: role_name.clone(),
             app_session_id: app_session_id.clone(),
         };
-        if let Some(hrx) = health_rx_clone {
-            spawn_connection_health_watch(key.clone(), instance_id, death, hrx);
-        }
+        spawn_connection_health_watch(key.clone(), instance_id, death, health_rx.clone());
     } else {
         let (available_modes, current_mode) = CONN_MAP.with(|m| {
             m.borrow()

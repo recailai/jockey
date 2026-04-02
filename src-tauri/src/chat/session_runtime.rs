@@ -18,6 +18,21 @@ pub(super) struct RoleRuntimeData {
     pub(super) mcp_servers: Vec<agent_client_protocol::McpServer>,
 }
 
+fn mcp_server_name(s: &agent_client_protocol::McpServer) -> &str {
+    match s {
+        agent_client_protocol::McpServer::Http(h) => h.name.as_str(),
+        agent_client_protocol::McpServer::Sse(e) => e.name.as_str(),
+        agent_client_protocol::McpServer::Stdio(d) => d.name.as_str(),
+        _ => "",
+    }
+}
+
+fn sanitize_prompt_field(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 fn upsert_context_pair(context_pairs: &mut Vec<(String, String)>, key: &str, value: String) {
     if let Some(existing) = context_pairs.iter_mut().find(|(k, _)| k == key) {
         existing.1 = value;
@@ -311,22 +326,10 @@ pub(super) fn load_role_runtime_data(
             .map(|r| &r.mcp_servers_json)
             .map(|raw| crate::db::global_mcp::parse_mcp_server_list_json_compat(raw))
             .unwrap_or_default();
-        let existing_names: std::collections::HashSet<String> = servers
-            .iter()
-            .map(|s| match s {
-                agent_client_protocol::McpServer::Http(h) => h.name.clone(),
-                agent_client_protocol::McpServer::Sse(e) => e.name.clone(),
-                agent_client_protocol::McpServer::Stdio(d) => d.name.clone(),
-                _ => String::new(),
-            })
-            .collect();
+        let existing_names: std::collections::HashSet<String> =
+            servers.iter().map(|s| mcp_server_name(s).to_string()).collect();
         for s in role_servers {
-            let name = match &s {
-                agent_client_protocol::McpServer::Http(h) => h.name.as_str(),
-                agent_client_protocol::McpServer::Sse(e) => e.name.as_str(),
-                agent_client_protocol::McpServer::Stdio(d) => d.name.as_str(),
-                _ => "",
-            };
+            let name = mcp_server_name(&s);
             if !name.is_empty() && !existing_names.contains(name) {
                 servers.push(s);
             }
@@ -345,12 +348,7 @@ pub(super) fn load_role_runtime_data(
         .collect();
     if !mcp_flags.is_empty() {
         mcp_servers.retain(|server| {
-            let server_name = match server {
-                agent_client_protocol::McpServer::Http(s) => s.name.as_str(),
-                agent_client_protocol::McpServer::Sse(s) => s.name.as_str(),
-                agent_client_protocol::McpServer::Stdio(s) => s.name.as_str(),
-                _ => "",
-            };
+            let server_name = mcp_server_name(server);
             let normalized_name = sanitize_dynamic_item_name(server_name)
                 .unwrap_or_else(|| server_name.trim().to_ascii_lowercase());
             match mcp_flags.get(&normalized_name) {
@@ -362,16 +360,13 @@ pub(super) fn load_role_runtime_data(
 
     let mcp_names: Vec<&str> = mcp_servers
         .iter()
-        .map(|s| match s {
-            agent_client_protocol::McpServer::Http(h) => h.name.as_str(),
-            agent_client_protocol::McpServer::Sse(e) => e.name.as_str(),
-            agent_client_protocol::McpServer::Stdio(d) => d.name.as_str(),
-            _ => "",
-        })
+        .map(mcp_server_name)
         .filter(|n| !n.is_empty())
         .collect();
+    let safe_role_name = sanitize_prompt_field(role_name);
+    let safe_runtime = sanitize_prompt_field(&runtime);
     let meta_header = format!(
-        "[Jockey context]\nrole: {role_name}\nruntime: {runtime}\nmcp_servers: {mcp}\n\nWhen calling jockey MCP tools that require a roleName parameter, use \"{role_name}\" unless the user specifies otherwise.",
+        "[Jockey context]\nrole: {safe_role_name}\nruntime: {safe_runtime}\nmcp_servers: {mcp}\n\nWhen calling jockey MCP tools that require a roleName parameter, use \"{safe_role_name}\" unless the user specifies otherwise.",
         mcp = if mcp_names.is_empty() { "none".to_string() } else { mcp_names.join(", ") },
     );
     let role_system_prompt = Some(match role_system_prompt {
