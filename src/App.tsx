@@ -302,11 +302,9 @@ export default function App() {
     const { appendOriginMessage, startOriginStream, completeOriginStream, dropOriginStream } =
       buildOriginStreamOps(originSessionId, sendRoleLabel);
 
-    let streamStarted = false;
     let finalStatus: "done" | "error" = "done";
-    if ((!isAppCommand) && s?.runtimeKind) {
+    if (!isAppCommand && originSessionId) {
       startOriginStream();
-      streamStarted = true;
     }
 
     try {
@@ -315,26 +313,26 @@ export default function App() {
         runtimeKind: s?.runtimeKind ?? null,
         appSessionId: originSessionId ?? null,
       });
-      if (runToken <= getCanceledRunToken()) return;
+      if (runToken <= getCanceledRunToken()) { dropOriginStream(); return; }
       if (res.runtimeKind && originSessionId === activeSessionId()) setPreferredAssistant(res.runtimeKind);
       if (text.startsWith("/app_role")) void refreshRoles();
 
       if (!res.ok) {
-        if (streamStarted) dropOriginStream();
+        dropOriginStream();
         showToast(res.reply);
         appendOriginMessage({ id: `${now()}-err`, roleName: "event", text: res.reply, at: now() });
         finalStatus = "error";
         return;
       }
 
-      if (streamStarted) {
+      if (!isAppCommand) {
         completeOriginStream(res.reply);
       } else {
         appendOriginMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, roleName: sendRoleLabel, text: res.reply, at: now() });
       }
 
     } catch (e) {
-      if (runToken <= getCanceledRunToken()) return;
+      if (runToken <= getCanceledRunToken()) { dropOriginStream(); return; }
       dropOriginStream();
       const errMsg = String(e);
       if (!errMsg.toLowerCase().includes("cancel")) showToast(errMsg);

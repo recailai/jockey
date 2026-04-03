@@ -31,51 +31,47 @@ export function useSessionManager() {
     persistSessionPatch(id, patch);
   };
 
+  type ScrollContainer = { el: HTMLElement; handler: () => void; scrolledUp: boolean };
   let scrollRaf: number | null = null;
-  const listRefMap = new Map<string, HTMLElement>();
-  // Per-session flag: true when user has scrolled up away from bottom
-  const userScrolledUpMap = new Map<string, boolean>();
-  const scrollListeners = new Map<string, () => void>();
+  const scrollContainers = new Map<string, ScrollContainer>();
 
-  const BOTTOM_THRESHOLD = 60; // px from bottom counts as "at bottom"
+  const BOTTOM_THRESHOLD = 60;
 
   const scheduleScrollToBottom = (force = false) => {
     if (scrollRaf !== null) return;
     scrollRaf = window.requestAnimationFrame(() => {
       scrollRaf = null;
       const id = activeSessionId();
-      const el = id ? listRefMap.get(id) : null;
-      if (!el) return;
-      if (!force && userScrolledUpMap.get(id!)) return;
-      el.scrollTop = el.scrollHeight;
+      const sc = id ? scrollContainers.get(id) : null;
+      if (!sc) return;
+      if (!force && sc.scrolledUp) return;
+      sc.el.scrollTop = sc.el.scrollHeight;
     });
   };
 
   const onListMounted = (id: string, el: HTMLElement) => {
-    listRefMap.set(id, el);
-    // Remove old listener if re-mounted
-    const old = scrollListeners.get(id);
-    if (old) el.removeEventListener("scroll", old);
+    const old = scrollContainers.get(id);
+    if (old) old.el.removeEventListener("scroll", old.handler);
+    let scrollRafId: number | null = null;
+    const sc: ScrollContainer = { el, handler: () => {}, scrolledUp: false };
     const handler = () => {
-      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      if (distFromBottom <= BOTTOM_THRESHOLD) {
-        userScrolledUpMap.set(id, false);
-      } else {
-        userScrolledUpMap.set(id, true);
-      }
+      if (scrollRafId !== null) return;
+      scrollRafId = window.requestAnimationFrame(() => {
+        scrollRafId = null;
+        const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+        sc.scrolledUp = distFromBottom > BOTTOM_THRESHOLD;
+      });
     };
+    sc.handler = handler;
     el.addEventListener("scroll", handler, { passive: true });
-    scrollListeners.set(id, handler);
+    scrollContainers.set(id, sc);
     scheduleScrollToBottom(true);
   };
 
   const onListUnmounted = (id: string) => {
-    const el = listRefMap.get(id);
-    const handler = scrollListeners.get(id);
-    if (el && handler) el.removeEventListener("scroll", handler);
-    listRefMap.delete(id);
-    scrollListeners.delete(id);
-    userScrolledUpMap.delete(id);
+    const sc = scrollContainers.get(id);
+    if (sc) sc.el.removeEventListener("scroll", sc.handler);
+    scrollContainers.delete(id);
   };
 
   createEffect(() => {
@@ -126,7 +122,6 @@ export function useSessionManager() {
     appendMessageToSession,
     appendMessage,
     pushMessage,
-    listRefMap,
     scheduleScrollToBottom,
     onListMounted,
     onListUnmounted,

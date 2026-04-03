@@ -103,15 +103,20 @@ export function useStreamEngine(sessionManager: SessionManager) {
   };
 
   const resetStreamState = (sessionId?: string) => {
-    if (streamBatchRaf !== null) {
-      window.cancelAnimationFrame(streamBatchRaf);
-      streamBatchRaf = null;
-    }
     if (sessionId) {
       streamBatchBuffers.delete(sessionId);
       thoughtBatchBuffers.delete(sessionId);
       acceptingStreams.delete(sessionId);
+      const anyPending = [...streamBatchBuffers.values(), ...thoughtBatchBuffers.values()].some(v => v);
+      if (!anyPending && streamBatchRaf !== null) {
+        window.cancelAnimationFrame(streamBatchRaf);
+        streamBatchRaf = null;
+      }
     } else {
+      if (streamBatchRaf !== null) {
+        window.cancelAnimationFrame(streamBatchRaf);
+        streamBatchRaf = null;
+      }
       streamBatchBuffers.clear();
       thoughtBatchBuffers.clear();
       acceptingStreams.clear();
