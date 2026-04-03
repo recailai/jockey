@@ -1,5 +1,4 @@
 import { createSignal } from "solid-js";
-import { produce } from "solid-js/store";
 import type { Role, AssistantRuntime, AppSkill, AcpConfigOption } from "../components/types";
 import { DEFAULT_ROLE_ALIAS, DEFAULT_BACKEND_ROLE } from "../components/types";
 import type { SessionManager } from "./useSessionManager";
@@ -17,8 +16,10 @@ export function useAgentContext(
     activeSessionId,
     activeSession,
     updateSession,
+    mutateSession,
     patchActiveSession,
     pushMessage,
+    getSessionIndex,
   } = sessionManager;
 
   const { finalizeSessionStream, acceptingStreams } = streamEngine;
@@ -159,7 +160,7 @@ export function useAgentContext(
     const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
     const result = await fetchAgentCommands(normalizedRuntime, roleName);
 
-    const aidx = sessions.findIndex((sess) => sess.id === sessionId);
+    const aidx = getSessionIndex(sessionId);
     const commandKey = commandCacheKey(result.runtimeKey, roleName);
     if (aidx !== -1) {
       setSessions(aidx, "agentCommands", (m) => {
@@ -215,13 +216,13 @@ export function useAgentContext(
     }
     try {
       await assistantApi.resetSession(role, sid);
-      setSessions((s) => s.id === sid, produce((s) => {
+      mutateSession(sid, (s) => {
         const next = new Map(s.agentCommands);
         for (const key of next.keys()) {
           if (key.endsWith(`:${role}`)) next.delete(key);
         }
         s.agentCommands = next;
-      }));
+      });
       updateSession(sid, {
         discoveredConfigOptions: [],
         toolCalls: {},
@@ -252,13 +253,13 @@ export function useAgentContext(
     }
     try {
       await assistantApi.reconnectSession(role, sid);
-      setSessions((s) => s.id === sid, produce((s) => {
+      mutateSession(sid, (s) => {
         const next = new Map(s.agentCommands);
         for (const key of next.keys()) {
           if (key.endsWith(`:${role}`)) next.delete(key);
         }
         s.agentCommands = next;
-      }));
+      });
       updateSession(sid, {
         discoveredConfigOptions: [],
         toolCalls: {},
@@ -278,7 +279,8 @@ export function useAgentContext(
 
   const cancelCurrentRun = async (runNextQueued: () => void) => {
     const sid = activeSessionId();
-    const sess = sid ? sessions.find((s) => s.id === sid) : null;
+    const cidx = sid ? getSessionIndex(sid) : -1;
+    const sess = cidx !== -1 ? sessions[cidx] : null;
     if (!sess?.submitting || !sid) return;
     canceledRunToken = Math.max(canceledRunToken, runTokenSeq);
     acceptingStreams.delete(sid);

@@ -59,23 +59,50 @@ export default function MessageWindow(props: MessageWindowProps) {
   });
 
   type VisibleMsg = { msg: AppMessage; count: number; latestAt: number };
-  const visibleMessages = createMemo<VisibleMsg[]>(() => {
+
+  // Incremental dedup: only re-process rows added since last run.
+  let _prevRows: readonly AppMessage[] = [];
+
+  const visibleMessages = createMemo<VisibleMsg[]>((prev) => {
     const rows = props.activeSession()?.messages ?? [];
-    const sliced = rows.length <= MESSAGE_RENDER_WINDOW ? rows : rows.slice(rows.length - MESSAGE_RENDER_WINDOW);
-    const deduped: VisibleMsg[] = [];
-    for (const msg of sliced) {
+    const sliceStart = rows.length > MESSAGE_RENDER_WINDOW ? rows.length - MESSAGE_RENDER_WINDOW : 0;
+
+    // Fast path: if only new messages were appended at the tail (no reorder/delete/session switch)
+    const prevRows = _prevRows;
+    const prevDeduped = prev ?? [];
+    const isAppendOnly =
+      prevRows.length > 0 &&
+      rows.length > prevRows.length &&
+      rows[prevRows.length - 1] === prevRows[prevRows.length - 1];
+
+    let deduped: VisibleMsg[];
+    let newStart: number;
+
+    if (isAppendOnly && sliceStart <= prevRows.length) {
+      // Reuse previous deduped, process only the new tail
+      deduped = [...prevDeduped];
+      newStart = prevRows.length;
+    } else {
+      // Full rebuild (session switch, delete, or first run)
+      deduped = [];
+      newStart = sliceStart;
+    }
+
+    for (let i = newStart; i < rows.length; i++) {
+      const msg = rows[i];
       if (msg.roleName === "system" || msg.roleName === "event") {
         const last = deduped[deduped.length - 1];
         if (last && (last.msg.roleName === "system" || last.msg.roleName === "event") && last.msg.text === msg.text) {
-          last.count++;
-          last.latestAt = msg.at;
+          deduped[deduped.length - 1] = { ...last, count: last.count + 1, latestAt: msg.at };
           continue;
         }
       }
       deduped.push({ msg, count: 1, latestAt: msg.at });
     }
+
+    _prevRows = rows;
     return deduped;
-  });
+  }, []);
 
   const hiddenMessageCount = (): number => {
     const count = (props.activeSession()?.messages.length ?? 0) - MESSAGE_RENDER_WINDOW;

@@ -1,4 +1,3 @@
-import { produce } from "solid-js/store";
 import type {
   AcpDeltaEvent,
   AcpStreamEvent,
@@ -51,11 +50,13 @@ export function appendAcpDelta(
   acceptingStreams: Set<string>,
   sessions: AppSession[],
   appendStream: (sid: string, chunk: string) => void,
+  getSessionIndex?: (id: string) => number,
 ): void {
   const sid = payload.appSessionId;
   if (!sid || !acceptingStreams.has(sid)) return;
-  const sess = sessions.find((s) => s.id === sid);
-  if (!sess?.streamingMessage) return;
+  const idx = getSessionIndex ? getSessionIndex(sid) : sessions.findIndex((s) => s.id === sid);
+  if (idx === -1) return;
+  if (!sessions[idx]?.streamingMessage) return;
   appendStream(sid, payload.delta);
 }
 
@@ -255,11 +256,8 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
 
 export function mutateSessionWithProduce(
   sid: string,
-  setSessions: (
-    selector: (s: AppSession) => boolean,
-    recipe: (s: AppSession) => void,
-  ) => void,
+  mutateSession: (id: string, recipe: (s: AppSession) => void) => void,
   recipe: (s: AppSession) => void,
 ) {
-  setSessions((s) => s.id === sid, produce(recipe));
+  mutateSession(sid, recipe);
 }

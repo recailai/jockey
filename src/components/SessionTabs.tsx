@@ -4,8 +4,10 @@ import type { AppSession } from "./types";
 import { INTERACTIVE_MOTION } from "./types";
 import { appSessionApi, assistantApi } from "../lib/tauriApi";
 
+export type SessionTab = { id: string; title: string; status: AppSession["status"] };
+
 type SessionTabsProps = {
-  sessions: AppSession[];
+  sessions: SessionTab[];
   activeSessionId: Accessor<string | null>;
   setActiveSessionId: Setter<string | null>;
   activeSession: Accessor<AppSession | null>;

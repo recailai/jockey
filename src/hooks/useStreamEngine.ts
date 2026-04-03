@@ -14,6 +14,7 @@ export function useStreamEngine(sessionManager: SessionManager) {
     updateSession,
     pushMessage,
     scheduleScrollToBottom,
+    getSessionIndex,
   } = sessionManager;
 
   const acceptingStreams = new Set<string>();
@@ -60,8 +61,10 @@ export function useStreamEngine(sessionManager: SessionManager) {
     for (const sid of allSids) {
       const textChunk = textChunks.get(sid);
       const thoughtChunk = thoughtChunks.get(sid);
+      const idx = getSessionIndex(sid);
+      if (idx === -1) continue;
       setSessions(
-        (s) => s.id === sid,
+        idx,
         produce((s) => {
           if (textChunk && s.streamingMessage) {
             s.streamingMessage.text = (s.streamingMessage.text ?? "") + textChunk;
@@ -130,7 +133,8 @@ export function useStreamEngine(sessionManager: SessionManager) {
 
   const finalizeSessionStream = (sessionId: string, fallbackRoleName: string, finalReply?: string) => {
     flushStreamBatch();
-    const sess = sessions.find((x) => x.id === sessionId);
+    const idx = getSessionIndex(sessionId);
+    const sess = idx !== -1 ? sessions[idx] : undefined;
     const row = sess?.streamingMessage ?? null;
     const snapshotToolCalls = sess && Object.keys(sess.toolCalls).length > 0 ? Object.values(sess.toolCalls) : undefined;
     const snapshotSegments = sess && sess.streamSegments.length > 0 ? [...sess.streamSegments] : undefined;
@@ -196,7 +200,7 @@ export function useStreamEngine(sessionManager: SessionManager) {
         if (sid === "__active__") {
           pushMessage("event", text);
         } else {
-          const idx = sessions.findIndex((s) => s.id === sid);
+          const idx = getSessionIndex(sid);
           if (idx === -1) {
             pushMessage("event", text);
           } else {

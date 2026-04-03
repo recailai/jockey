@@ -20,6 +20,7 @@ import {
 type RegisterAcpEventListenersInput = {
   acceptingStreams: Set<string>;
   sessions: AppSession[];
+  getSessionIndex: (id: string) => number;
   appendStream: (sid: string, chunk: string) => void;
   pushMessageToSession: (sid: string, role: string, text: string) => void;
   pushMessage: (role: string, text: string) => void;
@@ -46,6 +47,7 @@ export function useAcpEventListeners() {
     const {
       acceptingStreams,
       sessions,
+      getSessionIndex,
       appendStream,
       pushMessageToSession,
       pushMessage,
@@ -148,7 +150,7 @@ export function useAcpEventListeners() {
         },
       ),
       listen<AcpDeltaEvent & { appSessionId?: string }>("acp/delta", (ev) => {
-        appendAcpDelta(ev.payload, acceptingStreams, sessions, appendStream);
+        appendAcpDelta(ev.payload, acceptingStreams, sessions, appendStream, getSessionIndex);
       }),
       listen<SessionUpdateEvent & { appSessionId?: string }>("session/update", (ev) => {
         const line = toSessionDeltaMessage(ev.payload);

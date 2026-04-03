@@ -126,7 +126,7 @@ pub(crate) fn upsert_role(
         Ok(())
     })?;
 
-    Ok(Role {
+    let role = Role {
         id,
         role_name,
         runtime_kind,
@@ -139,7 +139,10 @@ pub(crate) fn upsert_role(
         auto_approve: approve,
         created_at: now,
         updated_at: now,
-    })
+    };
+    // Invalidate cache so next load_role re-fetches fresh data.
+    state.role_cache.remove(&role.role_name);
+    Ok(role)
 }
 
 #[derive(Deserialize)]
@@ -269,7 +272,9 @@ pub(crate) fn delete_role_internal(state: &AppState, role_name: &str) -> Result<
         )
         .map_err(|e| AppError::db(e.to_string()).to_string())?;
         Ok(())
-    })
+    })?;
+    state.role_cache.remove(&role_name);
+    Ok(())
 }
 
 #[tauri::command]
@@ -278,13 +283,21 @@ pub(crate) fn delete_role_cmd(state: State<'_, AppState>, role_name: String) -> 
 }
 
 pub(crate) fn load_role(state: &AppState, role_name: &str) -> Result<Option<Role>, String> {
-    with_db(state, |conn| {
+    // Check in-memory cache first to avoid a DB round-trip on every assistant_chat call.
+    if let Some(cached) = state.role_cache.get(role_name) {
+        return Ok(Some((*cached).as_ref().clone()));
+    }
+    let result = with_db(state, |conn| {
         conn.query_row(
             "SELECT id, role_name, runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, config_option_defs_json, auto_approve, created_at, updated_at FROM roles WHERE role_name = ?1",
             params![role_name],
             role_from_row,
         ).optional().map_err(|e| AppError::db(e.to_string()).to_string())
-    })
+    })?;
+    if let Some(ref role) = result {
+        state.role_cache.insert(role_name.to_string(), std::sync::Arc::new(role.clone()));
+    }
+    Ok(result)
 }
 
 pub(crate) fn update_role_config_option_defs_if_changed(
@@ -327,6 +340,11 @@ pub(crate) fn update_role_config_option_defs_if_changed(
         )
         .map_err(|e| AppError::db(e.to_string()).to_string())?;
         Ok(true)
+    }).map(|changed| {
+        if changed {
+            state.role_cache.remove(role_name);
+        }
+        changed
     })
 }
 

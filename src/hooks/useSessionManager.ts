@@ -9,10 +9,43 @@ export function useSessionManager() {
   const [sessions, setSessions] = createStore<AppSession[]>([]);
   const [activeSessionId, setActiveSessionId] = createSignal<string | null>(null);
 
-  const activeSession = createMemo(() => sessions.find((s) => s.id === activeSessionId()) ?? null);
+  // O(1) id → index lookup. Rebuilt whenever sessions array structure changes.
+  const sessionIndexMap = new Map<string, number>();
 
+  const rebuildIndexMap = () => {
+    sessionIndexMap.clear();
+    for (let i = 0; i < sessions.length; i++) {
+      sessionIndexMap.set(sessions[i].id, i);
+    }
+  };
+
+  // Keep index map in sync with sessions array.
+  // Runs synchronously after any setSessions call that changes ids/order.
+  createEffect(() => {
+    // Track all ids to detect adds/removes/reorders
+    void sessions.map((s) => s.id).join(",");
+    rebuildIndexMap();
+  });
+
+  const activeSession = createMemo(() => {
+    const id = activeSessionId();
+    if (!id) return null;
+    const idx = sessionIndexMap.get(id);
+    return idx !== undefined ? sessions[idx] : null;
+  });
+
+  // O(1) by-id update — uses index map
   const updateSession = (id: string, patch: Partial<AppSession>) => {
-    setSessions((s) => s.id === id, produce((s) => Object.assign(s, patch)));
+    const idx = sessionIndexMap.get(id);
+    if (idx === undefined) return;
+    setSessions(idx, produce((s) => Object.assign(s, patch)));
+  };
+
+  // O(1) arbitrary mutation via produce — for complex state transforms
+  const mutateSession = (id: string, recipe: (s: AppSession) => void) => {
+    const idx = sessionIndexMap.get(id);
+    if (idx === undefined) return;
+    setSessions(idx, produce(recipe));
   };
 
   const persistSessionPatch = (id: string, patch: Partial<AppSession>) => {
@@ -74,6 +107,14 @@ export function useSessionManager() {
     scrollContainers.delete(id);
   };
 
+  // Force scroll to bottom on session switch
+  createEffect(() => {
+    const id = activeSessionId();
+    if (!id) return;
+    scheduleScrollToBottom(true);
+  });
+
+  // Non-forced scroll on content updates within the current session
   createEffect(() => {
     if (!activeSessionId()) return;
     const session = activeSession();
@@ -88,9 +129,10 @@ export function useSessionManager() {
     void appSessionApi.appendMessage(sessionId, message.roleName, message.text).catch(() => {});
   };
 
+  // O(1) message append — uses index map
   const appendMessageToSession = (sessionId: string, message: AppMessage) => {
-    const idx = sessions.findIndex((s) => s.id === sessionId);
-    if (idx === -1) return;
+    const idx = sessionIndexMap.get(sessionId);
+    if (idx === undefined) return;
     setSessions(idx, "messages", produce((msgs: AppMessage[]) => {
       if (msgs.length >= MAX_MESSAGES) msgs.splice(0, msgs.length - MAX_MESSAGES + 1);
       msgs.push(message);
@@ -109,6 +151,9 @@ export function useSessionManager() {
     appendMessage({ id: `${now()}-${Math.random().toString(36).slice(2)}`, roleName, text, at: now() });
   };
 
+  // O(1) session lookup for consumers outside this hook
+  const getSessionIndex = (id: string): number => sessionIndexMap.get(id) ?? -1;
+
   return {
     sessions,
     setSessions,
@@ -116,6 +161,7 @@ export function useSessionManager() {
     setActiveSessionId,
     activeSession,
     updateSession,
+    mutateSession,
     patchActiveSession,
     persistSessionPatch,
     persistMessage,
@@ -125,6 +171,7 @@ export function useSessionManager() {
     scheduleScrollToBottom,
     onListMounted,
     onListUnmounted,
+    getSessionIndex,
   };
 }
 

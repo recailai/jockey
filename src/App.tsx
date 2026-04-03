@@ -1,6 +1,6 @@
-import { For, Show, Suspense, createSignal, lazy, onCleanup, onMount } from "solid-js";
+import { For, Show, Suspense, createMemo, createSignal, lazy, onCleanup, onMount } from "solid-js";
 
-import SessionTabs from "./components/SessionTabs";
+import SessionTabs, { type SessionTab } from "./components/SessionTabs";
 import MessageWindow from "./components/MessageWindow";
 import ChatInput from "./components/ChatInput";
 import type { AppMessage, AppSession } from "./components/types";
@@ -62,11 +62,18 @@ export default function App() {
     sessions, setSessions,
     activeSessionId, setActiveSessionId,
     activeSession,
-    updateSession, patchActiveSession,
+    updateSession, mutateSession, patchActiveSession,
     appendMessageToSession, pushMessage,
     scheduleScrollToBottom,
     onListMounted, onListUnmounted,
+    getSessionIndex,
   } = sessionManager;
+
+  // Minimal projection for SessionTabs — only re-computes when id/title/status change,
+  // not on every streaming delta. Prevents full For reconciliation on each stream update.
+  const sessionTabs = createMemo<SessionTab[]>(() =>
+    sessions.map((s) => ({ id: s.id, title: s.title, status: s.status }))
+  );
 
   const streamEngine = useStreamEngine(sessionManager);
   const {
@@ -125,8 +132,8 @@ export default function App() {
 
   const queuedInputsFor = (sid: string | null): string[] => {
     if (!sid) return [];
-    const s = sessions.find((x) => x.id === sid);
-    return s?.queuedMessages ?? [];
+    const idx = getSessionIndex(sid);
+    return idx !== -1 ? (sessions[idx]?.queuedMessages ?? []) : [];
   };
 
   let inputHistory: string[] = [];
@@ -137,11 +144,12 @@ export default function App() {
   const runNextQueued = (preferredSessionId?: string | null) => {
     const sid = preferredSessionId ?? activeSessionId();
     if (!sid) return;
-    const s = sessions.find((x) => x.id === sid);
+    const idx = getSessionIndex(sid);
+    const s = idx !== -1 ? sessions[idx] : null;
     if (s?.submitting) return;
     const queue = queuedInputsFor(sid);
     if (queue.length === 0) return;
-    setSessions((ss) => ss.id === sid, "queuedMessages", []);
+    if (idx !== -1) setSessions(idx, "queuedMessages", []);
     const merged = queue.map((q) => q.trim()).filter(Boolean).join("\n");
     if (!merged) return;
     if (queue.length > 1) {
@@ -210,7 +218,8 @@ export default function App() {
   };
 
   const maybeAutoTitleSession = (sid: string, text: string) => {
-    const sess = sessions.find((x) => x.id === sid);
+    const sidx = getSessionIndex(sid);
+    const sess = sidx !== -1 ? sessions[sidx] : null;
     if (!sess) return;
     if (!isDefaultSessionTitle(sess.title)) return;
     if (sess.messages.filter((m) => m.roleName === "user").length !== 0) return;
@@ -257,7 +266,8 @@ export default function App() {
       patchSessionById(originSessionId, patch);
     };
 
-    const s = sessions.find((x) => x.id === originSessionId) ?? activeSession();
+    const _oidx = originSessionId ? getSessionIndex(originSessionId) : -1;
+    const s = (_oidx !== -1 ? sessions[_oidx] : null) ?? activeSession();
     const sessionIsCustomRole = s ? s.activeRole !== DEFAULT_ROLE_ALIAS && s.activeRole !== DEFAULT_BACKEND_ROLE : false;
     const route = resolveRoute({
       text,
@@ -359,7 +369,8 @@ export default function App() {
       setInput("");
       const sid = activeSessionId();
       if (sid) {
-        setSessions((s) => s.id === sid, "queuedMessages", (prev) => [...prev, text]);
+        const qidx = getSessionIndex(sid);
+        if (qidx !== -1) setSessions(qidx, "queuedMessages", (prev) => [...prev, text]);
         scheduleScrollToBottom();
       }
       return;
@@ -520,6 +531,7 @@ export default function App() {
     void registerAcpEventListeners({
       acceptingStreams,
       sessions,
+      getSessionIndex,
       appendStream,
       pushMessageToSession,
       pushMessage,
@@ -529,7 +541,7 @@ export default function App() {
       },
       updateSession,
       mutateSession: (sessionId, recipe) =>
-        mutateSessionWithProduce(sessionId, setSessions, recipe),
+        mutateSessionWithProduce(sessionId, mutateSession, recipe),
       appendThought,
       normalizeToolLocations,
       parseAgentCommands,
@@ -575,7 +587,7 @@ export default function App() {
     >
       <div class="flex flex-1 flex-col min-h-0" style={{ "background-color": "var(--ui-bg)", "background-image": "radial-gradient(ellipse 80% 50% at 50% 0%, var(--ui-accent-soft), rgba(255,255,255,0))" }}>
       <SessionTabs
-        sessions={sessions}
+        sessions={sessionTabs()}
         activeSessionId={activeSessionId}
         setActiveSessionId={setActiveSessionId}
         activeSession={activeSession}
@@ -666,7 +678,7 @@ export default function App() {
             initialRoleName={managementInitialRole()}
             activeSessions={sessions}
             onRestoreSession={(id, title, activeRole, runtimeKind, cwd) => {
-              const existing = sessions.find((s) => s.id === id);
+              const existing = getSessionIndex(id) !== -1;
               if (!existing) {
                 const s = makeDefaultSession(title);
                 s.id = id;

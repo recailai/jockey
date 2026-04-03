@@ -2,10 +2,14 @@ use crate::db::DbPool;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 
 pub(crate) struct AppState {
     pub(crate) db: DbPool,
     pub(crate) shared_context: DashMap<String, String>,
+    /// In-memory cache for role rows; invalidated on upsert/delete.
+    /// Wrapped in Arc so temporary AppState clones share the same cache.
+    pub(crate) role_cache: Arc<DashMap<String, Arc<Role>>>,
 }
 
 #[derive(Serialize, Clone)]
