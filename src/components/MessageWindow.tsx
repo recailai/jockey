@@ -60,17 +60,23 @@ export default function MessageWindow(props: MessageWindowProps) {
 
   type VisibleMsg = { msg: AppMessage; count: number; latestAt: number };
 
-  // Incremental dedup: only re-process rows added since last run.
+  const isGroupable = (m: AppMessage) => m.roleName === "system" || m.roleName === "event";
+
+  // Incremental dedup: only re-process rows appended since last run.
+  // Reset state is tied to session id — session switch always triggers full rebuild.
   let _prevRows: readonly AppMessage[] = [];
+  let _prevSessionId: string | null = null;
 
   const visibleMessages = createMemo<VisibleMsg[]>((prev) => {
+    const sessionId = props.activeSessionId();
     const rows = props.activeSession()?.messages ?? [];
     const sliceStart = rows.length > MESSAGE_RENDER_WINDOW ? rows.length - MESSAGE_RENDER_WINDOW : 0;
 
-    // Fast path: if only new messages were appended at the tail (no reorder/delete/session switch)
+    // Fast path: same session, new messages only appended at the tail
     const prevRows = _prevRows;
     const prevDeduped = prev ?? [];
     const isAppendOnly =
+      sessionId === _prevSessionId &&
       prevRows.length > 0 &&
       rows.length > prevRows.length &&
       rows[prevRows.length - 1] === prevRows[prevRows.length - 1];
@@ -79,20 +85,18 @@ export default function MessageWindow(props: MessageWindowProps) {
     let newStart: number;
 
     if (isAppendOnly && sliceStart <= prevRows.length) {
-      // Reuse previous deduped, process only the new tail
       deduped = [...prevDeduped];
       newStart = prevRows.length;
     } else {
-      // Full rebuild (session switch, delete, or first run)
       deduped = [];
       newStart = sliceStart;
     }
 
     for (let i = newStart; i < rows.length; i++) {
       const msg = rows[i];
-      if (msg.roleName === "system" || msg.roleName === "event") {
+      if (isGroupable(msg)) {
         const last = deduped[deduped.length - 1];
-        if (last && (last.msg.roleName === "system" || last.msg.roleName === "event") && last.msg.text === msg.text) {
+        if (last && isGroupable(last.msg) && last.msg.text === msg.text) {
           deduped[deduped.length - 1] = { ...last, count: last.count + 1, latestAt: msg.at };
           continue;
         }
@@ -101,6 +105,7 @@ export default function MessageWindow(props: MessageWindowProps) {
     }
 
     _prevRows = rows;
+    _prevSessionId = sessionId;
     return deduped;
   }, []);
 

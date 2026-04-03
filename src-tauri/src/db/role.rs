@@ -285,7 +285,7 @@ pub(crate) fn delete_role_cmd(state: State<'_, AppState>, role_name: String) -> 
 pub(crate) fn load_role(state: &AppState, role_name: &str) -> Result<Option<Role>, String> {
     // Check in-memory cache first to avoid a DB round-trip on every assistant_chat call.
     if let Some(cached) = state.role_cache.get(role_name) {
-        return Ok(Some((*cached).as_ref().clone()));
+        return Ok(Some((**cached).clone()));
     }
     let result = with_db(state, |conn| {
         conn.query_row(

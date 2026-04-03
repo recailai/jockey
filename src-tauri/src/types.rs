@@ -12,6 +12,18 @@ pub(crate) struct AppState {
     pub(crate) role_cache: Arc<DashMap<String, Arc<Role>>>,
 }
 
+impl AppState {
+    /// Cheap clone of all shared handles — use when constructing short-lived
+    /// temporary AppState instances for spawn_blocking tasks.
+    pub(crate) fn clone_refs(&self) -> Self {
+        Self {
+            db: self.db.clone(),
+            shared_context: self.shared_context.clone(),
+            role_cache: self.role_cache.clone(),
+        }
+    }
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Role {

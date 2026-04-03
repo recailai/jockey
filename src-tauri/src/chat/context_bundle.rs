@@ -60,20 +60,10 @@ pub(super) async fn build_context_bundle(
         }
     }
 
-    let db_pool = get_state(state).db.clone();
-    let shared_ctx = get_state(state).shared_context.clone();
-    let role_cache = get_state(state).role_cache.clone();
     let skill_refs = routed.skill_refs.clone();
-    let skill_pool = db_pool.clone();
-    let skill_ctx = shared_ctx.clone();
-    let skill_rc = role_cache.clone();
+    let skill_state = get_state(state).clone_refs();
     let skill_pairs: Vec<(String, String)> = tokio::task::spawn_blocking(move || {
-        let tmp_state = AppState {
-            db: skill_pool,
-            shared_context: skill_ctx,
-            role_cache: skill_rc,
-        };
-        load_skills_by_names(&tmp_state, &skill_refs)
+        load_skills_by_names(&skill_state, &skill_refs)
     })
     .await
     .unwrap_or_default()
@@ -82,17 +72,10 @@ pub(super) async fn build_context_bundle(
     .map(|s| (format!("skill:{}", s.name), s.content))
     .collect();
 
-    let pre_pool = db_pool.clone();
-    let pre_ctx = shared_ctx.clone();
-    let pre_rc = role_cache.clone();
+    let pre_state = get_state(state).clone_refs();
     let pre_app_session_id = app_session_id.to_string();
     let recent_chats: Vec<RecentRoleChat> = tokio::task::spawn_blocking(move || {
-        let tmp = AppState {
-            db: pre_pool,
-            shared_context: pre_ctx,
-            role_cache: pre_rc,
-        };
-        load_recent_role_chats(&tmp, &pre_app_session_id)
+        load_recent_role_chats(&pre_state, &pre_app_session_id)
     })
     .await
     .unwrap_or_default();

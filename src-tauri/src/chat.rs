@@ -240,28 +240,17 @@ pub(crate) async fn assistant_chat(
     let attach_notes = bundle.attach_notes;
     let skill_pairs = bundle.skill_pairs;
     let all_recent_chats = bundle.recent_chats;
-    let db_pool = get_state(&state).db.clone();
-    let shared_ctx = get_state(&state).shared_context.clone();
-    let role_cache = get_state(&state).role_cache.clone();
-
     let mut role_outputs: Vec<(String, String)> = Vec::new();
     let mut any_acp_error = false;
 
     for role_name in role_targets {
         let is_union_assistant = role_name == "Jockey";
-        let pool_clone = db_pool.clone();
-        let ctx_clone = shared_ctx.clone();
-        let rc_clone = role_cache.clone();
+        let tmp_state = get_state(&state).clone_refs();
         let role_name_clone = role_name.clone();
         let assistant_clone = assistant.clone();
         let app_session_id_clone = app_session_id.clone();
         let recent_chats_snapshot = all_recent_chats.clone();
         let db_data = tokio::task::spawn_blocking(move || {
-            let tmp_state = AppState {
-                db: pool_clone,
-                shared_context: ctx_clone,
-                role_cache: rc_clone,
-            };
             load_role_runtime_data(
                 &tmp_state,
                 &app_session_id_clone,

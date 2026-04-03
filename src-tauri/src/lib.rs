@@ -218,15 +218,12 @@ pub fn run() {
                     };
                     let state_ref = app_handle.state::<AppState>();
                     let app_state_inner: &AppState = state_ref.inner();
-                    let db_clone = app_state_inner.db.clone();
-                    let ctx_clone = app_state_inner.shared_context.clone();
-                    let rc_clone = app_state_inner.role_cache.clone();
+                    let tmp = app_state_inner.clone_refs();
                     let sid_clone = app_session_id.clone();
                     let role_name_clone = role_name.clone();
                     let runtime_kind_clone = runtime_kind.clone();
                     let resume_sid_clone = resume_sid.clone();
                     priority_futs.push(Box::pin(async move {
-                        let tmp = AppState { db: db_clone, shared_context: ctx_clone, role_cache: rc_clone };
                         acp::prewarm_role_with_session_id(&runtime_kind_clone, &role_name_clone, &cwd, resume_sid_clone, &tmp, &sid_clone).await;
                     }));
                 }
@@ -280,16 +277,13 @@ pub fn run() {
                         for (session_id, role_name, runtime_kind) in session_roles {
                             if runtime_kind == "mock" { continue; }
                             active_role_names.insert(role_name.clone());
-                            let db_clone = app_state.db.clone();
-                            let ctx_clone = app_state.shared_context.clone();
-                            let rc_clone = app_state.role_cache.clone();
+                            let tmp = app_state.clone_refs();
                             let sid_clone = session_id.clone();
                             let rn_clone = role_name.clone();
                             let rk_clone = runtime_kind.clone();
                             let permit = refresh_sem.clone().acquire_owned().await.ok();
                             tokio::spawn(async move {
                                 let _permit = permit;
-                                let tmp = AppState { db: db_clone, shared_context: ctx_clone, role_cache: rc_clone };
                                 let cwd = crate::db::app_session::get_app_session_cwd(&tmp, &sid_clone)
                                     .unwrap_or_else(resolve_chat_cwd);
                                 acp::prewarm_role_for_config(
@@ -321,19 +315,12 @@ pub fn run() {
                             if active_role_names.contains(&role_name) {
                                 continue;
                             }
-                            let db_clone = app_state.db.clone();
-                            let ctx_clone = app_state.shared_context.clone();
-                            let rc_clone = app_state.role_cache.clone();
+                            let tmp = app_state.clone_refs();
                             let rn_clone = role_name.clone();
                             let rk_clone = runtime_kind.clone();
                             let permit = refresh_sem.clone().acquire_owned().await.ok();
                             tokio::spawn(async move {
                                 let _permit = permit;
-                                let tmp = AppState {
-                                    db: db_clone,
-                                    shared_context: ctx_clone,
-                                    role_cache: rc_clone,
-                                };
                                 let cwd = resolve_chat_cwd();
                                 acp::refresh_role_config_defs(&rk_clone, &rn_clone, &cwd, &tmp)
                                     .await;
