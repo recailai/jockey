@@ -254,10 +254,3 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
   }
 }
 
-export function mutateSessionWithProduce(
-  sid: string,
-  mutateSession: (id: string, recipe: (s: AppSession) => void) => void,
-  recipe: (s: AppSession) => void,
-) {
-  mutateSession(sid, recipe);
-}
