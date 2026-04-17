@@ -82,11 +82,11 @@ fn resolve_adapter_for_kind(
                 ("claude-agent-acp", &[][..]),
                 (
                     "pnpm",
-                    &["dlx", "@zed-industries/claude-agent-acp@latest"][..],
+                    &["dlx", "@agentclientprotocol/claude-agent-acp@latest"][..],
                 ),
                 (
                     "npx",
-                    &["-y", "@zed-industries/claude-agent-acp@latest"][..],
+                    &["-y", "@agentclientprotocol/claude-agent-acp@latest"][..],
                 ),
             ],
         ),
