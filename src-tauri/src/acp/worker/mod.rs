@@ -143,6 +143,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 runtime_key,
                 role_name,
                 app_session_id,
+                result_tx,
             } => {
                 let key = pool_key(&app_session_id, runtime_key, &role_name);
                 let handle = CANCEL_HANDLES.with(|m| {
@@ -150,6 +151,8 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                         .get(&key)
                         .map(|h| (h.conn.clone(), h.session_id.clone()))
                 });
+                let prompt_lock = pool::PROMPT_LOCKS.with(|m| m.borrow().get(&key).cloned());
+
                 if let Some((conn, session_id)) = handle {
                     acp_log(
                         "cancel.sending",
@@ -159,12 +162,41 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                         let _ = conn
                             .cancel(agent_client_protocol::CancelNotification::new(session_id))
                             .await;
+
+                        // Wait for the in-flight prompt to drain: acquire its
+                        // per-slot lock. handle_execute holds this lock for the
+                        // entire prompt future, so acquiring it here guarantees
+                        // the cancelled turn has finished (agent returned
+                        // StopReason::Cancelled or the process died).
+                        //
+                        // Bounded to 5s so a hung wrapper can't block the
+                        // frontend indefinitely — frontend then proceeds with
+                        // its queued prompt anyway; worst case PROMPT_LOCKS
+                        // serializes them.
+                        if let Some(lock) = prompt_lock {
+                            let wait = async {
+                                let _g = lock.lock().await;
+                                // release immediately
+                            };
+                            let _ = tokio::time::timeout(
+                                std::time::Duration::from_secs(5),
+                                wait,
+                            )
+                            .await;
+                        }
+
+                        if let Some(tx) = result_tx {
+                            let _ = tx.send(());
+                        }
                     });
                 } else {
                     acp_log(
                         "cancel.no_active_session",
                         json!({ "runtime": runtime_key, "role": role_name }),
                     );
+                    if let Some(tx) = result_tx {
+                        let _ = tx.send(());
+                    }
                 }
             }
             WorkerMsg::Reset {

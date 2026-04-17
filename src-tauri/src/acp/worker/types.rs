@@ -146,6 +146,10 @@ pub(crate) enum WorkerMsg {
         runtime_key: &'static str,
         role_name: String,
         app_session_id: String,
+        /// Resolved once the old prompt has released its PROMPT_LOCK
+        /// (i.e. agent responded with StopReason::Cancelled or process died).
+        /// None = fire-and-forget (legacy callers).
+        result_tx: Option<oneshot::Sender<()>>,
     },
     Reset {
         runtime_key: &'static str,

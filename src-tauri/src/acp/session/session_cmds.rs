@@ -20,11 +20,22 @@ pub async fn cancel_session(runtime_kind: &str, role_name: &str, app_session_id:
     let Some(resolved_session_id) = resolve_session_id(app_session_id) else {
         return;
     };
-    let _ = worker_tx().send(WorkerMsg::Cancel {
-        runtime_key,
-        role_name: role_name.to_string(),
-        app_session_id: resolved_session_id,
-    });
+    let (tx, rx) = oneshot::channel();
+    if worker_tx()
+        .send(WorkerMsg::Cancel {
+            runtime_key,
+            role_name: role_name.to_string(),
+            app_session_id: resolved_session_id,
+            result_tx: Some(tx),
+        })
+        .is_err()
+    {
+        return;
+    }
+    // Wait for the in-flight prompt to drain (bounded inside the worker).
+    // Frontend awaits this so it knows the old turn is fully done before
+    // sending a queued message.
+    let _ = rx.await;
 }
 
 pub async fn reset_session(

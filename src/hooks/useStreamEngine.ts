@@ -1,7 +1,7 @@
 import { produce } from "solid-js/store";
 import { now } from "../components/types";
 import type { AppMessage } from "../components/types";
-import { MAX_THOUGHT_CHARS, MAX_MESSAGES } from "../lib/sessionHelpers";
+import { MAX_THOUGHT_CHARS } from "../lib/sessionHelpers";
 import type { SessionManager } from "./useSessionManager";
 
 export function useStreamEngine(sessionManager: SessionManager) {
@@ -17,7 +17,17 @@ export function useStreamEngine(sessionManager: SessionManager) {
     getSessionIndex,
   } = sessionManager;
 
-  const acceptingStreams = new Set<string>();
+  // Map<sessionId, runToken> — tracks which run currently owns a session's stream.
+  // Use acceptingStreams.set(sid, runToken) to open, and releaseStream(sid, runToken)
+  // to close only if the token still matches (prevents a finishing run from evicting
+  // a newer run that already re-opened the same session's stream).
+  const acceptingStreams = new Map<string, number>();
+
+  const releaseStream = (sid: string, runToken: number) => {
+    if (acceptingStreams.get(sid) === runToken) {
+      acceptingStreams.delete(sid);
+    }
+  };
   const streamBatchBuffers = new Map<string, string>();
   const thoughtBatchBuffers = new Map<string, string>();
   let streamBatchRaf: number | null = null;
@@ -109,7 +119,7 @@ export function useStreamEngine(sessionManager: SessionManager) {
     if (sessionId) {
       streamBatchBuffers.delete(sessionId);
       thoughtBatchBuffers.delete(sessionId);
-      acceptingStreams.delete(sessionId);
+      acceptingStreams.delete(sessionId); // unconditional reset (e.g. session close)
       const anyPending = [...streamBatchBuffers.values(), ...thoughtBatchBuffers.values()].some(v => v);
       if (!anyPending && streamBatchRaf !== null) {
         window.cancelAnimationFrame(streamBatchRaf);
@@ -131,10 +141,26 @@ export function useStreamEngine(sessionManager: SessionManager) {
     resetStreamState(activeSessionId() ?? undefined);
   };
 
-  const finalizeSessionStream = (sessionId: string, fallbackRoleName: string, finalReply?: string) => {
+  /**
+   * Finalize the live stream into a persistent message.
+   *
+   * @param expectedRunToken — if provided, the call is a no-op when the session's
+   *   streamingRunToken no longer matches. Guards against a late-arriving response
+   *   from a cancelled run overwriting a newer run's live stream (the exact bug
+   *   that caused "UI doesn't update after cancel + queued send").
+   */
+  const finalizeSessionStream = (sessionId: string, fallbackRoleName: string, finalReply?: string, expectedRunToken?: number) => {
     flushStreamBatch();
     const idx = getSessionIndex(sessionId);
     const sess = idx !== -1 ? sessions[idx] : undefined;
+    if (
+      expectedRunToken !== undefined &&
+      sess?.streamingRunToken !== null &&
+      sess?.streamingRunToken !== undefined &&
+      sess.streamingRunToken !== expectedRunToken
+    ) {
+      return; // a newer run owns the stream — don't clobber it
+    }
     const row = sess?.streamingMessage ?? null;
     const snapshotToolCalls = sess && Object.keys(sess.toolCalls).length > 0 ? Object.values(sess.toolCalls) : undefined;
     const snapshotSegments = sess && sess.streamSegments.length > 0 ? [...sess.streamSegments] : undefined;
@@ -148,17 +174,17 @@ export function useStreamEngine(sessionManager: SessionManager) {
     }
     if (row) {
       const text = normalizeNewlines(finalReply ?? row.text);
-      const shouldAppend = !!text.trim() || !!snapshotToolCalls?.length || !!snapshotSegments?.length;
-      if (shouldAppend) {
-        appendMessageToSession(sessionId, {
-          ...row,
-          text,
-          at: now(),
-          toolCalls: snapshotToolCalls,
-          segments: snapshotSegments,
-        });
-      }
-      updateSession(sessionId, { streamingMessage: null, thoughtText: "" });
+      // Always append if there was an active streamingMessage — dropping it
+      // silently causes the response to disappear (e.g. after cancel + queued
+      // send when the agent returns empty text for the interrupted turn).
+      appendMessageToSession(sessionId, {
+        ...row,
+        text,
+        at: now(),
+        toolCalls: snapshotToolCalls,
+        segments: snapshotSegments,
+      });
+      updateSession(sessionId, { streamingMessage: null, streamingRunToken: null, thoughtText: "" });
     } else if (finalReply && finalReply.trim()) {
       appendMessageToSession(sessionId, {
         id: `${now()}-${Math.random().toString(36).slice(2)}`,
@@ -180,44 +206,9 @@ export function useStreamEngine(sessionManager: SessionManager) {
     });
   };
 
-  let pendingSessionEvents: Array<{ sid: string; line: string }> = [];
-  let sessionEventFlushTimer: number | null = null;
-
-  const scheduleSessionEventFlush = () => {
-    if (sessionEventFlushTimer !== null) return;
-    sessionEventFlushTimer = window.setTimeout(() => {
-      sessionEventFlushTimer = null;
-      if (pendingSessionEvents.length === 0) return;
-      const bySid = new Map<string, string[]>();
-      for (const { sid, line } of pendingSessionEvents) {
-        const key = sid || "__active__";
-        const arr = bySid.get(key) ?? [];
-        arr.push(line);
-        bySid.set(key, arr);
-      }
-      for (const [sid, lines] of bySid) {
-        const text = lines.join("\n");
-        if (sid === "__active__") {
-          pushMessage("event", text);
-        } else {
-          const idx = getSessionIndex(sid);
-          if (idx === -1) {
-            pushMessage("event", text);
-          } else {
-            const msg = { id: `${now()}-${Math.random().toString(36).slice(2)}`, roleName: "event", text, at: now() };
-            setSessions(idx, "messages", produce((msgs: AppMessage[]) => {
-              if (msgs.length >= MAX_MESSAGES) msgs.splice(0, msgs.length - MAX_MESSAGES + 1);
-              msgs.push(msg);
-            }));
-          }
-        }
-      }
-      pendingSessionEvents = [];
-    }, 120);
-  };
-
   return {
     acceptingStreams,
+    releaseStream,
     streamBatchBuffers,
     thoughtBatchBuffers,
     appendStream,
@@ -228,11 +219,6 @@ export function useStreamEngine(sessionManager: SessionManager) {
     finalizeSessionStream,
     normalizeNewlines,
     normalizeToolLocations,
-    scheduleSessionEventFlush,
-    get pendingSessionEvents() { return pendingSessionEvents; },
-    set pendingSessionEvents(v: Array<{ sid: string; line: string }>) { pendingSessionEvents = v; },
-    get sessionEventFlushTimer() { return sessionEventFlushTimer; },
-    set sessionEventFlushTimer(v: number | null) { sessionEventFlushTimer = v; },
   };
 }
 

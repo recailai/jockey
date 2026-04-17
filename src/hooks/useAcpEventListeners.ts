@@ -18,7 +18,7 @@ import {
 } from "../lib/acpEventBridge";
 
 type RegisterAcpEventListenersInput = {
-  acceptingStreams: Set<string>;
+  acceptingStreams: Map<string, number>;
   sessions: AppSession[];
   getSessionIndex: (id: string) => number;
   appendStream: (sid: string, chunk: string) => void;

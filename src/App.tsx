@@ -15,6 +15,7 @@ import { useCompletions } from "./hooks/useCompletions";
 import { useMessageSend } from "./hooks/useMessageSend";
 import { useInputHistory } from "./hooks/useInputHistory";
 import { uniqueName, makeDefaultSession } from "./lib/sessionHelpers";
+import { createSessionEventBuffer } from "./lib/sessionEventBuffer";
 import { appSessionApi } from "./lib/tauriApi";
 
 
@@ -77,8 +78,14 @@ export default function App() {
     appendStream, appendThought,
     dropStream,
     normalizeToolLocations,
-    scheduleSessionEventFlush,
   } = streamEngine;
+
+  const sessionEventBuffer = createSessionEventBuffer({
+    sessions,
+    setSessions,
+    getSessionIndex: sessionManager.getSessionIndex,
+    pushMessage: sessionManager.pushMessage,
+  });
 
   const agentContext = useAgentContext(sessionManager, streamEngine, showToast);
   const {
@@ -281,10 +288,7 @@ export default function App() {
       appendStream,
       pushMessageToSession,
       pushMessage,
-      onSessionDeltaLine: (sid, line) => {
-        streamEngine.pendingSessionEvents.push({ sid, line });
-        scheduleSessionEventFlush();
-      },
+      onSessionDeltaLine: (sid, line) => sessionEventBuffer.push(sid, line),
       updateSession,
       mutateSession,
       appendThought,

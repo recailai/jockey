@@ -1,8 +1,11 @@
-import type { AppMessage, AppSession } from "../components/types";
+import type { AppSession } from "../components/types";
 import { now, DEFAULT_BACKEND_ROLE, DEFAULT_ROLE_ALIAS } from "../components/types";
 import { appSessionApi, assistantApi } from "../lib/tauriApi";
 import { parseAgentControlCommand, resolveRoute } from "../lib/chatPipeline";
-import { isDefaultSessionTitle, deriveSessionTitleFromMessage } from "../lib/sessionHelpers";
+import { shouldAutoTitleSession, computeAutoTitleForSession } from "../lib/sessionHelpers";
+import { queuedInputsFor as queuedInputsFromStore, projectNextDequeue } from "../lib/messageQueue";
+import { createStreamSession } from "../lib/streamSession";
+import type { RunToken } from "../lib/runToken";
 import type { SessionManager } from "./useSessionManager";
 import type { StreamEngine } from "./useStreamEngine";
 import type { AgentContext } from "./useAgentContext";
@@ -35,13 +38,14 @@ export function useMessageSend({
 
   const {
     acceptingStreams,
+    releaseStream,
     appendThought: _appendThought,
     resetStreamState, finalizeSessionStream,
   } = streamEngine;
 
   const {
     roles,
-    bumpRunToken, getCanceledRunToken,
+    bumpRunToken, isRunCancelled,
     isCustomRole, activeBackendRole,
     refreshRoles,
     fetchConfigOptions, fetchAndCacheAgentCommands,
@@ -51,11 +55,8 @@ export function useMessageSend({
 
   // --- helpers ---
 
-  const queuedInputsFor = (sid: string | null): string[] => {
-    if (!sid) return [];
-    const idx = getSessionIndex(sid);
-    return idx !== -1 ? (sessions[idx]?.queuedMessages ?? []) : [];
-  };
+  const queuedInputsFor = (sid: string | null): readonly string[] =>
+    queuedInputsFromStore(sessions, getSessionIndex, sid);
 
   const patchSessionById = (sessionId: string | null, patch: Partial<AppSession>) => {
     if (!sessionId) return;
@@ -84,41 +85,25 @@ export function useMessageSend({
   const maybeAutoTitleSession = (sid: string, text: string) => {
     const sidx = getSessionIndex(sid);
     const sess = sidx !== -1 ? sessions[sidx] : null;
-    if (!sess) return;
-    if (!isDefaultSessionTitle(sess.title)) return;
-    if (sess.messages.filter((m) => m.roleName === "user").length !== 0) return;
-    const existing = sessions.filter((x) => x.id !== sid).map((x) => x.title);
-    const autoTitle = deriveSessionTitleFromMessage(text, existing);
+    if (!sess || !shouldAutoTitleSession(sess)) return;
+    const autoTitle = computeAutoTitleForSession(sess, sessions, text);
     updateSession(sid, { title: autoTitle });
     void appSessionApi.update(sid, { title: autoTitle }).catch(() => {});
   };
 
-  const buildStreamOps = (originSessionId: string | null, sendRoleLabel: string) => {
-    const appendOriginMessage = (msg: AppMessage) => {
-      if (!originSessionId) return;
-      appendMessageToSession(originSessionId, msg);
-    };
-    const startOriginStream = () => {
-      if (originSessionId) acceptingStreams.add(originSessionId);
-      const id = `stream-${now()}`;
-      const row: AppMessage = { id, roleName: sendRoleLabel, text: "", at: now() };
-      patchSessionById(originSessionId, {
-        streamingMessage: row, toolCalls: {}, streamSegments: [],
-        currentPlan: null, pendingPermission: null, thoughtText: "",
-      });
-      scheduleScrollToBottom();
-      return row;
-    };
-    const completeOriginStream = (finalReply?: string) => {
-      if (!originSessionId) return;
-      finalizeSessionStream(originSessionId, sendRoleLabel, finalReply);
-    };
-    const dropOriginStream = () => {
-      patchSessionById(originSessionId, { streamingMessage: null, thoughtText: "" });
-      resetStreamState(originSessionId ?? undefined);
-    };
-    return { appendOriginMessage, startOriginStream, completeOriginStream, dropOriginStream };
-  };
+  const openStreamSession = (originSessionId: string | null, roleLabel: string, runToken: RunToken) =>
+    createStreamSession(originSessionId, roleLabel, runToken, {
+      appendMessageToSession,
+      patchSession: patchSessionById as (sid: string, patch: Partial<AppSession>) => void,
+      finalizeSessionStream,
+      resetStreamState,
+      scheduleScrollToBottom,
+      getSession: (sid) => {
+        const idx = getSessionIndex(sid);
+        return idx !== -1 ? sessions[idx] : null;
+      },
+      acceptingStreams,
+    });
 
   const runAgentControlCommand = async (
     text: string,
@@ -156,15 +141,14 @@ export function useMessageSend({
     const s = idx !== -1 ? sessions[idx] : null;
     if (s?.submitting) return;
     const queue = queuedInputsFor(sid);
-    if (queue.length === 0) return;
+    const { merged, count } = projectNextDequeue(queue);
+    if (count === 0 || !merged) return;
     if (idx !== -1) setSessions(idx, "queuedMessages", []);
-    const merged = queue.map((q) => q.trim()).filter(Boolean).join("\n");
-    if (!merged) return;
-    if (queue.length > 1) {
+    if (count > 1) {
       appendMessageToSession(sid, {
         id: `${now()}-${Math.random().toString(36).slice(2)}`,
         roleName: "event",
-        text: `queued messages merged: ${queue.length}`,
+        text: `queued messages merged: ${count}`,
         at: now(),
       });
     }
@@ -220,11 +204,10 @@ export function useMessageSend({
 
     if (await runAgentControlCommand(text, isCommand, inRoleContext, originSessionId, patchOriginSession)) return;
 
-    const { appendOriginMessage, startOriginStream, completeOriginStream, dropOriginStream } =
-      buildStreamOps(originSessionId, sendRoleLabel);
+    const stream = openStreamSession(originSessionId, sendRoleLabel, runToken);
 
     let finalStatus: "done" | "error" = "done";
-    if (!isAppCommand && originSessionId) startOriginStream();
+    if (!isAppCommand && originSessionId) stream.start();
 
     try {
       const res = await assistantApi.chat({
@@ -232,38 +215,40 @@ export function useMessageSend({
         runtimeKind: s?.runtimeKind ?? null,
         appSessionId: originSessionId ?? null,
       });
-      if (runToken <= getCanceledRunToken()) { dropOriginStream(); return; }
+      if (isRunCancelled(runToken)) { return; }
       if (res.runtimeKind && originSessionId === activeSessionId()) setPreferredAssistant(res.runtimeKind);
       if (text.startsWith("/app_role")) void refreshRoles();
 
       if (!res.ok) {
-        dropOriginStream();
+        stream.drop();
         showToast(res.reply);
-        appendOriginMessage({ id: `${now()}-err`, roleName: "event", text: res.reply, at: now() });
+        stream.appendMessage({ id: `${now()}-err`, roleName: "event", text: res.reply, at: now() });
         finalStatus = "error";
         return;
       }
       if (!isAppCommand) {
-        completeOriginStream(res.reply);
+        stream.complete(res.reply);
       } else {
-        appendOriginMessage({
+        stream.appendMessage({
           id: `${now()}-${Math.random().toString(36).slice(2)}`,
           roleName: sendRoleLabel, text: res.reply, at: now(),
         });
       }
     } catch (e) {
-      if (runToken <= getCanceledRunToken()) { dropOriginStream(); return; }
-      dropOriginStream();
+      if (isRunCancelled(runToken)) { return; }
+      stream.drop();
       const errMsg = String(e);
       if (!errMsg.toLowerCase().includes("cancel")) showToast(errMsg);
-      appendOriginMessage({ id: `${now()}-err`, roleName: "event", text: errMsg, at: now() });
+      stream.appendMessage({ id: `${now()}-err`, roleName: "event", text: errMsg, at: now() });
       finalStatus = "error";
       return;
     } finally {
-      if (originSessionId) acceptingStreams.delete(originSessionId);
-      if (runToken <= getCanceledRunToken()) {
-        patchOriginSession({ submitting: false, status: "idle" });
-        runNextQueued(originSessionId);
+      // Token-guarded release: only clears the acceptingStreams slot if this run
+      // still owns it. A newer run that already called stream.start() will have
+      // overwritten the token, so releaseStream() becomes a no-op.
+      if (originSessionId) releaseStream(originSessionId, runToken);
+      if (isRunCancelled(runToken)) {
+        // Cancelled run: runNextQueued() was already called by cancelCurrentRun().
         return;
       }
       patchOriginSession({ submitting: false, status: finalStatus });

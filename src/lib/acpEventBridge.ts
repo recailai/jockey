@@ -47,7 +47,7 @@ export function toSessionDeltaMessage(payload: SessionUpdateEvent): string | nul
 
 export function appendAcpDelta(
   payload: AcpDeltaEvent & { appSessionId?: string },
-  acceptingStreams: Set<string>,
+  acceptingStreams: Map<string, number>,
   sessions: AppSession[],
   appendStream: (sid: string, chunk: string) => void,
   getSessionIndex?: (id: string) => number,

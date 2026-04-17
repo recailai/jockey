@@ -4,6 +4,7 @@ import { DEFAULT_ROLE_ALIAS, DEFAULT_BACKEND_ROLE } from "../components/types";
 import type { SessionManager } from "./useSessionManager";
 import type { StreamEngine } from "./useStreamEngine";
 import { assistantApi, roleApi, skillApi } from "../lib/tauriApi";
+import { createRunTokenSource, type RunToken } from "../lib/runToken";
 
 export function useAgentContext(
   sessionManager: SessionManager,
@@ -22,7 +23,7 @@ export function useAgentContext(
     getSessionIndex,
   } = sessionManager;
 
-  const { finalizeSessionStream, acceptingStreams } = streamEngine;
+  const { acceptingStreams, finalizeSessionStream } = streamEngine;
 
   const [roles, setRoles] = createSignal<Role[]>([]);
   const [assistants, setAssistants] = createSignal<AssistantRuntime[]>([]);
@@ -39,13 +40,12 @@ export function useAgentContext(
   };
   const commandCacheKey = (runtimeKey: string, roleName: string) => `${runtimeKey}:${roleName}`;
 
-  let runTokenSeq = 0;
-  let canceledRunToken = 0;
+  const runTokens = createRunTokenSource();
 
-  const getRunToken = () => runTokenSeq;
-  const bumpRunToken = () => ++runTokenSeq;
-  const getCanceledRunToken = () => canceledRunToken;
-  const setCanceledRunToken = (v: number) => { canceledRunToken = v; };
+  const getRunToken = () => runTokens.current();
+  const bumpRunToken = () => runTokens.next();
+  const getCanceledRunToken = () => runTokens.cancelledUpTo();
+  const isRunCancelled = (token: RunToken) => runTokens.isCancelled(token);
 
   const isCustomRole = () => {
     const s = activeSession();
@@ -282,12 +282,37 @@ export function useAgentContext(
     const cidx = sid ? getSessionIndex(sid) : -1;
     const sess = cidx !== -1 ? sessions[cidx] : null;
     if (!sess?.submitting || !sid) return;
-    canceledRunToken = Math.max(canceledRunToken, runTokenSeq);
-    acceptingStreams.delete(sid);
-    finalizeSessionStream(sid, activeBackendRole());
-    updateSession(sid, { toolCalls: {}, streamSegments: [], currentPlan: null, pendingPermission: null, thoughtText: "", submitting: false, status: "idle" });
-    pushMessage("event", "Cancellation requested.");
+
     const role = activeBackendRole();
+
+    // Preserve any partial output the user has already seen: flush
+    // streamingMessage (plus tool calls / segments) into a persistent message
+    // before we mark this run cancelled. Without this, mid-stream cancel erases
+    // everything that was rendered live.
+    //
+    // expectedRunToken is the current (pre-cancel) token, so finalize targets
+    // the right run; finalize itself clears streamingMessage + streamingRunToken.
+    // Only finalize when we actually have an owning run — otherwise the stream
+    // isn't ours to finalize.
+    if (sess.streamingRunToken !== null && sess.streamingMessage) {
+      finalizeSessionStream(sid, role, undefined, sess.streamingRunToken);
+    }
+
+    // Mark current run token as cancelled so its pending sendRaw promise bails
+    // out of post-await work (see useMessageSend).
+    runTokens.markCancelled();
+    acceptingStreams.delete(sid);
+    updateSession(sid, {
+      currentPlan: null,
+      pendingPermission: null,
+      submitting: false,
+      status: "idle",
+    });
+    pushMessage("event", "Cancellation requested.");
+
+    // Await cancelSession — the Rust worker now blocks on the old prompt's
+    // PROMPT_LOCK (up to 5s) before responding, so by the time this resolves
+    // the old turn has drained and we can safely launch the next queued send.
     try {
       await assistantApi.cancelSession(role, sid);
     } catch { }
@@ -307,7 +332,7 @@ export function useAgentContext(
     getRunToken,
     bumpRunToken,
     getCanceledRunToken,
-    setCanceledRunToken,
+    isRunCancelled,
     isCustomRole,
     activeBackendRole,
     runtimeForRole,
