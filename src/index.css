@@ -344,6 +344,14 @@ body {
   color: var(--tone-100);
 }
 
+/* ─── Search highlight ────────────────────────────────────────────────────── */
+.search-highlight {
+  background-color: rgba(250, 204, 21, 0.35);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
 /* ─── Theme-aware surface helpers ─────────────────────────────────────────
    Use instead of hardcoded bg-zinc-* / bg-[#...] so every theme works.
 ──────────────────────────────────────────────────────────────────────────── */

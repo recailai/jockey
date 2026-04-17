@@ -7,6 +7,12 @@ import { INTERACTIVE_MOTION, RUNTIME_COLOR, MESSAGE_RENDER_WINDOW, fmt } from ".
 import { assistantApi } from "../lib/tauriApi";
 import { identicon } from "../lib/identicon";
 
+function highlightText(text: string, query: string): string {
+  if (!query) return text;
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text.replace(new RegExp(escaped, "gi"), (m) => `<mark class="search-highlight">${m}</mark>`);
+}
+
 type MessageWindowProps = {
   activeSessionId: Accessor<string | null>;
   activeSession: Accessor<AppSession | null>;
@@ -43,8 +49,11 @@ function renderMdCached(id: string, text: string): string {
 
 export default function MessageWindow(props: MessageWindowProps) {
   let listEl: HTMLDivElement | undefined;
+  let searchInputEl: HTMLInputElement | undefined;
   let boundSessionId: string | null = null;
   const [queueCollapsed, setQueueCollapsed] = createSignal(true);
+  const [searchOpen, setSearchOpen] = createSignal(false);
+  const [searchQuery, setSearchQuery] = createSignal("");
 
   createEffect(() => {
     const id = props.activeSessionId();
@@ -114,6 +123,19 @@ export default function MessageWindow(props: MessageWindowProps) {
     return count > 0 ? count : 0;
   };
 
+  const filteredMessages = createMemo(() => {
+    const q = searchQuery().trim().toLowerCase();
+    if (!q) return visibleMessages();
+    return visibleMessages().filter((item) =>
+      item.msg.text?.toLowerCase().includes(q)
+    );
+  });
+
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setSearchQuery("");
+  };
+
   function handleContainerClick(e: MouseEvent) {
     const target = e.target as HTMLElement;
 
@@ -154,10 +176,51 @@ export default function MessageWindow(props: MessageWindowProps) {
 
   onMount(() => {
     window.addEventListener("click", closeCtxMenu);
-    onCleanup(() => window.removeEventListener("click", closeCtxMenu));
+
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault();
+        setSearchOpen(true);
+        window.requestAnimationFrame(() => searchInputEl?.focus());
+      }
+    };
+    window.addEventListener("keydown", handleGlobalKeyDown);
+
+    onCleanup(() => {
+      window.removeEventListener("click", closeCtxMenu);
+      window.removeEventListener("keydown", handleGlobalKeyDown);
+    });
   });
 
   return (
+    <div class="flex-1 flex flex-col min-h-0 relative" style={{ "background-color": "transparent" }}>
+      <Show when={searchOpen()}>
+        <div class="absolute top-2 right-3 z-30 flex items-center gap-1.5 rounded-xl border theme-border theme-panel shadow-lg backdrop-blur-md px-2 py-1.5">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 theme-muted">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input
+            ref={searchInputEl}
+            type="text"
+            placeholder="Search messages…"
+            class="bg-transparent outline-none text-[12px] theme-text placeholder:theme-muted w-48"
+            value={searchQuery()}
+            onInput={(e) => setSearchQuery(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") { e.preventDefault(); closeSearch(); }
+            }}
+          />
+          <Show when={searchQuery()}>
+            <span class="text-[10px] theme-muted font-mono shrink-0">{filteredMessages().length} / {visibleMessages().length}</span>
+          </Show>
+          <button
+            class="ml-1 theme-muted hover:theme-text transition-colors"
+            onClick={closeSearch}
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </Show>
     <div
       ref={listEl}
       id={`msg-list-${props.activeSessionId()}`}
@@ -173,13 +236,21 @@ export default function MessageWindow(props: MessageWindowProps) {
           {hiddenMessageCount()} older messages hidden for performance
         </div>
       </Show>
-      <For each={visibleMessages()}>
+      <Show when={searchQuery() && filteredMessages().length === 0}>
+        <div class="py-8 text-center text-xs theme-muted opacity-60">No messages match "{searchQuery()}"</div>
+      </Show>
+      <For each={filteredMessages()}>
         {(item) => {
           const msg = item.msg;
+          const q = searchQuery();
           if (msg.roleName === "user") return (
             <div class="flex flex-col items-end w-full mb-3 group/user">
               <div class="user-bubble max-w-[85%] rounded-2xl rounded-tr-md px-4 py-2 text-[13px]">
-                <div class="whitespace-pre-wrap break-words leading-relaxed font-mono">{msg.text}</div>
+                <Show when={q} fallback={
+                  <div class="whitespace-pre-wrap break-words leading-relaxed font-mono">{msg.text}</div>
+                }>
+                  <div class="whitespace-pre-wrap break-words leading-relaxed font-mono" innerHTML={highlightText(msg.text, q)} />
+                </Show>
               </div>
               <div class="mt-1.5 text-[10px] theme-muted mr-1 opacity-0 transition-opacity duration-300 group-hover/user:opacity-100 tracking-wide">{fmt(msg.at)}</div>
             </div>
@@ -189,13 +260,19 @@ export default function MessageWindow(props: MessageWindowProps) {
               <div class="absolute inset-x-0 top-1/2 h-px bg-gradient-to-r from-transparent via-[var(--ui-border)] to-transparent -z-10"></div>
               <div class="max-w-[90%] px-4 py-1.5 border rounded-full text-[11.5px] flex items-center gap-2.5 backdrop-blur-md shadow-sm theme-panel theme-border theme-muted">
                 <span class="opacity-70 text-indigo-400 mt-[1px] font-serif">✧</span>
-                <span class="whitespace-pre-wrap break-words tracking-wide">{msg.text}</span>
+                <Show when={q} fallback={
+                  <span class="whitespace-pre-wrap break-words tracking-wide">{msg.text}</span>
+                }>
+                  <span class="whitespace-pre-wrap break-words tracking-wide" innerHTML={highlightText(msg.text, q)} />
+                </Show>
                 <Show when={item.count > 1}>
                   <span class="bg-indigo-500/15 border border-indigo-500/20 text-indigo-300 font-mono rounded-full px-1.5 py-0.5 text-[9px] min-w-[20px] text-center">{item.count}</span>
                 </Show>
               </div>
             </div>
           );
+          const hasContent = !!msg.text?.trim() || (msg.segments && msg.segments.length > 0) || (msg.toolCalls && msg.toolCalls.length > 0);
+          if (!hasContent) return null;
           return (
             <div class="flex gap-4 w-full max-w-[95%] mb-6 group/agent">
               <button
@@ -216,7 +293,7 @@ export default function MessageWindow(props: MessageWindowProps) {
                   </Show>
                 </div>
                 <Show when={msg.segments && msg.segments.length > 0} fallback={
-                  <div class="md-prose" innerHTML={renderMdCached(msg.id, msg.text)} />
+                  <div class="md-prose" innerHTML={q ? highlightText(renderMdCached(msg.id, msg.text), q) : renderMdCached(msg.id, msg.text)} />
                 }>
                   <SegmentList segments={msg.segments!} />
                 </Show>
@@ -363,6 +440,7 @@ export default function MessageWindow(props: MessageWindowProps) {
           </div>
         )}
       </Show>
+    </div>
     </div>
   );
 }
