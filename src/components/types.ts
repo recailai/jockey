@@ -65,6 +65,12 @@ export type AppSession = {
   cwd: string | null;
   messages: AppMessage[];
   streamingMessage: AppMessage | null;
+  /** Run token that currently owns `streamingMessage`. Set by `startOriginStream`
+   *  and checked by `finalizeSessionStream` so that a late-arriving response from
+   *  a cancelled run cannot clobber a newer run's live stream.
+   *  Typed as number (not RunToken) to avoid circular imports; runToken.ts is the
+   *  authoritative source. null = no run owns it. */
+  streamingRunToken: number | null;
   toolCalls: Record<string, AppToolCall>;
   streamSegments: AppSegment[];
   currentPlan: AppPlanEntry[] | null;

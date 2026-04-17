@@ -35,6 +35,22 @@ export const deriveSessionTitleFromMessage = (text: string, existingTitles: stri
   return uniqueName(autoTitle, existingTitles);
 };
 
+/** Should this session's title be auto-derived from the upcoming user message?
+ *  True iff title is still the default placeholder and no user message has been sent yet. */
+export const shouldAutoTitleSession = (sess: AppSession): boolean =>
+  isDefaultSessionTitle(sess.title) &&
+  sess.messages.filter((m) => m.roleName === "user").length === 0;
+
+/** Compute a unique auto-title for a session from the first user message. */
+export const computeAutoTitleForSession = (
+  sess: AppSession,
+  allSessions: readonly AppSession[],
+  text: string,
+): string => {
+  const existing = allSessions.filter((x) => x.id !== sess.id).map((x) => x.title);
+  return deriveSessionTitleFromMessage(text, existing);
+};
+
 export const makeDefaultSession = (title: string): AppSession => ({
   id: makeSessionId(),
   title,
@@ -43,6 +59,7 @@ export const makeDefaultSession = (title: string): AppSession => ({
   cwd: null,
   messages: [],
   streamingMessage: null,
+  streamingRunToken: null,
   toolCalls: {},
   streamSegments: [],
   currentPlan: null,
