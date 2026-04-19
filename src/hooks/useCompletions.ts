@@ -129,9 +129,13 @@ export function useCompletions(
         { value: "dir:", kind: "hint", detail: "explicit directory path" },
       );
     }
-    let items = [...staticItems, ...listRoleMentionCandidates(ctx.query)];
+    const roleItems = listRoleMentionCandidates(ctx.query);
+    let items: AppMentionItem[] = [...staticItems, ...roleItems];
+    let pathAttempted = false;
+    let pathRows: AppMentionItem[] = [];
 
     if (shouldPathComplete(ctx.query)) {
+      pathAttempted = true;
       const seq = ++mentionReqSeq;
       const sid = activeSessionId() ?? null;
       if (mentionPathCacheOwner !== sid) {
@@ -141,7 +145,7 @@ export function useCompletions(
       }
       const cached = mentionPathCache.get(ctx.query);
       if (cached) {
-        items = [...items, ...cached];
+        pathRows = cached;
       } else {
         try {
           const rows = await completionApi.mentions(ctx.query, 12, sid);
@@ -152,10 +156,12 @@ export function useCompletions(
             const evictKey = mentionPathCacheKeys.shift()!;
             mentionPathCache.delete(evictKey);
           }
-          items = [...items, ...rows];
+          pathRows = rows;
         } catch {
+          pathRows = [];
         }
       }
+      items = [...items, ...pathRows];
     }
 
     const dedup = new Set<string>();
@@ -166,7 +172,10 @@ export function useCompletions(
       return true;
     }).slice(0, 12);
 
-    if (merged.length === 0) {
+    // If the query looks like a path lookup but nothing matched on disk,
+    // don't let static hints/role items keep the menu open — close it.
+    const nonHintCount = merged.filter((it) => it.kind !== "hint").length;
+    if (merged.length === 0 || (pathAttempted && ctx.query.length > 0 && pathRows.length === 0 && nonHintCount === 0)) {
       closeMentionMenu();
       return;
     }

@@ -7,10 +7,166 @@ use crate::fs_context::{
 };
 use crate::resolve_chat_cwd;
 use crate::types::*;
+use dashmap::DashMap;
+use ignore::WalkBuilder;
+use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config as MatcherConfig, Matcher};
 use serde::Serialize;
 use std::collections::HashSet;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::State;
+
+const FUZZY_INDEX_TTL: Duration = Duration::from_secs(5);
+const FUZZY_INDEX_MAX_ENTRIES: usize = 20_000;
+const FUZZY_WALK_MAX_DEPTH: usize = 10;
+
+struct CwdIndex {
+    cwd: String,
+    files: Vec<String>,
+    built_at: Instant,
+}
+
+fn fuzzy_index_map() -> &'static DashMap<String, Arc<Mutex<CwdIndex>>> {
+    static MAP: OnceLock<DashMap<String, Arc<Mutex<CwdIndex>>>> = OnceLock::new();
+    MAP.get_or_init(DashMap::new)
+}
+
+pub(crate) fn invalidate_fuzzy_index(session_id: &str) {
+    fuzzy_index_map().remove(session_id);
+}
+
+fn build_cwd_index(cwd: &str) -> Vec<String> {
+    let root = std::path::PathBuf::from(cwd);
+    if !root.is_dir() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let walker = WalkBuilder::new(&root)
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .max_depth(Some(FUZZY_WALK_MAX_DEPTH))
+        .follow_links(false)
+        .build();
+    for dent in walker.flatten() {
+        if dent.depth() == 0 {
+            continue;
+        }
+        let Some(ft) = dent.file_type() else { continue };
+        if ft.is_symlink() {
+            continue;
+        }
+        let path = dent.path();
+        let Ok(rel) = path.strip_prefix(&root) else {
+            continue;
+        };
+        let mut rel_str = normalize_slashes(&rel.to_string_lossy());
+        if ft.is_dir() {
+            rel_str.push('/');
+        }
+        out.push(rel_str);
+        if out.len() >= FUZZY_INDEX_MAX_ENTRIES {
+            break;
+        }
+    }
+    out
+}
+
+fn ensure_cwd_index(session_id: &str, cwd: &str) -> Arc<Mutex<CwdIndex>> {
+    let map = fuzzy_index_map();
+    if let Some(existing) = map.get(session_id) {
+        let entry = existing.clone();
+        drop(existing);
+        let stale = {
+            let guard = entry.lock().unwrap();
+            guard.cwd != cwd || guard.built_at.elapsed() > FUZZY_INDEX_TTL
+        };
+        if !stale {
+            return entry;
+        }
+    }
+    let files = build_cwd_index(cwd);
+    let idx = Arc::new(Mutex::new(CwdIndex {
+        cwd: cwd.to_string(),
+        files,
+        built_at: Instant::now(),
+    }));
+    map.insert(session_id.to_string(), idx.clone());
+    idx
+}
+
+fn fuzzy_match_paths(
+    session_id: &str,
+    cwd: &str,
+    query: &str,
+    mode: MentionPathMode,
+    limit: usize,
+) -> Vec<MentionCandidate> {
+    let idx = ensure_cwd_index(session_id, cwd);
+    let files: Vec<String> = {
+        let guard = idx.lock().unwrap();
+        guard.files.clone()
+    };
+    if files.is_empty() {
+        return Vec::new();
+    }
+    let filtered: Vec<&str> = files
+        .iter()
+        .filter(|p| match mode {
+            MentionPathMode::Dir => p.ends_with('/'),
+            MentionPathMode::File => !p.ends_with('/'),
+            MentionPathMode::Auto => true,
+        })
+        .map(|s| s.as_str())
+        .collect();
+    if filtered.is_empty() {
+        return Vec::new();
+    }
+    let mut matcher = Matcher::new(MatcherConfig::DEFAULT.match_paths());
+    let matches = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart)
+        .match_list(filtered, &mut matcher);
+    matches
+        .into_iter()
+        .take(limit)
+        .map(|(rel, _score)| {
+            let is_dir = rel.ends_with('/');
+            let rel_owned = rel.to_string();
+            let (kind, value) = match mode {
+                MentionPathMode::Dir => ("dir".to_string(), format!("dir:{rel_owned}")),
+                MentionPathMode::File => ("file".to_string(), format!("file:{rel_owned}")),
+                MentionPathMode::Auto => {
+                    if is_dir {
+                        ("dir".to_string(), rel_owned.clone())
+                    } else {
+                        ("file".to_string(), rel_owned.clone())
+                    }
+                }
+            };
+            let detail = std::path::Path::new(&rel_owned)
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| ".".to_string());
+            MentionCandidate {
+                value,
+                kind,
+                detail,
+            }
+        })
+        .collect()
+}
+
+fn is_path_like_query(query: &str) -> bool {
+    query.starts_with("file:")
+        || query.starts_with("dir:")
+        || query.starts_with('/')
+        || query.starts_with('~')
+        || query.starts_with("./")
+        || query.starts_with("../")
+        || query.contains('/')
+}
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 enum MentionPathMode {
@@ -157,9 +313,18 @@ pub(crate) async fn complete_mentions(
         .and_then(|sid| get_app_session_cwd(get_state(&state), sid))
         .unwrap_or_else(resolve_chat_cwd);
     let capped = limit.unwrap_or(10).clamp(1, 30);
-    tokio::task::spawn_blocking(move || complete_path_mentions(&cwd, &query, capped))
-        .await
-        .map_err(|e| e.to_string())
+    let session_key = app_session_id.unwrap_or_else(|| format!("__global__::{cwd}"));
+    tokio::task::spawn_blocking(move || {
+        let (mode, path_query) = parse_mention_query(&query);
+        let trimmed = path_query.trim();
+        if trimmed.is_empty() || is_path_like_query(trimmed) {
+            complete_path_mentions(&cwd, &query, capped)
+        } else {
+            fuzzy_match_paths(&session_key, &cwd, trimmed, mode, capped)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 fn matches_cli_query(candidate: &str, query_lower: &str) -> bool {
