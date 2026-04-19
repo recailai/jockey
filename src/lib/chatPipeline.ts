@@ -37,7 +37,14 @@ export const resolveRoute = (input: ResolveRouteInput): ResolveRouteResult => {
 
   if (!isCommand) {
     const mentionMatch = text.match(/^@(\S+)/);
-    if (mentionMatch) {
+    const isFileLikeMention = (s: string) =>
+      s.startsWith("file:")
+      || s.startsWith("dir:")
+      || s.includes("/")
+      || s.includes(".")
+      || s.startsWith("~");
+    const isExplicitRole = (s: string) => s.startsWith("role:");
+    if (mentionMatch && (isExplicitRole(mentionMatch[1]) || !isFileLikeMention(mentionMatch[1]))) {
       const rawTarget = mentionMatch[1];
       const target = rawTarget.startsWith("role:") ? rawTarget.slice(5) : rawTarget;
       if (
@@ -71,20 +78,24 @@ export const resolveRoute = (input: ResolveRouteInput): ResolveRouteResult => {
         inRoleContext = true;
         routedText = text.replace(/^@\S+\s*/, "").trim();
       }
-    } else if (isCustomRole && !text.startsWith("@")) {
-      if (!roleExists(effectiveRole)) {
-        return {
-          sendRoleLabel,
-          effectiveRole,
-          routedText,
-          isCommand,
-          isAppCommand,
-          inRoleContext,
-          explicitRoleMention,
-          error: `active role not found: ${effectiveRole}`,
-        };
+    } else {
+      const startsWithFileMention = !!mentionMatch && !isExplicitRole(mentionMatch[1]) && isFileLikeMention(mentionMatch[1]);
+      const needsRoleWrap = isCustomRole && (!text.startsWith("@") || startsWithFileMention);
+      if (needsRoleWrap) {
+        if (!roleExists(effectiveRole)) {
+          return {
+            sendRoleLabel,
+            effectiveRole,
+            routedText,
+            isCommand,
+            isAppCommand,
+            inRoleContext,
+            explicitRoleMention,
+            error: `active role not found: ${effectiveRole}`,
+          };
+        }
+        routedText = `@${effectiveRole} ${text}`;
       }
-      routedText = `@${effectiveRole} ${text}`;
     }
   }
 
