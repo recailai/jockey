@@ -46,6 +46,7 @@ export function useCompletions(
   const mentionDebounceTimerRef = { current: null as number | null };
   let mentionPathCache = new Map<string, AppMentionItem[]>();
   let mentionPathCacheKeys: string[] = [];
+  let mentionPathCacheOwner: string | null = null;
 
   const closeMentionMenu = () => {
     setMentionOpen(false);
@@ -132,12 +133,18 @@ export function useCompletions(
 
     if (shouldPathComplete(ctx.query)) {
       const seq = ++mentionReqSeq;
+      const sid = activeSessionId() ?? null;
+      if (mentionPathCacheOwner !== sid) {
+        mentionPathCache = new Map();
+        mentionPathCacheKeys = [];
+        mentionPathCacheOwner = sid;
+      }
       const cached = mentionPathCache.get(ctx.query);
       if (cached) {
         items = [...items, ...cached];
       } else {
         try {
-          const rows = await completionApi.mentions(ctx.query, 12);
+          const rows = await completionApi.mentions(ctx.query, 12, sid);
           if (seq !== mentionReqSeq) return;
           mentionPathCache.set(ctx.query, rows);
           mentionPathCacheKeys.push(ctx.query);

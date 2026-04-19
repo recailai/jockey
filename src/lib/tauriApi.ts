@@ -153,8 +153,8 @@ export const contextApi = {
 };
 
 export const completionApi = {
-  mentions: (query: string, limit: number) =>
-    call<AppMentionItem[]>("complete_mentions", { query, limit }),
+  mentions: (query: string, limit: number, appSessionId?: string | null) =>
+    call<AppMentionItem[]>("complete_mentions", { query, limit, appSessionId: appSessionId ?? null }),
   cli: (query: string, limit: number) =>
     call<AppMentionItem[]>("complete_cli", { query, limit }),
 };

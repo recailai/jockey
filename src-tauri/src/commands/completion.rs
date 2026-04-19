@@ -1,3 +1,4 @@
+use crate::db::app_session::get_app_session_cwd;
 use crate::db::context::{list_all_known_models, list_dynamic_catalog};
 use crate::db::get_state;
 use crate::db::role::list_all_roles;
@@ -146,11 +147,15 @@ fn complete_path_mentions(cwd: &str, query: &str, limit: usize) -> Vec<MentionCa
 
 #[tauri::command]
 pub(crate) async fn complete_mentions(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
     query: String,
     limit: Option<usize>,
+    app_session_id: Option<String>,
 ) -> Result<Vec<MentionCandidate>, String> {
-    let cwd = resolve_chat_cwd();
+    let cwd = app_session_id
+        .as_deref()
+        .and_then(|sid| get_app_session_cwd(get_state(&state), sid))
+        .unwrap_or_else(resolve_chat_cwd);
     let capped = limit.unwrap_or(10).clamp(1, 30);
     tokio::task::spawn_blocking(move || complete_path_mentions(&cwd, &query, capped))
         .await
