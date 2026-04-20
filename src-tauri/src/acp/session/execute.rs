@@ -29,6 +29,9 @@ pub(super) struct AcpStreamPayload<'a> {
     pub runtime_kind: &'a str,
     pub app_session_id: &'a str,
     pub event: &'a AcpEvent,
+    /// Per-execute monotonic counter; frontend uses this to detect dropped or
+    /// out-of-order frames and to debug stalls.
+    pub seq: u32,
 }
 
 pub async fn execute_runtime(
@@ -123,6 +126,7 @@ pub async fn execute_runtime(
     let role_owned = role_name.to_string();
     let mut full_output = String::new();
     let mut delta_count = 0usize;
+    let mut emit_seq: u32 = 0;
     // Buffer for batching TextDelta IPC events (~30ms flush interval)
     let mut delta_batch: String = String::new();
 
@@ -194,6 +198,7 @@ pub async fn execute_runtime(
                     }
                     Some(ref evt @ AcpEvent::ConfigUpdate { ref options }) => {
                         delta_count += 1;
+                        emit_seq += 1;
                         remember_runtime_config_options(
                             adapter.runtime_key,
                             options.clone(),
@@ -203,10 +208,12 @@ pub async fn execute_runtime(
                             runtime_kind: adapter.runtime_key,
                             app_session_id: &app_session_id_owned,
                             event: evt,
+                            seq: emit_seq,
                         });
                     }
                     Some(ref evt @ AcpEvent::AvailableCommands { ref commands }) => {
                         delta_count += 1;
+                        emit_seq += 1;
                         acp_log("commands.discovered", json!({
                             "runtime": adapter.runtime_key,
                             "role": role_owned,
@@ -224,20 +231,25 @@ pub async fn execute_runtime(
                             runtime_kind: adapter.runtime_key,
                             app_session_id: &app_session_id_owned,
                             event: evt,
+                            seq: emit_seq,
                         });
                     }
                     Some(ref other) => {
                         delta_count += 1;
+                        emit_seq += 1;
                         acp_log("delta.event", json!({
                             "runtime": adapter.runtime_key,
                             "role": role_owned,
                             "deltaIndex": delta_count,
+                            "emitSeq": emit_seq,
+                            "kind": event_kind_label(other),
                         }));
                         let _ = app.emit("acp/stream", AcpStreamPayload {
                             role: &role_owned,
                             runtime_kind: adapter.runtime_key,
                             app_session_id: &app_session_id_owned,
                             event: other,
+                            seq: emit_seq,
                         });
                     }
                     None => {}
@@ -255,11 +267,13 @@ pub async fn execute_runtime(
                         }
                         ref other => {
                             delta_count += 1;
+                            emit_seq += 1;
                             let _ = app.emit("acp/stream", AcpStreamPayload {
                                 role: &role_owned,
                                 runtime_kind: adapter.runtime_key,
                                 app_session_id: &app_session_id_owned,
                                 event: other,
+                                seq: emit_seq,
                             });
                         }
                     }
@@ -344,6 +358,24 @@ pub async fn execute_runtime(
                 meta: json!({ "mode": "acp-error", "runtime": adapter.runtime_key, "error": e, "friendlyMessage": friendly }),
             }
         }
+    }
+}
+
+fn event_kind_label(evt: &AcpEvent) -> &'static str {
+    match evt {
+        AcpEvent::TextDelta { .. } => "textDelta",
+        AcpEvent::ThoughtDelta { .. } => "thoughtDelta",
+        AcpEvent::ToolCall { .. } => "toolCall",
+        AcpEvent::ToolCallUpdate { .. } => "toolCallUpdate",
+        AcpEvent::Plan { .. } => "plan",
+        AcpEvent::ModeUpdate { .. } => "modeUpdate",
+        AcpEvent::AvailableModes { .. } => "availableModes",
+        AcpEvent::ConfigUpdate { .. } => "configUpdate",
+        AcpEvent::SessionInfo { .. } => "sessionInfo",
+        AcpEvent::AvailableCommands { .. } => "availableCommands",
+        AcpEvent::PermissionRequest { .. } => "permissionRequest",
+        AcpEvent::PermissionExpired { .. } => "permissionExpired",
+        AcpEvent::StatusUpdate { .. } => "statusUpdate",
     }
 }
 

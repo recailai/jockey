@@ -230,15 +230,35 @@ impl acp::Client for JockeyUiClient {
             },
             _ => return Ok(()),
         };
-        if let Ok(guard) = self.delta_slot.lock() {
-            if let Some(tx) = guard.as_ref() {
-                if tx.try_send(event).is_err() {
-                    // Channel full or disconnected — log once per overflow to aid debugging
-                    use super::adapter::acp_log;
+        let tx = self
+            .delta_slot
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().cloned());
+        if let Some(tx) = tx {
+            use super::adapter::acp_log;
+            // Backpressure: prefer fast non-blocking path; only fall back to
+            // awaited send when the channel is momentarily full. Closed channel
+            // means the consumer (execute loop) is gone — drop silently.
+            match tx.try_send(event) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
+                    let cap = super::worker::DELTA_CHANNEL_CAPACITY;
+                    let used = cap.saturating_sub(tx.capacity());
                     acp_log(
-                        "delta.channel.drop",
-                        serde_json::json!({ "capacity": super::worker::DELTA_CHANNEL_CAPACITY }),
+                        "delta.channel.backpressure",
+                        serde_json::json!({ "capacity": cap, "queued": used }),
                     );
+                    // Block the agent's session_notification handler until the
+                    // execute loop drains. This is what we want: the agent
+                    // (single-threaded) will pause emitting further updates,
+                    // which prevents lossy UI state.
+                    if tx.send(event).await.is_err() {
+                        acp_log("delta.channel.closed", serde_json::json!({}));
+                    }
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    acp_log("delta.channel.closed", serde_json::json!({}));
                 }
             }
         }

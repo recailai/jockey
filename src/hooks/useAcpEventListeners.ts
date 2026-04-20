@@ -63,6 +63,10 @@ export function useAcpEventListeners() {
       scheduleScrollToBottom,
     } = input;
 
+    // Per-session monotonic seq tracker — surfaces gaps that indicate
+    // a dropped/stalled acp/stream frame (the kind of bug that froze the UI
+    // mid-tool-loop). Reset when accepting flips off.
+    const lastSeqBySession = new Map<string, number>();
     type PrewarmStage = "warming" | "ready" | "failed";
     type PrewarmRuntimeState = { stage: PrewarmStage; error?: string };
     type PrewarmScopeState = {
@@ -166,11 +170,26 @@ export function useAcpEventListeners() {
           pushMessage("event", msg);
         }
       }),
-      listen<{ role: string; runtimeKind?: string; appSessionId?: string; event: AcpStreamEvent }>(
+      listen<{ role: string; runtimeKind?: string; appSessionId?: string; seq?: number; event: AcpStreamEvent }>(
         "acp/stream",
         (ev) => {
           const sid = ev.payload.appSessionId;
-          if (!sid || !acceptingStreams.has(sid)) return;
+          if (!sid) return;
+          if (!acceptingStreams.has(sid)) {
+            // Stream is closed but a frame still arrived — surface it so we
+            // can tell "agent kept emitting after we stopped listening" from
+            // a real backend stall.
+            console.debug("[acp/stream] dropped (not accepting)", { sid, seq: ev.payload.seq, kind: (ev.payload.event as { kind?: string })?.kind });
+            return;
+          }
+          const seq = ev.payload.seq;
+          if (typeof seq === "number") {
+            const prev = lastSeqBySession.get(sid);
+            if (prev !== undefined && seq !== prev + 1) {
+              console.warn("[acp/stream] seq gap", { sid, prev, seq, gap: seq - prev - 1, kind: (ev.payload.event as { kind?: string })?.kind });
+            }
+            lastSeqBySession.set(sid, seq);
+          }
           applyAcpStreamEvent({
             sid,
             roleName: ev.payload.role,
@@ -192,6 +211,7 @@ export function useAcpEventListeners() {
 
     listeners.push(() => {
       prewarmState.clear();
+      lastSeqBySession.clear();
     });
 
     return listeners;
