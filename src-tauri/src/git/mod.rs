@@ -1,3 +1,4 @@
+pub(crate) mod branches;
 pub(crate) mod diff;
 pub(crate) mod error;
 pub(crate) mod status;
@@ -5,6 +6,7 @@ pub(crate) mod status;
 use std::sync::OnceLock;
 use tauri::{AppHandle, Emitter};
 
+pub(crate) use branches::{checkout, list_branches, BranchInfo};
 pub(crate) use diff::diff;
 pub(crate) use error::GitError;
 pub(crate) use status::{status, GitStatus};

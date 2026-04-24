@@ -2,10 +2,11 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { For, Index, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { Accessor } from "solid-js";
 import type { AppSession, AppMessage, AppToolCall, AppSegment } from "./types";
-import { INTERACTIVE_MOTION, RUNTIME_COLOR, MESSAGE_RENDER_WINDOW, fmt } from "./types";
-import { assistantApi } from "../lib/tauriApi";
+import { RUNTIME_COLOR, MESSAGE_RENDER_WINDOW, fmt } from "./types";
 import { identicon } from "../lib/identicon";
 import { renderMd, renderMdCached } from "../lib/markdown";
+import { ToolCallGroup } from "./ToolCallGroup";
+import { PermissionModal } from "./PermissionModal";
 
 function highlightText(text: string, query: string): string {
   if (!query) return text;
@@ -465,134 +466,3 @@ function StreamSegmentList(props: { segments: AppSegment[] }) {
   );
 }
 
-function tcStatusDot(status: string): string {
-  if (status === "success" || status === "completed") return "bg-emerald-400 shadow-emerald-400/40";
-  if (status === "failure" || status === "error") return "bg-rose-400 shadow-rose-400/40";
-  return "bg-amber-400 animate-pulse shadow-amber-400/40";
-}
-
-function ToolCallGroup(props: { tools: AppToolCall[]; streaming: boolean }) {
-  const [expanded, setExpanded] = createSignal(false);
-
-  const count = () => props.tools.length;
-  const lastTool = () => props.tools[props.tools.length - 1];
-  const statusCounts = createMemo(() => {
-    let success = 0, error = 0;
-    for (const t of props.tools) {
-      if (t.status === "success" || t.status === "completed") success++;
-      else if (t.status === "failure" || t.status === "error") error++;
-    }
-    return { success, error, pending: props.tools.length - success - error };
-  });
-
-  return (
-    <div class="rounded-xl border theme-border theme-panel overflow-hidden shadow-sm my-1.5">
-      <button
-        class="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-[11.5px] theme-text select-none hover:bg-[var(--ui-accent-soft)] transition-colors"
-        onClick={() => setExpanded(v => !v)}
-      >
-        <span class={`h-2 w-2 shrink-0 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)] ${tcStatusDot(lastTool()?.status ?? "pending")}`} />
-        <span class="theme-text font-mono tracking-tight font-medium">{lastTool()?.title || "tool calls"}</span>
-        <span class="flex items-center gap-1.5 ml-auto">
-          <Show when={statusCounts().success > 0}>
-            <span class="flex items-center gap-0.5 text-[9px] text-emerald-400">
-              <span class="h-1.5 w-1.5 rounded-full bg-emerald-400 inline-block" />
-              {statusCounts().success}
-            </span>
-          </Show>
-          <Show when={statusCounts().error > 0}>
-            <span class="flex items-center gap-0.5 text-[9px] text-rose-400">
-              <span class="h-1.5 w-1.5 rounded-full bg-rose-400 inline-block" />
-              {statusCounts().error}
-            </span>
-          </Show>
-          <Show when={statusCounts().pending > 0}>
-            <span class="flex items-center gap-0.5 text-[9px] text-amber-400">
-              <span class="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse inline-block" />
-              {statusCounts().pending}
-            </span>
-          </Show>
-          <span class="text-[9px] theme-muted font-bold tracking-widest uppercase bg-[var(--ui-panel-2)] px-1.5 py-0.5 rounded-md ml-1">{count()} calls</span>
-          <svg class={`w-3 h-3 text-zinc-500 transition-transform duration-150 ${expanded() ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-        </span>
-      </button>
-      <Show when={expanded()}>
-        <div class="border-t border-white/[0.05] px-2 py-1.5 space-y-1">
-          <For each={props.tools}>{(tc) => (
-            <ToolCallItem tc={tc} />
-          )}</For>
-        </div>
-      </Show>
-    </div>
-  );
-}
-
-function ToolCallItem(props: { tc: AppToolCall }) {
-  const tc = () => props.tc;
-  return (
-    <details class="group/tc rounded-lg border theme-border theme-surface overflow-hidden transition-all duration-200 hover:bg-[var(--ui-surface-muted)] hover:border-[var(--ui-border-strong)]">
-      <summary class="flex cursor-pointer items-center gap-2 px-2.5 py-1.5 text-[11px] theme-muted select-none">
-        <span class={`h-1.5 w-1.5 shrink-0 rounded-full shadow-[0_0_6px_rgba(0,0,0,0.4)] ${tcStatusDot(tc().status)}`} />
-        <span class="theme-text font-mono tracking-tight font-medium group-hover/tc:text-white transition-colors truncate">{tc().title || tc().toolCallId}</span>
-        <span class="ml-auto text-[9px] theme-muted uppercase tracking-widest font-bold bg-[var(--ui-panel-2)] px-1.5 py-0.5 rounded-md shrink-0">{tc().kind}</span>
-      </summary>
-      <Show when={tc().contentJson}>
-        <pre class="whitespace-pre-wrap break-words border-t theme-border px-3 py-2.5 text-[11px] font-mono theme-muted bg-[var(--ui-panel-2)]">{tc().contentJson}</pre>
-      </Show>
-      <Show when={tc().locations && tc().locations!.length > 0}>
-        <div class="border-t theme-border px-3 py-2 text-[10.5px] theme-muted bg-[var(--ui-panel-2)]">
-          <div class="mb-0.5 uppercase tracking-wider text-[9px] theme-muted">Files</div>
-          <For each={tc().locations}>{(loc) => (
-            <div class="font-mono break-all">{loc.path}{loc.line ? `:${loc.line}` : ""}</div>
-          )}</For>
-        </div>
-      </Show>
-      <Show when={tc().rawInputJson}>
-        <pre class="whitespace-pre-wrap break-words border-t theme-border px-3 py-2.5 text-[10.5px] font-mono theme-muted bg-[var(--ui-panel-2)]">{tc().rawInputJson}</pre>
-      </Show>
-      <Show when={tc().rawOutputJson}>
-        <pre class="whitespace-pre-wrap break-words border-t theme-border px-3 py-2.5 text-[10.5px] font-mono theme-muted bg-[var(--ui-panel-2)]">{tc().rawOutputJson}</pre>
-      </Show>
-    </details>
-  );
-}
-
-type PermissionModalProps = {
-  activeSession: Accessor<AppSession | null>;
-  patchActiveSession: (patch: Partial<AppSession>) => void;
-};
-
-function PermissionModal(props: PermissionModalProps) {
-  return (
-    <Show when={props.activeSession()?.pendingPermission}>
-      {(perm) => (
-        <div class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 my-2">
-          <div class="mb-1 text-xs font-semibold text-amber-300">{perm().title}</div>
-          <Show when={perm().description}><p class="mb-2 text-xs text-zinc-400">{perm().description}</p></Show>
-          <div class="flex gap-2">
-            <For each={perm().options}>{(opt) => (
-              <button
-                class={`min-h-8 rounded border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-300 hover:bg-emerald-500/20 ${INTERACTIVE_MOTION}`}
-                onClick={() => {
-                  void assistantApi.respondPermission(perm().requestId, opt.optionId, false);
-                  props.patchActiveSession({ pendingPermission: null });
-                }}
-              >
-                {opt.title ?? opt.optionId}
-              </button>
-            )}</For>
-            <button
-              class={`min-h-8 rounded border border-rose-500/40 bg-rose-500/10 px-3 py-1 text-xs text-rose-300 hover:bg-rose-500/20 ${INTERACTIVE_MOTION}`}
-              onClick={() => {
-                void assistantApi.respondPermission(perm().requestId, "", true);
-                props.patchActiveSession({ pendingPermission: null });
-              }}
-            >
-              Deny
-            </button>
-          </div>
-        </div>
-      )}
-    </Show>
-  );
-}

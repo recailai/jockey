@@ -46,7 +46,7 @@ export function useMessageSend({
   const {
     roles,
     bumpRunToken, isRunCancelled,
-    isCustomRole, activeBackendRole,
+    activeBackendRole,
     refreshRoles,
     fetchConfigOptions, fetchAndCacheAgentCommands,
     setPreferredAssistant,

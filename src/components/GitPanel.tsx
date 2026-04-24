@@ -11,15 +11,27 @@ type GitPanelProps = {
   onOpenDiff: (path: string, staged: boolean, untracked: boolean) => void;
 };
 
-function statusClass(letter: string, untracked: boolean): string {
-  if (untracked) return "git-status-untracked";
-  switch (letter) {
+type ChangeEntry = GitFileEntry & { untracked: boolean };
+
+function vscodeLetter(entry: ChangeEntry): string {
+  if (entry.untracked) return "U";
+  switch (entry.statusLetter) {
+    case "A": return "A";
+    case "D": return "D";
+    case "R":
+    case "C": return "R";
+    default:   return "M";
+  }
+}
+
+function statusClass(entry: ChangeEntry): string {
+  if (entry.untracked) return "git-status-untracked";
+  switch (entry.statusLetter) {
     case "A": return "git-status-added";
     case "D": return "git-status-deleted";
     case "R":
     case "C": return "git-status-renamed";
-    case "M":
-    default:  return "git-status-modified";
+    default:   return "git-status-modified";
   }
 }
 
@@ -30,8 +42,7 @@ export default function GitPanel(props: GitPanelProps) {
   );
 
   const [stagedOpen, setStagedOpen] = createSignal(true);
-  const [unstagedOpen, setUnstagedOpen] = createSignal(true);
-  const [untrackedOpen, setUntrackedOpen] = createSignal(true);
+  const [changesOpen, setChangesOpen] = createSignal(true);
 
   useGitChanged(props.cwd, () => { void refetch(); });
 
@@ -39,66 +50,63 @@ export default function GitPanel(props: GitPanelProps) {
     title: string,
     open: () => boolean,
     setOpen: (v: boolean) => void,
-    entries: GitFileEntry[],
+    entries: ChangeEntry[],
     staged: boolean,
-    untracked: boolean,
-  ) => {
-    return (
-      <div class="mb-1">
-        <button
-          type="button"
-          onClick={() => setOpen(!open())}
-          class="section-header"
-        >
-          <ChevronRight
-            size={12}
-            class={`transition-transform shrink-0 ${open() ? "rotate-90" : ""}`}
-          />
-          <span>{title}</span>
-          <span class="section-count">{entries.length}</span>
-        </button>
-        <Show when={open()}>
-          <div>
-            <For each={entries}>
-              {(entry) => {
-                const basename = () => {
-                  const i = entry.path.lastIndexOf("/");
-                  return i === -1 ? entry.path : entry.path.slice(i + 1);
-                };
-                const dirname = () => {
-                  const i = entry.path.lastIndexOf("/");
-                  return i === -1 ? "" : entry.path.slice(0, i);
-                };
-                return (
-                  <div
-                    class="row-item group"
-                    onClick={() => props.onOpenDiff(entry.path, staged, untracked)}
-                    title={entry.path}
+  ) => (
+    <div class="mb-1">
+      <button
+        type="button"
+        onClick={() => setOpen(!open())}
+        class="section-header"
+      >
+        <ChevronRight
+          size={12}
+          class={`transition-transform shrink-0 ${open() ? "rotate-90" : ""}`}
+        />
+        <span>{title}</span>
+        <span class="section-count">{entries.length}</span>
+      </button>
+      <Show when={open()}>
+        <div>
+          <For each={entries}>
+            {(entry) => {
+              const basename = () => {
+                const i = entry.path.lastIndexOf("/");
+                return i === -1 ? entry.path : entry.path.slice(i + 1);
+              };
+              const dirname = () => {
+                const i = entry.path.lastIndexOf("/");
+                return i === -1 ? "" : entry.path.slice(0, i);
+              };
+              return (
+                <div
+                  class="row-item group"
+                  onClick={() => props.onOpenDiff(entry.path, staged, entry.untracked)}
+                  title={entry.path}
+                >
+                  <span class="truncate">{basename()}</span>
+                  <Show when={dirname()}>
+                    <span class="text-[10.5px] theme-muted truncate min-w-0 flex-1">{dirname()}</span>
+                  </Show>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); props.onAddMention(entry.path); }}
+                    title="Add to chat as @mention"
+                    class="shrink-0 rounded px-1.5 py-0.5 text-[10px] theme-muted hover:theme-text hover:bg-[var(--ui-accent-soft)] opacity-0 group-hover:opacity-100 transition-opacity"
                   >
-                    <span class="truncate">{basename()}</span>
-                    <Show when={dirname()}>
-                      <span class="text-[10.5px] theme-muted truncate min-w-0 flex-1">{dirname()}</span>
-                    </Show>
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); props.onAddMention(entry.path); }}
-                      title="Add to chat as @mention"
-                      class="shrink-0 rounded px-1.5 py-0.5 text-[10px] theme-muted hover:theme-text hover:bg-[var(--ui-accent-soft)] opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      +@
-                    </button>
-                    <span class={`git-status ${statusClass(entry.statusLetter, untracked)}`}>
-                      {entry.statusLetter}
-                    </span>
-                  </div>
-                );
-              }}
-            </For>
-          </div>
-        </Show>
-      </div>
-    );
-  };
+                    +@
+                  </button>
+                  <span class={`git-status ${statusClass(entry)}`}>
+                    {vscodeLetter(entry)}
+                  </span>
+                </div>
+              );
+            }}
+          </For>
+        </div>
+      </Show>
+    </div>
+  );
 
   return (
     <div class="flex flex-col h-full overflow-hidden theme-bg">
@@ -136,7 +144,17 @@ export default function GitPanel(props: GitPanelProps) {
               </div>
             );
           }
-          const dirty = s.staged.length + s.unstaged.length + s.untracked.length > 0;
+
+          const stagedEntries = (): ChangeEntry[] =>
+            s.staged.map((e) => ({ ...e, untracked: false }));
+
+          const changesEntries = (): ChangeEntry[] => [
+            ...s.unstaged.map((e) => ({ ...e, untracked: false })),
+            ...s.untracked.map((e) => ({ ...e, untracked: true })),
+          ];
+
+          const dirty = stagedEntries().length + changesEntries().length > 0;
+
           return (
             <>
               <div class="panel-subheader">
@@ -159,14 +177,11 @@ export default function GitPanel(props: GitPanelProps) {
                     Working tree clean
                   </div>
                 </Show>
-                <Show when={s.staged.length > 0}>
-                  {renderGroup("Staged Changes", stagedOpen, setStagedOpen, s.staged, true, false)}
+                <Show when={stagedEntries().length > 0}>
+                  {renderGroup("Staged Changes", stagedOpen, setStagedOpen, stagedEntries(), true)}
                 </Show>
-                <Show when={s.unstaged.length > 0}>
-                  {renderGroup("Changes", unstagedOpen, setUnstagedOpen, s.unstaged, false, false)}
-                </Show>
-                <Show when={s.untracked.length > 0}>
-                  {renderGroup("Untracked", untrackedOpen, setUntrackedOpen, s.untracked, false, true)}
+                <Show when={changesEntries().length > 0}>
+                  {renderGroup("Changes", changesOpen, setChangesOpen, changesEntries(), false)}
                 </Show>
               </div>
             </>
@@ -176,4 +191,3 @@ export default function GitPanel(props: GitPanelProps) {
     </div>
   );
 }
-

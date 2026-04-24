@@ -1,12 +1,32 @@
-import { Show, createMemo, createResource, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createResource, createSignal, onCleanup } from "solid-js";
 import { AtSign } from "lucide-solid";
-import { gitApi } from "../lib/tauriApi";
+import { gitApi, fsApi } from "../lib/tauriApi";
 import { renderMd } from "../lib/markdown";
 import type { PreviewMode } from "./types";
 import DiffView from "./DiffView";
 
+function FileWithLineNumbers(props: { text: string }) {
+  const lines = () => props.text.split("\n");
+  const lineCount = () => lines().length;
+  const gutterWidth = () => String(lineCount()).length;
+  return (
+    <div class="flex font-mono text-[12px] leading-[1.55] py-3 min-w-0">
+      <div
+        class="shrink-0 select-none text-right pr-4 theme-muted border-r theme-border"
+        style={{ "min-width": `${gutterWidth() * 0.6 + 1.5}em`, "padding-left": "1rem" }}
+      >
+        <For each={lines()}>
+          {(_, i) => <div>{i() + 1}</div>}
+        </For>
+      </div>
+      <pre class="flex-1 overflow-x-auto whitespace-pre theme-text pl-4 pr-4">{props.text}</pre>
+    </div>
+  );
+}
+
 type PreviewContentProps = {
   appSessionId: () => string | undefined;
+  cwd: string;
   path: string;
   initialMode: PreviewMode;
   staged: boolean;
@@ -16,18 +36,79 @@ type PreviewContentProps = {
 };
 
 const MD_EXT = /\.(md|markdown|mdx)$/i;
+const IMG_EXT = /\.(png|jpg|jpeg|gif|webp|svg|bmp|ico|tiff|avif)$/i;
+
 const isMarkdown = (p: string) => MD_EXT.test(p);
+const isImage = (p: string) => IMG_EXT.test(p);
+
+function imgMimeType(p: string): string {
+  const ext = p.split(".").pop()?.toLowerCase() ?? "";
+  const map: Record<string, string> = {
+    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+    gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
+    bmp: "image/bmp", ico: "image/x-icon", tiff: "image/tiff",
+    avif: "image/avif",
+  };
+  return map[ext] ?? "image/png";
+}
+
+function resolveImgPath(src: string, mdPath: string): string | null {
+  if (!src || src.startsWith("http://") || src.startsWith("https://") || src.startsWith("data:")) {
+    return null;
+  }
+  if (src.startsWith("/")) {
+    return src.slice(1);
+  }
+  const dir = mdPath.includes("/") ? mdPath.slice(0, mdPath.lastIndexOf("/") + 1) : "";
+  const parts = (dir + src).split("/");
+  const resolved: string[] = [];
+  for (const p of parts) {
+    if (p === "..") resolved.pop();
+    else if (p && p !== ".") resolved.push(p);
+  }
+  return resolved.join("/");
+}
+
+async function hydrateImages(
+  container: HTMLElement,
+  appSessionId: string | undefined,
+  mdPath: string,
+): Promise<void> {
+  const imgs = container.querySelectorAll<HTMLImageElement>("img[src]");
+  await Promise.all(
+    Array.from(imgs).map(async (img) => {
+      const src = img.getAttribute("src") ?? "";
+      const relPath = resolveImgPath(src, mdPath);
+      if (!relPath) return;
+      if (!IMG_EXT.test(relPath)) return;
+      try {
+        const b64 = await fsApi.readFileBase64(appSessionId, relPath);
+        img.src = `data:${imgMimeType(relPath)};base64,${b64}`;
+      } catch {
+      }
+    }),
+  );
+}
 
 export default function PreviewContent(props: PreviewContentProps) {
   const isFolder = () => props.path.endsWith("/");
   const pathIsMd = createMemo(() => isMarkdown(props.path));
+  const pathIsImg = createMemo(() => isImage(props.path));
 
   const computeInitial = (): PreviewMode => {
     if (props.initialMode === "diff") return "diff";
+    if (pathIsImg()) return "image";
     return pathIsMd() ? "preview" : "file";
   };
   const [mode, setMode] = createSignal<PreviewMode>(computeInitial());
   const [vsHead, setVsHead] = createSignal(false);
+
+  let mdContainerRef: HTMLDivElement | undefined;
+  let hydrateAbort: AbortController | null = null;
+
+  onCleanup(() => {
+    hydrateAbort?.abort();
+  });
 
   const diffQuery = createMemo(() => ({
     sid: props.appSessionId(),
@@ -53,11 +134,35 @@ export default function PreviewContent(props: PreviewContentProps) {
     async (q) => (q ? gitApi.file(q.sid, q.path) : ""),
   );
 
+  const [imgRes] = createResource(
+    () => (mode() === "image" ? fileQuery() : null),
+    async (q) => {
+      if (!q) return "";
+      return fsApi.readFileBase64(q.sid, q.path);
+    },
+  );
+
+  const imgSrc = createMemo(() => {
+    const b64 = imgRes();
+    if (!b64) return "";
+    return `data:${imgMimeType(props.path)};base64,${b64}`;
+  });
+
   const renderedMd = createMemo(() => {
     if (mode() !== "preview") return "";
     const text = fileRes() ?? "";
     if (!text) return "";
     return renderMd(text);
+  });
+
+  createEffect(() => {
+    const html = renderedMd();
+    if (!html) return;
+    const el = mdContainerRef;
+    if (!el) return;
+    hydrateAbort?.abort();
+    hydrateAbort = new AbortController();
+    void hydrateImages(el, props.appSessionId(), props.path).catch(() => {});
   });
 
   const TabButton = (p: { label: string; value: PreviewMode; disabled?: boolean; title?: string }) => (
@@ -85,7 +190,14 @@ export default function PreviewContent(props: PreviewContentProps) {
           <Show when={props.initialMode === "diff"}>
             <TabButton label="Diff" value="diff" disabled={isFolder()} />
           </Show>
-          <Show when={pathIsMd()} fallback={<TabButton label="File" value="file" disabled={isFolder()} />}>
+          <Show when={pathIsImg()}>
+            <TabButton label="Image" value="image" disabled={isFolder()} />
+          </Show>
+          <Show when={pathIsMd()} fallback={
+            <Show when={!pathIsImg()}>
+              <TabButton label="File" value="file" disabled={isFolder()} />
+            </Show>
+          }>
             <TabButton label="Preview" value="preview" disabled={isFolder()} title="Rendered Markdown" />
             <TabButton label="Source" value="file" disabled={isFolder()} title="Raw text" />
           </Show>
@@ -127,6 +239,24 @@ export default function PreviewContent(props: PreviewContentProps) {
           <DiffView diffText={diffRes() ?? ""} loading={diffRes.loading} />
         </Show>
 
+        <Show when={mode() === "image"}>
+          <div class="h-full overflow-auto flex items-center justify-center p-4">
+            <Show when={imgRes.loading}>
+              <div class="text-xs theme-muted">Loading image…</div>
+            </Show>
+            <Show when={imgRes.error}>
+              <div class="text-xs text-rose-400">{String(imgRes.error)}</div>
+            </Show>
+            <Show when={!imgRes.loading && !imgRes.error && imgSrc()}>
+              <img
+                src={imgSrc()}
+                alt={props.path}
+                class="max-w-full max-h-full object-contain rounded"
+              />
+            </Show>
+          </div>
+        </Show>
+
         <Show when={mode() === "file"}>
           <div class="h-full overflow-auto">
             <Show when={fileRes.loading}>
@@ -136,7 +266,7 @@ export default function PreviewContent(props: PreviewContentProps) {
               <div class="px-4 py-3 text-xs text-rose-400">{String(fileRes.error)}</div>
             </Show>
             <Show when={!fileRes.loading && !fileRes.error && fileRes() !== undefined}>
-              <pre class="font-mono text-[12px] leading-[1.55] whitespace-pre theme-text px-4 py-3">{fileRes()}</pre>
+              <FileWithLineNumbers text={fileRes()!} />
             </Show>
           </div>
         </Show>
@@ -150,7 +280,11 @@ export default function PreviewContent(props: PreviewContentProps) {
               <div class="px-4 py-3 text-xs text-rose-400">{String(fileRes.error)}</div>
             </Show>
             <Show when={!fileRes.loading && !fileRes.error}>
-              <div class="md-prose px-6 py-5 max-w-[880px]" innerHTML={renderedMd()} />
+              <div
+                ref={mdContainerRef}
+                class="md-prose px-6 py-5 max-w-[880px]"
+                innerHTML={renderedMd()}
+              />
             </Show>
           </div>
         </Show>

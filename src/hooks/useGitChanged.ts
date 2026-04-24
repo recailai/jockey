@@ -9,7 +9,8 @@ export function useGitChanged(cwd: () => string | null | undefined, onChange: Ha
     unlisten = await listen<{ path: string }>("git/changed", (ev) => {
       const base = cwd() ?? "";
       const abs = ev.payload?.path ?? "";
-      if (!base || !abs.startsWith(base)) return;
+      if (!base) return;
+      if (!abs.startsWith(base)) return;
       const rel = abs.slice(base.length).replace(/^\/+/, "");
       onChange({ absPath: abs, relPath: rel });
     });

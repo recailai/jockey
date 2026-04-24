@@ -181,9 +181,21 @@ export type GitState =
   | { kind: "git_missing" }
   | ({ kind: "status" } & GitStatus);
 
+export type BranchInfo = {
+  name: string;
+  isCurrent: boolean;
+  upstream: string | null;
+};
+
 export const gitApi = {
   status: (appSessionId?: string | null) =>
     call<GitState>("git_status_cmd", { appSessionId: appSessionId ?? null }),
+  listBranches: (appSessionId?: string | null) =>
+    call<BranchInfo[]>("git_list_branches_cmd", { appSessionId: appSessionId ?? null }),
+  checkout: (appSessionId: string | null | undefined, branch: string) =>
+    call<void>("git_checkout_cmd", { appSessionId: appSessionId ?? null, branch }),
+  prUrl: (appSessionId?: string | null) =>
+    call<string | null>("git_pr_url_cmd", { appSessionId: appSessionId ?? null }),
   diff: (
     appSessionId: string | null | undefined,
     path: string,
@@ -208,9 +220,15 @@ export const gitApi = {
 export type DirEntry = { name: string; isDir: boolean };
 
 export const fsApi = {
-  listDir: (appSessionId: string | null | undefined, relPath: string) =>
+  listDir: (appSessionId: string | null | undefined, relPath: string, showHidden = false) =>
     call<DirEntry[]>("list_dir_cmd", {
       appSessionId: appSessionId ?? null,
       relPath,
+      showHidden,
+    }),
+  readFileBase64: (appSessionId: string | null | undefined, path: string) =>
+    call<string>("read_file_base64_cmd", {
+      appSessionId: appSessionId ?? null,
+      path,
     }),
 };

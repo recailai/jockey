@@ -3,8 +3,8 @@ import { For, Show, Suspense, createMemo, createSignal, lazy, onCleanup, onMount
 import SessionTabs, { type SessionTab } from "./components/SessionTabs";
 import MessageWindow from "./components/MessageWindow";
 import ChatInput from "./components/ChatInput";
-import { now } from "./components/types";
-import { type UiTheme, normalizeUiTheme, UI_THEME_KEY } from "./lib/theme";
+import { now, DEFAULT_ROLE_ALIAS } from "./components/types";
+import { UI_THEME_KEY } from "./lib/theme";
 
 import { useSessionManager } from "./hooks/useSessionManager";
 import { useStreamEngine } from "./hooks/useStreamEngine";
@@ -17,6 +17,10 @@ import { useInputHistory } from "./hooks/useInputHistory";
 import { uniqueName, makeDefaultSession } from "./lib/sessionHelpers";
 import { createSessionEventBuffer } from "./lib/sessionEventBuffer";
 import { appSessionApi } from "./lib/tauriApi";
+import { useToast } from "./lib/useToast";
+import { useTheme } from "./lib/useTheme";
+import { useGitPoller } from "./hooks/useGitPoller";
+import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 
 
 const ConfigDrawer = lazy(() => import("./components/ConfigDrawer"));
@@ -40,28 +44,8 @@ const EDITOR_MIN_RATIO = 0.15;
 const EDITOR_MAX_RATIO = 0.85;
 
 export default function App() {
-  type Toast = { id: number; message: string; severity?: "error" | "info" };
-  const [toasts, setToasts] = createSignal<Toast[]>([]);
-  let toastSeq = 0;
-  const initialTheme = (): UiTheme => {
-    try {
-      const raw = window.localStorage.getItem(UI_THEME_KEY);
-      const theme = normalizeUiTheme(raw);
-      document.documentElement.setAttribute("data-theme", theme);
-      return theme;
-    } catch {
-      document.documentElement.setAttribute("data-theme", "dark");
-      return "dark";
-    }
-  };
-
-  const [uiTheme, setUiTheme] = createSignal<UiTheme>(initialTheme());
-
-  const showToast = (message: string, severity: Toast["severity"] = "error") => {
-    const id = ++toastSeq;
-    setToasts((ts) => [...ts, { id, message, severity }]);
-    window.setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 4000);
-  };
+  const { toasts, showToast } = useToast();
+  const { uiTheme, setUiTheme } = useTheme();
 
   const [showDrawer, setShowDrawer] = createSignal(false);
   const [showManagement, setShowManagement] = createSignal(false);
@@ -168,6 +152,8 @@ export default function App() {
     getSessionIndex,
   } = sessionManager;
 
+  const { gitChangeCount } = useGitPoller(activeSession);
+
   // Minimal projection for SessionTabs — only re-computes when id/title/status change,
   // not on every streaming delta. Prevents full For reconciliation on each stream update.
   const sessionTabs = createMemo<SessionTab[]>(() =>
@@ -231,7 +217,7 @@ export default function App() {
     showToast,
   });
 
-  const { sendRaw, runNextQueued, cancelCurrentRun } = useMessageSend({
+  const { sendRaw, cancelCurrentRun } = useMessageSend({
     sessionManager,
     streamEngine,
     agentContext,
@@ -241,6 +227,10 @@ export default function App() {
   });
 
   const inputHistory = useInputHistory(setInput);
+
+  const chatActiveRole = createMemo(() => activeSession()?.activeRole ?? DEFAULT_ROLE_ALIAS);
+  const chatSubmitting = createMemo(() => activeSession()?.submitting ?? false);
+  const chatQueuedCount = createMemo(() => activeSession()?.queuedMessages.length ?? 0);
 
   const handleSend = async (e: SubmitEvent) => {
     e.preventDefault();
@@ -371,6 +361,27 @@ export default function App() {
     void appSessionApi.remove(id).catch(() => {});
   };
 
+  const toggleSidebar = (panel: ActivityPanel) =>
+    setSidebarPanel(sidebarPanel() === panel ? null : panel);
+
+  const toggleSidebarRestore = () => {
+    if (sidebarPanel() !== null) { setSidebarPanel(null); return; }
+    let remembered: ActivityPanel | null = null;
+    try {
+      const raw = window.localStorage.getItem(SIDEBAR_PANEL_KEY);
+      if (raw === "git" || raw === "files") remembered = raw;
+    } catch { }
+    setSidebarPanel(remembered ?? "files");
+  };
+
+  useKeyboardShortcuts({
+    newSession: () => setShowDrawer((v) => !v),
+    toggleManagement: () => setShowManagement((v) => !v),
+    toggleSidebarRestore,
+    setSidebarPanel: (p) => { if (p !== null) toggleSidebar(p); },
+    cancelCurrentRun: () => { void cancelCurrentRun(); },
+  });
+
   onMount(() => {
     const handlers: Array<() => void> = [];
     let startupRaf: number | null = null;
@@ -402,49 +413,11 @@ export default function App() {
       scheduleScrollToBottom,
     }).then((hs) => handlers.push(...hs));
 
-    const toggleSidebar = (panel: ActivityPanel) =>
-      setSidebarPanel(sidebarPanel() === panel ? null : panel);
-    const toggleSidebarRestore = () => {
-      if (sidebarPanel() !== null) { setSidebarPanel(null); return; }
-      let remembered: ActivityPanel | null = null;
-      try {
-        const raw = window.localStorage.getItem(SIDEBAR_PANEL_KEY);
-        if (raw === "git" || raw === "files") remembered = raw;
-      } catch { /* ignore */ }
-      setSidebarPanel(remembered ?? "files");
-    };
-
-    const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      const inEditableTarget = tag === "INPUT" || tag === "TEXTAREA";
-      switch (e.key) {
-        case "k":
-          e.preventDefault(); setShowDrawer((v) => !v); return;
-        case "m":
-          if (e.shiftKey) { e.preventDefault(); setShowManagement((v) => !v); }
-          return;
-        case "g":
-          e.preventDefault(); toggleSidebar("git"); return;
-        case "1":
-          if (!inEditableTarget) { e.preventDefault(); toggleSidebar("git"); }
-          return;
-        case "2":
-          if (!inEditableTarget) { e.preventDefault(); toggleSidebar("files"); }
-          return;
-        case "b":
-          if (!e.shiftKey && !e.altKey) { e.preventDefault(); toggleSidebarRestore(); }
-          return;
-      }
-    };
-    window.addEventListener("keydown", handleGlobalKeyDown);
-
     onCleanup(() => {
       if (startupRaf !== null) {
         window.cancelAnimationFrame(startupRaf);
         startupRaf = null;
       }
-      window.removeEventListener("keydown", handleGlobalKeyDown);
       dropStream();
       if (mentionCloseTimerRef.current !== null) window.clearTimeout(mentionCloseTimerRef.current);
       if (mentionDebounceTimerRef.current !== null) window.clearTimeout(mentionDebounceTimerRef.current);
@@ -462,7 +435,7 @@ export default function App() {
       onContextMenu={(e) => e.preventDefault()}
     >
       <div class="flex flex-1 flex-row min-h-0 min-w-0">
-        <ActivityBar activePanel={sidebarPanel} onSelect={(p) => setSidebarPanel(p)} />
+        <ActivityBar activePanel={sidebarPanel} onSelect={(p) => setSidebarPanel(p)} gitChangeCount={gitChangeCount} />
         <Show when={sidebarPanel() !== null}>
           <div
             class="shrink-0 border-r theme-border flex flex-col min-h-0 theme-bg"
@@ -604,8 +577,10 @@ export default function App() {
           <ChatInput
             input={input}
             setInput={setInput}
-            activeSession={activeSession}
-            patchActiveSession={patchActiveSession}
+            activeRole={chatActiveRole}
+            submitting={chatSubmitting}
+            queuedCount={chatQueuedCount}
+            onResetRole={() => patchActiveSession({ activeRole: DEFAULT_ROLE_ALIAS })}
             isCustomRole={isCustomRole}
             onSubmit={handleSend}
             onInputEvent={handleInputEvent}
@@ -628,7 +603,7 @@ export default function App() {
         </div>
       </div>
 
-      <Suspense fallback={null}>
+      <Suspense fallback={<div style={{ height: "22px" }} class="shrink-0 border-t theme-border theme-bg" />}>
         <StatusBar
           appSessionId={() => activeSession()?.id}
           cwd={() => activeSession()?.cwd ?? null}

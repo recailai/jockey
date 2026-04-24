@@ -1,6 +1,5 @@
 import { produce } from "solid-js/store";
 import { now } from "../components/types";
-import type { AppMessage } from "../components/types";
 import { MAX_THOUGHT_CHARS } from "../lib/sessionHelpers";
 import type { SessionManager } from "./useSessionManager";
 
@@ -12,7 +11,6 @@ export function useStreamEngine(sessionManager: SessionManager) {
     patchActiveSession,
     appendMessageToSession,
     updateSession,
-    pushMessage,
     scheduleScrollToBottom,
     getSessionIndex,
   } = sessionManager;

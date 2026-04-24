@@ -138,13 +138,13 @@ export default function PreviewArea(props: PreviewAreaProps) {
       tabindex="-1"
       class="flex flex-col h-full overflow-hidden theme-bg outline-none"
     >
-      <div class="flex items-stretch border-b theme-border shrink-0 overflow-x-auto h-[34px]">
+      <div class="flex items-stretch border-b theme-border shrink-0 overflow-x-hidden h-[34px] min-w-0">
         <For each={tabs()}>
           {(tab) => {
             const isActive = () => tab.id === activeId();
             return (
               <div
-                class={`group relative flex items-center shrink-0 select-none transition-colors ${
+                class={`group relative flex items-center min-w-0 select-none transition-colors ${
                   isActive() ? "theme-text" : "theme-muted hover:theme-text"
                 }`}
                 style={{
@@ -160,13 +160,13 @@ export default function PreviewArea(props: PreviewAreaProps) {
                 <button
                   type="button"
                   onClick={() => handleActivate(tab.id)}
-                  class="flex items-center gap-1.5 pl-3 pr-1 py-1.5 text-[11.5px] font-mono"
+                  class="flex items-center gap-1.5 pl-3 pr-1 py-1.5 text-[11.5px] font-mono min-w-0"
                   title={tab.path}
                 >
                   <Show when={isDirty(tab.id)}>
                     <span class="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" title="changed on disk" />
                   </Show>
-                  <span class="truncate max-w-[220px]">{tab.label}</span>
+                  <span class="truncate">{tab.label}</span>
                 </button>
                 <button
                   type="button"
@@ -196,6 +196,7 @@ export default function PreviewArea(props: PreviewAreaProps) {
           {(tab) => (
             <PreviewContent
               appSessionId={props.appSessionId}
+              cwd={tab.cwd}
               path={tab.path}
               initialMode={tab.initialMode}
               staged={tab.staged}

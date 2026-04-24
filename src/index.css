@@ -322,6 +322,12 @@ body {
   background: var(--ui-panel-2);
   border-radius: 0 4px 4px 0;
 }
+.md-prose img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+  margin: 0.5em 0;
+}
 .md-prose hr {
   border: none;
   border-top: 1px solid var(--ui-border);

@@ -19,7 +19,9 @@ pub(crate) async fn list_dir_cmd(
     state: State<'_, AppState>,
     app_session_id: Option<String>,
     rel_path: String,
+    show_hidden: Option<bool>,
 ) -> Result<Vec<DirEntry>, String> {
+    let show_hidden = show_hidden.unwrap_or(false);
     let state_ref = get_state(&state);
     let sid = app_session_id.as_deref().filter(|s| !s.trim().is_empty());
     let cwd_str = sid
@@ -49,7 +51,7 @@ pub(crate) async fn list_dir_cmd(
             Some(n) => n.to_string(),
             None => continue,
         };
-        if should_skip_name(&name) {
+        if should_skip_name(&name, show_hidden) {
             continue;
         }
         let is_dir = dent
@@ -67,4 +69,19 @@ pub(crate) async fn list_dir_cmd(
     });
 
     Ok(entries)
+}
+
+#[tauri::command]
+pub(crate) async fn read_file_base64_cmd(
+    state: State<'_, AppState>,
+    app_session_id: Option<String>,
+    path: String,
+) -> Result<String, String> {
+    use base64::Engine;
+    let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
+    let canonical = resolve_within_cwd(&cwd, path.trim_end_matches('/')).await?;
+    let bytes = tokio::fs::read(&canonical)
+        .await
+        .map_err(|e| format!("read failed: {e}"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }

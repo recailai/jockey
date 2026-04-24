@@ -4,7 +4,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::db::get_state;
 use crate::fs_context::looks_binary;
-use crate::git::{self, GitError, GitStatus};
+use crate::git::{self, BranchInfo, GitError, GitStatus};
 use crate::types::AppState;
 
 use super::cwd_util::{resolve_cwd, resolve_within_cwd};
@@ -47,6 +47,57 @@ pub(crate) async fn git_diff_cmd(
     git::diff(&cwd, &path, vs_head, staged, untracked)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn git_list_branches_cmd(
+    state: State<'_, AppState>,
+    app_session_id: Option<String>,
+) -> Result<Vec<BranchInfo>, String> {
+    let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
+    git::list_branches(&cwd).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn git_checkout_cmd(
+    state: State<'_, AppState>,
+    app_session_id: Option<String>,
+    branch: String,
+) -> Result<(), String> {
+    let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
+    git::checkout(&cwd, &branch).await.map_err(|e| e.to_string())?;
+    let head_path = cwd.join(".git").join("HEAD");
+    git::notify_changed(&head_path);
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn git_pr_url_cmd(
+    state: State<'_, AppState>,
+    app_session_id: Option<String>,
+) -> Result<Option<String>, String> {
+    use std::process::Stdio;
+    let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
+    let output = tokio::process::Command::new("gh")
+        .arg("pr")
+        .arg("view")
+        .arg("--json")
+        .arg("url")
+        .arg("-q")
+        .arg(".url")
+        .current_dir(&cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if output.status.success() {
+        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if url.is_empty() { Ok(None) } else { Ok(Some(url)) }
+    } else {
+        Ok(None)
+    }
 }
 
 const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;

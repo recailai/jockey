@@ -1,4 +1,4 @@
-import { For } from "solid-js";
+import { For, Show } from "solid-js";
 import { FileText, GitBranch } from "lucide-solid";
 import { INTERACTIVE_MOTION } from "./types";
 
@@ -7,38 +7,42 @@ export type ActivityPanel = "git" | "files";
 type ActivityBarProps = {
   activePanel: () => ActivityPanel | null;
   onSelect: (panel: ActivityPanel | null) => void;
+  gitChangeCount?: () => number;
 };
 
-const ITEMS: Array<{
-  id: ActivityPanel;
-  title: string;
-  hint: string;
-  icon: () => any;
-}> = [
-  {
-    id: "files",
-    title: "Explorer",
-    hint: "Cmd/Ctrl+2",
-    icon: () => <FileText size={18} stroke-width={1.6} />,
-  },
-  {
-    id: "git",
-    title: "Source Control",
-    hint: "Cmd/Ctrl+G",
-    icon: () => <GitBranch size={18} stroke-width={1.6} />,
-  },
-];
-
 export default function ActivityBar(props: ActivityBarProps) {
+  const items: Array<{
+    id: ActivityPanel;
+    title: string;
+    hint: string;
+    icon: () => any;
+    badge?: () => number;
+  }> = [
+    {
+      id: "files",
+      title: "Explorer",
+      hint: "Cmd/Ctrl+2",
+      icon: () => <FileText size={18} stroke-width={1.6} />,
+    },
+    {
+      id: "git",
+      title: "Source Control",
+      hint: "Cmd/Ctrl+G",
+      icon: () => <GitBranch size={18} stroke-width={1.6} />,
+      badge: props.gitChangeCount,
+    },
+  ];
+
   return (
     <div
       data-tauri-drag-region
       class="w-11 shrink-0 border-r theme-border flex flex-col items-center gap-0.5 theme-bg"
       style={{ "padding-top": "44px", "padding-bottom": "8px" }}
     >
-      <For each={ITEMS}>
+      <For each={items}>
         {(item) => {
           const isActive = () => props.activePanel() === item.id;
+          const count = () => item.badge?.() ?? 0;
           return (
             <button
               type="button"
@@ -54,6 +58,17 @@ export default function ActivityBar(props: ActivityBarProps) {
                 }`}
               />
               {item.icon()}
+              <Show when={count() > 0}>
+                <span
+                  class="absolute top-1 right-1 min-w-[14px] h-[14px] px-[3px] rounded-full flex items-center justify-center text-[9px] font-bold leading-none"
+                  style={{
+                    "background-color": "var(--ui-accent)",
+                    color: "var(--ui-bg)",
+                  }}
+                >
+                  {count() > 99 ? "99+" : count()}
+                </span>
+              </Show>
             </button>
           );
         }}

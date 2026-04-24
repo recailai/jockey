@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 agent-client-protocol = "0.10.4"
+base64 = "0.22"
 async-trait = "0.1.89"
 dashmap = "6.1.0"
 dirs = "6"

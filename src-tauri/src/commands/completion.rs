@@ -238,7 +238,7 @@ fn complete_path_mentions(cwd: &str, query: &str, limit: usize) -> Vec<MentionCa
     };
     for entry in entries.flatten() {
         let file_name = entry.file_name().to_string_lossy().to_string();
-        if should_skip_name(&file_name) {
+        if should_skip_name(&file_name, false) {
             continue;
         }
         if !name_prefix_lower.is_empty()

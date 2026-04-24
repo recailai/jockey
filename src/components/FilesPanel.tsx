@@ -1,6 +1,6 @@
-import { For, Show, createEffect, createMemo, on, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
-import { ChevronRight, Folder, FolderOpen, File as FileIcon, RefreshCw } from "lucide-solid";
+import { ChevronRight, Folder, FolderOpen, File as FileIcon, RefreshCw, Eye, EyeOff } from "lucide-solid";
 import { fsApi, type DirEntry } from "../lib/tauriApi";
 import { useGitChanged } from "../hooks/useGitChanged";
 
@@ -90,6 +90,7 @@ function TreeNode(props: TreeNodeProps) {
                   <div
                     class="row-item"
                     style={rowStyle(props.depth)}
+                    classList={{ "opacity-60": entry.name.startsWith(".") }}
                     onClick={() => props.toggle(childKey)}
                   >
                     <ChevronRight
@@ -115,6 +116,7 @@ function TreeNode(props: TreeNodeProps) {
               <div
                 class="row-item"
                 style={rowStyle(props.depth + 1)}
+                classList={{ "opacity-60": entry.name.startsWith(".") }}
                 onClick={() => props.onOpenFile(childKey)}
               >
                 <FileIcon size={13} class="shrink-0 theme-muted" />
@@ -130,6 +132,7 @@ function TreeNode(props: TreeNodeProps) {
 
 export default function FilesPanel(props: FilesPanelProps) {
   const [nodes, setNodes] = createStore<Record<string, NodeState>>({});
+  const [showHidden, setShowHidden] = createSignal(false);
   let epoch = 0;
 
   const ensureNode = (key: string) => {
@@ -145,7 +148,7 @@ export default function FilesPanel(props: FilesPanelProps) {
     setNodes(key, "loading", true);
     setNodes(key, "error", null);
     try {
-      const entries = await fsApi.listDir(sid, key);
+      const entries = await fsApi.listDir(sid, key, showHidden());
       if (myEpoch !== epoch) return;
       setNodes(key, "children", entries);
     } catch (e) {
@@ -187,10 +190,20 @@ export default function FilesPanel(props: FilesPanelProps) {
     }
   };
 
+  const refreshAll = () => {
+    for (const [key, node] of Object.entries(nodes)) {
+      if (node?.expanded) void fetchChildren(key);
+    }
+  };
+
   const sessionKey = createMemo(() => `${props.appSessionId() ?? ""}:${props.cwd() ?? ""}`);
   createEffect(on(sessionKey, () => {
     reset();
   }));
+
+  createEffect(on(showHidden, () => {
+    refreshAll();
+  }, { defer: true }));
 
   let gitChangedTimer: ReturnType<typeof setTimeout> | null = null;
   const pendingRefreshKeys = new Set<string>();
@@ -229,6 +242,16 @@ export default function FilesPanel(props: FilesPanelProps) {
     <div class="flex flex-col h-full overflow-hidden theme-bg">
       <div class="panel-header">
         <span class="panel-header-title">Explorer</span>
+        <button
+          type="button"
+          class="icon-btn"
+          title={showHidden() ? "Hide dotfiles" : "Show dotfiles"}
+          onClick={() => setShowHidden((v) => !v)}
+        >
+          <Show when={showHidden()} fallback={<Eye size={13} />}>
+            <EyeOff size={13} />
+          </Show>
+        </button>
         <button type="button" class="icon-btn" title="Refresh" onClick={() => reset()}>
           <RefreshCw size={13} />
         </button>

@@ -5,7 +5,7 @@ import { RUNTIME_COLOR, RUNTIMES, flattenConfigValues } from "../types";
 import { EmptyState, FieldRow, TextInput, InlineSelect, ActionButton, Badge } from "./primitives";
 import type { AcpMcpServer } from "./primitives";
 import { mcpTransport, mcpDisplayUri, parseCommandArgs } from "./primitives";
-import { assistantApi, configApi, roleApi, parseError } from "../../lib/tauriApi";
+import { roleApi, parseError } from "../../lib/tauriApi";
 
 export function RolesTab(props: {
   roles: Accessor<Role[]>;

@@ -146,6 +146,7 @@
 ### Desktop Polish
 - [ ] Background throttling configuration
 - [ ] Confirmation prompts for high-risk commands
+- [ ] PR button (GitPullRequest) in StatusBar does not open system browser — `openUrl` from `@tauri-apps/plugin-opener` is called correctly and `opener:allow-open-url` capability is set, but the URL never opens. Debug: confirm URL is returned from `git_pr_url_cmd`, check Tauri devtools for IPC errors on the `plugin:opener|open-url` call, verify scope config in `capabilities/default.json`.
 
 ### UI/UX Refinements
 - [ ] Dark-mode visual refresh with depth and elevation

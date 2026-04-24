@@ -1,10 +1,10 @@
-import { createSignal } from "solid-js";
-import type { Role, AssistantRuntime, AppSkill, AcpConfigOption } from "../components/types";
-import { DEFAULT_ROLE_ALIAS, DEFAULT_BACKEND_ROLE } from "../components/types";
+import type { AcpConfigOption } from "../components/types";
+import { DEFAULT_BACKEND_ROLE } from "../components/types";
 import type { SessionManager } from "./useSessionManager";
 import type { StreamEngine } from "./useStreamEngine";
-import { assistantApi, roleApi, skillApi } from "../lib/tauriApi";
-import { createRunTokenSource, type RunToken } from "../lib/runToken";
+import { assistantApi } from "../lib/tauriApi";
+import { useAgentData } from "./useAgentData";
+import { useRunTokens } from "./useRunTokens";
 
 export function useAgentContext(
   sessionManager: SessionManager,
@@ -18,68 +18,40 @@ export function useAgentContext(
     activeSession,
     updateSession,
     mutateSession,
-    patchActiveSession,
     pushMessage,
     getSessionIndex,
   } = sessionManager;
 
   const { acceptingStreams, finalizeSessionStream } = streamEngine;
 
-  const [roles, setRoles] = createSignal<Role[]>([]);
-  const [assistants, setAssistants] = createSignal<AssistantRuntime[]>([]);
-  const [skills, setSkills] = createSignal<AppSkill[]>([]);
+  const agentData = useAgentData(sessionManager, showToast);
+  const {
+    roles,
+    setRoles,
+    assistants,
+    setAssistants,
+    skills,
+    setSkills,
+    slashCliCacheRef,
+    normalizeRuntimeKey,
+    isCustomRole,
+    activeBackendRole,
+    refreshRoles,
+    refreshSkills,
+    setPreferredAssistant,
+    refreshAssistants,
+  } = agentData;
+
+  const runTokens = useRunTokens();
+  const { getRunToken, bumpRunToken, getCanceledRunToken, isRunCancelled } = runTokens;
 
   const runtimeConfigCache = new Map<string, { options: AcpConfigOption[]; modes: string[] }>();
 
-  const normalizeRuntimeKey = (runtimeKey: string): string => {
-    const k = runtimeKey.trim().toLowerCase();
-    if (k === "claude" || k === "claude-acp") return "claude-code";
-    if (k === "gemini") return "gemini-cli";
-    if (k === "codex" || k === "codex-acp") return "codex-cli";
-    return k;
-  };
   const commandCacheKey = (runtimeKey: string, roleName: string) => `${runtimeKey}:${roleName}`;
-
-  const runTokens = createRunTokenSource();
-
-  const getRunToken = () => runTokens.current();
-  const bumpRunToken = () => runTokens.next();
-  const getCanceledRunToken = () => runTokens.cancelledUpTo();
-  const isRunCancelled = (token: RunToken) => runTokens.isCancelled(token);
-
-  const isCustomRole = () => {
-    const s = activeSession();
-    return s ? s.activeRole !== DEFAULT_ROLE_ALIAS && s.activeRole !== DEFAULT_BACKEND_ROLE : false;
-  };
-
-  const activeBackendRole = () => isCustomRole() ? (activeSession()?.activeRole ?? DEFAULT_BACKEND_ROLE) : DEFAULT_BACKEND_ROLE;
 
   const runtimeForRole = (roleName: string): string | null => {
     if (!isCustomRole() || roleName === DEFAULT_BACKEND_ROLE) return activeSession()?.runtimeKind ?? null;
     return roles().find((r) => r.roleName === roleName)?.runtimeKind ?? null;
-  };
-
-  // slashCliCache is shared between useAgentContext and useCompletions;
-  // we keep it here and expose a reset helper used by refreshRoles/refreshAssistants
-  let slashCliCacheRef: { cache: null | unknown[]; version: number } = { cache: null, version: 0 };
-
-  const refreshRoles = async () => {
-    try {
-      const rows = await roleApi.list();
-      setRoles(rows);
-      slashCliCacheRef.cache = null;
-    } catch (e) {
-      showToast(`Failed to load roles: ${String(e)}`);
-    }
-  };
-
-  const refreshSkills = async () => {
-    try {
-      const rows = await skillApi.list();
-      setSkills(rows);
-    } catch (e) {
-      showToast(`Failed to load skills: ${String(e)}`);
-    }
   };
 
   const fetchConfigOptions = async (runtimeKey: string, roleName?: string): Promise<AcpConfigOption[]> => {
@@ -182,27 +154,6 @@ export function useAgentContext(
     });
   };
 
-  const setPreferredAssistant = (assistantKey: string | null) => {
-    patchActiveSession({ runtimeKind: assistantKey });
-  };
-
-  const refreshAssistants = async () => {
-    try {
-      const rows = await assistantApi.detect();
-      setAssistants(rows);
-      slashCliCacheRef.cache = null;
-      const current = activeSession()?.runtimeKind ?? null;
-      const currentAvailable = current ? rows.find((a) => a.key === current && a.available) : null;
-      if (currentAvailable) return;
-      const first = rows.find((a) => a.available) ?? null;
-      if (first) {
-        setPreferredAssistant(first.key);
-      }
-    } catch (e) {
-      showToast(`Failed to detect assistants: ${String(e)}`);
-    }
-  };
-
   const resetActiveAgentContext = async () => {
     const sid = activeSessionId();
     const role = activeBackendRole();
@@ -285,21 +236,10 @@ export function useAgentContext(
 
     const role = activeBackendRole();
 
-    // Preserve any partial output the user has already seen: flush
-    // streamingMessage (plus tool calls / segments) into a persistent message
-    // before we mark this run cancelled. Without this, mid-stream cancel erases
-    // everything that was rendered live.
-    //
-    // expectedRunToken is the current (pre-cancel) token, so finalize targets
-    // the right run; finalize itself clears streamingMessage + streamingRunToken.
-    // Only finalize when we actually have an owning run — otherwise the stream
-    // isn't ours to finalize.
     if (sess.streamingRunToken !== null && sess.streamingMessage) {
       finalizeSessionStream(sid, role, undefined, sess.streamingRunToken);
     }
 
-    // Mark current run token as cancelled so its pending sendRaw promise bails
-    // out of post-await work (see useMessageSend).
     runTokens.markCancelled();
     acceptingStreams.delete(sid);
     updateSession(sid, {
@@ -310,9 +250,6 @@ export function useAgentContext(
     });
     pushMessage("event", "Cancellation requested.");
 
-    // Await cancelSession — the Rust worker now blocks on the old prompt's
-    // PROMPT_LOCK (up to 5s) before responding, so by the time this resolves
-    // the old turn has drained and we can safely launch the next queued send.
     try {
       await assistantApi.cancelSession(role, sid);
     } catch { }

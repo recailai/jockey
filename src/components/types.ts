@@ -56,7 +56,7 @@ export type AppSegment = { kind: "text"; text: string } | { kind: "tool"; tc: Ap
 export type AppMessage = { id: string; roleName: string; text: string; at: number; toolCalls?: AppToolCall[]; segments?: AppSegment[] };
 export type AppMentionItem = { value: string; kind: "role" | "file" | "dir" | "hint" | "command" | "skill"; detail: string };
 
-export type PreviewMode = "diff" | "file" | "preview";
+export type PreviewMode = "diff" | "file" | "preview" | "image";
 export type PreviewTab = {
   id: string;
   cwd: string;

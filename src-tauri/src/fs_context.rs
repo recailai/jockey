@@ -43,11 +43,11 @@ pub(crate) fn relative_or_abs(path: &std::path::Path, cwd: &str) -> String {
     path.to_string_lossy().to_string()
 }
 
-pub(crate) fn should_skip_name(name: &str) -> bool {
+pub(crate) fn should_skip_name(name: &str, show_hidden: bool) -> bool {
     if name.starts_with('.') {
-        return true;
+        return !show_hidden;
     }
-    matches!(name, "node_modules" | "dist" | "build" | "target" | ".next")
+    matches!(name, "node_modules" | "dist" | "build" | "target")
 }
 
 pub(crate) fn looks_binary(bytes: &[u8]) -> bool {
@@ -111,7 +111,7 @@ pub(crate) fn collect_dir_files(
         for entry in entries.flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
-            if should_skip_name(&name) {
+            if should_skip_name(&name, false) {
                 continue;
             }
             let Ok(ft) = entry.file_type() else {
