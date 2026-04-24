@@ -381,6 +381,29 @@ body {
 .theme-dropdown-item:hover { background-color: var(--ui-accent-soft); color: var(--ui-text); }
 .theme-dropdown-item-active { background-color: var(--ui-accent-soft); color: var(--ui-text); }
 
+/* Context menu (right-click) */
+.ctx-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.375rem 0.75rem;
+  text-align: left;
+  font-size: 12px;
+  color: var(--ui-text);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.ctx-menu-item:hover { background-color: var(--ui-accent-soft); }
+.ctx-menu-item > svg { color: var(--tone-500); flex-shrink: 0; }
+.ctx-menu-sep {
+  height: 1px;
+  background: var(--ui-border);
+  margin: 0.25rem 0;
+}
+
 /* Input */
 .theme-input {
   background-color: var(--ui-surface-muted);

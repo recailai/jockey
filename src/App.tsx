@@ -152,7 +152,7 @@ export default function App() {
     getSessionIndex,
   } = sessionManager;
 
-  const { gitChangeCount } = useGitPoller(activeSession);
+  const { gitChangeCount, gitStatus, refetch: refetchGitStatus } = useGitPoller(activeSession);
 
   // Minimal projection for SessionTabs — only re-computes when id/title/status change,
   // not on every streaming delta. Prevents full For reconciliation on each stream update.
@@ -441,11 +441,14 @@ export default function App() {
             class="shrink-0 border-r theme-border flex flex-col min-h-0 theme-bg"
             style={{ width: `${sidebarWidth()}px` }}
           >
+            <div data-tauri-drag-region class="h-[34px] shrink-0" />
             <Suspense fallback={<div class="flex-1 theme-bg" />}>
               <Show when={sidebarPanel() === "git"}>
                 <GitPanel
                   appSessionId={() => activeSession()?.id}
                   cwd={() => activeSession()?.cwd ?? null}
+                  gitStatus={gitStatus}
+                  onRefresh={refetchGitStatus}
                   onAddMention={insertMentionAtCaret}
                   onCollapse={() => setSidebarPanel(null)}
                   onOpenDiff={(path, staged, untracked) => {
@@ -490,6 +493,7 @@ export default function App() {
         <div class="flex flex-1 flex-col min-h-0 min-w-0">
           <div class="flex flex-1 flex-col min-h-0" style={{ "background-color": "var(--ui-bg)", "background-image": "radial-gradient(ellipse 80% 50% at 50% 0%, var(--ui-accent-soft), rgba(255,255,255,0))" }}>
             <SessionTabs
+              leadingInsetPx={sidebarPanel() === null ? 36 : 0}
               sessions={sessionTabs()}
               activeSessionId={activeSessionId}
               setActiveSessionId={setActiveSessionId}
@@ -607,6 +611,7 @@ export default function App() {
         <StatusBar
           appSessionId={() => activeSession()?.id}
           cwd={() => activeSession()?.cwd ?? null}
+          gitStatus={gitStatus}
           onOpenGit={() => setSidebarPanel("git")}
         />
       </Suspense>

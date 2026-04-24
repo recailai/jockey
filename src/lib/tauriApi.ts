@@ -187,6 +187,16 @@ export type BranchInfo = {
   upstream: string | null;
 };
 
+export type GitRemoteInfo = {
+  host: string;
+  owner: string;
+  repo: string;
+  webUrl: string;
+  branchUrl: string | null;
+  prUrl: string | null;
+  compareUrl: string | null;
+};
+
 export const gitApi = {
   status: (appSessionId?: string | null) =>
     call<GitState>("git_status_cmd", { appSessionId: appSessionId ?? null }),
@@ -196,6 +206,8 @@ export const gitApi = {
     call<void>("git_checkout_cmd", { appSessionId: appSessionId ?? null, branch }),
   prUrl: (appSessionId?: string | null) =>
     call<string | null>("git_pr_url_cmd", { appSessionId: appSessionId ?? null }),
+  remoteInfo: (appSessionId?: string | null) =>
+    call<GitRemoteInfo | null>("git_remote_info_cmd", { appSessionId: appSessionId ?? null }),
   diff: (
     appSessionId: string | null | undefined,
     path: string,

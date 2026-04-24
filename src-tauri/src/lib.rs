@@ -369,6 +369,7 @@ pub fn run() {
             commands::git_cmd::git_list_branches_cmd,
             commands::git_cmd::git_checkout_cmd,
             commands::git_cmd::git_pr_url_cmd,
+            commands::git_cmd::git_remote_info_cmd,
             commands::fs_cmd::list_dir_cmd,
             commands::fs_cmd::read_file_base64_cmd,
             db::app_session::list_app_sessions,
