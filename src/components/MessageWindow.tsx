@@ -7,6 +7,7 @@ import { identicon } from "../lib/identicon";
 import { renderMd, renderMdCached } from "../lib/markdown";
 import { ToolCallGroup } from "./ToolCallGroup";
 import { PermissionModal } from "./PermissionModal";
+import SessionErrorBanner from "./SessionErrorBanner";
 
 function highlightText(text: string, query: string): string {
   if (!query) return text;
@@ -17,6 +18,7 @@ function highlightText(text: string, query: string): string {
 type MessageWindowProps = {
   activeSessionId: Accessor<string | null>;
   activeSession: Accessor<AppSession | null>;
+  activeBackendRole: () => string;
   patchActiveSession: (patch: Partial<AppSession>) => void;
   onResetAgentContext?: () => void;
   onReconnectAgent?: () => void;
@@ -272,7 +274,7 @@ export default function MessageWindow(props: MessageWindowProps) {
                 <Show when={msg.segments && msg.segments.length > 0} fallback={
                   <div class="md-prose" innerHTML={q ? highlightText(renderMdCached(msg.id, msg.text), q) : renderMdCached(msg.id, msg.text)} />
                 }>
-                  <SegmentList segments={msg.segments!} />
+                  <SegmentList segments={msg.segments!} terminals={props.activeSession()?.terminals} />
                 </Show>
               </div>
             </div>
@@ -321,7 +323,10 @@ export default function MessageWindow(props: MessageWindowProps) {
                   </Show>
                 </>
               }>
-                <StreamSegmentList segments={props.activeSession()?.streamSegments ?? []} />
+                <StreamSegmentList
+                  segments={props.activeSession()?.streamSegments ?? []}
+                  terminals={props.activeSession()?.terminals}
+                />
               </Show>
               <Show when={props.activeSession()?.thoughtText}>
                 <div class="mt-2 rounded-md border theme-border theme-panel px-2.5 py-2 text-[11px] theme-muted leading-relaxed font-mono whitespace-pre-wrap break-words">
@@ -338,6 +343,12 @@ export default function MessageWindow(props: MessageWindowProps) {
           </div>
         )}
       </Show>
+      <SessionErrorBanner
+        activeSession={props.activeSession}
+        activeSessionId={props.activeSessionId}
+        activeBackendRole={props.activeBackendRole}
+        patchActiveSession={props.patchActiveSession}
+      />
       <PermissionModal
         activeSession={props.activeSession}
         patchActiveSession={props.patchActiveSession}
@@ -439,18 +450,18 @@ function collectToolGroups(segments: AppSegment[]): Array<{ kind: "text"; text: 
   return result;
 }
 
-function SegmentList(props: { segments: AppSegment[] }) {
+function SegmentList(props: { segments: AppSegment[]; terminals?: AppSession["terminals"] }) {
   const groups = createMemo(() => collectToolGroups(props.segments));
   return (
     <For each={groups()}>{(g) => (
       g.kind === "text"
         ? <div class="md-prose" innerHTML={renderMd(g.text)} />
-        : <ToolCallGroup tools={g.tools} streaming={false} />
+        : <ToolCallGroup tools={g.tools} streaming={false} terminals={props.terminals} />
     )}</For>
   );
 }
 
-function StreamSegmentList(props: { segments: AppSegment[] }) {
+function StreamSegmentList(props: { segments: AppSegment[]; terminals?: AppSession["terminals"] }) {
   const groups = createMemo(() => collectToolGroups(props.segments));
   return (
     <Index each={groups()}>{(g) => (
@@ -459,7 +470,11 @@ function StreamSegmentList(props: { segments: AppSegment[] }) {
           <div class="md-prose" innerHTML={renderMd((g() as { kind: "text"; text: string }).text)} />
         </Match>
         <Match when={g().kind === "tools"}>
-          <ToolCallGroup tools={(g() as { kind: "tools"; tools: AppToolCall[] }).tools} streaming={true} />
+          <ToolCallGroup
+            tools={(g() as { kind: "tools"; tools: AppToolCall[] }).tools}
+            streaming={true}
+            terminals={props.terminals}
+          />
         </Match>
       </Switch>
     )}</Index>

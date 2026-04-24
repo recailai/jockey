@@ -568,6 +568,7 @@ export default function App() {
                 <MessageWindow
                   activeSessionId={activeSessionId}
                   activeSession={activeSession}
+                  activeBackendRole={activeBackendRole}
                   patchActiveSession={patchActiveSession}
                   onResetAgentContext={resetActiveAgentContext}
                   onReconnectAgent={reconnectActiveAgent}
