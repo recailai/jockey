@@ -354,19 +354,29 @@ export default function MessageWindow(props: MessageWindowProps) {
         patchActiveSession={props.patchActiveSession}
       />
       <Show when={props.activeSession()?.currentPlan}>
-        {(plan) => (
-          <div class="rounded-lg border theme-border theme-surface px-3 py-2 my-2">
-            <div class="mb-1 text-xs font-semibold theme-muted">Plan</div>
-            <ol class="list-inside list-decimal space-y-0.5 text-xs">
-              <For each={plan()}>{(entry) => (
-                <li class="flex items-center gap-1.5">
-                  <span class={`inline-block h-1.5 w-1.5 rounded-full ${entry.status === "completed" ? "bg-emerald-400" : entry.status === "in_progress" ? "bg-amber-400 animate-pulse" : "bg-zinc-500"}`} />
-                  <span class="theme-text">{entry.content ?? entry.title ?? entry.description ?? "step"}</span>
-                </li>
-              )}</For>
-            </ol>
-          </div>
-        )}
+        {(plan) => {
+          const total = () => plan().length;
+          const done = () => plan().filter((e) => e.status === "completed").length;
+          const running = () => plan().some((e) => e.status === "in_progress");
+          return (
+            <details class="group/plan rounded-lg border theme-border theme-surface px-3 py-2 my-2">
+              <summary class="flex cursor-pointer items-center gap-2 text-xs font-semibold theme-muted select-none list-none">
+                <span class={`inline-block h-1.5 w-1.5 rounded-full ${running() ? "bg-amber-400 animate-pulse" : done() === total() && total() > 0 ? "bg-emerald-400" : "bg-zinc-500"}`} />
+                <span class="theme-text">Plan</span>
+                <span class="ml-auto text-[10px] theme-muted font-mono bg-[var(--ui-panel-2)] px-1.5 py-0.5 rounded-md">{done()}/{total()}</span>
+                <svg class="w-3 h-3 theme-muted transition-transform duration-150 group-open/plan:rotate-180" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+              </summary>
+              <ol class="list-inside list-decimal space-y-0.5 text-xs mt-2">
+                <For each={plan()}>{(entry) => (
+                  <li class="flex items-center gap-1.5">
+                    <span class={`inline-block h-1.5 w-1.5 rounded-full ${entry.status === "completed" ? "bg-emerald-400" : entry.status === "in_progress" ? "bg-amber-400 animate-pulse" : "bg-zinc-500"}`} />
+                    <span class="theme-text">{entry.content ?? entry.title ?? entry.description ?? "step"}</span>
+                  </li>
+                )}</For>
+              </ol>
+            </details>
+          );
+        }}
       </Show>
       <Show when={props.activeSession()?.submitting && !props.activeSession()?.streamingMessage}>
         <div class="flex items-center gap-2 px-1 text-xs theme-muted opacity-80 mt-2">
