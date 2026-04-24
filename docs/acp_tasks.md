@@ -135,6 +135,257 @@ without a restart.
 
 ---
 
+### P1.6: Zed-style "+" menu + settings surface redesign
+
+#### Background
+
+Zed's agent panel exposes an "+" dropdown (MCP Servers / Rules /
+Profiles / Settings / Reauthenticate / Toggle Threads Sidebar) and a
+Settings page organized as External Agents / MCP Servers / LLM
+Providers. Jockey's equivalent is the gear icon in `SessionTabs`
+opening `ConfigDrawer`, which conflates theme, assistant runtime
+selection, and role list.
+
+Key differences from Zed's model, per the design decisions captured
+for this task:
+
+- **Role is top-level and global** (cross-project). Do not split into
+  separate `ExternalAgent` + `Profile` tables; the existing `roles`
+  table already captures the full "profile" bundle. Skip Zed's
+  Profiles menu item entirely.
+- **MCP servers become a global pool** with per-role enable/disable.
+  Today MCP is embedded in `Role.mcpServersJson`; the refactor
+  introduces a separate `mcp_servers` table and a join table
+  `role_mcp_servers (role_id, mcp_server_id, enabled)`, and
+  eventually supports **dynamic enable/disable on a live session**
+  without cold restart.
+- **Four independent concepts all coexist**: `systemPrompt`,
+  `rules`, `skills`, `mcpServers`. They are not aliases or
+  rebrandings of each other. Verified via
+  `src-tauri/src/chat/prompt_builder.rs:24-30`: the existing
+  builder only knows about `systemPrompt`. Rules are a new
+  concept layered on top.
+  - **`systemPrompt`** (existing, per-role): the always-injected
+    "System:\n…" block at the start of every prompt. Unchanged.
+  - **`rules`** (new, global with per-role selection): a library
+    of named, reusable rule entries (each is name + content
+    markdown). A role can enable any subset of rules; enabled
+    rules are concatenated into the prompt after
+    `systemPrompt`. Independent of `Role.systemPrompt` so the
+    same rules can be shared across roles.
+  - **`skills`** (existing `AppSkill`): user-triggered via
+    `@mention` in chat, inserted into the message text at send
+    time. Not auto-injected.
+  - **`mcpServers`** (existing, migrated to global pool): tool
+    providers attached to a session at cold-start.
+  All four are surfaced in the "+" menu and in Settings as
+  separate sections.
+- **Drop Zed's Reauthenticate menu item.** The
+  `SessionErrorBanner` `Reconnect` action already covers the same
+  ground.
+
+#### Goal
+
+Replace the gear icon with a richer "+" menu that consolidates
+session-scoped actions (MCP, Rules, Skills, Settings) and redesign
+`ConfigDrawer` (or replace it with a new Settings page) so the
+sections match Zed's External Agents / MCP Servers / LLM Providers /
+Rules / Skills layout, without changing Jockey's semantics (role is
+top-level, MCP is a global pool).
+
+#### Implementation tasks
+
+##### P1.6-a: "+" menu component
+
+- New component `src/components/AgentMenu.tsx`. Dropdown anchored to
+  a button placed next to (or replacing) the gear in `SessionTabs`.
+- Menu items — designed to be extension-friendly; each item is an
+  entry in a typed `AgentMenuItem[]` array so future items are a
+  one-line addition:
+  ```ts
+  type AgentMenuItem = {
+    id: string;
+    label: string;
+    section?: string;
+    shortcut?: string;  // "⌥⌘M" etc.
+    icon?: JSX.Element;
+    onSelect: () => void;
+    when?: () => boolean;  // conditional visibility
+  };
+  ```
+- Initial items:
+  - `MCP Servers → View all`            (⌥⌘M) opens MCP page
+  - `MCP Servers → Add custom server…`  opens quick-add modal
+  - `Rules → Manage`                    (⌥⌘L) opens rules library
+  - `Rules → Add rule…`                 opens quick-add rule modal
+  - `Skills`                            (⌥⌘K) opens skills manager
+  - `System Prompt`                     (⌥⌘P) jumps into the active
+                                        role's `systemPrompt` editor
+  - `Roles`                             opens roles manager
+  - `Settings`                          (⌥⌘,) opens settings page
+
+##### P1.6-b: Quick-add MCP server modal
+
+- New component `src/components/QuickAddMcpServerModal.tsx`.
+- Transport switch: stdio / http / sse. Form fields from
+  `src/components/management/primitives.tsx` (`McpServerStdio`,
+  `McpServerHttp`, `McpServerSse`).
+- Submit writes to the **global `mcp_servers` table** (see data
+  model below) and, optionally via a "Enable for this role"
+  checkbox (default on), adds a row to `role_mcp_servers`.
+- Shared form extracted into
+  `src/components/mcp/McpServerForm.tsx` so the modal, the settings
+  page, and the roles page all reuse it.
+
+##### P1.6-c: Data model — extract global MCP pool
+
+- New SQLite tables (in `src-tauri/src/db/mod.rs`):
+  ```
+  mcp_servers(
+    id TEXT PRIMARY KEY,
+    name TEXT UNIQUE,
+    transport TEXT CHECK IN ('stdio','http','sse'),
+    config_json TEXT NOT NULL,   -- transport-specific payload
+    created_at INTEGER, updated_at INTEGER
+  )
+  role_mcp_servers(
+    role_id TEXT NOT NULL REFERENCES roles(id),
+    mcp_server_id TEXT NOT NULL REFERENCES mcp_servers(id),
+    enabled INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY(role_id, mcp_server_id)
+  )
+  ```
+- Migration: on schema version bump, read every
+  `roles.mcp_servers_json`, upsert each entry into `mcp_servers`
+  (dedup by name), populate `role_mcp_servers`. Leave
+  `roles.mcp_servers_json` in place for one release cycle as a
+  rollback safety net; stop reading it once the migration runs.
+- Tauri commands: `list_mcp_servers`, `upsert_mcp_server`,
+  `delete_mcp_server`, `set_role_mcp_enabled(role_id,
+  mcp_server_id, enabled)`.
+
+##### P1.6-c.2: Rules library data model + prompt builder change
+
+- New SQLite tables:
+  ```
+  rules(
+    id TEXT PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    content TEXT NOT NULL,        -- markdown
+    description TEXT,
+    created_at INTEGER, updated_at INTEGER
+  )
+  role_rules(
+    role_id TEXT NOT NULL REFERENCES roles(id),
+    rule_id TEXT NOT NULL REFERENCES rules(id),
+    enabled INTEGER NOT NULL DEFAULT 1,
+    ord INTEGER NOT NULL DEFAULT 0,  -- ordering within the role
+    PRIMARY KEY(role_id, rule_id)
+  )
+  ```
+- Tauri commands: `list_rules`, `upsert_rule`, `delete_rule`,
+  `set_role_rules(role_id, Vec<(rule_id, enabled, ord)>)`.
+- Prompt builder (`src-tauri/src/chat/prompt_builder.rs`): extend
+  signature to take `enabled_rules: &[(String /*name*/, String
+  /*content*/)]`. After the existing `System:\n{systemPrompt}`
+  block, append each rule as:
+  ```
+  Rule: {name}
+  {content}
+  ```
+  with a blank line between rules, then the existing `Context:` /
+  `User:` blocks. Order respects `role_rules.ord`.
+- `session_runtime.rs`: load enabled rules for the role alongside
+  the existing `role_system_prompt` lookup and thread them through
+  to `build_prepared_prompt`.
+- A rule's content is **not** automatically reloaded on an
+  existing session — rules apply on cold-start only (no ACP hot
+  update for system-level prompt). Changing the enabled rule set
+  for an active role triggers the same reset-on-next-prompt
+  behavior as MCP changes (P1.6-d).
+
+##### P1.6-d: Dynamic MCP enable/disable on live session
+
+- Today MCP servers are only applied at cold-start (`new_session` /
+  `load_session` carries `mcp_servers: Vec<McpServer>`). ACP does
+  not have a "hot-swap MCP" method on an open session. Deal with
+  this as two phases:
+  - Phase 1 (easy): toggling enabled-state for a role in the UI
+    triggers a `reset_acp_session` on any live session bound to
+    that role so the next prompt cold-starts with the new set.
+    Surface a one-line banner "MCP servers changed — reconnecting"
+    so the user knows why the agent restarted.
+  - Phase 2 (protocol): watch the ACP spec for a `session/mcp_update`
+    capability; gate phase 2 behind capability advertisement and
+    fall back to phase 1 when absent.
+
+##### P1.6-e: Settings page redesign
+
+- Replace the current `ConfigDrawer` with a structured Settings
+  page laid out by section (matches Zed's screenshot). Sections,
+  in order:
+  - **External Agents** — read-only health list of detected
+    runtimes (Claude Code / Codex / Gemini CLI), from
+    `detect_assistants`. No add/remove UI at this level (runtimes
+    are tied to installed binaries).
+  - **MCP Servers** — global pool management. List, add, edit,
+    delete. Each row shows how many roles reference it.
+  - **Rules** — global rules library. List, add, edit, delete
+    rule entries. Each row shows how many roles reference it.
+  - **Skills** — reuse existing `SkillsTab` content.
+  - **Roles** — existing `RolesTab` content, plus per-role:
+    - `systemPrompt` editor (textarea, unchanged)
+    - MCP multi-select (from global pool, each with enable toggle
+      and optional order)
+    - Rules multi-select (from global library, each with enable
+      toggle and order)
+    Inline add forms for MCP / Rules from this page use the same
+    quick-add modals as the "+" menu so behavior is consistent.
+  - **Interface** — theme (unchanged).
+- Keep the drawer layout if the current right-slide panel has
+  muscle memory value; otherwise promote to a full-page route.
+
+##### P1.6-f: Extensibility abstractions
+
+- `AgentMenuItem[]` registry described in P1.6-a makes menu items
+  trivially extensible.
+- Add a `McpTransportKind = 'stdio' | 'http' | 'sse'` string-union
+  central to `primitives.tsx`, so adding a new transport (e.g.
+  future `websocket`) is one extension point not a scattered switch.
+- The Settings page uses a `SettingsSection[]` array driven
+  rendering so new sections (future: LLM Providers, Telemetry, …)
+  are a push, not a rewrite.
+
+#### Acceptance criteria
+
+- Clicking "+" opens the dropdown; all listed items navigate or
+  open modals correctly.
+- Adding an MCP server via the quick-add modal persists to the
+  global `mcp_servers` pool and (when the checkbox is on) enables
+  it for the active session's role via `role_mcp_servers`.
+- Adding a rule via the quick-add modal persists to the global
+  `rules` library and (when the checkbox is on) enables it for
+  the active session's role via `role_rules`.
+- Toggling a rule's enabled state for a role changes the content
+  of the next cold-started prompt (verifiable by inspecting
+  `acp_log_snapshot_cmd` after a prompt) without the other
+  existing rules' order being disturbed.
+- Changing either the enabled MCP set **or** the enabled rules set
+  on a role triggers a `reset_acp_session` for any live session
+  bound to that role, with a one-line banner explaining the
+  reconnect.
+- Renaming a global MCP server or rule propagates to every role
+  that references it (name is not duplicated per role).
+- Deleting a role does not delete any global MCP server or rule
+  (only deletes join-table rows).
+- A new menu item can be added by appending one entry to
+  `AgentMenuItem[]` and not modifying the menu component.
+- A new Settings section can be added by appending one entry to
+  `SettingsSection[]` and not modifying the Settings page shell.
+- `cargo check`, `cargo clippy`, `pnpm exec tsc --noEmit` all clean.
+
+---
+
 ### P1.5: Turn-control UX (queue, interrupt-and-send, approval flow)
 
 Zed delivers "feels like a TUI" interactivity with just three ACP
