@@ -135,20 +135,92 @@ without a restart.
 
 ---
 
+### P1.5: Turn-control UX (queue, interrupt-and-send, approval flow)
+
+Zed delivers "feels like a TUI" interactivity with just three ACP
+primitives: `prompt`, `cancel`, and `request_permission`. A
+user-visible investigation of Zed confirmed there is no stdin /
+keystroke channel back to the agent; the sense of interactivity comes
+entirely from frontend turn-taking state. Jockey already has the
+permission path; it is missing the queue and the interrupt-and-send
+paths.
+
+#### P1.5-a: Auto-send queued messages
+
+`AppSession.queuedMessages` is populated when the user hits send
+while the agent is running, but nothing drains it today. Zed's model
+(`crates/agent_ui/src/conversation_view.rs:1530-1554`): after
+`prompt()` resolves the UI checks the queue and auto-sends the next
+entry.
+
+- Implementation: watch the session's running-state transition to
+  idle in `useStreamEngine` / `streamSession.ts`; if
+  `queuedMessages` is non-empty, shift the head and feed it to the
+  regular submit path.
+- Surface a queue badge and per-entry remove / edit-before-send
+  affordances on the message row above the input box. The "Queued"
+  panel that already exists in `MessageWindow.tsx:369` is the
+  anchor point.
+
+Accept when: typing three messages rapid-fire while the agent runs
+results in all three being processed in order, with a visible queue
+count and the ability to cancel any still-queued entry.
+
+#### P1.5-b: Interrupt-and-send ("jump the queue")
+
+Zed maps this to `cancel` + fresh `prompt` on the next turn. Jockey
+has `assistantApi.cancelSession` but no combined path that also
+carries the new prompt as the next turn.
+
+- Implementation: add a "send now" variant on the chat input that,
+  when the session is running, awaits `cancelSession` (already
+  bounded 5s in the worker), drains any partial stream state, and
+  then submits the message as a normal prompt. On the backend this
+  is just `WorkerMsg::Cancel { result_tx }` then the usual
+  `WorkerMsg::Execute`.
+- UX: show a chip next to the send button during a running turn that
+  toggles between "Queue" (default) and "Send now" (interrupts). A
+  keyboard shortcut (Cmd+Shift+Enter) is the natural fit.
+
+Accept when: hitting "Send now" while the agent is mid-turn cancels
+the current turn within a bounded window and the new message is
+processed as the next turn; queued messages remain queued.
+
+#### P1.5-c: In-stream permission status
+
+Today the `PermissionModal` is a modal overlay. Zed keeps the
+permission UI inline with the tool call card so the rest of the
+stream stays visible. Jockey's `AcpEvent::PermissionRequest` already
+flows through, and every tool call that needs approval already has a
+matching `ToolCall` stream event.
+
+- Implementation: correlate the permission request with the most
+  recent in-flight `ToolCall` (same `appSessionId`, tool status is
+  `pending`) and render the approval buttons inside the tool call
+  card in `ToolCallGroup.tsx`. Keep the modal as a fallback when no
+  correlation exists.
+
+Accept when: a permission prompt for a tool call shows the approve /
+deny buttons directly under the tool call card, with no modal, and
+resolves the same oneshot on the backend.
+
+---
+
 ### P2: UI richness parity with Zed
 
 Zed renders agent responses as a chat-first stream with specialized
 widgets. Concretely, Jockey is missing: inline diffs with hunk
-controls, an interactive PTY widget for agent terminals, collapsible
-thinking blocks with a preview fade-out, clickable file paths that
-hook into the existing preview tab system, and a "remember my choice"
-affordance on permission prompts.
+controls, an ANSI-capable terminal widget for agent terminals,
+collapsible thinking blocks with a preview fade-out, clickable file
+paths that hook into the existing preview tab system, and a
+"remember my choice" affordance on permission prompts.
 
-True CLI-native TUI interactivity (sending keystrokes back to the
-agent-spawned process) is **out of scope**: ACP has no client → agent
-terminal-stdin method. Keyboard input into the embedded terminal
-would have to bypass ACP entirely, which defeats the "tool call"
-model. The items below are ordered by value per unit of work.
+True CLI-native TUI interactivity — sending raw keystrokes back into
+the agent-spawned child process's stdin — remains out of scope: ACP
+has no client → agent terminal-stdin method. (See P1.5 for the
+items that give the *perception* of TUI-level control without needing
+a new protocol channel.) The items below are ordered by value per
+unit of work.
 
 #### P2-a: Clickable file paths → preview tab
 
@@ -227,8 +299,10 @@ scenario appears (session picker UI, per-session cleanup).
   provide.
 - Changing the worker's current-thread + LocalSet model. It correctly
   handles `!Send` `Rc<ClientSideConnection>` without locks.
-- Full TUI-style terminal interactivity (stdin injection into
-  agent-spawned processes). Requires an ACP protocol extension.
+- Raw stdin injection into agent-spawned terminal child processes.
+  No ACP method exists for it; Zed does not implement it either. The
+  user-facing "feels like a TUI" experience (queue, interrupt, inline
+  approvals) is covered by P1.5 and does not need this channel.
 - W3C trace-context propagation in session metadata — owned by
   `rfd_meta_propagation`.
 
