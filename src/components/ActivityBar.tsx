@@ -1,0 +1,63 @@
+import { For } from "solid-js";
+import { FileText, GitBranch } from "lucide-solid";
+import { INTERACTIVE_MOTION } from "./types";
+
+export type ActivityPanel = "git" | "files";
+
+type ActivityBarProps = {
+  activePanel: () => ActivityPanel | null;
+  onSelect: (panel: ActivityPanel | null) => void;
+};
+
+const ITEMS: Array<{
+  id: ActivityPanel;
+  title: string;
+  hint: string;
+  icon: () => any;
+}> = [
+  {
+    id: "files",
+    title: "Explorer",
+    hint: "Cmd/Ctrl+2",
+    icon: () => <FileText size={18} stroke-width={1.6} />,
+  },
+  {
+    id: "git",
+    title: "Source Control",
+    hint: "Cmd/Ctrl+G",
+    icon: () => <GitBranch size={18} stroke-width={1.6} />,
+  },
+];
+
+export default function ActivityBar(props: ActivityBarProps) {
+  return (
+    <div
+      data-tauri-drag-region
+      class="w-11 shrink-0 border-r theme-border flex flex-col items-center gap-0.5 theme-bg"
+      style={{ "padding-top": "44px", "padding-bottom": "8px" }}
+    >
+      <For each={ITEMS}>
+        {(item) => {
+          const isActive = () => props.activePanel() === item.id;
+          return (
+            <button
+              type="button"
+              onClick={() => props.onSelect(isActive() ? null : item.id)}
+              title={`${item.title} (${item.hint})`}
+              class={`relative flex h-10 w-10 items-center justify-center ${INTERACTIVE_MOTION} ${
+                isActive() ? "theme-text" : "theme-muted hover:theme-text"
+              }`}
+            >
+              <span
+                class={`absolute left-0 top-0 bottom-0 w-[2px] ${
+                  isActive() ? "bg-[var(--ui-accent)] opacity-80" : "bg-transparent"
+                }`}
+              />
+              {item.icon()}
+            </button>
+          );
+        }}
+      </For>
+    </div>
+  );
+}

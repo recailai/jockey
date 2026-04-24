@@ -47,10 +47,10 @@ pub(crate) fn should_skip_name(name: &str) -> bool {
     if name.starts_with('.') {
         return true;
     }
-    matches!(name, "node_modules" | "dist" | "build" | "target")
+    matches!(name, "node_modules" | "dist" | "build" | "target" | ".next")
 }
 
-fn looks_binary(bytes: &[u8]) -> bool {
+pub(crate) fn looks_binary(bytes: &[u8]) -> bool {
     if bytes.is_empty() {
         return false;
     }

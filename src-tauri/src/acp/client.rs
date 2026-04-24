@@ -303,6 +303,7 @@ impl acp::Client for JockeyUiClient {
         tokio::fs::write(&args.path, &args.content)
             .await
             .map_err(|e| acp::Error::new(acp::ErrorCode::InternalError.into(), e.to_string()))?;
+        crate::git::notify_changed(&args.path);
         Ok(acp::WriteTextFileResponse::new())
     }
 

@@ -123,7 +123,7 @@ export const assistantApi = {
   prewarmRoleConfig: (roleName: string, appSessionId: string) =>
     call<{ configOptions: unknown[]; modes: string[] }>("prewarm_role_config_cmd", { roleName, appSessionId }),
   listDiscoveredConfig: (roleName: string) =>
-    call<unknown[]>("list_discovered_config_options_cmd", { roleName, appSessionId: "" }),
+    call<unknown[]>("list_discovered_config_options_cmd", { roleName }),
   listDiscoveredModes: (roleName: string) =>
     call<string[]>("list_discovered_modes_cmd", { roleName }),
   listAvailableCommands: (roleName: string, appSessionId: string) =>
@@ -161,4 +161,56 @@ export const completionApi = {
 
 export const configApi = {
   asOptions: (raw: unknown[]) => raw as AcpConfigOption[],
+};
+
+export type GitFileEntry = { path: string; statusLetter: string };
+
+export type GitStatus = {
+  branch: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  detached: boolean;
+  staged: GitFileEntry[];
+  unstaged: GitFileEntry[];
+  untracked: GitFileEntry[];
+};
+
+export type GitState =
+  | { kind: "not_repo"; cwd: string }
+  | { kind: "git_missing" }
+  | ({ kind: "status" } & GitStatus);
+
+export const gitApi = {
+  status: (appSessionId?: string | null) =>
+    call<GitState>("git_status_cmd", { appSessionId: appSessionId ?? null }),
+  diff: (
+    appSessionId: string | null | undefined,
+    path: string,
+    vsHead: boolean,
+    staged: boolean,
+    untracked: boolean,
+  ) =>
+    call<string>("git_diff_cmd", {
+      appSessionId: appSessionId ?? null,
+      path,
+      vsHead,
+      staged,
+      untracked,
+    }),
+  file: (appSessionId: string | null | undefined, path: string) =>
+    call<string>("git_file_cmd", {
+      appSessionId: appSessionId ?? null,
+      path,
+    }),
+};
+
+export type DirEntry = { name: string; isDir: boolean };
+
+export const fsApi = {
+  listDir: (appSessionId: string | null | undefined, relPath: string) =>
+    call<DirEntry[]>("list_dir_cmd", {
+      appSessionId: appSessionId ?? null,
+      relPath,
+    }),
 };

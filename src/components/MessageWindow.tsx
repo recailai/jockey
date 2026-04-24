@@ -1,11 +1,11 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { For, Index, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { Accessor } from "solid-js";
-import { marked } from "marked";
 import type { AppSession, AppMessage, AppToolCall, AppSegment } from "./types";
 import { INTERACTIVE_MOTION, RUNTIME_COLOR, MESSAGE_RENDER_WINDOW, fmt } from "./types";
 import { assistantApi } from "../lib/tauriApi";
 import { identicon } from "../lib/identicon";
+import { renderMd, renderMdCached } from "../lib/markdown";
 
 function highlightText(text: string, query: string): string {
   if (!query) return text;
@@ -22,30 +22,6 @@ type MessageWindowProps = {
   onListMounted?: (id: string, el: HTMLElement) => void;
   onListUnmounted?: (id: string) => void;
 };
-
-const COPY_BTN = `<button data-copy-code class="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded text-[10px] font-mono opacity-0 group-hover/pre:opacity-100 transition-opacity cursor-pointer theme-muted hover:theme-text" style="background:var(--ui-panel)">Copy</button>`;
-
-function injectCopyButtons(html: string): string {
-  return html.replace(/<pre>/g, `<pre class="group/pre relative">${COPY_BTN}`);
-}
-
-const renderMd = (text: string) => injectCopyButtons(marked.parse(text, { async: false }) as string);
-
-// Module-level LRU-style cache for completed (non-streaming) message markdown.
-// Keyed by message id so re-renders never re-parse the same static content.
-const mdCache = new Map<string, string>();
-const MD_CACHE_MAX = 500;
-function renderMdCached(id: string, text: string): string {
-  const hit = mdCache.get(id);
-  if (hit !== undefined) return hit;
-  const html = renderMd(text);
-  if (mdCache.size >= MD_CACHE_MAX) {
-    // evict oldest entry
-    mdCache.delete(mdCache.keys().next().value!);
-  }
-  mdCache.set(id, html);
-  return html;
-}
 
 export default function MessageWindow(props: MessageWindowProps) {
   let listEl: HTMLDivElement | undefined;

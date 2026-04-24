@@ -73,4 +73,6 @@ export const makeDefaultSession = (title: string): AppSession => ({
   status: "idle",
   thoughtText: "",
   queuedMessages: [],
+  previewTabs: [],
+  activePreviewTabId: null,
 });

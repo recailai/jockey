@@ -45,7 +45,7 @@ export default function SessionTabs(props: SessionTabsProps) {
   };
 
   return (
-    <div data-tauri-drag-region class="flex h-[38px] shrink-0 items-center gap-1.5 relative z-10" style="padding-left: max(12px, env(titlebar-area-x, 78px)); padding-right: 10px;">
+    <div data-tauri-drag-region class="flex h-[38px] shrink-0 items-center gap-1.5 relative z-10" style="padding-left: 10px; padding-right: 10px;">
       <For each={props.sessions}>
         {(s) => (
           <div

@@ -55,6 +55,17 @@ export type AcpDeltaEvent = { role: string; delta: string; appSessionId?: string
 export type AppSegment = { kind: "text"; text: string } | { kind: "tool"; tc: AppToolCall };
 export type AppMessage = { id: string; roleName: string; text: string; at: number; toolCalls?: AppToolCall[]; segments?: AppSegment[] };
 export type AppMentionItem = { value: string; kind: "role" | "file" | "dir" | "hint" | "command" | "skill"; detail: string };
+
+export type PreviewMode = "diff" | "file" | "preview";
+export type PreviewTab = {
+  id: string;
+  cwd: string;
+  path: string;
+  label: string;
+  initialMode: PreviewMode;
+  staged: boolean;
+  untracked: boolean;
+};
 export type AppSkill = { id: string; name: string; description: string; content: string; createdAt: number; updatedAt: number };
 
 export type AppSession = {
@@ -85,6 +96,8 @@ export type AppSession = {
   agentState?: string;
   thoughtText?: string;
   queuedMessages: string[];
+  previewTabs: PreviewTab[];
+  activePreviewTabId: string | null;
 };
 
 export const RUNTIMES = ["gemini-cli", "claude-code", "codex-cli", "mock"];

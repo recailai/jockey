@@ -21,6 +21,23 @@ import { appSessionApi } from "./lib/tauriApi";
 
 const ConfigDrawer = lazy(() => import("./components/ConfigDrawer"));
 const ManagementPanel = lazy(() => import("./components/ManagementPanel"));
+const GitPanel = lazy(() => import("./components/GitPanel"));
+const FilesPanel = lazy(() => import("./components/FilesPanel"));
+const PreviewArea = lazy(() => import("./components/PreviewArea"));
+const StatusBar = lazy(() => import("./components/StatusBar"));
+import ActivityBar, { type ActivityPanel } from "./components/ActivityBar";
+import { useResize } from "./lib/useResize";
+import { openPreviewTab, closePreviewTab, setActivePreviewTab, closeAllPreviewTabs, closeOtherPreviewTabs } from "./lib/previewTabs";
+
+const SIDEBAR_WIDTH_KEY = "jockey:sidebar.width";
+const SIDEBAR_PANEL_KEY = "jockey:sidebar.panel";
+const SIDEBAR_DEFAULT_WIDTH = 280;
+const SIDEBAR_MIN_WIDTH = 200;
+const SIDEBAR_MAX_WIDTH = 520;
+const EDITOR_RATIO_KEY = "jockey:editorChatRatio";
+const EDITOR_DEFAULT_RATIO = 0.6;
+const EDITOR_MIN_RATIO = 0.15;
+const EDITOR_MAX_RATIO = 0.85;
 
 export default function App() {
   type Toast = { id: number; message: string; severity?: "error" | "info" };
@@ -48,6 +65,91 @@ export default function App() {
 
   const [showDrawer, setShowDrawer] = createSignal(false);
   const [showManagement, setShowManagement] = createSignal(false);
+
+  // Sidebar is always hidden on startup; SIDEBAR_PANEL_KEY is only consulted by
+  // Cmd/Ctrl+B restore to reopen the user's last-chosen panel.
+  const initialSidebarPanel = (): ActivityPanel | null => null;
+  const initialSidebarWidth = (): number => {
+    try {
+      const raw = window.localStorage.getItem(SIDEBAR_WIDTH_KEY);
+      const n = raw ? parseInt(raw, 10) : NaN;
+      if (Number.isFinite(n)) return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, n));
+    } catch { /* ignore */ }
+    return SIDEBAR_DEFAULT_WIDTH;
+  };
+  const initialEditorRatio = (): number => {
+    try {
+      const raw = window.localStorage.getItem(EDITOR_RATIO_KEY);
+      const n = raw ? parseFloat(raw) : NaN;
+      if (Number.isFinite(n)) return Math.min(EDITOR_MAX_RATIO, Math.max(EDITOR_MIN_RATIO, n));
+    } catch { /* ignore */ }
+    return EDITOR_DEFAULT_RATIO;
+  };
+
+  const [sidebarPanel, setSidebarPanelInternal] = createSignal<ActivityPanel | null>(initialSidebarPanel());
+  const [sidebarWidth, setSidebarWidth] = createSignal(initialSidebarWidth());
+  const [editorRatio, setEditorRatio] = createSignal(initialEditorRatio());
+  const [splitContainerEl, setSplitContainerEl] = createSignal<HTMLDivElement | null>(null);
+  const [splitContainerHeight, setSplitContainerHeight] = createSignal(0);
+
+  const setSidebarPanel = (p: ActivityPanel | null) => {
+    setSidebarPanelInternal(p);
+    try {
+      // Remember last-opened panel for Cmd/Ctrl+B restore; only clear when a new value is set.
+      if (p !== null) window.localStorage.setItem(SIDEBAR_PANEL_KEY, p);
+    } catch { /* ignore */ }
+  };
+  const persistSidebarWidth = (w: number) => {
+    const clamped = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, w));
+    setSidebarWidth(clamped);
+    try { window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(clamped)); } catch { /* ignore */ }
+  };
+  const persistEditorRatio = (r: number) => {
+    const clamped = Math.min(EDITOR_MAX_RATIO, Math.max(EDITOR_MIN_RATIO, r));
+    setEditorRatio(clamped);
+    try { window.localStorage.setItem(EDITOR_RATIO_KEY, String(clamped)); } catch { /* ignore */ }
+  };
+
+  const insertMentionAtCaret = (p: string) => {
+    const target = inputEl;
+    const mention = `@${p}`;
+    const current = input();
+    if (target) {
+      const caret = target.selectionStart ?? current.length;
+      const left = current.slice(0, caret);
+      const right = current.slice(caret);
+      const needsLead = left.length > 0 && !left.endsWith(" ");
+      const insert = `${needsLead ? " " : ""}${mention} `;
+      const next = `${left}${insert}${right}`;
+      setInput(next);
+      const pos = caret + insert.length;
+      queueMicrotask(() => {
+        target.focus();
+        target.setSelectionRange(pos, pos);
+      });
+    } else {
+      setInput(current ? `${current} ${mention} ` : `${mention} `);
+    }
+  };
+
+  const sidebarResize = useResize({
+    axis: "x",
+    min: SIDEBAR_MIN_WIDTH,
+    max: SIDEBAR_MAX_WIDTH,
+    getStart: () => sidebarWidth(),
+    onCommit: persistSidebarWidth,
+  });
+
+  const editorResize = useResize({
+    axis: "y",
+    min: 80,
+    max: 4000,
+    getStart: () => Math.round(editorRatio() * splitContainerHeight()),
+    onCommit: (px) => {
+      const h = splitContainerHeight();
+      if (h > 0) persistEditorRatio(px / h);
+    },
+  });
   const [managementInitialTab, setManagementInitialTab] = createSignal<"sessions" | "workflows" | "roles" | "mcp" | "skills">("sessions");
   const [managementInitialRole, setManagementInitialRole] = createSignal<string | undefined>(undefined);
 
@@ -300,14 +402,39 @@ export default function App() {
       scheduleScrollToBottom,
     }).then((hs) => handlers.push(...hs));
 
+    const toggleSidebar = (panel: ActivityPanel) =>
+      setSidebarPanel(sidebarPanel() === panel ? null : panel);
+    const toggleSidebarRestore = () => {
+      if (sidebarPanel() !== null) { setSidebarPanel(null); return; }
+      let remembered: ActivityPanel | null = null;
+      try {
+        const raw = window.localStorage.getItem(SIDEBAR_PANEL_KEY);
+        if (raw === "git" || raw === "files") remembered = raw;
+      } catch { /* ignore */ }
+      setSidebarPanel(remembered ?? "files");
+    };
+
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        setShowDrawer((v) => !v);
-      }
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "m") {
-        e.preventDefault();
-        setShowManagement((v) => !v);
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      const inEditableTarget = tag === "INPUT" || tag === "TEXTAREA";
+      switch (e.key) {
+        case "k":
+          e.preventDefault(); setShowDrawer((v) => !v); return;
+        case "m":
+          if (e.shiftKey) { e.preventDefault(); setShowManagement((v) => !v); }
+          return;
+        case "g":
+          e.preventDefault(); toggleSidebar("git"); return;
+        case "1":
+          if (!inEditableTarget) { e.preventDefault(); toggleSidebar("git"); }
+          return;
+        case "2":
+          if (!inEditableTarget) { e.preventDefault(); toggleSidebar("files"); }
+          return;
+        case "b":
+          if (!e.shiftKey && !e.altKey) { e.preventDefault(); toggleSidebarRestore(); }
+          return;
       }
     };
     window.addEventListener("keydown", handleGlobalKeyDown);
@@ -334,57 +461,180 @@ export default function App() {
       class="window-bg h-dvh overflow-hidden text-[var(--ui-text)] relative flex flex-col"
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div class="flex flex-1 flex-col min-h-0" style={{ "background-color": "var(--ui-bg)", "background-image": "radial-gradient(ellipse 80% 50% at 50% 0%, var(--ui-accent-soft), rgba(255,255,255,0))" }}>
-      <SessionTabs
-        sessions={sessionTabs()}
-        activeSessionId={activeSessionId}
-        setActiveSessionId={setActiveSessionId}
-        activeSession={activeSession}
-        patchActiveSession={patchActiveSession}
-        activeBackendRole={activeBackendRole}
-        onNewSession={newSession}
-        onCloseSession={closeSession}
-        updateSession={updateSession}
-        onRefresh={() => { void refreshAssistants(); void refreshRoles(); void refreshSkills(); }}
-        onToggleDrawer={() => setShowDrawer((v) => !v)}
-        onToggleManagement={() => setShowManagement((v) => !v)}
-      />
+      <div class="flex flex-1 flex-row min-h-0 min-w-0">
+        <ActivityBar activePanel={sidebarPanel} onSelect={(p) => setSidebarPanel(p)} />
+        <Show when={sidebarPanel() !== null}>
+          <div
+            class="shrink-0 border-r theme-border flex flex-col min-h-0 theme-bg"
+            style={{ width: `${sidebarWidth()}px` }}
+          >
+            <Suspense fallback={<div class="flex-1 theme-bg" />}>
+              <Show when={sidebarPanel() === "git"}>
+                <GitPanel
+                  appSessionId={() => activeSession()?.id}
+                  cwd={() => activeSession()?.cwd ?? null}
+                  onAddMention={insertMentionAtCaret}
+                  onCollapse={() => setSidebarPanel(null)}
+                  onOpenDiff={(path, staged, untracked) => {
+                    const sid = activeSessionId();
+                    const cwd = activeSession()?.cwd ?? "";
+                    if (!sid || !cwd) return;
+                    openPreviewTab(mutateSession, sid, {
+                      cwd, path, initialMode: "diff", staged, untracked,
+                    });
+                  }}
+                />
+              </Show>
+              <Show when={sidebarPanel() === "files"}>
+                <FilesPanel
+                  appSessionId={() => activeSession()?.id}
+                  cwd={() => activeSession()?.cwd ?? null}
+                  onOpenFile={(path) => {
+                    const sid = activeSessionId();
+                    const cwd = activeSession()?.cwd ?? "";
+                    if (!sid || !cwd) return;
+                    openPreviewTab(mutateSession, sid, {
+                      cwd, path, initialMode: "file", staged: false, untracked: false,
+                    });
+                  }}
+                />
+              </Show>
+            </Suspense>
+          </div>
+          <div
+            class="resizer-x"
+            onMouseDown={sidebarResize.beginResize}
+            title="Drag to resize"
+          />
+          <Show when={sidebarResize.previewPx() !== null}>
+            <div
+              class="pointer-events-none fixed top-0 bottom-0 w-px bg-[var(--ui-accent)] opacity-70 z-[70]"
+              style={{ left: `${(sidebarResize.previewPx() ?? 0) + 44}px` }}
+            />
+          </Show>
+        </Show>
 
-      <MessageWindow
-        activeSessionId={activeSessionId}
-        activeSession={activeSession}
-        patchActiveSession={patchActiveSession}
-        onResetAgentContext={resetActiveAgentContext}
-        onReconnectAgent={reconnectActiveAgent}
-        onListMounted={onListMounted}
-        onListUnmounted={onListUnmounted}
-      />
+        <div class="flex flex-1 flex-col min-h-0 min-w-0">
+          <div class="flex flex-1 flex-col min-h-0" style={{ "background-color": "var(--ui-bg)", "background-image": "radial-gradient(ellipse 80% 50% at 50% 0%, var(--ui-accent-soft), rgba(255,255,255,0))" }}>
+            <SessionTabs
+              sessions={sessionTabs()}
+              activeSessionId={activeSessionId}
+              setActiveSessionId={setActiveSessionId}
+              activeSession={activeSession}
+              patchActiveSession={patchActiveSession}
+              activeBackendRole={activeBackendRole}
+              onNewSession={newSession}
+              onCloseSession={closeSession}
+              updateSession={updateSession}
+              onRefresh={() => { void refreshAssistants(); void refreshRoles(); void refreshSkills(); }}
+              onToggleDrawer={() => setShowDrawer((v) => !v)}
+              onToggleManagement={() => setShowManagement((v) => !v)}
+            />
+
+            <div
+              class="flex flex-1 flex-col min-h-0 relative"
+              ref={(el) => {
+                setSplitContainerEl(el);
+                const ro = new ResizeObserver((entries) => {
+                  for (const e of entries) setSplitContainerHeight(e.contentRect.height);
+                });
+                ro.observe(el);
+                onCleanup(() => ro.disconnect());
+                setSplitContainerHeight(el.clientHeight);
+              }}
+            >
+              <Show when={(activeSession()?.previewTabs.length ?? 0) > 0}>
+                <div
+                  class="shrink-0 overflow-hidden border-b theme-border"
+                  style={{ height: `${Math.round(editorRatio() * splitContainerHeight())}px` }}
+                >
+                  <Suspense fallback={<div class="flex-1 theme-bg" />}>
+                    <PreviewArea
+                      session={activeSession}
+                      appSessionId={() => activeSession()?.id}
+                      onCloseTab={(tabId) => {
+                        const sid = activeSessionId();
+                        if (sid) closePreviewTab(mutateSession, sid, tabId);
+                      }}
+                      onCloseOthers={(tabId) => {
+                        const sid = activeSessionId();
+                        if (sid) closeOtherPreviewTabs(mutateSession, sid, tabId);
+                      }}
+                      onCloseAll={() => {
+                        const sid = activeSessionId();
+                        if (sid) closeAllPreviewTabs(mutateSession, sid);
+                      }}
+                      onActivateTab={(tabId) => {
+                        const sid = activeSessionId();
+                        if (sid) setActivePreviewTab(mutateSession, sid, tabId);
+                      }}
+                      onAddMention={insertMentionAtCaret}
+                    />
+                  </Suspense>
+                </div>
+                <div
+                  class="resizer-y"
+                  onMouseDown={editorResize.beginResize}
+                  title="Drag to resize"
+                />
+                <Show when={editorResize.previewPx() !== null}>
+                  <div
+                    class="pointer-events-none fixed left-0 right-0 h-px bg-[var(--ui-accent)] opacity-70 z-[70]"
+                    style={{
+                      top: `${(splitContainerEl()?.getBoundingClientRect().top ?? 0) + (editorResize.previewPx() ?? 0)}px`,
+                    }}
+                  />
+                </Show>
+              </Show>
+
+              <div class="flex flex-1 flex-col min-h-0">
+                <MessageWindow
+                  activeSessionId={activeSessionId}
+                  activeSession={activeSession}
+                  patchActiveSession={patchActiveSession}
+                  onResetAgentContext={resetActiveAgentContext}
+                  onReconnectAgent={reconnectActiveAgent}
+                  onListMounted={onListMounted}
+                  onListUnmounted={onListUnmounted}
+                />
+              </div>
+            </div>
+          </div>
+
+          <ChatInput
+            input={input}
+            setInput={setInput}
+            activeSession={activeSession}
+            patchActiveSession={patchActiveSession}
+            isCustomRole={isCustomRole}
+            onSubmit={handleSend}
+            onInputEvent={handleInputEvent}
+            onInputKeyDown={handleInputKeyDownFinal}
+            refreshInputCompletions={refreshInputCompletions}
+            mentionOpen={mentionOpen}
+            mentionItems={mentionItems}
+            mentionActiveIndex={mentionActiveIndex}
+            slashOpen={slashOpen}
+            slashItems={slashItems}
+            slashActiveIndex={slashActiveIndex}
+            applyMentionCandidate={applyMentionCandidate}
+            applySlashCandidate={applySlashCandidate}
+            closeMentionMenu={closeMentionMenu}
+            closeSlashMenu={closeSlashMenu}
+            inputElRef={(el) => { inputEl = el; }}
+            mentionCloseTimerRef={mentionCloseTimerRef}
+            mentionDebounceTimerRef={mentionDebounceTimerRef}
+          />
+        </div>
       </div>
 
-      <ChatInput
-        input={input}
-        setInput={setInput}
-        activeSession={activeSession}
-        patchActiveSession={patchActiveSession}
-        isCustomRole={isCustomRole}
-        onSubmit={handleSend}
-        onInputEvent={handleInputEvent}
-        onInputKeyDown={handleInputKeyDownFinal}
-        refreshInputCompletions={refreshInputCompletions}
-        mentionOpen={mentionOpen}
-        mentionItems={mentionItems}
-        mentionActiveIndex={mentionActiveIndex}
-        slashOpen={slashOpen}
-        slashItems={slashItems}
-        slashActiveIndex={slashActiveIndex}
-        applyMentionCandidate={applyMentionCandidate}
-        applySlashCandidate={applySlashCandidate}
-        closeMentionMenu={closeMentionMenu}
-        closeSlashMenu={closeSlashMenu}
-        inputElRef={(el) => { inputEl = el; }}
-        mentionCloseTimerRef={mentionCloseTimerRef}
-        mentionDebounceTimerRef={mentionDebounceTimerRef}
-      />
+      <Suspense fallback={null}>
+        <StatusBar
+          appSessionId={() => activeSession()?.id}
+          cwd={() => activeSession()?.cwd ?? null}
+          onOpenGit={() => setSidebarPanel("git")}
+        />
+      </Suspense>
 
       <Show when={showDrawer()}>
         <Suspense fallback={null}>

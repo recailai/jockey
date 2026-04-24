@@ -5,6 +5,7 @@ mod commands;
 mod db;
 mod error;
 mod fs_context;
+mod git;
 pub mod jockey_mcp;
 mod parser;
 mod runtime_kind;
@@ -80,6 +81,7 @@ pub fn run() {
             let app_dir = app.path().app_local_data_dir()?;
             fs::create_dir_all(&app_dir)?;
             acp::set_app_data_dir(app_dir.clone());
+            git::set_app_handle(app.handle().clone());
 
             let db_path = app_dir.join("jockey.sqlite3");
             // Per-connection PRAGMAs run by the pool on every new connection.
@@ -291,6 +293,7 @@ pub fn run() {
                                     &rn_clone,
                                     &cwd,
                                     Some((&tmp, &sid_clone)),
+                                    false,
                                 ).await;
                             });
                         }
@@ -360,6 +363,10 @@ pub fn run() {
             commands::runtime_cmd::list_available_commands_cmd,
             commands::runtime_cmd::respond_permission,
             commands::runtime_cmd::prewarm_role_config_cmd,
+            commands::git_cmd::git_status_cmd,
+            commands::git_cmd::git_diff_cmd,
+            commands::git_cmd::git_file_cmd,
+            commands::fs_cmd::list_dir_cmd,
             db::app_session::list_app_sessions,
             db::app_session::list_closed_app_sessions,
             db::app_session::create_app_session,

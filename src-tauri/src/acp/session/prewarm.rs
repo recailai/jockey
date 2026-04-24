@@ -22,6 +22,7 @@ struct PrewarmOpts<'a> {
     resume_session_id: Option<String>,
     app_session_id: Option<&'a str>,
     mcp_servers: Vec<agent_client_protocol::McpServer>,
+    force_refresh: bool,
 }
 
 async fn send_prewarm(
@@ -51,6 +52,7 @@ async fn send_prewarm(
         role_config_options: vec![],
         result_tx: Some(tx),
         resume_session_id: opts.resume_session_id,
+        force_refresh: opts.force_refresh,
     });
     Some(rx)
 }
@@ -110,6 +112,7 @@ pub async fn prewarm_role(
         resume_session_id,
         app_session_id,
         mcp_servers,
+        force_refresh: false,
     })
     .await
     else {
@@ -127,11 +130,16 @@ pub async fn prewarm_role_for_config(
     role_name: &str,
     cwd: &str,
     state: Option<(&AppState, &str)>,
+    force_refresh: bool,
 ) -> (Vec<Value>, Vec<String>) {
     let runtime_key = normalize_runtime_key(runtime_kind).unwrap_or(runtime_kind);
-    let resume_session_id = state
-        .as_ref()
-        .and_then(|(s, sid)| load_app_session_role_cli_id(s, sid, runtime_key, role_name));
+    let resume_session_id = if force_refresh {
+        None
+    } else {
+        state
+            .as_ref()
+            .and_then(|(s, sid)| load_app_session_role_cli_id(s, sid, runtime_key, role_name))
+    };
     let app_session_id = state.as_ref().map(|(_, sid)| *sid);
     let mcp_servers = state
         .as_ref()
@@ -145,6 +153,7 @@ pub async fn prewarm_role_for_config(
         resume_session_id,
         app_session_id,
         mcp_servers,
+        force_refresh,
     })
     .await
     else {
@@ -173,6 +182,7 @@ pub async fn refresh_role_config_defs(
         resume_session_id: None,
         app_session_id: None,
         mcp_servers,
+        force_refresh: true,
     })
     .await
     else {
@@ -205,6 +215,7 @@ pub async fn prewarm_role_with_session_id(
         resume_session_id,
         app_session_id: Some(app_session_id),
         mcp_servers,
+        force_refresh: false,
     })
     .await
     else {

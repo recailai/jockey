@@ -295,7 +295,9 @@ pub(crate) fn load_role(state: &AppState, role_name: &str) -> Result<Option<Role
         ).optional().map_err(|e| AppError::db(e.to_string()).to_string())
     })?;
     if let Some(ref role) = result {
-        state.role_cache.insert(role_name.to_string(), std::sync::Arc::new(role.clone()));
+        state
+            .role_cache
+            .insert(role_name.to_string(), std::sync::Arc::new(role.clone()));
     }
     Ok(result)
 }
@@ -340,7 +342,8 @@ pub(crate) fn update_role_config_option_defs_if_changed(
         )
         .map_err(|e| AppError::db(e.to_string()).to_string())?;
         Ok(true)
-    }).map(|changed| {
+    })
+    .map(|changed| {
         if changed {
             state.role_cache.remove(role_name);
         }
