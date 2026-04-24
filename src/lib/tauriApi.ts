@@ -128,6 +128,12 @@ export const assistantApi = {
     call<string[]>("list_discovered_modes_cmd", { roleName }),
   listAvailableCommands: (roleName: string, appSessionId: string) =>
     call<unknown[]>("list_available_commands_cmd", { roleName, appSessionId }),
+  metricsSnapshot: () =>
+    call<Array<Record<string, unknown>>>("acp_metrics_snapshot_cmd"),
+  logSnapshot: (limit?: number) =>
+    call<Array<Record<string, unknown>>>("acp_log_snapshot_cmd", { limit }),
+  activeConnections: () =>
+    call<Array<Record<string, unknown>>>("active_acp_connections_cmd"),
   respondPermission: (requestId: string, optionId: string, cancelled: boolean) =>
     call<void>("respond_permission", { requestId, optionId, cancelled }),
 };

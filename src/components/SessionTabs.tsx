@@ -119,22 +119,28 @@ export default function SessionTabs(props: SessionTabsProps) {
       </button>
       <div class="flex-1" />
       <Show when={(props.activeSession()?.agentModes ?? []).length > 0}>
-        <div class="flex gap-1.5 ml-1.5">
+        <select
+          class={`ml-1.5 h-6 rounded-md border border-[var(--ui-border)] bg-[var(--ui-surface-muted)] px-2 pr-6 text-[10px] font-semibold tracking-wider uppercase theme-muted hover:text-primary hover:border-[var(--ui-border-strong)] focus:outline-none focus:ring-1 focus:ring-indigo-500/30 ${INTERACTIVE_MOTION}`}
+          title="Agent mode"
+          value={props.activeSession()?.currentMode ?? ""}
+          onChange={(e) => {
+            const next = e.currentTarget.value;
+            if (!next) return;
+            const role = props.activeBackendRole();
+            const sid = props.activeSessionId() ?? "";
+            const previous = props.activeSession()?.currentMode ?? null;
+            if (sid) {
+              props.patchActiveSession({ currentMode: next });
+              void assistantApi.setMode(role, next, sid).catch(() => {
+                props.patchActiveSession({ currentMode: previous });
+              });
+            }
+          }}
+        >
           <For each={props.activeSession()?.agentModes ?? []}>
-            {(m) => (
-              <button
-                class={`min-h-6 rounded-md border px-2 py-px text-[9px] font-bold tracking-wider uppercase transition-all duration-200 ${INTERACTIVE_MOTION} ${props.activeSession()?.currentMode === m.id ? "border-indigo-500/40 bg-indigo-500/20 text-indigo-300 shadow-[0_0_8px_rgba(99,102,241,0.15)] ring-1 ring-indigo-500/20" : "border-[var(--ui-border)] bg-[var(--ui-surface-muted)] theme-muted hover:text-primary hover:bg-[var(--ui-surface-muted)] hover:border-[var(--ui-border-strong)]"}`}
-                onClick={() => {
-                  const role = props.activeBackendRole();
-                  const sid = props.activeSessionId() ?? "";
-                  if (sid) void assistantApi.setMode(role, m.id, sid);
-                }}
-              >
-                {m.title ?? m.id}
-              </button>
-            )}
+            {(m) => <option value={m.id}>{m.title ?? m.id}</option>}
           </For>
-        </div>
+        </select>
       </Show>
       <button
         onClick={() => props.onRefresh()}

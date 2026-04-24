@@ -75,4 +75,7 @@ export const makeDefaultSession = (title: string): AppSession => ({
   queuedMessages: [],
   previewTabs: [],
   activePreviewTabId: null,
+  terminals: {},
+  pendingTerminalOutput: {},
+  lastError: null,
 });

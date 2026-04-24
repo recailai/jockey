@@ -1,9 +1,10 @@
 use crate::runtime_kind::RuntimeKind;
 use dashmap::DashMap;
+use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use which::which;
 
@@ -20,6 +21,16 @@ pub fn clear_adapter_cache() {
 }
 
 static APP_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+static ACP_LOG_RING: OnceLock<Mutex<VecDeque<AcpLogEntry>>> = OnceLock::new();
+const ACP_LOG_RING_LIMIT: usize = 512;
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpLogEntry {
+    pub ts_ms: u128,
+    pub event: String,
+    pub payload: Value,
+}
 
 pub fn set_app_data_dir(path: PathBuf) {
     let _ = APP_DATA_DIR.set(path);
@@ -181,6 +192,17 @@ pub(super) fn friendly_error_message(runtime: &str, raw: &str) -> String {
     {
         return format!("[{runtime}] Rate limit exceeded — please wait and retry.");
     }
+    if l.contains("auth_required") {
+        return format!("[{runtime}] Authentication required. Log in to the agent CLI and retry.");
+    }
+    if l.contains("connection_failed") || l.contains("process_crashed") {
+        return format!(
+            "[{runtime}] Agent process exited unexpectedly. It will restart on next message."
+        );
+    }
+    if l.contains("prompt_timeout") {
+        return format!("[{runtime}] Operation timed out — please retry.");
+    }
     if l.contains("epipe") || l.contains("broken pipe") || l.contains("transport closed") {
         return format!(
             "[{runtime}] Agent process exited unexpectedly. It will restart on next message."
@@ -263,5 +285,30 @@ fn supports_arg_in_help(binary: &str, arg_flag: &str) -> bool {
 }
 
 pub(super) fn acp_log(event: &str, payload: Value) {
-    eprintln!("[jockey.acp] {} {} {}", now_ms(), event, payload);
+    let ts_ms = now_ms();
+    if let Ok(mut ring) = ACP_LOG_RING
+        .get_or_init(|| Mutex::new(VecDeque::new()))
+        .lock()
+    {
+        ring.push_back(AcpLogEntry {
+            ts_ms,
+            event: event.to_string(),
+            payload: payload.clone(),
+        });
+        while ring.len() > ACP_LOG_RING_LIMIT {
+            ring.pop_front();
+        }
+    }
+    eprintln!("[jockey.acp] {} {} {}", ts_ms, event, payload);
+}
+
+pub fn acp_log_snapshot(limit: Option<usize>) -> Vec<AcpLogEntry> {
+    let max = limit.unwrap_or(ACP_LOG_RING_LIMIT).min(ACP_LOG_RING_LIMIT);
+    let mut out = ACP_LOG_RING
+        .get_or_init(|| Mutex::new(VecDeque::new()))
+        .lock()
+        .map(|ring| ring.iter().rev().take(max).cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    out.reverse();
+    out
 }

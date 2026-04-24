@@ -2,20 +2,17 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Accessor } from "solid-js";
 import type {
   AcpDeltaEvent,
-  AcpStreamEvent,
   AppSession,
   Role,
   SessionUpdateEvent,
   WorkflowStateEvent,
 } from "../components/types";
-import { now } from "../components/types";
 import {
-  appendAcpDelta,
-  applyAcpStreamEvent,
-  toConnectionLostMessage,
-  toSessionDeltaMessage,
-  toWorkflowStateMessage,
-} from "../lib/acpEventBridge";
+  createAcpEventBus,
+  type AcpConnectionLostPayload,
+  type AcpPrewarmPayload,
+  type AcpStreamPayload,
+} from "../lib/acpEventBus";
 
 type RegisterAcpEventListenersInput = {
   acceptingStreams: Map<string, number>;
@@ -63,155 +60,60 @@ export function useAcpEventListeners() {
       scheduleScrollToBottom,
     } = input;
 
-    // Per-session monotonic seq tracker — surfaces gaps that indicate
-    // a dropped/stalled acp/stream frame (the kind of bug that froze the UI
-    // mid-tool-loop). Reset when accepting flips off.
-    const lastSeqBySession = new Map<string, number>();
-    type PrewarmStage = "warming" | "ready" | "failed";
-    type PrewarmRuntimeState = { stage: PrewarmStage; error?: string };
-    type PrewarmScopeState = {
-      messageId: string;
-      runtimes: Map<string, PrewarmRuntimeState>;
-    };
-    const prewarmState = new Map<string, PrewarmScopeState>();
-
-    const renderPrewarmText = (runtimes: Map<string, PrewarmRuntimeState>): string => {
-      const warming: string[] = [];
-      const ready: string[] = [];
-      const failed: string[] = [];
-      for (const [runtimeKey, state] of runtimes) {
-        if (state.stage === "warming") warming.push(runtimeKey);
-        if (state.stage === "ready") ready.push(runtimeKey);
-        if (state.stage === "failed") failed.push(`${runtimeKey}: ${state.error ?? "unknown error"}`);
-      }
-      const parts: string[] = [];
-      if (warming.length > 0) parts.push(`warming ${warming.join(", ")}`);
-      if (ready.length > 0) parts.push(`ready ${ready.join(", ")}`);
-      if (failed.length > 0) parts.push(`failed ${failed.join("; ")}`);
-      return parts.length > 0 ? `Runtime warmup: ${parts.join(" | ")}` : "Runtime warmup: idle";
-    };
-
-    const upsertPrewarmMessage = (appSessionId: string, runtimeKey: string, state: PrewarmRuntimeState) => {
-      const scopeKey = appSessionId || "__global__";
-      const scope = prewarmState.get(scopeKey) ?? {
-        messageId: `runtime-warmup-${scopeKey}`,
-        runtimes: new Map<string, PrewarmRuntimeState>(),
-      };
-      scope.runtimes.set(runtimeKey, state);
-      prewarmState.set(scopeKey, scope);
-      const text = renderPrewarmText(scope.runtimes);
-
-      if (!appSessionId) {
-        pushMessage("event", text);
-        return;
-      }
-
-      mutateSession(appSessionId, (s) => {
-        const idx = s.messages.findIndex((m) => m.id === scope.messageId);
-        if (idx === -1) {
-          s.messages.push({
-            id: scope.messageId,
-            roleName: "event",
-            text,
-            at: now(),
-          });
-          return;
-        }
-        s.messages[idx].text = text;
-        s.messages[idx].at = now();
-      });
-      scheduleScrollToBottom();
-    };
+    const bus = createAcpEventBus({
+      acceptingStreams,
+      sessions,
+      getSessionIndex,
+      appendStream,
+      pushMessageToSession,
+      pushMessage,
+      onSessionDeltaLine,
+      updateSession,
+      mutateSession,
+      appendThought,
+      normalizeToolLocations,
+      parseAgentCommands,
+      normalizeRuntimeKey,
+      roles,
+      commandCacheKey,
+      scheduleScrollToBottom,
+    });
 
     const listeners = await Promise.all([
       listen<string>("jockey-mcp/error", (ev) => {
-        pushMessage("event", `Jockey MCP bridge failed: ${ev.payload}`);
+        bus.jockeyMcpError(ev.payload);
       }),
-      listen<{ runtimeKey: string; roleName: string; appSessionId: string }>(
+      listen<AcpConnectionLostPayload>(
         "acp/connection-lost",
         (ev) => {
-          const sid = ev.payload.appSessionId;
-          const msg = toConnectionLostMessage(ev.payload);
-          if (sid) {
-            pushMessageToSession(sid, "event", msg);
-          } else {
-            pushMessage("event", msg);
-          }
+          bus.connectionLost(ev.payload);
         },
       ),
-      listen<{ runtimeKey: string; roleName: string; appSessionId: string; status: string | { failed: { error: string } } }>(
+      listen<AcpPrewarmPayload>(
         "acp/prewarm",
         (ev) => {
-          const { runtimeKey, appSessionId, status } = ev.payload;
-          if (status === "started") {
-            upsertPrewarmMessage(appSessionId, runtimeKey, { stage: "warming" });
-          } else if (status === "ready") {
-            upsertPrewarmMessage(appSessionId, runtimeKey, { stage: "ready" });
-          } else if (typeof status === "object" && status && "failed" in status) {
-            const err = (status as { failed: { error: string } }).failed.error;
-            upsertPrewarmMessage(appSessionId, runtimeKey, { stage: "failed", error: err });
-          }
+          bus.prewarm(ev.payload);
         },
       ),
       listen<AcpDeltaEvent & { appSessionId?: string }>("acp/delta", (ev) => {
-        appendAcpDelta(ev.payload, acceptingStreams, sessions, appendStream, getSessionIndex);
+        bus.delta(ev.payload);
       }),
       listen<SessionUpdateEvent & { appSessionId?: string }>("session/update", (ev) => {
-        const line = toSessionDeltaMessage(ev.payload);
-        if (!line) return;
-        onSessionDeltaLine(ev.payload.appSessionId ?? "", line);
+        bus.sessionUpdate(ev.payload);
       }),
       listen<WorkflowStateEvent & { appSessionId?: string }>("workflow/state_changed", (ev) => {
-        const msg = toWorkflowStateMessage(ev.payload);
-        const sid = ev.payload.appSessionId;
-        if (sid) {
-          pushMessageToSession(sid, "event", msg);
-        } else {
-          pushMessage("event", msg);
-        }
+        bus.workflowState(ev.payload);
       }),
-      listen<{ role: string; runtimeKind?: string; appSessionId?: string; seq?: number; event: AcpStreamEvent }>(
+      listen<AcpStreamPayload>(
         "acp/stream",
         (ev) => {
-          const sid = ev.payload.appSessionId;
-          if (!sid) return;
-          if (!acceptingStreams.has(sid)) {
-            // Stream is closed but a frame still arrived — surface it so we
-            // can tell "agent kept emitting after we stopped listening" from
-            // a real backend stall.
-            console.debug("[acp/stream] dropped (not accepting)", { sid, seq: ev.payload.seq, kind: (ev.payload.event as { kind?: string })?.kind });
-            return;
-          }
-          const seq = ev.payload.seq;
-          if (typeof seq === "number") {
-            const prev = lastSeqBySession.get(sid);
-            if (prev !== undefined && seq !== prev + 1) {
-              console.warn("[acp/stream] seq gap", { sid, prev, seq, gap: seq - prev - 1, kind: (ev.payload.event as { kind?: string })?.kind });
-            }
-            lastSeqBySession.set(sid, seq);
-          }
-          applyAcpStreamEvent({
-            sid,
-            roleName: ev.payload.role,
-            runtimeKind: ev.payload.runtimeKind,
-            event: ev.payload.event,
-            patchSession: (sessionId, patch) => updateSession(sessionId, patch),
-            mutateSession,
-            appendThought,
-            normalizeToolLocations,
-            parseAgentCommands,
-            normalizeRuntimeKey,
-            roles,
-            commandCacheKey,
-            scheduleScrollToBottom,
-          });
+          bus.stream(ev.payload);
         },
       ),
     ]);
 
     listeners.push(() => {
-      prewarmState.clear();
-      lastSeqBySession.clear();
+      bus.clear();
     });
 
     return listeners;

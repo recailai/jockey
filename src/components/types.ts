@@ -21,6 +21,7 @@ export type AppToolCall = {
   rawOutput?: unknown;
   rawInputJson?: string;
   rawOutputJson?: string;
+  terminalMeta?: unknown;
 };
 export type AppPlanEntry = { content?: string; title?: string; status?: string; description?: string; priority?: string };
 export type AppPermission = { requestId: string; title: string; description: string | null; options: Array<{ optionId: string; title?: string }> };
@@ -31,11 +32,30 @@ export type AcpStreamEvent = {
   locations?: Array<{ path: string; line?: number }>;
   rawInput?: unknown;
   rawOutput?: unknown;
+  terminalMeta?: unknown;
   entries?: AppPlanEntry[];
   requestId?: string; description?: string | null; options?: unknown[];
   modeId?: string;
   commands?: unknown[];
   modes?: Array<{ id: string; title?: string }>; current?: string | null;
+  // `sessionError` event fields — typed session error surface from the worker.
+  code?: string; message?: string; retryable?: boolean;
+};
+
+/** Display-only terminal view derived from ToolCall.meta.terminal_* payloads.
+ *  One entry per terminal_id; updated in-place as `terminalOutput` chunks arrive. */
+export type TerminalEntry = {
+  terminalId: string;
+  label: string | null;
+  cwd: string | null;
+  output: string;
+  exitStatus: { exitCode?: number; signal?: string | null } | null;
+};
+
+export type SessionErrorInfo = {
+  code: string;
+  message: string;
+  retryable: boolean;
 };
 export type ConfigOptionValue = { value: string; name: string; description?: string };
 export type ConfigOptionGroup = { group: string; name: string; options: ConfigOptionValue[] };
@@ -98,6 +118,15 @@ export type AppSession = {
   queuedMessages: string[];
   previewTabs: PreviewTab[];
   activePreviewTabId: string | null;
+  /** Display-only terminal entries keyed by terminal_id. Populated from
+   *  `ToolCall.meta.terminal_info`; `terminal_output` chunks append to
+   *  `output`; `terminal_exit` sets `exitStatus`. */
+  terminals: Record<string, TerminalEntry>;
+  /** Buffers `terminal_output` chunks that arrive before the matching
+   *  `terminal_info`. Flushed when the info event registers the terminal. */
+  pendingTerminalOutput: Record<string, string[]>;
+  /** Latest structured ACP-layer error for this session, for UI banner. */
+  lastError: SessionErrorInfo | null;
 };
 
 export const RUNTIMES = ["gemini-cli", "claude-code", "codex-cli", "mock"];

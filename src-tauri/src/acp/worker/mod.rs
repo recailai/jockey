@@ -7,40 +7,32 @@ mod types;
 pub use crate::runtime_kind::RuntimeKind;
 pub use notify::{set_death_event_sender, set_prewarm_event_sender};
 pub use permission::respond_to_permission;
-pub use types::{AcpEvent, AcpPromptResult, ConnectionDeathEvent, PrewarmEvent};
+pub use types::{
+    AcpEvent, AcpPromptResult, ActiveConnectionInfo, ConnectionDeathEvent, PrewarmEvent,
+};
 
-pub(crate) use permission::permission_requests;
+pub(crate) use permission::{
+    cached_approval, cancel_all_permissions, cancel_permissions_for, insert_permission,
+    permission_requests, PendingPermission,
+};
 pub(crate) use pool::{
-    pool_key, register_child_pid, DeltaSlot, LiveConnection, CANCEL_HANDLES, CONN_MAP,
-    DELTA_CHANNEL_CAPACITY,
+    pool_key, register_child_pid, ConfigStateCell, DeltaSlot, LiveConnection, ModeStateCell,
+    CANCEL_HANDLES, CONN_MAP, DELTA_CHANNEL_CAPACITY,
 };
 pub(crate) use types::WorkerMsg;
 
 use handlers::{
-    handle_execute, handle_prewarm, reconnect_worker_session, reset_worker_session,
-    shutdown_worker_state,
+    handle_execute, handle_prewarm, reclaim_idle_connections, reconnect_worker_session,
+    reset_worker_session, shutdown_worker_state,
 };
 use serde_json::json;
 use std::sync::OnceLock;
 use tokio::sync::{mpsc, oneshot};
 
 use super::adapter::acp_log;
-use agent_client_protocol::Agent as _;
+use super::error::AcpLayerError;
 
 static WORKER_TX: OnceLock<mpsc::UnboundedSender<WorkerMsg>> = OnceLock::new();
-
-fn lookup_live_session(
-    key: &str,
-) -> Option<(
-    std::rc::Rc<agent_client_protocol::ClientSideConnection>,
-    agent_client_protocol::SessionId,
-)> {
-    CONN_MAP.with(|m| {
-        m.borrow()
-            .get(key)
-            .map(|live| (live.conn.clone(), live.session_id.clone()))
-    })
-}
 
 pub(crate) fn worker_tx() -> &'static mpsc::UnboundedSender<WorkerMsg> {
     WORKER_TX.get_or_init(|| {
@@ -71,7 +63,51 @@ pub async fn shutdown() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(3), done_rx).await;
 }
 
+pub async fn active_connections_snapshot() -> Vec<ActiveConnectionInfo> {
+    let (result_tx, result_rx) = oneshot::channel();
+    if worker_tx()
+        .send(WorkerMsg::SnapshotConnections { result_tx })
+        .is_err()
+    {
+        return vec![];
+    }
+    result_rx.await.unwrap_or_default()
+}
+
+fn snapshot_connections_now() -> Vec<ActiveConnectionInfo> {
+    let now = std::time::Instant::now();
+    CONN_MAP.with(|m| {
+        m.borrow()
+            .iter()
+            .map(|(key, conn)| {
+                let mut parts = key.splitn(3, ':');
+                let app_session_id = parts.next().unwrap_or_default().to_string();
+                let runtime_key = parts.next().unwrap_or_default().to_string();
+                let role_name = parts.next().unwrap_or_default().to_string();
+                ActiveConnectionInfo {
+                    key: key.clone(),
+                    runtime_key,
+                    role_name,
+                    app_session_id,
+                    acp_session_id: conn.session_id.to_string(),
+                    cwd: conn.cwd.clone(),
+                    child_pid: conn.child_pid,
+                    idle_ms: now.duration_since(conn.last_active).as_millis(),
+                    healthy: *conn.health_rx.borrow(),
+                }
+            })
+            .collect()
+    })
+}
+
 async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
+    tokio::task::spawn_local(async {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            reclaim_idle_connections();
+        }
+    });
     while let Some(msg) = rx.recv().await {
         match msg {
             WorkerMsg::Execute {
@@ -167,6 +203,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                         .map(|h| (h.conn.clone(), h.session_id.clone()))
                 });
                 let prompt_lock = pool::PROMPT_LOCKS.with(|m| m.borrow().get(&key).cloned());
+                cancel_permissions_for(runtime_key, &role_name, &app_session_id);
 
                 if let Some((conn, session_id)) = handle {
                     acp_log(
@@ -174,8 +211,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                         json!({ "runtime": runtime_key, "role": role_name }),
                     );
                     tokio::task::spawn_local(async move {
-                        let _ = conn
-                            .cancel(agent_client_protocol::CancelNotification::new(session_id))
+                        conn.cancel(agent_client_protocol::CancelNotification::new(session_id))
                             .await;
 
                         // Wait for the in-flight prompt to drain: acquire its
@@ -245,17 +281,43 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 use agent_client_protocol as acp;
                 let key = pool_key(&app_session_id, runtime_key, &role_name);
                 tokio::task::spawn_local(async move {
-                    let result = match lookup_live_session(&key) {
-                        Some((conn, session_id)) => conn
-                            .set_session_mode(acp::SetSessionModeRequest::new(
-                                session_id,
-                                acp::SessionModeId::from(mode_id),
-                            ))
-                            .await
-                            .map(|_| ())
-                            .map_err(|e| e.to_string()),
-                        None => Err("no active session".to_string()),
+                    let lookup = CONN_MAP.with(|m| {
+                        m.borrow().get(&key).map(|live| {
+                            (
+                                crate::acp::AgentConnection::rpc_handle(live),
+                                live.session_id.clone(),
+                                live.mode_state.clone(),
+                            )
+                        })
+                    });
+                    let Some((conn, session_id, mode_state)) = lookup else {
+                        let _ = result_tx.send(Err("no active session".to_string()));
+                        return;
                     };
+                    // Optimistic update: snapshot the old mode id, apply the new,
+                    // roll back on RPC failure so UI does not keep a stale value.
+                    let previous_mode_id = mode_state
+                        .borrow()
+                        .as_ref()
+                        .map(|s| s.current_mode_id.clone());
+                    if let Some(state) = mode_state.borrow_mut().as_mut() {
+                        state.current_mode_id = acp::SessionModeId::from(mode_id.clone());
+                    }
+                    let result = conn
+                        .set_session_mode(acp::SetSessionModeRequest::new(
+                            session_id,
+                            acp::SessionModeId::from(mode_id),
+                        ))
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| AcpLayerError::from(e).into_message());
+                    if result.is_err() {
+                        if let Some(prev) = previous_mode_id {
+                            if let Some(state) = mode_state.borrow_mut().as_mut() {
+                                state.current_mode_id = prev;
+                            }
+                        }
+                    }
                     let _ = result_tx.send(result);
                 });
             }
@@ -270,18 +332,60 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 use agent_client_protocol as acp;
                 let key = pool_key(&app_session_id, runtime_key, &role_name);
                 tokio::task::spawn_local(async move {
-                    let result = match lookup_live_session(&key) {
-                        Some((conn, session_id)) => conn
-                            .set_session_config_option(acp::SetSessionConfigOptionRequest::new(
-                                session_id,
-                                acp::SessionConfigId::from(config_id),
-                                acp::SessionConfigValueId::from(value),
-                            ))
-                            .await
-                            .map(|_| ())
-                            .map_err(|e| e.to_string()),
-                        None => Err("no active session".to_string()),
+                    let lookup = CONN_MAP.with(|m| {
+                        m.borrow().get(&key).map(|live| {
+                            (
+                                crate::acp::AgentConnection::rpc_handle(live),
+                                live.session_id.clone(),
+                                live.config_state.clone(),
+                            )
+                        })
+                    });
+                    let Some((conn, session_id, config_state)) = lookup else {
+                        let _ = result_tx.send(Err("no active session".to_string()));
+                        return;
                     };
+                    // Optimistic update: mutate the select option's current_value,
+                    // remember the old value so we can roll back on failure.
+                    let target_config_id = acp::SessionConfigId::from(config_id.clone());
+                    let new_value_id = acp::SessionConfigValueId::from(value.clone());
+                    let previous_value = {
+                        let mut cell = config_state.borrow_mut();
+                        cell.iter_mut().find_map(|opt| {
+                            if opt.id != target_config_id {
+                                return None;
+                            }
+                            match &mut opt.kind {
+                                acp::SessionConfigKind::Select(sel) => {
+                                    let old = sel.current_value.clone();
+                                    sel.current_value = new_value_id.clone();
+                                    Some(old)
+                                }
+                                _ => None,
+                            }
+                        })
+                    };
+                    let result = conn
+                        .set_session_config_option(acp::SetSessionConfigOptionRequest::new(
+                            session_id,
+                            target_config_id.clone(),
+                            new_value_id,
+                        ))
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| AcpLayerError::from(e).into_message());
+                    if result.is_err() {
+                        if let Some(prev) = previous_value {
+                            let mut cell = config_state.borrow_mut();
+                            if let Some(opt) =
+                                cell.iter_mut().find(|opt| opt.id == target_config_id)
+                            {
+                                if let acp::SessionConfigKind::Select(sel) = &mut opt.kind {
+                                    sel.current_value = prev;
+                                }
+                            }
+                        }
+                    }
                     let _ = result_tx.send(result);
                 });
             }
@@ -290,6 +394,9 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 shutdown_worker_state().await;
                 let _ = done_tx.send(());
                 break;
+            }
+            WorkerMsg::SnapshotConnections { result_tx } => {
+                let _ = result_tx.send(snapshot_connections_now());
             }
         }
     }

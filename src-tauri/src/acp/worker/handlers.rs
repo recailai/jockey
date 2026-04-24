@@ -1,9 +1,11 @@
-use agent_client_protocol::{self as acp, Agent as _};
+use agent_client_protocol::{self as acp};
 use serde_json::{json, Value};
 use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
 
 use super::super::adapter::{acp_log, resolve_cwd};
+use super::super::error::{AcpErrorCode, AcpLayerError};
+use super::super::metrics::{record_error, record_idle_reclaim, record_prompt_latency};
 use super::super::runtime_state::{
     list_discovered_config_options, list_discovered_modes, remember_runtime_available_commands,
     remember_runtime_modes,
@@ -11,11 +13,54 @@ use super::super::runtime_state::{
 use super::super::session::cold_start;
 use super::notify::{notify_connection_death, notify_prewarm};
 use super::pool::{
-    child_pids, pool_key, CANCEL_HANDLES, CONN_MAP, DELTA_CHANNEL_CAPACITY, PROMPT_LOCKS,
+    child_pids, pool_key, CANCEL_HANDLES, CONN_MAP, DELTA_CHANNEL_CAPACITY, PENDING_COLD_STARTS,
+    PROMPT_LOCKS, PROMPT_WAITERS,
 };
+use futures::future::FutureExt;
 use super::types::{AcpEvent, ConnectionDeathEvent, PrewarmStatus};
+use super::{cancel_all_permissions, cancel_permissions_for};
 
 const PROMPT_LIVENESS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+const IDLE_RECLAIM_AFTER: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Emit a structured SessionError event on the delta stream so the UI can
+/// render a recovery action before the final result_tx rejection arrives.
+/// Best-effort: if the receiver is already gone the event is silently dropped.
+pub(crate) fn emit_session_error(
+    delta_tx: &mpsc::Sender<AcpEvent>,
+    code: AcpErrorCode,
+    message: impl Into<String>,
+    retryable: bool,
+) {
+    let _ = delta_tx.try_send(AcpEvent::SessionError {
+        code: code.as_str().to_string(),
+        message: message.into(),
+        retryable,
+    });
+}
+
+/// Recover `(AcpErrorCode, retryable)` from a string that went through
+/// `AcpLayerError::into_message()` (format: `"{CODE}: {msg}{ (retryable)?}"`).
+/// Returns `None` if the prefix doesn't look like a known code.
+fn parse_layer_error_prefix(msg: &str) -> Option<(AcpErrorCode, bool)> {
+    let code_str = msg.split(':').next()?;
+    let code = match code_str {
+        "AUTH_REQUIRED" => AcpErrorCode::AuthRequired,
+        "CONNECTION_FAILED" => AcpErrorCode::ConnectionFailed,
+        "PROCESS_CRASHED" => AcpErrorCode::ProcessCrashed,
+        "PROMPT_TIMEOUT" => AcpErrorCode::PromptTimeout,
+        "ACP_REQ_CANCELLED" => AcpErrorCode::RequestCancelled,
+        "INVALID_ACP_REQUEST" => AcpErrorCode::InvalidRequest,
+        "ACP_INVALID_PARAMS" => AcpErrorCode::InvalidParams,
+        "ACP_METHOD_NOT_FOUND" => AcpErrorCode::MethodNotFound,
+        "AGENT_SESSION_NOT_FOUND" => AcpErrorCode::ResourceNotFound,
+        "INTERNAL_ERROR" => AcpErrorCode::InternalError,
+        "AGENT_ERROR" => AcpErrorCode::AgentError,
+        _ => return None,
+    };
+    let retryable = msg.contains("(retryable)");
+    Some((code, retryable))
+}
 
 // ── Connection lifecycle ──────────────────────────────────────────────────────
 
@@ -31,7 +76,7 @@ pub(crate) async fn shutdown_worker_state() {
         items
     });
     for (_key, conn, session_id) in cancel_items {
-        let _ = conn.cancel(acp::CancelNotification::new(session_id)).await;
+        conn.cancel(acp::CancelNotification::new(session_id)).await;
     }
 
     // Drop all live connections
@@ -41,20 +86,17 @@ pub(crate) async fn shutdown_worker_state() {
     PROMPT_LOCKS.with(|m| {
         m.borrow_mut().clear();
     });
+    PROMPT_WAITERS.with(|m| {
+        m.borrow_mut().clear();
+    });
+    PENDING_COLD_STARTS.with(|m| {
+        m.borrow_mut().clear();
+    });
 
     use super::super::runtime_state::clear_all as clear_runtime_state;
     clear_runtime_state();
 
-    use super::permission::permission_requests;
-    let request_ids: Vec<String> = permission_requests()
-        .iter()
-        .map(|entry| entry.key().clone())
-        .collect();
-    for request_id in request_ids {
-        if let Some((_, tx)) = permission_requests().remove(&request_id) {
-            let _ = tx.send(acp::RequestPermissionOutcome::Cancelled);
-        }
-    }
+    cancel_all_permissions();
 
     use super::super::client::shutdown_terminals;
     shutdown_terminals().await;
@@ -73,6 +115,33 @@ pub(crate) async fn shutdown_worker_state() {
     );
 }
 
+pub(crate) fn reclaim_idle_connections() {
+    let now = std::time::Instant::now();
+    let active_prompt_keys = CANCEL_HANDLES.with(|m| {
+        m.borrow()
+            .keys()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>()
+    });
+    let stale_keys = CONN_MAP.with(|m| {
+        m.borrow()
+            .iter()
+            .filter_map(|(key, conn)| {
+                (!active_prompt_keys.contains(key)
+                    && now.duration_since(conn.last_active) >= IDLE_RECLAIM_AFTER)
+                    .then_some(key.clone())
+            })
+            .collect::<Vec<_>>()
+    });
+    for key in stale_keys {
+        acp_log("pool.idle_reclaim", json!({ "key": key }));
+        if let Some(runtime_key) = key.split(':').nth(1) {
+            record_idle_reclaim(runtime_key);
+        }
+        CONN_MAP.with(|m| m.borrow_mut().remove(&key));
+    }
+}
+
 pub(crate) async fn reset_worker_session(
     runtime_key: &'static str,
     role_name: &str,
@@ -82,13 +151,13 @@ pub(crate) async fn reset_worker_session(
 
     let cancel = CANCEL_HANDLES.with(|m| m.borrow_mut().remove(&key));
     if let Some(h) = cancel {
-        let _ = h
-            .conn
+        h.conn
             .cancel(acp::CancelNotification::new(h.session_id))
             .await;
     }
 
     CONN_MAP.with(|m| m.borrow_mut().remove(&key));
+    cancel_permissions_for(runtime_key, role_name, app_session_id);
     use super::super::runtime_state::clear_session as clear_session_runtime_state;
     clear_session_runtime_state(app_session_id, runtime_key, role_name);
     Ok(())
@@ -103,13 +172,13 @@ pub(crate) async fn reconnect_worker_session(
 
     let cancel = CANCEL_HANDLES.with(|m| m.borrow_mut().remove(&key));
     if let Some(h) = cancel {
-        let _ = h
-            .conn
+        h.conn
             .cancel(acp::CancelNotification::new(h.session_id))
             .await;
     }
 
     CONN_MAP.with(|m| m.borrow_mut().remove(&key));
+    cancel_permissions_for(runtime_key, role_name, app_session_id);
     use super::super::runtime_state::clear_session as clear_session_runtime_state;
     clear_session_runtime_state(app_session_id, runtime_key, role_name);
     acp_log(
@@ -139,7 +208,9 @@ pub(crate) fn evict_if_cwd_changed(key: &str, resolved: &str, runtime_key: &str,
 }
 
 /// Ensure a live connection exists for the given key; cold-start if missing.
-/// Returns `true` if a cold start was performed.
+/// Returns `true` if a cold start was performed (or shared with a concurrent
+/// cold start). Multiple concurrent callers for the same key share a single
+/// `cold_start` task via `PENDING_COLD_STARTS`.
 pub(crate) async fn ensure_connection(
     key: &str,
     runtime_key: &'static str,
@@ -155,30 +226,83 @@ pub(crate) async fn ensure_connection(
 ) -> Result<bool, String> {
     let already_live = CONN_MAP.with(|m| m.borrow().contains_key(key));
     if already_live {
+        CONN_MAP.with(|m| {
+            if let Some(conn) = m.borrow_mut().get_mut(key) {
+                conn.last_active = Instant::now();
+            }
+        });
         acp_log(
             "pool.reuse",
             json!({ "runtime": runtime_key, "role": role_name }),
         );
         return Ok(false);
     }
-    let conn = cold_start(
-        runtime_key,
-        role_name,
-        app_session_id,
-        binary,
-        args,
-        env,
-        resolved,
-        auto_approve,
-        mcp_servers,
-        resume_session_id,
-    )
-    .await?;
-    acp_log(
-        "pool.cold_start",
-        json!({ "runtime": runtime_key, "role": role_name, "sessionId": conn.session_id.to_string() }),
-    );
-    CONN_MAP.with(|m| m.borrow_mut().insert(key.to_string(), conn));
+
+    // If another task is already cold-starting this key, await its future.
+    let pending = PENDING_COLD_STARTS.with(|m| m.borrow().get(key).cloned());
+    if let Some(shared) = pending {
+        acp_log(
+            "pool.cold_start.shared",
+            json!({ "runtime": runtime_key, "role": role_name }),
+        );
+        shared.await?;
+        return Ok(true);
+    }
+
+    // We are the first; build the cold_start future, insert it as Shared, then
+    // await it. On completion, insert the resulting LiveConnection into
+    // CONN_MAP and remove the pending entry.
+    let key_owned = key.to_string();
+    let role_owned = role_name.to_string();
+    let app_session_owned = app_session_id.to_string();
+    let binary_owned = binary.to_string();
+    let args_owned = args.to_vec();
+    let env_owned = env.to_vec();
+    let resolved_owned = resolved.to_string();
+    let pending_key_for_task = key_owned.clone();
+    let task = async move {
+        let result = cold_start(
+            runtime_key,
+            &role_owned,
+            &app_session_owned,
+            &binary_owned,
+            &args_owned,
+            &env_owned,
+            &resolved_owned,
+            auto_approve,
+            mcp_servers,
+            resume_session_id,
+        )
+        .await;
+        // Always clear the pending entry, regardless of success.
+        PENDING_COLD_STARTS.with(|m| {
+            m.borrow_mut().remove(&pending_key_for_task);
+        });
+        match result {
+            Ok(conn) => {
+                let instance_id = conn.instance_id;
+                acp_log(
+                    "pool.cold_start",
+                    json!({
+                        "runtime": runtime_key,
+                        "role": role_owned,
+                        "sessionId": conn.session_id.to_string()
+                    }),
+                );
+                CONN_MAP.with(|m| m.borrow_mut().insert(pending_key_for_task.clone(), conn));
+                Ok(instance_id)
+            }
+            Err(e) => Err(e),
+        }
+    }
+    .boxed_local()
+    .shared();
+
+    PENDING_COLD_STARTS.with(|m| {
+        m.borrow_mut().insert(key_owned, task.clone());
+    });
+
+    task.await?;
     Ok(true)
 }
 
@@ -190,35 +314,68 @@ pub(crate) async fn apply_cold_start_config(
     role_config_options: &[(String, String)],
     runtime_key: &str,
 ) {
-    // Borrow conn fields we need
-    let (available_modes, current_mode) = CONN_MAP.with(|m| {
+    let mode_snapshot: Option<acp::SessionModeState> = CONN_MAP.with(|m| {
         m.borrow()
             .get(key)
-            .map(|c| (c.available_modes.clone(), c.current_mode.clone()))
-            .unwrap_or_default()
+            .and_then(|c| c.mode_state.borrow().clone())
     });
 
-    if !available_modes.is_empty() {
-        let _ = delta_tx.try_send(AcpEvent::AvailableModes {
-            modes: available_modes,
-            current: current_mode,
-        });
+    if let Some(state) = &mode_snapshot {
+        let modes_json: Vec<Value> = state
+            .available_modes
+            .iter()
+            .filter_map(|mode| serde_json::to_value(mode).ok())
+            .collect();
+        if !modes_json.is_empty() {
+            let _ = delta_tx.try_send(AcpEvent::AvailableModes {
+                modes: modes_json,
+                current: Some(state.current_mode_id.to_string()),
+            });
+        }
     }
 
-    let conn_rc = CONN_MAP.with(|m| m.borrow().get(key).map(|c| c.conn.clone()));
+    let conn_rc = CONN_MAP.with(|m| m.borrow().get(key).map(|c| crate::acp::AgentConnection::rpc_handle(c)));
     let Some(conn_rc) = conn_rc else { return };
 
     if let Some(mode) = role_mode {
-        if let Err(e) = conn_rc
+        // Pre-validate: if the saved mode isn't in the agent's advertised list,
+        // skip the RPC and surface an UNSUPPORTED_CONFIG warning so the user
+        // knows why their saved configuration didn't take effect.
+        let is_supported = mode_snapshot
+            .as_ref()
+            .map(|state| {
+                state
+                    .available_modes
+                    .iter()
+                    .any(|m| m.id.to_string() == *mode)
+            })
+            .unwrap_or(true); // no snapshot yet — let the agent decide
+        if !is_supported {
+            let msg = format!(
+                "saved role mode '{mode}' is not advertised by runtime '{runtime_key}'"
+            );
+            acp_log(
+                "config.unsupported",
+                json!({ "mode": mode, "runtime": runtime_key, "reason": "not in available_modes" }),
+            );
+            emit_session_error(delta_tx, AcpErrorCode::InvalidParams, msg, false);
+        } else if let Err(e) = conn_rc
             .set_session_mode(acp::SetSessionModeRequest::new(
                 session_id.clone(),
                 acp::SessionModeId::from(mode.clone()),
             ))
             .await
         {
+            let layer = AcpLayerError::from(e);
             acp_log(
                 "config.set_mode.error",
-                json!({ "mode": mode, "error": e.to_string() }),
+                json!({ "mode": mode, "error": layer.message }),
+            );
+            emit_session_error(
+                delta_tx,
+                layer.code,
+                format!("failed to set mode '{mode}'"),
+                layer.retryable,
             );
         }
     }
@@ -231,10 +388,14 @@ pub(crate) async fn apply_cold_start_config(
 
     for (k, value) in role_config_options {
         if !supported_keys.is_empty() && !supported_keys.contains(k.as_str()) {
-            acp_log(
-                "config.set_option.skipped",
-                json!({ "key": k, "runtime": runtime_key, "reason": "not supported by runtime" }),
+            let msg = format!(
+                "saved role config '{k}' is not advertised by runtime '{runtime_key}'"
             );
+            acp_log(
+                "config.unsupported",
+                json!({ "key": k, "runtime": runtime_key, "reason": "not in discovered options" }),
+            );
+            emit_session_error(delta_tx, AcpErrorCode::InvalidParams, msg, false);
             continue;
         }
         if let Err(e) = conn_rc
@@ -245,9 +406,16 @@ pub(crate) async fn apply_cold_start_config(
             ))
             .await
         {
+            let layer = AcpLayerError::from(e);
             acp_log(
                 "config.set_option.error",
-                json!({ "key": k, "error": e.to_string() }),
+                json!({ "key": k, "error": layer.message }),
+            );
+            emit_session_error(
+                delta_tx,
+                layer.code,
+                format!("failed to apply config '{k}'"),
+                layer.retryable,
             );
         }
     }
@@ -277,18 +445,18 @@ pub(crate) fn build_prompt_blocks(
 pub(crate) fn spawn_connection_health_watch(
     key: String,
     instance_id: u64,
-    death: ConnectionDeathEvent,
+    mut death: ConnectionDeathEvent,
     mut hrx: tokio::sync::watch::Receiver<bool>,
 ) {
     tokio::task::spawn_local(async move {
-        loop {
+        let reason = loop {
             if hrx.changed().await.is_err() {
-                break;
+                break "connection health watcher closed".to_string();
             }
             if !*hrx.borrow() {
-                break;
+                break "agent io stopped".to_string();
             }
-        }
+        };
         acp_log("health.process_died", json!({ "key": &key }));
 
         // Only evict if the connection in the map is still the same instance.
@@ -302,6 +470,8 @@ pub(crate) fn spawn_connection_health_watch(
         if is_same {
             CONN_MAP.with(|m| m.borrow_mut().remove(&key));
             CANCEL_HANDLES.with(|m| m.borrow_mut().remove(&key));
+            death.reason = Some(reason);
+            cancel_permissions_for(&death.runtime_key, &death.role_name, &death.app_session_id);
             notify_connection_death(death);
         }
     });
@@ -357,6 +527,14 @@ pub(crate) async fn handle_execute(
     {
         Ok(cold) => cold,
         Err(e) => {
+            record_error(runtime_key);
+            // Parse the code out of the serialized AcpLayerError string (cold_start
+            // returns `AcpLayerError::into_message()`). If parsing fails we fall
+            // back to a generic connection failure which is the most common cold
+            // start outcome.
+            let (code, retryable) = parse_layer_error_prefix(&e)
+                .unwrap_or((AcpErrorCode::ConnectionFailed, true));
+            emit_session_error(&delta_tx, code, e.clone(), retryable);
             let _ = result_tx.send(Err(e));
             return;
         }
@@ -367,7 +545,7 @@ pub(crate) async fn handle_execute(
             (
                 c.session_id.clone(),
                 c.delta_slot.clone(),
-                c.conn.clone(),
+                crate::acp::AgentConnection::rpc_handle(c),
                 c.health_rx.clone(),
                 c.instance_id,
             )
@@ -398,20 +576,27 @@ pub(crate) async fn handle_execute(
             runtime_key: runtime_key.to_string(),
             role_name: role_name.clone(),
             app_session_id: app_session_id.clone(),
+            reason: None,
         };
         spawn_connection_health_watch(key.clone(), instance_id, death, health_rx_clone);
     } else {
-        let (available_modes, current_mode) = CONN_MAP.with(|m| {
+        let mode_snapshot: Option<acp::SessionModeState> = CONN_MAP.with(|m| {
             m.borrow()
                 .get(&key)
-                .map(|c| (c.available_modes.clone(), c.current_mode.clone()))
-                .unwrap_or_default()
+                .and_then(|c| c.mode_state.borrow().clone())
         });
-        if !available_modes.is_empty() {
-            let _ = delta_tx.try_send(AcpEvent::AvailableModes {
-                modes: available_modes,
-                current: current_mode,
-            });
+        if let Some(state) = mode_snapshot {
+            let modes_json: Vec<Value> = state
+                .available_modes
+                .iter()
+                .filter_map(|mode| serde_json::to_value(mode).ok())
+                .collect();
+            if !modes_json.is_empty() {
+                let _ = delta_tx.try_send(AcpEvent::AvailableModes {
+                    modes: modes_json,
+                    current: Some(state.current_mode_id.to_string()),
+                });
+            }
         }
     }
 
@@ -435,7 +620,34 @@ pub(crate) async fn handle_execute(
             .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
             .clone()
     });
-    let prompt_guard = prompt_lock.lock().await;
+    let queue_position = PROMPT_WAITERS.with(|m| {
+        let mut map = m.borrow_mut();
+        let entry = map.entry(key.clone()).or_insert(0);
+        let current = *entry;
+        *entry += 1;
+        current
+    });
+    let prompt_guard = match prompt_lock.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            let _ = delta_tx.try_send(AcpEvent::StatusUpdate {
+                text: format!(
+                    "Waiting for previous turn... queue position {}",
+                    queue_position + 1
+                ),
+            });
+            prompt_lock.lock().await
+        }
+    };
+    PROMPT_WAITERS.with(|m| {
+        let mut map = m.borrow_mut();
+        if let Some(count) = map.get_mut(&key) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                map.remove(&key);
+            }
+        }
+    });
 
     let prompt_started = Instant::now();
     let prompt_fut = conn_rc.prompt(acp::PromptRequest::new(session_id.clone(), blocks));
@@ -470,6 +682,12 @@ pub(crate) async fn handle_execute(
 
     match prompt_result {
         Ok(Ok(resp)) => {
+            record_prompt_latency(runtime_key, prompt_started.elapsed().as_millis());
+            CONN_MAP.with(|m| {
+                if let Some(conn) = m.borrow_mut().get_mut(&key) {
+                    conn.last_active = Instant::now();
+                }
+            });
             acp_log(
                 "stage.ok",
                 json!({
@@ -482,10 +700,13 @@ pub(crate) async fn handle_execute(
             let _ = result_tx.send(Ok((String::new(), session_id.to_string())));
         }
         Ok(Err(e)) => {
+            record_error(runtime_key);
             acp_log(
                 "pool.invalidate",
                 json!({ "runtime": runtime_key, "error": e.to_string() }),
             );
+            let layer = AcpLayerError::from(e.clone());
+            emit_session_error(&delta_tx, layer.code, layer.message.clone(), layer.retryable);
             // Invalidate connection only if still the same instance.
             let is_same = CONN_MAP.with(|m| {
                 m.borrow()
@@ -495,10 +716,18 @@ pub(crate) async fn handle_execute(
             });
             if is_same {
                 CONN_MAP.with(|m| m.borrow_mut().remove(&key));
+                cancel_permissions_for(runtime_key, &role_name, &app_session_id);
+                notify_connection_death(ConnectionDeathEvent {
+                    runtime_key: runtime_key.to_string(),
+                    role_name: role_name.clone(),
+                    app_session_id: app_session_id.clone(),
+                    reason: Some(e.to_string()),
+                });
             }
             let _ = result_tx.send(Err(e.to_string()));
         }
         Err(reason) => {
+            record_error(runtime_key);
             acp_log(
                 "pool.prompt.process_died",
                 json!({
@@ -508,7 +737,13 @@ pub(crate) async fn handle_execute(
                     "reason": reason
                 }),
             );
-            let _ = conn_rc
+            emit_session_error(
+                &delta_tx,
+                AcpErrorCode::ProcessCrashed,
+                reason.to_string(),
+                true,
+            );
+            conn_rc
                 .cancel(acp::CancelNotification::new(session_id.clone()))
                 .await;
             let is_same = CONN_MAP.with(|m| {
@@ -519,6 +754,13 @@ pub(crate) async fn handle_execute(
             });
             if is_same {
                 CONN_MAP.with(|m| m.borrow_mut().remove(&key));
+                cancel_permissions_for(runtime_key, &role_name, &app_session_id);
+                notify_connection_death(ConnectionDeathEvent {
+                    runtime_key: runtime_key.to_string(),
+                    role_name: role_name.clone(),
+                    app_session_id: app_session_id.clone(),
+                    reason: Some(reason.to_string()),
+                });
             }
             let _ = result_tx.send(Err(reason.to_string()));
         }
@@ -547,6 +789,11 @@ pub(crate) async fn handle_prewarm(
 ) {
     let already_live = CONN_MAP.with(|m| m.borrow().contains_key(&key));
     if already_live {
+        CONN_MAP.with(|m| {
+            if let Some(conn) = m.borrow_mut().get_mut(&key) {
+                conn.last_active = Instant::now();
+            }
+        });
         if force_refresh {
             acp_log(
                 "prewarm.force_refresh",
@@ -696,6 +943,7 @@ pub(crate) async fn handle_prewarm(
                 runtime_key: runtime_key.to_string(),
                 role_name: role_name.clone(),
                 app_session_id: app_session_id.clone(),
+                reason: None,
             };
             spawn_connection_health_watch(key, instance_id, death, health_rx_clone);
 
@@ -708,6 +956,7 @@ pub(crate) async fn handle_prewarm(
             }
         }
         Err(e) => {
+            record_error(runtime_key);
             acp_log(
                 "prewarm.error",
                 json!({ "runtime": runtime_key, "role": role_name, "error": e }),

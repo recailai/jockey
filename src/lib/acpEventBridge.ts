@@ -6,8 +6,79 @@ import type {
   AppToolCall,
   Role,
   SessionUpdateEvent,
+  TerminalEntry,
   WorkflowStateEvent,
 } from "../components/types";
+
+type TerminalInfo = { terminalId?: string; cwd?: string | null; label?: string } | undefined;
+type TerminalOutput = { terminalId?: string; data?: string } | undefined;
+type TerminalExit = { terminalId?: string; exitCode?: number; signal?: string | null } | undefined;
+
+function readTerminalMeta(meta: unknown): {
+  info: TerminalInfo;
+  output: TerminalOutput;
+  exit: TerminalExit;
+} {
+  if (!meta || typeof meta !== "object") {
+    return { info: undefined, output: undefined, exit: undefined };
+  }
+  const m = meta as Record<string, unknown>;
+  const info = (m.terminalInfo ?? m.terminal_info) as TerminalInfo;
+  const output = (m.terminalOutput ?? m.terminal_output) as TerminalOutput;
+  const exit = (m.terminalExit ?? m.terminal_exit) as TerminalExit;
+  return { info, output, exit };
+}
+
+function applyTerminalMetaToSession(
+  session: AppSession,
+  event: AcpStreamEvent,
+  tc: AppToolCall,
+): void {
+  const { info, output, exit } = readTerminalMeta(event.terminalMeta);
+  // `terminal_info`: upsert entry and flush any buffered output chunks.
+  if (info?.terminalId) {
+    const tid = info.terminalId;
+    const existing = session.terminals[tid];
+    const entry: TerminalEntry = existing ?? {
+      terminalId: tid,
+      label: info.label ?? tc.title ?? null,
+      cwd: info.cwd ?? null,
+      output: "",
+      exitStatus: null,
+    };
+    if (!existing) {
+      const buffered = session.pendingTerminalOutput[tid];
+      if (buffered && buffered.length > 0) {
+        entry.output += buffered.join("");
+        delete session.pendingTerminalOutput[tid];
+      }
+    }
+    session.terminals[tid] = entry;
+  }
+  // `terminal_output`: append to entry or buffer if info hasn't arrived yet.
+  if (output?.terminalId && typeof output.data === "string") {
+    const tid = output.terminalId;
+    const chunk = output.data;
+    const entry = session.terminals[tid];
+    if (entry) {
+      entry.output += chunk;
+    } else {
+      const pending = session.pendingTerminalOutput[tid] ?? [];
+      pending.push(chunk);
+      session.pendingTerminalOutput[tid] = pending;
+    }
+  }
+  // `terminal_exit`: set exit status on the entry (if registered).
+  if (exit?.terminalId) {
+    const entry = session.terminals[exit.terminalId];
+    if (entry) {
+      entry.exitStatus = {
+        exitCode: exit.exitCode,
+        signal: exit.signal ?? null,
+      };
+    }
+  }
+}
 
 type BridgeDeps = {
   sid: string;
@@ -32,8 +103,10 @@ type BridgeDeps = {
 export function toConnectionLostMessage(payload: {
   runtimeKey: string;
   roleName: string;
+  reason?: string | null;
 }): string {
-  return `Agent ${payload.runtimeKey} (role: ${payload.roleName}) disconnected — will reconnect on next message.`;
+  const suffix = payload.reason ? ` Reason: ${payload.reason}` : "";
+  return `Agent ${payload.runtimeKey} (role: ${payload.roleName}) disconnected — will reconnect on next message.${suffix}`;
 }
 
 export function toWorkflowStateMessage(payload: WorkflowStateEvent): string {
@@ -104,6 +177,7 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
           locations,
           rawInput: event.rawInput,
           rawOutput: event.rawOutput,
+          terminalMeta: event.terminalMeta,
           rawInputJson:
             event.rawInput !== undefined
               ? JSON.stringify(event.rawInput, null, 2)
@@ -123,6 +197,7 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
           } else {
             s.streamSegments.push({ kind: "tool", tc });
           }
+          applyTerminalMetaToSession(s, event, tc);
         });
         patchSession(sid, {
           agentState: `${event.toolKind ?? "tool"}: ${event.title ?? event.toolCallId}`,
@@ -156,6 +231,8 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
             event.rawInput !== undefined ? event.rawInput : existing.rawInput;
           const newRawOutput =
             event.rawOutput !== undefined ? event.rawOutput : existing.rawOutput;
+          const newTerminalMeta =
+            event.terminalMeta !== undefined ? event.terminalMeta : existing.terminalMeta;
           const updated: AppToolCall = {
             ...existing,
             kind: event.toolKind ?? existing.kind,
@@ -166,6 +243,7 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
             locations: newLocations,
             rawInput: newRawInput,
             rawOutput: newRawOutput,
+            terminalMeta: newTerminalMeta,
             rawInputJson:
               event.rawInput !== undefined
                 ? JSON.stringify(newRawInput, null, 2)
@@ -187,6 +265,7 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
               }
             }
           }
+          applyTerminalMetaToSession(s, event, updated);
         });
         if (event.status || event.title) {
           patchSession(sid, {
@@ -249,8 +328,18 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
         });
       }
       break;
+    case "sessionError":
+      if (event.code && event.message) {
+        patchSession(sid, {
+          lastError: {
+            code: event.code,
+            message: event.message,
+            retryable: event.retryable === true,
+          },
+        });
+      }
+      break;
     default:
       break;
   }
 }
-

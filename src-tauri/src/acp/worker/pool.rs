@@ -1,13 +1,16 @@
 use agent_client_protocol as acp;
 use dashmap::DashSet;
-use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
 use super::types::AcpEvent;
+
+pub(crate) type ModeStateCell = Rc<RefCell<Option<acp::SessionModeState>>>;
+pub(crate) type ConfigStateCell = Rc<RefCell<Vec<acp::SessionConfigOption>>>;
 
 pub(crate) const DELTA_CHANNEL_CAPACITY: usize = 512;
 pub(crate) type DeltaSlot = Arc<Mutex<Option<mpsc::Sender<AcpEvent>>>>;
@@ -26,11 +29,15 @@ pub(crate) struct LiveConnection {
     pub(crate) session_id: acp::SessionId,
     pub(crate) cwd: String,
     pub(crate) delta_slot: DeltaSlot,
-    #[allow(dead_code)]
-    pub(crate) available_modes: Vec<Value>,
-    #[allow(dead_code)]
-    pub(crate) current_mode: Option<String>,
+    /// Shared cell updated when CurrentModeUpdate arrives and on optimistic
+    /// `set_session_mode`. Cloned into the owning JockeyUiClient so writes
+    /// from `session_notification` land here without a worker round-trip.
+    pub(crate) mode_state: ModeStateCell,
+    /// Shared cell updated when ConfigOptionUpdate arrives and on
+    /// `set_session_config_option` responses.
+    pub(crate) config_state: ConfigStateCell,
     pub(crate) child_pid: Option<u32>,
+    pub(crate) last_active: Instant,
     pub(crate) _child: tokio::process::Child,
     pub(crate) _io_task: tokio::task::JoinHandle<()>,
     pub(crate) health_rx: tokio::sync::watch::Receiver<bool>,
@@ -60,13 +67,49 @@ impl Drop for LiveConnection {
 unsafe impl Send for LiveConnection {}
 unsafe impl Sync for LiveConnection {}
 
+impl crate::acp::AgentConnection for LiveConnection {
+    fn instance_id(&self) -> u64 {
+        self.instance_id
+    }
+    fn session_id(&self) -> acp::SessionId {
+        self.session_id.clone()
+    }
+    fn cwd(&self) -> &str {
+        &self.cwd
+    }
+    fn child_pid(&self) -> Option<u32> {
+        self.child_pid
+    }
+    fn delta_slot(&self) -> DeltaSlot {
+        self.delta_slot.clone()
+    }
+    fn mode_state(&self) -> ModeStateCell {
+        self.mode_state.clone()
+    }
+    fn config_state(&self) -> ConfigStateCell {
+        self.config_state.clone()
+    }
+    fn health_rx(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.health_rx.clone()
+    }
+    fn last_active(&self) -> Instant {
+        self.last_active
+    }
+    fn touch_last_active(&mut self) {
+        self.last_active = Instant::now();
+    }
+    fn rpc_handle(&self) -> Rc<dyn crate::acp::AgentRpc> {
+        self.conn.clone()
+    }
+}
+
 // ── CancelHandle: lightweight per-prompt cancel token ────────────────────────
 
 /// A lightweight handle for sending ACP cancel without holding the conn mutex.
 /// Stored in a thread-local map keyed by pool_key, only accessed on the worker
 /// thread's LocalSet — so `Rc` is fine.
 pub(crate) struct CancelHandle {
-    pub(crate) conn: Rc<acp::ClientSideConnection>,
+    pub(crate) conn: Rc<dyn crate::acp::AgentRpc>,
     pub(crate) session_id: acp::SessionId,
 }
 
@@ -88,6 +131,19 @@ thread_local! {
     /// Per-slot prompt serialization: pool_key → async mutex.
     pub(crate) static PROMPT_LOCKS: RefCell<HashMap<String, Arc<AsyncMutex<()>>>> =
         RefCell::new(HashMap::new());
+
+    pub(crate) static PROMPT_WAITERS: RefCell<HashMap<String, usize>> =
+        RefCell::new(HashMap::new());
+
+    /// Cold-start dedup: pool_key → shared future resolving to the newly
+    /// inserted `LiveConnection.instance_id` (or an error). Multiple callers
+    /// hitting `ensure_connection` for the same key before the first one
+    /// completes all await this shared future rather than each spawning their
+    /// own agent subprocess.
+    pub(crate) static PENDING_COLD_STARTS: RefCell<HashMap<
+        String,
+        futures::future::Shared<futures::future::LocalBoxFuture<'static, Result<u64, String>>>,
+    >> = RefCell::new(HashMap::new());
 }
 
 // ── Global state: child PIDs (still shared for cross-thread shutdown) ─────────

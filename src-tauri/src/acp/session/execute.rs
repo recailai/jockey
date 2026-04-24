@@ -129,6 +129,9 @@ pub async fn execute_runtime(
     let mut emit_seq: u32 = 0;
     // Buffer for batching TextDelta IPC events (~30ms flush interval)
     let mut delta_batch: String = String::new();
+    // Captured from the latest AcpEvent::SessionError the worker emits during
+    // streaming; used to set AcpPromptResult.error_code without re-parsing.
+    let mut last_error_code: Option<String> = None;
 
     acp_log(
         "execute.stream.listening",
@@ -237,6 +240,9 @@ pub async fn execute_runtime(
                     Some(ref other) => {
                         delta_count += 1;
                         emit_seq += 1;
+                        if let AcpEvent::SessionError { code, .. } = other {
+                            last_error_code = Some(code.clone());
+                        }
                         acp_log("delta.event", json!({
                             "runtime": adapter.runtime_key,
                             "role": role_owned,
@@ -268,6 +274,9 @@ pub async fn execute_runtime(
                         ref other => {
                             delta_count += 1;
                             emit_seq += 1;
+                            if let AcpEvent::SessionError { code, .. } = other {
+                                last_error_code = Some(code.clone());
+                            }
                             let _ = app.emit("acp/stream", AcpStreamPayload {
                                 role: &role_owned,
                                 runtime_kind: adapter.runtime_key,
@@ -349,7 +358,11 @@ pub async fn execute_runtime(
         }
         Err(e) => {
             let friendly = friendly_error_message(adapter.runtime_key, &e);
-            let code = error_code_from_raw(&e);
+            // Prefer the structured AcpErrorCode published by the worker's
+            // typed SessionError stream event; fall back to a generic label if
+            // none arrived (shouldn't happen for ACP error paths, but keeps
+            // the result well-formed for exotic failure modes).
+            let code = last_error_code.unwrap_or_else(|| "ACP_ERROR".to_string());
             AcpPromptResult {
                 ok: false,
                 output: friendly.clone(),
@@ -376,27 +389,7 @@ fn event_kind_label(evt: &AcpEvent) -> &'static str {
         AcpEvent::PermissionRequest { .. } => "permissionRequest",
         AcpEvent::PermissionExpired { .. } => "permissionExpired",
         AcpEvent::StatusUpdate { .. } => "statusUpdate",
-    }
-}
-
-pub(super) fn error_code_from_raw(raw: &str) -> String {
-    let l = raw.to_ascii_lowercase();
-    if l.contains("429")
-        || l.contains("rate limit")
-        || l.contains("quota")
-        || l.contains("too many requests")
-    {
-        "RATE_LIMITED".to_string()
-    } else if l.contains("epipe") || l.contains("broken pipe") || l.contains("transport closed") {
-        "PROCESS_CRASHED".to_string()
-    } else if l.contains("timeout") {
-        "TIMEOUT".to_string()
-    } else if l.contains("binary not found") || l.contains("adapter unavailable") {
-        "ADAPTER_UNAVAILABLE".to_string()
-    } else if l.contains("missing --experimental-acp") {
-        "INCOMPATIBLE_VERSION".to_string()
-    } else {
-        "ACP_ERROR".to_string()
+        AcpEvent::SessionError { .. } => "sessionError",
     }
 }
 

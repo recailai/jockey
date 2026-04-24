@@ -11,6 +11,7 @@ pub struct ConnectionDeathEvent {
     pub runtime_key: String,
     pub role_name: String,
     pub app_session_id: String,
+    pub reason: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -20,6 +21,20 @@ pub struct PrewarmEvent {
     pub role_name: String,
     pub app_session_id: String,
     pub status: PrewarmStatus,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveConnectionInfo {
+    pub key: String,
+    pub runtime_key: String,
+    pub role_name: String,
+    pub app_session_id: String,
+    pub acp_session_id: String,
+    pub cwd: String,
+    pub child_pid: Option<u32>,
+    pub idle_ms: u128,
+    pub healthy: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -62,6 +77,7 @@ pub enum AcpEvent {
         locations: Option<Vec<Value>>,
         raw_input: Option<Value>,
         raw_output: Option<Value>,
+        terminal_meta: Option<Value>,
     },
     ToolCallUpdate {
         tool_call_id: String,
@@ -72,6 +88,7 @@ pub enum AcpEvent {
         locations: Option<Vec<Value>>,
         raw_input: Option<Value>,
         raw_output: Option<Value>,
+        terminal_meta: Option<Value>,
     },
     Plan {
         entries: Vec<Value>,
@@ -103,6 +120,14 @@ pub enum AcpEvent {
     },
     PermissionExpired {
         request_id: String,
+    },
+    /// Structured error notification surfaced to the UI before the final
+    /// execute-promise rejection. Consumers route on `code` (the
+    /// `AcpErrorCode::as_str()` value) to pick a recovery action.
+    SessionError {
+        code: String,
+        message: String,
+        retryable: bool,
     },
 }
 
@@ -181,5 +206,8 @@ pub(crate) enum WorkerMsg {
     },
     Shutdown {
         done_tx: oneshot::Sender<()>,
+    },
+    SnapshotConnections {
+        result_tx: oneshot::Sender<Vec<ActiveConnectionInfo>>,
     },
 }

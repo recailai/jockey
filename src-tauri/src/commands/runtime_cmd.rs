@@ -114,7 +114,6 @@ pub(crate) async fn reconnect_acp_session(
     let sid = require_app_session_id(&app_session_id)?;
     let runtime = resolve_runtime_for_session_role(get_state(&state), sid, &role_name)?;
     acp::reconnect_session(&runtime, &role_name, Some(sid)).await?;
-    crate::db::app_session_role::clear_app_session_role_cli_id(get_state(&state), sid, &role_name)?;
     Ok(())
 }
 
@@ -127,7 +126,6 @@ pub(crate) async fn set_acp_mode(
 ) -> Result<(), String> {
     let sid = require_app_session_id(&app_session_id)?;
     let runtime = resolve_runtime_for_session_role(get_state(&state), sid, &role_name)?;
-    acp::set_mode(&runtime, &role_name, &mode_id, Some(sid)).await?;
     save_app_session_role_mode_override(
         get_state(&state),
         sid,
@@ -135,6 +133,11 @@ pub(crate) async fn set_acp_mode(
         &runtime,
         Some(&mode_id),
     )?;
+    if let Err(e) = acp::set_mode(&runtime, &role_name, &mode_id, Some(sid)).await {
+        if !e.to_ascii_lowercase().contains("no active session") {
+            return Err(e);
+        }
+    }
     Ok(())
 }
 
@@ -148,7 +151,6 @@ pub(crate) async fn set_acp_config_option(
 ) -> Result<(), String> {
     let sid = require_app_session_id(&app_session_id)?;
     let runtime = resolve_runtime_for_session_role(get_state(&state), sid, &role_name)?;
-    acp::set_config_option(&runtime, &role_name, &config_id, &value, Some(sid)).await?;
     save_app_session_role_config_option_override(
         get_state(&state),
         sid,
@@ -157,6 +159,13 @@ pub(crate) async fn set_acp_config_option(
         &config_id,
         &value,
     )?;
+    if let Err(e) =
+        acp::set_config_option(&runtime, &role_name, &config_id, &value, Some(sid)).await
+    {
+        if !e.to_ascii_lowercase().contains("no active session") {
+            return Err(e);
+        }
+    }
     Ok(())
 }
 
@@ -174,6 +183,21 @@ pub(crate) fn list_available_commands_cmd(
         Err(_) => return vec![],
     };
     acp::list_available_commands(sid, &runtime, &role_name)
+}
+
+#[tauri::command]
+pub(crate) fn acp_metrics_snapshot_cmd() -> Vec<acp::AcpRuntimeMetrics> {
+    acp::metrics_snapshot()
+}
+
+#[tauri::command]
+pub(crate) fn acp_log_snapshot_cmd(limit: Option<usize>) -> Vec<acp::AcpLogEntry> {
+    acp::acp_log_snapshot(limit)
+}
+
+#[tauri::command]
+pub(crate) async fn active_acp_connections_cmd() -> Vec<acp::ActiveConnectionInfo> {
+    acp::active_connections_snapshot().await
 }
 
 #[tauri::command]
