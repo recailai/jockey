@@ -189,11 +189,28 @@ export const gitApi = {
     path: string,
     vsHead: boolean,
     staged: boolean,
+    untracked: boolean,
   ) =>
     call<string>("git_diff_cmd", {
       appSessionId: appSessionId ?? null,
       path,
       vsHead,
       staged,
+      untracked,
+    }),
+  file: (appSessionId: string | null | undefined, path: string) =>
+    call<string>("git_file_cmd", {
+      appSessionId: appSessionId ?? null,
+      path,
+    }),
+};
+
+export type DirEntry = { name: string; isDir: boolean };
+
+export const fsApi = {
+  listDir: (appSessionId: string | null | undefined, relPath: string) =>
+    call<DirEntry[]>("list_dir_cmd", {
+      appSessionId: appSessionId ?? null,
+      relPath,
     }),
 };

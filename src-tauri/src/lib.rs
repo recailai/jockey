@@ -365,6 +365,8 @@ pub fn run() {
             commands::runtime_cmd::prewarm_role_config_cmd,
             commands::git_cmd::git_status_cmd,
             commands::git_cmd::git_diff_cmd,
+            commands::git_cmd::git_file_cmd,
+            commands::fs_cmd::list_dir_cmd,
             db::app_session::list_app_sessions,
             db::app_session::list_closed_app_sessions,
             db::app_session::create_app_session,

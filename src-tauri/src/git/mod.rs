@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter};
 
 pub(crate) use diff::diff;
 pub(crate) use error::GitError;
-pub(crate) use status::{status, FileEntry, GitStatus};
+pub(crate) use status::{status, GitStatus};
 
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 

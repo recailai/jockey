@@ -1,58 +1,39 @@
-import { For, Show, createMemo, createResource, createSignal, onCleanup, onMount } from "solid-js";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { For, Show, createResource, createSignal } from "solid-js";
+import { ChevronRight, RefreshCw, PanelLeftClose, GitBranch } from "lucide-solid";
 import { gitApi, type GitFileEntry, type GitState } from "../lib/tauriApi";
-import { INTERACTIVE_MOTION } from "./types";
+import { useGitChanged } from "../hooks/useGitChanged";
 
 type GitPanelProps = {
   appSessionId: () => string | undefined;
+  cwd: () => string | null;
   onAddMention: (path: string) => void;
   onCollapse: () => void;
-  onOpenDiff: (path: string, staged: boolean) => void;
+  onOpenDiff: (path: string, staged: boolean, untracked: boolean) => void;
 };
 
-const FOLDER_ROLLUP_THRESHOLD = 10;
-
-type GroupRow =
-  | { kind: "file"; entry: GitFileEntry }
-  | { kind: "folder"; folder: string; count: number; entries: GitFileEntry[] };
-
-function rollupGroup(entries: GitFileEntry[]): GroupRow[] {
-  const byParent = new Map<string, GitFileEntry[]>();
-  for (const e of entries) {
-    const slash = e.path.lastIndexOf("/");
-    const parent = slash === -1 ? "" : e.path.slice(0, slash);
-    const arr = byParent.get(parent) ?? [];
-    arr.push(e);
-    byParent.set(parent, arr);
+function statusClass(letter: string, untracked: boolean): string {
+  if (untracked) return "git-status-untracked";
+  switch (letter) {
+    case "A": return "git-status-added";
+    case "D": return "git-status-deleted";
+    case "R":
+    case "C": return "git-status-renamed";
+    case "M":
+    default:  return "git-status-modified";
   }
-  const rows: GroupRow[] = [];
-  for (const [parent, items] of byParent) {
-    if (parent && items.length > FOLDER_ROLLUP_THRESHOLD) {
-      rows.push({ kind: "folder", folder: parent, count: items.length, entries: items });
-    } else {
-      for (const e of items) rows.push({ kind: "file", entry: e });
-    }
-  }
-  return rows;
 }
 
 export default function GitPanel(props: GitPanelProps) {
-  const sessionId = createMemo(() => props.appSessionId());
-  const [statusRes, { refetch }] = createResource(sessionId, (sid) => gitApi.status(sid ?? null));
+  const [statusRes, { refetch }] = createResource(
+    () => props.appSessionId() ?? null,
+    (sid) => gitApi.status(sid),
+  );
 
   const [stagedOpen, setStagedOpen] = createSignal(true);
   const [unstagedOpen, setUnstagedOpen] = createSignal(true);
   const [untrackedOpen, setUntrackedOpen] = createSignal(true);
 
-  let unlisten: UnlistenFn | null = null;
-  onMount(async () => {
-    unlisten = await listen("git/changed", () => {
-      refetch();
-    });
-  });
-  onCleanup(() => {
-    if (unlisten) unlisten();
-  });
+  useGitChanged(props.cwd, () => { void refetch(); });
 
   const renderGroup = (
     title: string,
@@ -60,75 +41,58 @@ export default function GitPanel(props: GitPanelProps) {
     setOpen: (v: boolean) => void,
     entries: GitFileEntry[],
     staged: boolean,
+    untracked: boolean,
   ) => {
-    const rows = createMemo(() => rollupGroup(entries));
     return (
-      <div class="space-y-1">
+      <div class="mb-1">
         <button
           type="button"
           onClick={() => setOpen(!open())}
-          class={`flex w-full items-center justify-between text-[10px] font-medium uppercase tracking-widest theme-muted ${INTERACTIVE_MOTION}`}
+          class="section-header"
         >
-          <span>{title} ({entries.length})</span>
-          <svg
-            class={`h-3 w-3 transition-transform ${open() ? "rotate-90" : ""}`}
-            viewBox="0 0 12 12"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.5"
-          >
-            <path d="M4 2l4 4-4 4" />
-          </svg>
+          <ChevronRight
+            size={12}
+            class={`transition-transform shrink-0 ${open() ? "rotate-90" : ""}`}
+          />
+          <span>{title}</span>
+          <span class="section-count">{entries.length}</span>
         </button>
         <Show when={open()}>
-          <div class="space-y-0.5">
-            <For each={rows()}>
-              {(row) =>
-                row.kind === "file" ? (
+          <div>
+            <For each={entries}>
+              {(entry) => {
+                const basename = () => {
+                  const i = entry.path.lastIndexOf("/");
+                  return i === -1 ? entry.path : entry.path.slice(i + 1);
+                };
+                const dirname = () => {
+                  const i = entry.path.lastIndexOf("/");
+                  return i === -1 ? "" : entry.path.slice(0, i);
+                };
+                return (
                   <div
-                    class={`group flex items-center gap-2 rounded px-2 py-1 text-xs ${INTERACTIVE_MOTION} theme-muted hover:theme-text hover:bg-[var(--ui-surface-muted)]`}
+                    class="row-item group"
+                    onClick={() => props.onOpenDiff(entry.path, staged, untracked)}
+                    title={entry.path}
                   >
+                    <span class="truncate">{basename()}</span>
+                    <Show when={dirname()}>
+                      <span class="text-[10.5px] theme-muted truncate min-w-0 flex-1">{dirname()}</span>
+                    </Show>
                     <button
                       type="button"
-                      onClick={() => props.onOpenDiff(row.entry.path, staged)}
-                      class="flex-1 flex items-center gap-2 text-left truncate"
-                    >
-                      <span class="font-mono text-[10px] w-5 shrink-0 text-center opacity-70">
-                        {row.entry.statusLetter}
-                      </span>
-                      <span class="truncate">{row.entry.path}</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => props.onAddMention(row.entry.path)}
+                      onClick={(e) => { e.stopPropagation(); props.onAddMention(entry.path); }}
                       title="Add to chat as @mention"
-                      class={`shrink-0 rounded px-1.5 py-0.5 text-[10px] opacity-0 group-hover:opacity-100 hover:bg-[var(--ui-panel)] ${INTERACTIVE_MOTION}`}
+                      class="shrink-0 rounded px-1.5 py-0.5 text-[10px] theme-muted hover:theme-text hover:bg-[var(--ui-accent-soft)] opacity-0 group-hover:opacity-100 transition-opacity"
                     >
                       +@
                     </button>
+                    <span class={`git-status ${statusClass(entry.statusLetter, untracked)}`}>
+                      {entry.statusLetter}
+                    </span>
                   </div>
-                ) : (
-                  <div class="group flex items-center gap-2 rounded px-2 py-1 text-xs theme-muted hover:theme-text hover:bg-[var(--ui-surface-muted)]">
-                    <button
-                      type="button"
-                      onClick={() => props.onOpenDiff(`${row.folder}/`, staged)}
-                      class="flex-1 flex items-center gap-2 text-left truncate"
-                    >
-                      <span class="font-mono text-[10px] w-5 shrink-0 text-center opacity-70">…</span>
-                      <span class="truncate">{row.folder}/</span>
-                      <span class="text-[10px] opacity-60">({row.count})</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => props.onAddMention(`${row.folder}/`)}
-                      title="Add folder to chat as @mention"
-                      class={`shrink-0 rounded px-1.5 py-0.5 text-[10px] opacity-0 group-hover:opacity-100 hover:bg-[var(--ui-panel)] ${INTERACTIVE_MOTION}`}
-                    >
-                      +@
-                    </button>
-                  </div>
-                )
-              }
+                );
+              }}
             </For>
           </div>
         </Show>
@@ -137,30 +101,15 @@ export default function GitPanel(props: GitPanelProps) {
   };
 
   return (
-    <div class="flex flex-col h-full overflow-hidden theme-surface">
-      <div class="flex items-center justify-between px-3 py-2 border-b theme-border shrink-0">
-        <span class="text-[10px] font-medium uppercase tracking-widest theme-muted">Git</span>
-        <div class="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => refetch()}
-            title="Refresh"
-            class={`flex h-6 w-6 items-center justify-center rounded theme-muted hover:text-primary ${INTERACTIVE_MOTION}`}
-          >
-            <svg viewBox="0 0 12 12" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5">
-              <path d="M2 6a4 4 0 1 1 1.2 2.85" />
-              <path d="M2 9.5V6h3.5" />
-            </svg>
+    <div class="flex flex-col h-full overflow-hidden theme-bg">
+      <div class="panel-header">
+        <span class="panel-header-title">Source Control</span>
+        <div class="flex items-center gap-0.5">
+          <button type="button" class="icon-btn" title="Refresh" onClick={() => refetch()}>
+            <RefreshCw size={13} />
           </button>
-          <button
-            type="button"
-            onClick={() => props.onCollapse()}
-            title="Collapse (Cmd/Ctrl+G)"
-            class={`flex h-6 w-6 items-center justify-center rounded theme-muted hover:text-primary ${INTERACTIVE_MOTION}`}
-          >
-            <svg viewBox="0 0 12 12" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.5">
-              <path d="M8 2L4 6l4 4" />
-            </svg>
+          <button type="button" class="icon-btn" title="Collapse (Cmd/Ctrl+G)" onClick={() => props.onCollapse()}>
+            <PanelLeftClose size={13} />
           </button>
         </div>
       </div>
@@ -181,48 +130,43 @@ export default function GitPanel(props: GitPanelProps) {
           }
           if (s.kind === "not_repo") {
             return (
-              <div class="flex-1 flex flex-col items-center justify-center p-6 text-center text-xs theme-muted">
+              <div class="flex-1 flex flex-col items-center justify-center p-6 text-center text-xs theme-muted gap-2">
                 <div>Not a git repository</div>
-                <div class="mt-2 font-mono text-[10px] opacity-70 break-all">{s.cwd}</div>
+                <div class="font-mono text-[10px] opacity-70 break-all">{s.cwd}</div>
               </div>
             );
           }
           const dirty = s.staged.length + s.unstaged.length + s.untracked.length > 0;
           return (
             <>
-              <div class="px-3 py-2 border-b theme-border shrink-0">
-                <div class="flex items-center gap-2 text-xs">
-                  <Show when={s.detached}>
-                    <span class="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-300">
-                      detached
-                    </span>
-                  </Show>
-                  <span class="font-medium theme-text truncate">{s.branch ?? "(unknown)"}</span>
-                </div>
-                <Show when={s.upstream}>
-                  <div class="mt-0.5 text-[10px] theme-muted truncate">→ {s.upstream}</div>
+              <div class="panel-subheader">
+                <GitBranch size={12} class="shrink-0 theme-muted" />
+                <span class="theme-text truncate font-medium">{s.branch ?? "(unknown)"}</span>
+                <Show when={s.detached}>
+                  <span class="chip text-[9px]">detached</span>
                 </Show>
                 <Show when={s.ahead > 0 || s.behind > 0}>
-                  <div class="mt-1 text-[10px] theme-muted">
-                    <Show when={s.ahead > 0}><span>↑{s.ahead}</span></Show>
-                    <Show when={s.ahead > 0 && s.behind > 0}><span> </span></Show>
+                  <span class="ml-auto flex items-center gap-1.5 text-[10.5px] theme-muted">
                     <Show when={s.behind > 0}><span>↓{s.behind}</span></Show>
-                  </div>
+                    <Show when={s.ahead > 0}><span>↑{s.ahead}</span></Show>
+                  </span>
                 </Show>
               </div>
 
-              <div class="flex-1 overflow-auto p-3 space-y-4 min-h-0">
+              <div class="flex-1 overflow-auto py-2 min-h-0">
                 <Show when={!dirty}>
-                  <div class="text-xs theme-muted text-center py-6">Working tree clean</div>
+                  <div class="text-xs theme-muted text-center py-10 px-6 leading-relaxed">
+                    Working tree clean
+                  </div>
                 </Show>
                 <Show when={s.staged.length > 0}>
-                  {renderGroup("Staged", stagedOpen, setStagedOpen, s.staged, true)}
+                  {renderGroup("Staged Changes", stagedOpen, setStagedOpen, s.staged, true, false)}
                 </Show>
                 <Show when={s.unstaged.length > 0}>
-                  {renderGroup("Unstaged", unstagedOpen, setUnstagedOpen, s.unstaged, false)}
+                  {renderGroup("Changes", unstagedOpen, setUnstagedOpen, s.unstaged, false, false)}
                 </Show>
                 <Show when={s.untracked.length > 0}>
-                  {renderGroup("Untracked", untrackedOpen, setUntrackedOpen, s.untracked, false)}
+                  {renderGroup("Untracked", untrackedOpen, setUntrackedOpen, s.untracked, false, true)}
                 </Show>
               </div>
             </>
@@ -232,3 +176,4 @@ export default function GitPanel(props: GitPanelProps) {
     </div>
   );
 }
+

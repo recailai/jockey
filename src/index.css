@@ -383,3 +383,159 @@ body {
 }
 .theme-input::placeholder { color: var(--ui-muted); }
 .theme-input:focus { border-color: var(--ui-border-strong); }
+
+/* ─── Shared panel primitives (VSCode-ish) ──────────────────────────────── */
+
+/* Uniform panel header: 32px tall, subtle bottom border, uppercase title */
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--ui-border);
+  flex-shrink: 0;
+}
+.panel-header-title {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ui-muted);
+}
+
+/* Sub-header (branch bar, file path etc.) */
+.panel-subheader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--ui-border);
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+/* Icon-only button used in headers */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  color: var(--ui-muted);
+  transition: background-color 120ms, color 120ms;
+}
+.icon-btn:hover {
+  color: var(--ui-text);
+  background-color: var(--ui-accent-soft);
+}
+
+/* Row-like interactive item (list rows) */
+.row-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  min-height: 22px;
+  font-size: 12px;
+  color: var(--ui-text);
+  cursor: pointer;
+  position: relative;
+  user-select: none;
+}
+.row-item:hover {
+  background-color: var(--ui-surface-muted);
+}
+.row-item.is-active {
+  background-color: var(--ui-accent-soft);
+  color: var(--ui-text);
+}
+.row-item.is-active::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 2px;
+  background-color: var(--ui-accent);
+  opacity: 0.7;
+}
+
+/* Resizer gripper: 1px visible line, 6px hit zone on each side */
+.resizer-x {
+  position: relative;
+  width: 1px;
+  flex-shrink: 0;
+  background: var(--ui-border);
+  cursor: col-resize;
+}
+.resizer-x::after {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0;
+  left: -3px; right: -3px;
+  z-index: 10;
+}
+.resizer-x:hover { background: var(--ui-accent); }
+
+.resizer-y {
+  position: relative;
+  height: 1px;
+  flex-shrink: 0;
+  background: var(--ui-border);
+  cursor: row-resize;
+}
+.resizer-y::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0;
+  top: -3px; bottom: -3px;
+  z-index: 10;
+}
+.resizer-y:hover { background: var(--ui-accent); }
+
+/* Section disclosure header (Staged/Unstaged/...) */
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ui-muted);
+  cursor: pointer;
+  user-select: none;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+}
+.section-header:hover { color: var(--ui-text); }
+.section-count {
+  margin-left: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--ui-panel-2);
+  color: var(--ui-muted);
+}
+
+/* Git status letter chip */
+.git-status {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.git-status-modified { color: #e5c07b; }  /* yellow */
+.git-status-added    { color: #98c379; }  /* green */
+.git-status-deleted  { color: #e06c75; }  /* red */
+.git-status-renamed  { color: #61afef; }  /* blue */
+.git-status-untracked { color: #73d0ff; } /* cyan */

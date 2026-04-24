@@ -12,17 +12,26 @@ pub async fn diff(
     path: &str,
     vs_head: bool,
     staged: bool,
+    untracked: bool,
 ) -> Result<String, GitError> {
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(cwd).arg("diff");
-    if staged {
-        cmd.arg("--cached");
+    cmd.arg("-C").arg(cwd);
+
+    if untracked {
+        let null_path = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        cmd.args(["diff", "--no-index", "--no-color", "--"]);
+        cmd.arg(null_path);
+        cmd.arg(path);
+    } else {
+        cmd.arg("diff").arg("--no-color");
+        if staged {
+            cmd.arg("--cached");
+        }
+        if vs_head {
+            cmd.arg("HEAD");
+        }
+        cmd.arg("--").arg(path);
     }
-    if vs_head {
-        cmd.arg("HEAD");
-    }
-    cmd.arg("--");
-    cmd.arg(path);
 
     let output = cmd
         .stdin(Stdio::null())
@@ -38,7 +47,14 @@ pub async fn diff(
             }
         })?;
 
-    if !output.status.success() {
+    let code = output.status.code().unwrap_or(-1);
+    let ok = if untracked {
+        code == 0 || code == 1
+    } else {
+        output.status.success()
+    };
+
+    if !ok {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("not a git repository") {
             return Err(GitError::NotARepo);

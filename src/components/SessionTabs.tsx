@@ -19,7 +19,6 @@ type SessionTabsProps = {
   onRefresh: () => void;
   onToggleDrawer: () => void;
   onToggleManagement?: () => void;
-  onToggleGitPanel?: () => void;
 };
 
 export default function SessionTabs(props: SessionTabsProps) {
@@ -46,7 +45,7 @@ export default function SessionTabs(props: SessionTabsProps) {
   };
 
   return (
-    <div data-tauri-drag-region class="flex h-[38px] shrink-0 items-center gap-1.5 relative z-10" style="padding-left: max(12px, env(titlebar-area-x, 78px)); padding-right: 10px;">
+    <div data-tauri-drag-region class="flex h-[38px] shrink-0 items-center gap-1.5 relative z-10" style="padding-left: 10px; padding-right: 10px;">
       <For each={props.sessions}>
         {(s) => (
           <div
@@ -136,18 +135,6 @@ export default function SessionTabs(props: SessionTabsProps) {
       >
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
       </button>
-      <Show when={props.onToggleGitPanel}>
-        <button
-          onClick={() => props.onToggleGitPanel?.()}
-          title="Git panel (Cmd/Ctrl+G)"
-          class={`flex h-6 w-6 items-center justify-center rounded-md theme-muted hover:text-primary hover:bg-[var(--ui-accent-soft)] transition-all motion-safe:hover:scale-105 ${INTERACTIVE_MOTION}`}
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/>
-            <path d="M6 8v8M6 12c0-3.314 2.686-6 6-6h4"/>
-          </svg>
-        </button>
-      </Show>
       <button
         onClick={() => props.onToggleDrawer()}
         class={`flex h-6 w-6 items-center justify-center rounded-md theme-muted hover:text-primary hover:bg-[var(--ui-accent-soft)] transition-all motion-safe:hover:scale-105 ${INTERACTIVE_MOTION}`}

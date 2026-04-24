@@ -148,7 +148,7 @@ fn parse_ordinary(body: &str, status: &mut GitStatus) {
     }
     let staged_letter = &xy[..1];
     let unstaged_letter = &xy[1..2];
-    let Some(path) = skip_fields(body, 8) else {
+    let Some(path) = skip_fields(body, 7) else {
         return;
     };
     if path.is_empty() {
@@ -165,7 +165,7 @@ fn parse_renamed(body: &str, status: &mut GitStatus) {
     }
     let staged_letter = &xy[..1];
     let unstaged_letter = &xy[1..2];
-    let Some(path) = skip_fields(body, 9) else {
+    let Some(path) = skip_fields(body, 8) else {
         return;
     };
     if path.is_empty() {
@@ -180,7 +180,7 @@ fn parse_unmerged(body: &str, status: &mut GitStatus) {
     if xy.is_empty() {
         return;
     }
-    let Some(path) = skip_fields(body, 10) else {
+    let Some(path) = skip_fields(body, 9) else {
         return;
     };
     if path.is_empty() {
