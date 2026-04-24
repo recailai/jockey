@@ -141,6 +141,7 @@ pub(crate) enum WorkerMsg {
         role_config_options: Vec<(String, String)>,
         result_tx: Option<oneshot::Sender<(Vec<Value>, Vec<String>, String)>>,
         resume_session_id: Option<String>,
+        force_refresh: bool,
     },
     Cancel {
         runtime_key: &'static str,

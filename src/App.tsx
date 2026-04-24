@@ -21,6 +21,14 @@ import { appSessionApi } from "./lib/tauriApi";
 
 const ConfigDrawer = lazy(() => import("./components/ConfigDrawer"));
 const ManagementPanel = lazy(() => import("./components/ManagementPanel"));
+const GitPanel = lazy(() => import("./components/GitPanel"));
+const GitDiffModal = lazy(() => import("./components/GitDiffModal"));
+
+const GIT_PANEL_WIDTH_KEY = "jockey:git-panel-width";
+const GIT_PANEL_OPEN_KEY = "jockey:git-panel-open";
+const GIT_PANEL_DEFAULT_WIDTH = 280;
+const GIT_PANEL_MIN_WIDTH = 200;
+const GIT_PANEL_MAX_WIDTH = 520;
 
 export default function App() {
   type Toast = { id: number; message: string; severity?: "error" | "info" };
@@ -48,6 +56,73 @@ export default function App() {
 
   const [showDrawer, setShowDrawer] = createSignal(false);
   const [showManagement, setShowManagement] = createSignal(false);
+
+  const initialGitPanelOpen = (): boolean => {
+    try { return window.localStorage.getItem(GIT_PANEL_OPEN_KEY) === "1"; } catch { return false; }
+  };
+  const initialGitPanelWidth = (): number => {
+    try {
+      const raw = window.localStorage.getItem(GIT_PANEL_WIDTH_KEY);
+      const n = raw ? parseInt(raw, 10) : NaN;
+      if (Number.isFinite(n)) return Math.min(GIT_PANEL_MAX_WIDTH, Math.max(GIT_PANEL_MIN_WIDTH, n));
+    } catch { /* ignore */ }
+    return GIT_PANEL_DEFAULT_WIDTH;
+  };
+  const [showGitPanel, setShowGitPanel] = createSignal(initialGitPanelOpen());
+  const [gitPanelWidth, setGitPanelWidth] = createSignal(initialGitPanelWidth());
+
+  const persistGitPanelOpen = (v: boolean) => {
+    setShowGitPanel(v);
+    try { window.localStorage.setItem(GIT_PANEL_OPEN_KEY, v ? "1" : "0"); } catch { /* ignore */ }
+  };
+  const persistGitPanelWidth = (w: number) => {
+    const clamped = Math.min(GIT_PANEL_MAX_WIDTH, Math.max(GIT_PANEL_MIN_WIDTH, w));
+    setGitPanelWidth(clamped);
+    try { window.localStorage.setItem(GIT_PANEL_WIDTH_KEY, String(clamped)); } catch { /* ignore */ }
+  };
+
+  type GitDiffTarget = { path: string; staged: boolean };
+  const [gitDiffTarget, setGitDiffTarget] = createSignal<GitDiffTarget | null>(null);
+
+  const insertMentionAtCaret = (p: string) => {
+    const target = inputEl;
+    const mention = `@${p}`;
+    const current = input();
+    if (target) {
+      const caret = target.selectionStart ?? current.length;
+      const left = current.slice(0, caret);
+      const right = current.slice(caret);
+      const needsLead = left.length > 0 && !left.endsWith(" ");
+      const insert = `${needsLead ? " " : ""}${mention} `;
+      const next = `${left}${insert}${right}`;
+      setInput(next);
+      const pos = caret + insert.length;
+      queueMicrotask(() => {
+        target.focus();
+        target.setSelectionRange(pos, pos);
+      });
+    } else {
+      setInput(current ? `${current} ${mention} ` : `${mention} `);
+    }
+  };
+
+  const beginGitPanelResize = (startEvent: MouseEvent) => {
+    startEvent.preventDefault();
+    const startX = startEvent.clientX;
+    const startWidth = gitPanelWidth();
+    const onMove = (ev: MouseEvent) => {
+      const delta = ev.clientX - startX;
+      const next = startWidth + delta;
+      setGitPanelWidth(Math.min(GIT_PANEL_MAX_WIDTH, Math.max(GIT_PANEL_MIN_WIDTH, next)));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      try { window.localStorage.setItem(GIT_PANEL_WIDTH_KEY, String(gitPanelWidth())); } catch { /* ignore */ }
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
   const [managementInitialTab, setManagementInitialTab] = createSignal<"sessions" | "workflows" | "roles" | "mcp" | "skills">("sessions");
   const [managementInitialRole, setManagementInitialRole] = createSignal<string | undefined>(undefined);
 
@@ -309,6 +384,10 @@ export default function App() {
         e.preventDefault();
         setShowManagement((v) => !v);
       }
+      if ((e.metaKey || e.ctrlKey) && e.key === "g") {
+        e.preventDefault();
+        persistGitPanelOpen(!showGitPanel());
+      }
     };
     window.addEventListener("keydown", handleGlobalKeyDown);
 
@@ -334,57 +413,83 @@ export default function App() {
       class="window-bg h-dvh overflow-hidden text-[var(--ui-text)] relative flex flex-col"
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div class="flex flex-1 flex-col min-h-0" style={{ "background-color": "var(--ui-bg)", "background-image": "radial-gradient(ellipse 80% 50% at 50% 0%, var(--ui-accent-soft), rgba(255,255,255,0))" }}>
-      <SessionTabs
-        sessions={sessionTabs()}
-        activeSessionId={activeSessionId}
-        setActiveSessionId={setActiveSessionId}
-        activeSession={activeSession}
-        patchActiveSession={patchActiveSession}
-        activeBackendRole={activeBackendRole}
-        onNewSession={newSession}
-        onCloseSession={closeSession}
-        updateSession={updateSession}
-        onRefresh={() => { void refreshAssistants(); void refreshRoles(); void refreshSkills(); }}
-        onToggleDrawer={() => setShowDrawer((v) => !v)}
-        onToggleManagement={() => setShowManagement((v) => !v)}
-      />
+      <div class="flex flex-1 flex-row min-h-0 min-w-0">
+        <Show when={showGitPanel()}>
+          <div
+            class="shrink-0 border-r theme-border flex flex-col min-h-0"
+            style={{ width: `${gitPanelWidth()}px` }}
+          >
+            <Suspense fallback={<div class="flex-1 theme-surface" />}>
+              <GitPanel
+                appSessionId={() => activeSession()?.id}
+                onAddMention={insertMentionAtCaret}
+                onCollapse={() => persistGitPanelOpen(false)}
+                onOpenDiff={(path, staged) => setGitDiffTarget({ path, staged })}
+              />
+            </Suspense>
+          </div>
+          <div
+            class="w-1 shrink-0 cursor-col-resize hover:bg-[var(--ui-accent-soft)] active:bg-[var(--ui-accent-soft)]"
+            onMouseDown={beginGitPanelResize}
+            title="Drag to resize"
+          />
+        </Show>
 
-      <MessageWindow
-        activeSessionId={activeSessionId}
-        activeSession={activeSession}
-        patchActiveSession={patchActiveSession}
-        onResetAgentContext={resetActiveAgentContext}
-        onReconnectAgent={reconnectActiveAgent}
-        onListMounted={onListMounted}
-        onListUnmounted={onListUnmounted}
-      />
+        <div class="flex flex-1 flex-col min-h-0 min-w-0">
+          <div class="flex flex-1 flex-col min-h-0" style={{ "background-color": "var(--ui-bg)", "background-image": "radial-gradient(ellipse 80% 50% at 50% 0%, var(--ui-accent-soft), rgba(255,255,255,0))" }}>
+            <SessionTabs
+              sessions={sessionTabs()}
+              activeSessionId={activeSessionId}
+              setActiveSessionId={setActiveSessionId}
+              activeSession={activeSession}
+              patchActiveSession={patchActiveSession}
+              activeBackendRole={activeBackendRole}
+              onNewSession={newSession}
+              onCloseSession={closeSession}
+              updateSession={updateSession}
+              onRefresh={() => { void refreshAssistants(); void refreshRoles(); void refreshSkills(); }}
+              onToggleDrawer={() => setShowDrawer((v) => !v)}
+              onToggleManagement={() => setShowManagement((v) => !v)}
+              onToggleGitPanel={() => persistGitPanelOpen(!showGitPanel())}
+            />
+
+            <MessageWindow
+              activeSessionId={activeSessionId}
+              activeSession={activeSession}
+              patchActiveSession={patchActiveSession}
+              onResetAgentContext={resetActiveAgentContext}
+              onReconnectAgent={reconnectActiveAgent}
+              onListMounted={onListMounted}
+              onListUnmounted={onListUnmounted}
+            />
+          </div>
+
+          <ChatInput
+            input={input}
+            setInput={setInput}
+            activeSession={activeSession}
+            patchActiveSession={patchActiveSession}
+            isCustomRole={isCustomRole}
+            onSubmit={handleSend}
+            onInputEvent={handleInputEvent}
+            onInputKeyDown={handleInputKeyDownFinal}
+            refreshInputCompletions={refreshInputCompletions}
+            mentionOpen={mentionOpen}
+            mentionItems={mentionItems}
+            mentionActiveIndex={mentionActiveIndex}
+            slashOpen={slashOpen}
+            slashItems={slashItems}
+            slashActiveIndex={slashActiveIndex}
+            applyMentionCandidate={applyMentionCandidate}
+            applySlashCandidate={applySlashCandidate}
+            closeMentionMenu={closeMentionMenu}
+            closeSlashMenu={closeSlashMenu}
+            inputElRef={(el) => { inputEl = el; }}
+            mentionCloseTimerRef={mentionCloseTimerRef}
+            mentionDebounceTimerRef={mentionDebounceTimerRef}
+          />
+        </div>
       </div>
-
-      <ChatInput
-        input={input}
-        setInput={setInput}
-        activeSession={activeSession}
-        patchActiveSession={patchActiveSession}
-        isCustomRole={isCustomRole}
-        onSubmit={handleSend}
-        onInputEvent={handleInputEvent}
-        onInputKeyDown={handleInputKeyDownFinal}
-        refreshInputCompletions={refreshInputCompletions}
-        mentionOpen={mentionOpen}
-        mentionItems={mentionItems}
-        mentionActiveIndex={mentionActiveIndex}
-        slashOpen={slashOpen}
-        slashItems={slashItems}
-        slashActiveIndex={slashActiveIndex}
-        applyMentionCandidate={applyMentionCandidate}
-        applySlashCandidate={applySlashCandidate}
-        closeMentionMenu={closeMentionMenu}
-        closeSlashMenu={closeSlashMenu}
-        inputElRef={(el) => { inputEl = el; }}
-        mentionCloseTimerRef={mentionCloseTimerRef}
-        mentionDebounceTimerRef={mentionDebounceTimerRef}
-      />
 
       <Show when={showDrawer()}>
         <Suspense fallback={null}>
@@ -448,6 +553,20 @@ export default function App() {
             pushMessage={pushMessage}
           />
         </Suspense>
+      </Show>
+
+      <Show when={gitDiffTarget()}>
+        {(target) => (
+          <Suspense fallback={null}>
+            <GitDiffModal
+              appSessionId={() => activeSession()?.id}
+              path={target().path}
+              staged={target().staged}
+              onClose={() => setGitDiffTarget(null)}
+              onAddMention={insertMentionAtCaret}
+            />
+          </Suspense>
+        )}
       </Show>
 
       <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">

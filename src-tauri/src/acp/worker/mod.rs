@@ -29,6 +29,19 @@ use agent_client_protocol::Agent as _;
 
 static WORKER_TX: OnceLock<mpsc::UnboundedSender<WorkerMsg>> = OnceLock::new();
 
+fn lookup_live_session(
+    key: &str,
+) -> Option<(
+    std::rc::Rc<agent_client_protocol::ClientSideConnection>,
+    agent_client_protocol::SessionId,
+)> {
+    CONN_MAP.with(|m| {
+        m.borrow()
+            .get(key)
+            .map(|live| (live.conn.clone(), live.session_id.clone()))
+    })
+}
+
 pub(crate) fn worker_tx() -> &'static mpsc::UnboundedSender<WorkerMsg> {
     WORKER_TX.get_or_init(|| {
         let (tx, rx) = mpsc::unbounded_channel::<WorkerMsg>();
@@ -117,6 +130,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 role_config_options,
                 result_tx,
                 resume_session_id,
+                force_refresh,
             } => {
                 let key = pool_key(&app_session_id, runtime_key, &role_name);
                 tokio::task::spawn_local(async move {
@@ -135,6 +149,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                         role_config_options,
                         result_tx,
                         resume_session_id,
+                        force_refresh,
                     )
                     .await;
                 });
@@ -178,11 +193,8 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                                 let _g = lock.lock().await;
                                 // release immediately
                             };
-                            let _ = tokio::time::timeout(
-                                std::time::Duration::from_secs(5),
-                                wait,
-                            )
-                            .await;
+                            let _ =
+                                tokio::time::timeout(std::time::Duration::from_secs(5), wait).await;
                         }
 
                         if let Some(tx) = result_tx {
@@ -233,24 +245,16 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 use agent_client_protocol as acp;
                 let key = pool_key(&app_session_id, runtime_key, &role_name);
                 tokio::task::spawn_local(async move {
-                    let result = CONN_MAP.with(|m| {
-                        let map = m.borrow();
-                        if let Some(live) = map.get(&key) {
-                            Some((live.conn.clone(), live.session_id.clone()))
-                        } else {
-                            None
-                        }
-                    });
-                    let result = if let Some((conn, session_id)) = result {
-                        conn.set_session_mode(acp::SetSessionModeRequest::new(
-                            session_id,
-                            acp::SessionModeId::from(mode_id),
-                        ))
-                        .await
-                        .map(|_| ())
-                        .map_err(|e| e.to_string())
-                    } else {
-                        Err("no active session".to_string())
+                    let result = match lookup_live_session(&key) {
+                        Some((conn, session_id)) => conn
+                            .set_session_mode(acp::SetSessionModeRequest::new(
+                                session_id,
+                                acp::SessionModeId::from(mode_id),
+                            ))
+                            .await
+                            .map(|_| ())
+                            .map_err(|e| e.to_string()),
+                        None => Err("no active session".to_string()),
                     };
                     let _ = result_tx.send(result);
                 });
@@ -266,25 +270,17 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 use agent_client_protocol as acp;
                 let key = pool_key(&app_session_id, runtime_key, &role_name);
                 tokio::task::spawn_local(async move {
-                    let result = CONN_MAP.with(|m| {
-                        let map = m.borrow();
-                        if let Some(live) = map.get(&key) {
-                            Some((live.conn.clone(), live.session_id.clone()))
-                        } else {
-                            None
-                        }
-                    });
-                    let result = if let Some((conn, session_id)) = result {
-                        conn.set_session_config_option(acp::SetSessionConfigOptionRequest::new(
-                            session_id,
-                            acp::SessionConfigId::from(config_id),
-                            acp::SessionConfigValueId::from(value),
-                        ))
-                        .await
-                        .map(|_| ())
-                        .map_err(|e| e.to_string())
-                    } else {
-                        Err("no active session".to_string())
+                    let result = match lookup_live_session(&key) {
+                        Some((conn, session_id)) => conn
+                            .set_session_config_option(acp::SetSessionConfigOptionRequest::new(
+                                session_id,
+                                acp::SessionConfigId::from(config_id),
+                                acp::SessionConfigValueId::from(value),
+                            ))
+                            .await
+                            .map(|_| ())
+                            .map_err(|e| e.to_string()),
+                        None => Err("no active session".to_string()),
                     };
                     let _ = result_tx.send(result);
                 });

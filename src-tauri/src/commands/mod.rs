@@ -3,6 +3,7 @@ mod catalog_cmd;
 pub(crate) mod completion;
 mod context_cmd;
 mod fallback_cmd;
+pub(crate) mod git_cmd;
 mod query_cmd;
 mod role_templates;
 pub(crate) mod runtime_cmd;

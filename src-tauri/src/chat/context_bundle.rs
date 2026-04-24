@@ -62,15 +62,14 @@ pub(super) async fn build_context_bundle(
 
     let skill_refs = routed.skill_refs.clone();
     let skill_state = get_state(state).clone_refs();
-    let skill_pairs: Vec<(String, String)> = tokio::task::spawn_blocking(move || {
-        load_skills_by_names(&skill_state, &skill_refs)
-    })
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .filter(|s| !s.content.is_empty())
-    .map(|s| (format!("skill:{}", s.name), s.content))
-    .collect();
+    let skill_pairs: Vec<(String, String)> =
+        tokio::task::spawn_blocking(move || load_skills_by_names(&skill_state, &skill_refs))
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| !s.content.is_empty())
+            .map(|s| (format!("skill:{}", s.name), s.content))
+            .collect();
 
     let pre_state = get_state(state).clone_refs();
     let pre_app_session_id = app_session_id.to_string();
