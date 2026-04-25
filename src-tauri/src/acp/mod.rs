@@ -20,7 +20,7 @@ pub use runtime_state::{
 pub use session::{
     cancel_session, execute_runtime, prewarm_role, prewarm_role_for_config,
     prewarm_role_with_session_id, reconnect_session, refresh_role_config_defs, reset_session,
-    set_config_option, set_mode,
+    set_config_option, set_mode, sync_role_mode,
 };
 pub use worker::{
     active_connections_snapshot, respond_to_permission, set_death_event_sender,

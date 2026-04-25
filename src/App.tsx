@@ -1,6 +1,6 @@
 import { For, Show, Suspense, createMemo, createSignal, lazy, onCleanup, onMount } from "solid-js";
 
-import SessionTabs, { type SessionTab } from "./components/SessionTabs";
+import SessionTabs, { type SessionTab, type AgentMenuItem } from "./components/SessionTabs";
 import MessageWindow from "./components/MessageWindow";
 import ChatInput from "./components/ChatInput";
 import { now, DEFAULT_ROLE_ALIAS } from "./components/types";
@@ -228,7 +228,7 @@ export default function App() {
     showToast,
   });
 
-  const { sendRaw, cancelCurrentRun } = useMessageSend({
+  const { sendRaw, cancelCurrentRun, runNextQueued } = useMessageSend({
     sessionManager,
     streamEngine,
     agentContext,
@@ -305,7 +305,6 @@ export default function App() {
       void cancelCurrentRun();
       return;
     }
-
     const slash = slashItems();
     if (slashOpen() && slash.length > 0) {
       if (e.key === "ArrowDown") {
@@ -529,15 +528,71 @@ export default function App() {
               sessions={sessionTabs()}
               activeSessionId={activeSessionId}
               setActiveSessionId={setActiveSessionId}
-              activeSession={activeSession}
-              patchActiveSession={patchActiveSession}
-              activeBackendRole={activeBackendRole}
               onNewSession={newSession}
               onCloseSession={closeSession}
               updateSession={updateSession}
               onRefresh={() => { void refreshAssistants(); void refreshRoles(); void refreshSkills(); }}
               onToggleDrawer={() => setShowDrawer((v) => !v)}
               onToggleManagement={() => setShowManagement((v) => !v)}
+              agentMenuItems={[
+                {
+                  id: "mcp-view",
+                  label: "View all MCP Servers",
+                  section: "MCP Servers",
+                  shortcut: "⌥⌘M",
+                  icon: "⚡",
+                  onSelect: () => {
+                    setManagementInitialTab("mcp");
+                    setManagementInitialRole(undefined);
+                    setShowManagement(true);
+                  },
+                },
+                {
+                  id: "roles",
+                  label: "Roles",
+                  section: "Agent",
+                  icon: "◈",
+                  onSelect: () => {
+                    setManagementInitialTab("roles");
+                    setManagementInitialRole(undefined);
+                    setShowManagement(true);
+                  },
+                },
+                {
+                  id: "skills",
+                  label: "Skills",
+                  section: "Agent",
+                  shortcut: "⌥⌘K",
+                  icon: "◆",
+                  onSelect: () => {
+                    setManagementInitialTab("skills");
+                    setManagementInitialRole(undefined);
+                    setShowManagement(true);
+                  },
+                },
+                {
+                  id: "system-prompt",
+                  label: "System Prompt",
+                  section: "Agent",
+                  shortcut: "⌥⌘P",
+                  icon: "≡",
+                  when: () => !!activeSession() && isCustomRole(),
+                  onSelect: () => {
+                    const role = activeSession()?.activeRole;
+                    setManagementInitialTab("roles");
+                    setManagementInitialRole(role);
+                    setShowManagement(true);
+                  },
+                },
+                {
+                  id: "settings",
+                  label: "Settings",
+                  section: "Interface",
+                  shortcut: "⌥⌘,",
+                  icon: "⚙",
+                  onSelect: () => setShowDrawer(true),
+                },
+              ] satisfies AgentMenuItem[]}
             />
 
             <div
@@ -602,10 +657,27 @@ export default function App() {
                   activeSession={activeSession}
                   activeBackendRole={activeBackendRole}
                   patchActiveSession={patchActiveSession}
+                  onRemoveQueuedMessage={(index) => {
+                    const sid = activeSessionId();
+                    if (!sid) return;
+                    const idx = getSessionIndex(sid);
+                    if (idx === -1) return;
+                    setSessions(idx, "queuedMessages", (prev) => prev.filter((_, i) => i !== index));
+                  }}
+                  onFlushQueue={() => { void cancelCurrentRun(); }}
                   onResetAgentContext={resetActiveAgentContext}
                   onReconnectAgent={reconnectActiveAgent}
                   onListMounted={onListMounted}
                   onListUnmounted={onListUnmounted}
+                  onFileClick={(path, kind) => {
+                    const sid = activeSessionId();
+                    const cwd = activeSession()?.cwd ?? "";
+                    if (!sid || !cwd) return;
+                    const isEdit = kind === "write" || kind === "edit" || kind === "create" || kind === "patch";
+                    openPreviewTab(mutateSession, sid, {
+                      cwd, path, initialMode: isEdit ? "diff" : "file", staged: false, untracked: false,
+                    });
+                  }}
                 />
               </div>
             </div>
@@ -716,6 +788,7 @@ export default function App() {
             refreshSkills={refreshSkills}
             activeSession={activeSession}
             patchActiveSession={patchActiveSession}
+            updateSession={updateSession}
             refreshRoles={refreshRoles}
             fetchConfigOptions={fetchConfigOptions}
             pushMessage={pushMessage}

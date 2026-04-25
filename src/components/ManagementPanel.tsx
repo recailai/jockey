@@ -35,6 +35,7 @@ export type ManagementPanelProps = {
   // Roles tab extras
   activeSession: Accessor<AppSession | null>;
   patchActiveSession: (patch: Partial<AppSession>) => void;
+  updateSession: (id: string, patch: Partial<AppSession>) => void;
   refreshRoles: () => Promise<void>;
   fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
   pushMessage: (role: string, text: string) => void;
@@ -118,6 +119,7 @@ export default function ManagementPanel(props: ManagementPanelProps) {
                 roles={props.roles}
                 activeSession={props.activeSession}
                 patchActiveSession={props.patchActiveSession}
+                updateSession={props.updateSession}
                 refreshRoles={props.refreshRoles}
                 fetchConfigOptions={props.fetchConfigOptions}
                 pushMessage={props.pushMessage}

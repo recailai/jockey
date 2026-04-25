@@ -205,6 +205,12 @@ pub(crate) enum WorkerMsg {
         value: String,
         result_tx: oneshot::Sender<Result<(), String>>,
     },
+    SyncRoleMode {
+        role_name: String,
+        mode_id: String,
+        eligible_session_ids: Vec<String>,
+        result_tx: oneshot::Sender<Vec<String>>,
+    },
     Shutdown {
         done_tx: oneshot::Sender<()>,
     },

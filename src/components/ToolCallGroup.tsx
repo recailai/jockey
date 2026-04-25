@@ -62,6 +62,7 @@ type ToolCallItemProps = {
   inlinePermission?: AppPermission | null;
   onApprove?: (optionId: string) => void;
   onDeny?: () => void;
+  onFileClick?: (path: string, kind: string) => void;
 };
 
 function ToolCallItem(props: ToolCallItemProps) {
@@ -73,6 +74,12 @@ function ToolCallItem(props: ToolCallItemProps) {
   };
   const showPermission = () =>
     !!props.inlinePermission && tc().status === "pending";
+
+  const [remember, setRemember] = createSignal(false);
+
+  const hasRememberableOptions = () =>
+    !!props.inlinePermission?.options.some((o) => o.kind === "allow_always");
+
   return (
     <details
       class="group/tc rounded-lg border theme-border theme-surface overflow-hidden transition-all duration-200 hover:bg-[var(--ui-surface-muted)] hover:border-[var(--ui-border-strong)]"
@@ -96,6 +103,11 @@ function ToolCallItem(props: ToolCallItemProps) {
       <Show when={showPermission()}>
         {(_) => {
           const perm = () => props.inlinePermission!;
+          const opts = () => {
+            const all = perm().options;
+            if (remember()) return all.filter((o) => o.kind === "allow_always" || !o.kind || o.kind === "allow_once");
+            return all.filter((o) => o.kind !== "allow_always");
+          };
           return (
             <div class="border-t border-amber-500/30 bg-amber-500/8 px-3 py-2.5">
               <div class="mb-1 text-[11px] font-semibold text-amber-300">{perm().title}</div>
@@ -103,7 +115,7 @@ function ToolCallItem(props: ToolCallItemProps) {
                 <p class="mb-2 text-[10.5px] theme-muted">{perm().description}</p>
               </Show>
               <div class="flex flex-wrap gap-2">
-                <For each={perm().options}>{(opt) => (
+                <For each={opts()}>{(opt) => (
                   <button
                     class={`min-h-7 rounded border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-[11px] text-emerald-300 hover:bg-emerald-500/20 ${INTERACTIVE_MOTION}`}
                     onClick={(e) => { e.preventDefault(); props.onApprove?.(opt.optionId); }}
@@ -118,6 +130,17 @@ function ToolCallItem(props: ToolCallItemProps) {
                   Deny
                 </button>
               </div>
+              <Show when={hasRememberableOptions()}>
+                <label class="mt-2 flex items-center gap-1.5 cursor-pointer select-none w-fit">
+                  <input
+                    type="checkbox"
+                    checked={remember()}
+                    onChange={(e) => setRemember(e.currentTarget.checked)}
+                    class="accent-amber-400 h-3 w-3"
+                  />
+                  <span class="text-[10px] theme-muted">Remember my choice</span>
+                </label>
+              </Show>
             </div>
           );
         }}
@@ -132,7 +155,13 @@ function ToolCallItem(props: ToolCallItemProps) {
         <div class="border-t theme-border px-3 py-2 text-[10.5px] theme-muted bg-[var(--ui-panel-2)]">
           <div class="mb-0.5 uppercase tracking-wider text-[9px] theme-muted">Files</div>
           <For each={tc().locations}>{(loc) => (
-            <div class="font-mono break-all">{loc.path}{loc.line ? `:${loc.line}` : ""}</div>
+            <button
+              type="button"
+              class={`block w-full text-left font-mono break-all hover:text-indigo-300 transition-colors ${props.onFileClick ? "cursor-pointer" : "cursor-default"}`}
+              onClick={() => props.onFileClick?.(loc.path, tc().kind)}
+            >
+              {loc.path}{loc.line ? `:${loc.line}` : ""}
+            </button>
           )}</For>
         </div>
       </Show>
@@ -153,6 +182,7 @@ export function ToolCallGroup(props: {
   pendingPermission?: AppPermission | null;
   onApprove?: (optionId: string) => void;
   onDeny?: () => void;
+  onFileClick?: (path: string, kind: string) => void;
 }) {
   const hasPendingPermission = () => !!props.pendingPermission;
   const [expanded, setExpanded] = createSignal(false);
@@ -229,6 +259,7 @@ export function ToolCallGroup(props: {
               inlinePermission={i() === pendingToolCallIndex() ? props.pendingPermission : null}
               onApprove={props.onApprove}
               onDeny={props.onDeny}
+              onFileClick={props.onFileClick}
             />
           )}</For>
         </div>

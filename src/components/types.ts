@@ -24,7 +24,7 @@ export type AppToolCall = {
   terminalMeta?: unknown;
 };
 export type AppPlanEntry = { content?: string; title?: string; status?: string; description?: string; priority?: string };
-export type AppPermission = { requestId: string; title: string; description: string | null; options: Array<{ optionId: string; title?: string }> };
+export type AppPermission = { requestId: string; title: string; description: string | null; options: Array<{ optionId: string; title?: string; kind?: string }> };
 export type AcpStreamEvent = {
   kind: string;
   text?: string;
@@ -73,7 +73,7 @@ export type SessionUpdateEvent = { sessionId: string; roleName: string; delta: s
 export type WorkflowStateEvent = { sessionId: string; status: string; activeRole: string | null; message: string };
 export type AcpDeltaEvent = { role: string; delta: string; appSessionId?: string };
 export type AppSegment = { kind: "text"; text: string } | { kind: "tool"; tc: AppToolCall };
-export type AppMessage = { id: string; roleName: string; text: string; at: number; toolCalls?: AppToolCall[]; segments?: AppSegment[]; images?: { data: string; mimeType: string }[] };
+export type AppMessage = { id: string; roleName: string; text: string; at: number; toolCalls?: AppToolCall[]; segments?: AppSegment[]; images?: { data: string; mimeType: string }[]; thoughtText?: string };
 export type AppMentionItem = { value: string; kind: "role" | "file" | "dir" | "hint" | "command" | "skill"; detail: string };
 
 export type PreviewMode = "diff" | "file" | "preview" | "image";

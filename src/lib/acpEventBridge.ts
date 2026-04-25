@@ -288,7 +288,7 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
             title: event.title ?? "Permission Required",
             description: event.description ?? null,
             options:
-              (event.options as Array<{ optionId: string; title?: string }>) ?? [],
+              (event.options as Array<{ optionId: string; title?: string; kind?: string }>) ?? [],
           },
         });
       }

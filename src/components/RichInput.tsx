@@ -245,6 +245,8 @@ export function getPlainText(nodes: RichNode[]): string {
 export default function RichInput(props: Props) {
   let el: HTMLDivElement | undefined;
   let suppressEffect = false;
+  let composing = false;
+  let justFinishedComposing = false;
 
   onMount(() => {
     if (!el) return;
@@ -265,7 +267,7 @@ export default function RichInput(props: Props) {
   });
 
   const emitChange = () => {
-    if (!el) return;
+    if (!el || composing) return;
     suppressEffect = true;
     const nodes = domToNodes(el);
     props.onNodesChange(nodes);
@@ -274,12 +276,36 @@ export default function RichInput(props: Props) {
     props.onCaretText(plain, caret);
   };
 
+  const handlePaste = (e: ClipboardEvent) => {
+    const text = e.clipboardData?.getData("text/plain");
+    if (!text) return;
+    e.preventDefault();
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    range.insertNode(document.createTextNode(text));
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    emitChange();
+  };
+
   return (
     <div
       ref={(d) => { el = d; props.ref?.(d); }}
       contentEditable
+      onCompositionStart={() => { composing = true; justFinishedComposing = false; }}
+      onCompositionEnd={() => { composing = false; justFinishedComposing = true; emitChange(); }}
       onInput={emitChange}
-      onKeyDown={props.onKeyDown}
+      onPaste={handlePaste}
+      onKeyDown={(e) => {
+        if (justFinishedComposing) {
+          justFinishedComposing = false;
+          if (e.key === "Enter") return;
+        }
+        props.onKeyDown(e);
+      }}
       onFocus={props.onFocus}
       onBlur={props.onBlur}
       onClick={props.onClick}

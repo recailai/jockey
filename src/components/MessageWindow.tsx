@@ -37,10 +37,13 @@ type MessageWindowProps = {
   activeSession: Accessor<AppSession | null>;
   activeBackendRole: () => string;
   patchActiveSession: (patch: Partial<AppSession>) => void;
+  onRemoveQueuedMessage: (index: number) => void;
+  onFlushQueue?: () => void;
   onResetAgentContext?: () => void;
   onReconnectAgent?: () => void;
   onListMounted?: (id: string, el: HTMLElement) => void;
   onListUnmounted?: (id: string) => void;
+  onFileClick?: (path: string, kind: string) => void;
 };
 
 export default function MessageWindow(props: MessageWindowProps) {
@@ -315,7 +318,10 @@ export default function MessageWindow(props: MessageWindowProps) {
                 <Show when={msg.segments && msg.segments.length > 0} fallback={
                   <div class="md-prose" innerHTML={q ? highlightText(renderMdCached(msg.id, msg.text), q) : renderMdCached(msg.id, msg.text)} />
                 }>
-                  <SegmentList segments={msg.segments!} terminals={props.activeSession()?.terminals} />
+                  <SegmentList segments={msg.segments!} terminals={props.activeSession()?.terminals} onFileClick={props.onFileClick} />
+                </Show>
+                <Show when={msg.thoughtText}>
+                  <ThoughtBlock text={msg.thoughtText!} />
                 </Show>
               </div>
             </div>
@@ -380,12 +386,11 @@ export default function MessageWindow(props: MessageWindowProps) {
                     void assistantApi.respondPermission(perm.requestId, "", true);
                     props.patchActiveSession({ pendingPermission: null });
                   }}
+                  onFileClick={props.onFileClick}
                 />
               </Show>
               <Show when={props.activeSession()?.thoughtText}>
-                <div class="mt-2 rounded-md border theme-border theme-panel px-2.5 py-2 text-[11px] theme-muted leading-relaxed font-mono whitespace-pre-wrap break-words">
-                  {props.activeSession()?.thoughtText}
-                </div>
+                <ThoughtBlock text={props.activeSession()!.thoughtText!} streaming />
               </Show>
               <div class="flex items-center gap-2 mt-2 pt-1.5">
                 <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
@@ -473,24 +478,47 @@ export default function MessageWindow(props: MessageWindowProps) {
       </Show>
       <Show when={(props.activeSession()?.queuedMessages ?? []).length > 0}>
         <div class="mt-3 rounded-lg border theme-border backdrop-blur-sm overflow-hidden theme-panel">
-          <button
-            class="flex w-full items-center gap-2 px-3 py-1.5 hover:bg-[var(--ui-accent-soft)] transition-colors"
+          <div
+            class="flex items-center gap-2 px-3 py-1.5"
             classList={{ "border-b theme-border": !queueCollapsed() }}
-            onClick={() => setQueueCollapsed(v => !v)}
           >
-            <span class="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse shrink-0" />
-            <span class="text-[10px] theme-muted font-medium uppercase tracking-wider">Queued</span>
-            <span class="ml-auto text-[9px] theme-muted font-mono bg-[var(--ui-panel-2)] px-1.5 py-0.5 rounded-md">{props.activeSession()!.queuedMessages.length}</span>
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="theme-muted transition-transform ml-1" classList={{ "rotate-180": !queueCollapsed() }}>
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
-          </button>
+            <button
+              class="flex flex-1 items-center gap-2 text-left"
+              onClick={() => setQueueCollapsed(v => !v)}
+            >
+              <span class="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse shrink-0" />
+              <span class="text-[10px] theme-muted font-medium uppercase tracking-wider">Queued</span>
+              <span class="text-[9px] theme-muted font-mono bg-[var(--ui-panel-2)] px-1.5 py-0.5 rounded-md">{props.activeSession()!.queuedMessages.length}</span>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="theme-muted transition-transform" classList={{ "rotate-180": !queueCollapsed() }}>
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+            <Show when={props.onFlushQueue && props.activeSession()?.submitting}>
+              <button
+                type="button"
+                onClick={() => props.onFlushQueue!()}
+                class="shrink-0 flex items-center gap-1 rounded-md border border-indigo-500/40 bg-indigo-500/10 px-2 py-0.5 text-[9px] font-semibold text-indigo-300 hover:bg-indigo-500/20 transition-colors"
+                title="Interrupt current turn and send queued messages"
+              >
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 11 12 6 7 11"/><polyline points="17 18 12 13 7 18"/></svg>
+                Send now
+              </button>
+            </Show>
+          </div>
           <Show when={!queueCollapsed()}>
             <div class="px-2 py-1.5 space-y-1">
               <For each={props.activeSession()!.queuedMessages}>{(text, i) => (
-                <div class="flex items-start gap-2 px-2 py-1 rounded-md hover:bg-[var(--ui-accent-soft)] transition-colors">
+                <div class="group flex items-start gap-2 px-2 py-1 rounded-md hover:bg-[var(--ui-accent-soft)] transition-colors">
                   <span class="text-[9px] theme-muted font-mono mt-0.5 shrink-0 w-4 text-right">{i() + 1}</span>
-                  <span class="text-[11px] theme-text font-mono break-all leading-relaxed">{text}</span>
+                  <span class="flex-1 text-[11px] theme-text font-mono break-all leading-relaxed">{text}</span>
+                  <button
+                    type="button"
+                    onClick={() => props.onRemoveQueuedMessage(i())}
+                    class="shrink-0 opacity-0 group-hover:opacity-100 theme-muted hover:text-rose-400 transition-all mt-0.5"
+                    title="Remove from queue"
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
                 </div>
               )}</For>
             </div>
@@ -530,6 +558,47 @@ export default function MessageWindow(props: MessageWindowProps) {
   );
 }
 
+function ThoughtBlock(props: { text: string; streaming?: boolean }) {
+  const [open, setOpen] = createSignal(false);
+  const preview = () => {
+    const t = props.text.trim();
+    const nl = t.indexOf("\n");
+    const first = nl === -1 ? t : t.slice(0, nl);
+    return first.length > 80 ? first.slice(0, 80) + "…" : first + (props.text.trim().length > first.length ? "…" : "");
+  };
+  return (
+    <div class="mt-1.5 rounded-md border theme-border theme-panel overflow-hidden">
+      <button
+        type="button"
+        class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left hover:bg-[var(--ui-accent-soft)] transition-colors"
+        onClick={() => setOpen(v => !v)}
+      >
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 theme-muted">
+          <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
+        </svg>
+        <span class="text-[10px] theme-muted font-medium uppercase tracking-wider shrink-0">
+          {props.streaming ? "Thinking" : "Thought"}
+        </span>
+        <Show when={!open()}>
+          <span class="flex-1 truncate text-[10px] theme-muted font-mono ml-1 opacity-60">{preview()}</span>
+        </Show>
+        <svg
+          width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+          stroke-linecap="round" stroke-linejoin="round"
+          class={`shrink-0 theme-muted transition-transform duration-150 ml-auto ${open() ? "rotate-180" : ""}`}
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+      <Show when={open()}>
+        <div class="px-2.5 py-2 border-t theme-border text-[11px] theme-muted font-mono leading-relaxed whitespace-pre-wrap break-words max-h-72 overflow-auto">
+          {props.text}
+        </div>
+      </Show>
+    </div>
+  );
+}
+
 function collectToolGroups(segments: AppSegment[]): Array<{ kind: "text"; text: string } | { kind: "tools"; tools: AppToolCall[] }> {
   const result: Array<{ kind: "text"; text: string } | { kind: "tools"; tools: AppToolCall[] }> = [];
   for (const seg of segments) {
@@ -547,13 +616,13 @@ function collectToolGroups(segments: AppSegment[]): Array<{ kind: "text"; text: 
   return result;
 }
 
-function SegmentList(props: { segments: AppSegment[]; terminals?: AppSession["terminals"] }) {
+function SegmentList(props: { segments: AppSegment[]; terminals?: AppSession["terminals"]; onFileClick?: (path: string, kind: string) => void }) {
   const groups = createMemo(() => collectToolGroups(props.segments));
   return (
     <For each={groups()}>{(g) => (
       g.kind === "text"
         ? <div class="md-prose" innerHTML={renderMd(g.text)} />
-        : <ToolCallGroup tools={g.tools} streaming={false} terminals={props.terminals} />
+        : <ToolCallGroup tools={g.tools} streaming={false} terminals={props.terminals} onFileClick={props.onFileClick} />
     )}</For>
   );
 }
@@ -564,6 +633,7 @@ function StreamSegmentList(props: {
   pendingPermission?: AppPermission | null;
   onApprove?: (optionId: string) => void;
   onDeny?: () => void;
+  onFileClick?: (path: string, kind: string) => void;
 }) {
   const groups = createMemo(() => collectToolGroups(props.segments));
   return (
@@ -580,6 +650,7 @@ function StreamSegmentList(props: {
             pendingPermission={i === groups().length - 1 ? props.pendingPermission : null}
             onApprove={props.onApprove}
             onDeny={props.onDeny}
+            onFileClick={props.onFileClick}
           />
         </Match>
       </Switch>

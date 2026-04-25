@@ -5,12 +5,13 @@ import { RUNTIME_COLOR, RUNTIMES, flattenConfigValues } from "../types";
 import { EmptyState, FieldRow, TextInput, InlineSelect, ActionButton, Badge } from "./primitives";
 import type { AcpMcpServer } from "./primitives";
 import { mcpTransport, mcpDisplayUri, parseCommandArgs } from "./primitives";
-import { roleApi, parseError } from "../../lib/tauriApi";
+import { roleApi, assistantApi, parseError } from "../../lib/tauriApi";
 
 export function RolesTab(props: {
   roles: Accessor<Role[]>;
   activeSession: Accessor<AppSession | null>;
   patchActiveSession: (patch: Partial<AppSession>) => void;
+  updateSession: (id: string, patch: Partial<AppSession>) => void;
   refreshRoles: () => Promise<void>;
   fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
   pushMessage: (role: string, text: string) => void;
@@ -150,16 +151,24 @@ export function RolesTab(props: {
     let parsedCfg: unknown;
     try { parsedCfg = JSON.parse(eCfgJson().trim() || "{}"); if (!parsedCfg || typeof parsedCfg !== "object" || Array.isArray(parsedCfg)) throw new Error("must be object"); }
     catch (e) { props.pushMessage("event", `Invalid config JSON: ${String(e)}`); return; }
+    const previousMode = role.mode ?? null;
+    const newMode = eMode().trim() || null;
+    const modeChanged = newMode !== previousMode;
     setSaving(true);
     try {
       await roleApi.upsert({
         roleName: role.roleName, runtimeKind: role.runtimeKind,
         systemPrompt: ePrompt().trim(), model: eModel().trim() || null,
-        mode: eMode().trim() || null, mcpServersJson: JSON.stringify(eMcpServers()),
+        mode: newMode, mcpServersJson: JSON.stringify(eMcpServers()),
         configOptionsJson: JSON.stringify(parsedCfg), autoApprove: eAutoApprove(),
       } satisfies RoleUpsertInput);
       await props.refreshRoles();
-      // 保存后留在编辑页，不关闭
+      if (modeChanged && newMode) {
+        const synced = await assistantApi.syncRoleMode(role.roleName, newMode).catch(() => []);
+        for (const sessionId of synced) {
+          props.updateSession(sessionId, { currentMode: newMode });
+        }
+      }
       props.pushMessage("event", `role saved: ${role.roleName}`);
     } catch (e) { const err = parseError(e); props.pushMessage("event", `Failed to save: ${err.message}`); }
     finally { setSaving(false); }

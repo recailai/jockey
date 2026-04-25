@@ -97,6 +97,29 @@ pub async fn set_mode(
     rx.await.map_err(|_| "worker disconnected".to_string())?
 }
 
+pub async fn sync_role_mode(
+    role_name: &str,
+    mode_id: &str,
+    eligible_session_ids: Vec<String>,
+) -> Vec<String> {
+    if eligible_session_ids.is_empty() {
+        return vec![];
+    }
+    let (tx, rx) = oneshot::channel();
+    if worker_tx()
+        .send(WorkerMsg::SyncRoleMode {
+            role_name: role_name.to_string(),
+            mode_id: mode_id.to_string(),
+            eligible_session_ids,
+            result_tx: tx,
+        })
+        .is_err()
+    {
+        return vec![];
+    }
+    rx.await.unwrap_or_default()
+}
+
 pub async fn set_config_option(
     runtime_kind: &str,
     role_name: &str,

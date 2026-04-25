@@ -281,3 +281,28 @@ pub(crate) async fn respond_permission(
     acp::respond_to_permission(&request_id, outcome);
     Ok(())
 }
+
+#[tauri::command]
+pub(crate) async fn sync_role_mode_cmd(
+    state: State<'_, AppState>,
+    role_name: String,
+    mode_id: String,
+) -> Result<Vec<String>, String> {
+    let eligible = with_db(get_state(&state), |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT app_session_id FROM app_session_roles
+                 WHERE role_name = ?1
+                 AND (mode_override IS NULL OR mode_override = '')",
+            )
+            .map_err(|e| e.to_string())?;
+        let ids = stmt
+            .query_map(params![role_name], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect::<Vec<_>>();
+        Ok(ids)
+    })
+    .unwrap_or_default();
+    Ok(acp::sync_role_mode(&role_name, &mode_id, eligible).await)
+}

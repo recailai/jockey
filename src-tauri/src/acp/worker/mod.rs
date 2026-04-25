@@ -397,6 +397,73 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 let _ = done_tx.send(());
                 break;
             }
+            WorkerMsg::SyncRoleMode {
+                role_name,
+                mode_id,
+                eligible_session_ids,
+                result_tx,
+            } => {
+                use agent_client_protocol as acp;
+                let eligible_set: std::collections::HashSet<String> =
+                    eligible_session_ids.into_iter().collect();
+                let target_keys: Vec<(String, String)> = CONN_MAP.with(|m| {
+                    m.borrow()
+                        .keys()
+                        .filter_map(|key| {
+                            let mut parts = key.splitn(3, ':');
+                            let app_session_id = parts.next().unwrap_or_default().to_string();
+                            let _runtime_key = parts.next().unwrap_or_default();
+                            let conn_role = parts.next().unwrap_or_default();
+                            if conn_role == role_name && eligible_set.contains(&app_session_id) {
+                                Some((key.clone(), app_session_id))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                });
+
+                tokio::task::spawn_local(async move {
+                    let mut synced: Vec<String> = Vec::new();
+                    for (key, app_session_id) in target_keys {
+                        let lookup = CONN_MAP.with(|m| {
+                            m.borrow().get(&key).map(|live| {
+                                (
+                                    crate::acp::AgentConnection::rpc_handle(live),
+                                    live.session_id.clone(),
+                                    live.mode_state.clone(),
+                                )
+                            })
+                        });
+                        let Some((rpc, session_id, mode_state)) = lookup else {
+                            continue;
+                        };
+                        let previous_mode_id = mode_state
+                            .borrow()
+                            .as_ref()
+                            .map(|s| s.current_mode_id.clone());
+                        if let Some(state) = mode_state.borrow_mut().as_mut() {
+                            state.current_mode_id = acp::SessionModeId::from(mode_id.clone());
+                        }
+                        let result = rpc
+                            .set_session_mode(acp::SetSessionModeRequest::new(
+                                session_id,
+                                acp::SessionModeId::from(mode_id.clone()),
+                            ))
+                            .await
+                            .map(|_| ())
+                            .map_err(|e| AcpLayerError::from(e).into_message());
+                        if result.is_ok() {
+                            synced.push(app_session_id);
+                        } else if let Some(prev) = previous_mode_id {
+                            if let Some(state) = mode_state.borrow_mut().as_mut() {
+                                state.current_mode_id = prev;
+                            }
+                        }
+                    }
+                    let _ = result_tx.send(synced);
+                });
+            }
             WorkerMsg::SnapshotConnections { result_tx } => {
                 let _ = result_tx.send(snapshot_connections_now());
             }

@@ -136,6 +136,8 @@ export const assistantApi = {
     call<Array<Record<string, unknown>>>("acp_log_snapshot_cmd", { limit }),
   activeConnections: () =>
     call<Array<Record<string, unknown>>>("active_acp_connections_cmd"),
+  syncRoleMode: (roleName: string, modeId: string) =>
+    call<string[]>("sync_role_mode_cmd", { roleName, modeId }),
   respondPermission: (requestId: string, optionId: string, cancelled: boolean) =>
     call<void>("respond_permission", { requestId, optionId, cancelled }),
 };

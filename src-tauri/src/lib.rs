@@ -365,6 +365,7 @@ pub fn run() {
             commands::runtime_cmd::acp_log_snapshot_cmd,
             commands::runtime_cmd::active_acp_connections_cmd,
             commands::runtime_cmd::respond_permission,
+            commands::runtime_cmd::sync_role_mode_cmd,
             commands::runtime_cmd::prewarm_role_config_cmd,
             commands::git_cmd::git_status_cmd,
             commands::git_cmd::git_diff_cmd,

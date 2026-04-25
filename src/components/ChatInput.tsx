@@ -77,7 +77,7 @@ export default function ChatInput(props: ChatInputProps) {
   };
 
   const fakeSubmit = (e: KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       const fakeEvent = new Event("submit", { bubbles: true, cancelable: true }) as unknown as SubmitEvent;
       props.onSubmit(fakeEvent);
@@ -154,10 +154,11 @@ export default function ChatInput(props: ChatInputProps) {
               type="submit"
               class={`shrink-0 flex h-8 w-8 items-center justify-center rounded-xl motion-safe:transition-colors motion-safe:duration-150 ${INTERACTIVE_MOTION}`}
               classList={{
-                "bg-gradient-to-t from-indigo-600 to-indigo-500 text-white shadow-md shadow-indigo-500/25 border border-indigo-400/30 hover:shadow-indigo-500/40 hover:scale-105": hasContent(),
+                "bg-gradient-to-t from-indigo-600 to-indigo-500 text-white shadow-md shadow-indigo-500/25 border border-indigo-400/30 hover:shadow-indigo-500/40 hover:scale-105": hasContent() && !props.submitting(),
+                "bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25": hasContent() && props.submitting(),
                 "theme-surface-muted theme-muted border border-transparent": !hasContent(),
               }}
-              title={props.submitting() ? `Queue (${props.queuedCount()})` : "Send"}
+              title={props.submitting() ? `Add to queue (${props.queuedCount() + 1})` : "Send"}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" classList={{ "drop-shadow-[0_1px_2px_rgba(0,0,0,0.3)]": hasContent() }}><line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" /></svg>
             </button>

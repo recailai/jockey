@@ -172,6 +172,7 @@ export function useStreamEngine(sessionManager: SessionManager) {
     }
     if (row) {
       const text = normalizeNewlines(finalReply ?? row.text);
+      const snapshotThought = sess?.thoughtText || undefined;
       // Always append if there was an active streamingMessage — dropping it
       // silently causes the response to disappear (e.g. after cancel + queued
       // send when the agent returns empty text for the interrupted turn).
@@ -181,6 +182,7 @@ export function useStreamEngine(sessionManager: SessionManager) {
         at: now(),
         toolCalls: snapshotToolCalls,
         segments: snapshotSegments,
+        thoughtText: snapshotThought,
       });
       updateSession(sessionId, { streamingMessage: null, streamingRunToken: null, thoughtText: "" });
     } else if (finalReply && finalReply.trim()) {
