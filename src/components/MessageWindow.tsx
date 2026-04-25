@@ -44,6 +44,7 @@ type MessageWindowProps = {
   onListMounted?: (id: string, el: HTMLElement) => void;
   onListUnmounted?: (id: string) => void;
   onFileClick?: (path: string, kind: string) => void;
+  onRejectHunk?: (rejectPrompt: string) => void;
 };
 
 export default function MessageWindow(props: MessageWindowProps) {
@@ -318,7 +319,7 @@ export default function MessageWindow(props: MessageWindowProps) {
                 <Show when={msg.segments && msg.segments.length > 0} fallback={
                   <div class="md-prose" innerHTML={q ? highlightText(renderMdCached(msg.id, msg.text), q) : renderMdCached(msg.id, msg.text)} />
                 }>
-                  <SegmentList segments={msg.segments!} terminals={props.activeSession()?.terminals} onFileClick={props.onFileClick} />
+                  <SegmentList segments={msg.segments!} terminals={props.activeSession()?.terminals} onFileClick={props.onFileClick} onRejectHunk={props.onRejectHunk} />
                 </Show>
                 <Show when={msg.thoughtText}>
                   <ThoughtBlock text={msg.thoughtText!} />
@@ -387,6 +388,7 @@ export default function MessageWindow(props: MessageWindowProps) {
                     props.patchActiveSession({ pendingPermission: null });
                   }}
                   onFileClick={props.onFileClick}
+                  onRejectHunk={props.onRejectHunk}
                 />
               </Show>
               <Show when={props.activeSession()?.thoughtText}>
@@ -616,13 +618,13 @@ function collectToolGroups(segments: AppSegment[]): Array<{ kind: "text"; text: 
   return result;
 }
 
-function SegmentList(props: { segments: AppSegment[]; terminals?: AppSession["terminals"]; onFileClick?: (path: string, kind: string) => void }) {
+function SegmentList(props: { segments: AppSegment[]; terminals?: AppSession["terminals"]; onFileClick?: (path: string, kind: string) => void; onRejectHunk?: (p: string) => void }) {
   const groups = createMemo(() => collectToolGroups(props.segments));
   return (
     <For each={groups()}>{(g) => (
       g.kind === "text"
         ? <div class="md-prose" innerHTML={renderMd(g.text)} />
-        : <ToolCallGroup tools={g.tools} streaming={false} terminals={props.terminals} onFileClick={props.onFileClick} />
+        : <ToolCallGroup tools={g.tools} streaming={false} terminals={props.terminals} onFileClick={props.onFileClick} onRejectHunk={props.onRejectHunk} />
     )}</For>
   );
 }
@@ -634,6 +636,7 @@ function StreamSegmentList(props: {
   onApprove?: (optionId: string) => void;
   onDeny?: () => void;
   onFileClick?: (path: string, kind: string) => void;
+  onRejectHunk?: (p: string) => void;
 }) {
   const groups = createMemo(() => collectToolGroups(props.segments));
   return (
@@ -651,6 +654,7 @@ function StreamSegmentList(props: {
             onApprove={props.onApprove}
             onDeny={props.onDeny}
             onFileClick={props.onFileClick}
+            onRejectHunk={props.onRejectHunk}
           />
         </Match>
       </Switch>

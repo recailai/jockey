@@ -699,6 +699,9 @@ export default function App() {
                       cwd, path, initialMode: isEdit ? "diff" : "file", staged: false, untracked: false,
                     });
                   }}
+                  onRejectHunk={(rejectPrompt) => {
+                    void sendRaw(rejectPrompt, false);
+                  }}
                 />
               </div>
             </div>

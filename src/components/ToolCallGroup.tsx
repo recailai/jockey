@@ -1,6 +1,9 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import type { AppPermission, AppToolCall, TerminalEntry } from "./types";
 import { INTERACTIVE_MOTION } from "./types";
+import { DiffViewer } from "./DiffViewer";
+import { parseDiff, isDiffLike, hunkToRejectPrompt } from "../lib/diffParser";
+import type { DiffHunk } from "../lib/diffParser";
 
 function tcStatusDot(status: string): string {
   if (status === "success" || status === "completed") return "bg-emerald-400 shadow-emerald-400/40";
@@ -63,6 +66,7 @@ type ToolCallItemProps = {
   onApprove?: (optionId: string) => void;
   onDeny?: () => void;
   onFileClick?: (path: string, kind: string) => void;
+  onRejectHunk?: (rejectPrompt: string) => void;
 };
 
 function ToolCallItem(props: ToolCallItemProps) {
@@ -169,7 +173,40 @@ function ToolCallItem(props: ToolCallItemProps) {
         <pre class="whitespace-pre-wrap break-words border-t theme-border px-3 py-2.5 text-[10.5px] font-mono theme-muted bg-[var(--ui-panel-2)]">{tc().rawInputJson}</pre>
       </Show>
       <Show when={tc().rawOutputJson}>
-        <pre class="whitespace-pre-wrap break-words border-t theme-border px-3 py-2.5 text-[10.5px] font-mono theme-muted bg-[var(--ui-panel-2)]">{tc().rawOutputJson}</pre>
+        {(_) => {
+          const raw = () => tc().rawOutputJson!;
+          const diffData = () => {
+            try {
+              const parsed = JSON.parse(raw());
+              const text = typeof parsed === "string" ? parsed
+                : typeof parsed?.patch === "string" ? parsed.patch
+                : typeof parsed?.diff === "string" ? parsed.diff
+                : null;
+              if (text && isDiffLike(text)) return parseDiff(text);
+            } catch {
+              if (isDiffLike(raw())) return parseDiff(raw());
+            }
+            return null;
+          };
+          return (
+            <div class="border-t theme-border bg-[var(--ui-panel-2)]">
+              <Show when={diffData()} fallback={
+                <pre class="whitespace-pre-wrap break-words px-3 py-2.5 text-[10.5px] font-mono theme-muted">{raw()}</pre>
+              }>
+                {(diffs) => (
+                  <div class="p-2.5">
+                    <DiffViewer
+                      diffs={diffs()}
+                      onRejectHunk={(filePath: string, hunk: DiffHunk) => {
+                        props.onRejectHunk?.(hunkToRejectPrompt(filePath, hunk));
+                      }}
+                    />
+                  </div>
+                )}
+              </Show>
+            </div>
+          );
+        }}
       </Show>
     </details>
   );
@@ -183,6 +220,7 @@ export function ToolCallGroup(props: {
   onApprove?: (optionId: string) => void;
   onDeny?: () => void;
   onFileClick?: (path: string, kind: string) => void;
+  onRejectHunk?: (rejectPrompt: string) => void;
 }) {
   const hasPendingPermission = () => !!props.pendingPermission;
   const [expanded, setExpanded] = createSignal(false);
@@ -260,6 +298,7 @@ export function ToolCallGroup(props: {
               onApprove={props.onApprove}
               onDeny={props.onDeny}
               onFileClick={props.onFileClick}
+              onRejectHunk={props.onRejectHunk}
             />
           )}</For>
         </div>
