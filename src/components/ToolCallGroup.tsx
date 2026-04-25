@@ -1,9 +1,12 @@
-import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { AppPermission, AppToolCall, TerminalEntry } from "./types";
 import { INTERACTIVE_MOTION } from "./types";
 import { DiffViewer } from "./DiffViewer";
 import { parseDiff, isDiffLike, hunkToRejectPrompt } from "../lib/diffParser";
 import type { DiffHunk } from "../lib/diffParser";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 
 function tcStatusDot(status: string): string {
   if (status === "success" || status === "completed") return "bg-emerald-400 shadow-emerald-400/40";
@@ -23,6 +26,11 @@ function terminalIdOf(tc: AppToolCall): string | null {
 
 function TerminalView(props: { entry: TerminalEntry }) {
   const entry = () => props.entry;
+  let containerEl: HTMLDivElement | undefined;
+  let term: Terminal | undefined;
+  let fitAddon: FitAddon | undefined;
+  let lastOutput = "";
+
   const exitLabel = () => {
     const ex = entry().exitStatus;
     if (!ex) return null;
@@ -37,13 +45,56 @@ function TerminalView(props: { entry: TerminalEntry }) {
     if (ex.exitCode === 0) return "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
     return "bg-rose-500/15 text-rose-300 border-rose-500/30";
   };
+
+  onMount(() => {
+    if (!containerEl) return;
+    term = new Terminal({
+      disableStdin: true,
+      scrollback: 1000,
+      rows: 12,
+      convertEol: true,
+      theme: {
+        background: "#0b0b0d",
+        foreground: "#d4d4d8",
+        cursor: "#d4d4d8",
+      },
+      fontSize: 11,
+      fontFamily: "ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace",
+    });
+    fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(containerEl);
+    fitAddon.fit();
+
+    const output = entry().output;
+    if (output) {
+      term.write(output);
+      lastOutput = output;
+    }
+  });
+
+  createEffect(() => {
+    const output = entry().output;
+    if (!term || output === lastOutput) return;
+    if (output.startsWith(lastOutput)) {
+      term.write(output.slice(lastOutput.length));
+    } else {
+      term.reset();
+      term.write(output);
+    }
+    lastOutput = output;
+    fitAddon?.fit();
+  });
+
+  onCleanup(() => { term?.dispose(); });
+
   return (
     <div class="border-t theme-border bg-[#0b0b0d]">
       <div class="flex items-center justify-between px-3 py-1.5 text-[9.5px] theme-muted uppercase tracking-widest border-b theme-border">
         <span class="font-mono truncate">
           {entry().label ?? "terminal"}
           <Show when={entry().cwd}>
-            <span class="theme-muted/70"> · {entry().cwd}</span>
+            <span class="opacity-60"> · {entry().cwd}</span>
           </Show>
         </span>
         <Show when={exitLabel()}>
@@ -52,9 +103,14 @@ function TerminalView(props: { entry: TerminalEntry }) {
           </span>
         </Show>
       </div>
-      <pre class="whitespace-pre-wrap break-words px-3 py-2 text-[11px] font-mono leading-[1.35] text-zinc-200 max-h-[360px] overflow-auto">
-        {entry().output || <span class="theme-muted italic">(waiting for output...)</span>}
-      </pre>
+      <div
+        ref={containerEl}
+        class="px-1 py-1 overflow-hidden"
+        style={{ "max-height": "280px" }}
+      />
+      <Show when={!entry().output}>
+        <div class="px-3 py-2 text-[11px] font-mono text-zinc-500 italic">(waiting for output...)</div>
+      </Show>
     </div>
   );
 }
