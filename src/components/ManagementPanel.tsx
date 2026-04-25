@@ -18,6 +18,7 @@ import { RolesTab } from "./management/RolesTab";
 import { McpRegistryTab } from "./management/McpRegistryTab";
 import { SkillRegistryTab } from "./management/SkillRegistryTab";
 import { RulesTab } from "./management/RulesTab";
+import { ExternalAgentsTab } from "./management/ExternalAgentsTab";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Root ManagementPanel
@@ -135,6 +136,9 @@ export default function ManagementPanel(props: ManagementPanelProps) {
             </Show>
             <Show when={activeTab() === "rules"}>
               <RulesTab />
+            </Show>
+            <Show when={activeTab() === "agents"}>
+              <ExternalAgentsTab />
             </Show>
 
           </div>

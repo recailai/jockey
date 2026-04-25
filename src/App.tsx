@@ -129,7 +129,7 @@ export default function App() {
       if (h > 0) persistEditorRatio(px / h);
     },
   });
-  const [managementInitialTab, setManagementInitialTab] = createSignal<"sessions" | "workflows" | "roles" | "mcp" | "skills" | "rules">("sessions");
+  const [managementInitialTab, setManagementInitialTab] = createSignal<"sessions" | "workflows" | "roles" | "mcp" | "skills" | "rules" | "agents">("sessions");
   const [managementInitialRole, setManagementInitialRole] = createSignal<string | undefined>(undefined);
 
   const [richNodes, setRichNodes] = createSignal<RichNode[]>([]);
