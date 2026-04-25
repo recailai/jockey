@@ -102,6 +102,8 @@ export const globalMcpApi = {
   listRoleMcp: (roleName: string) => call<RoleMcpEntry[]>("list_role_mcp_servers_cmd", { roleName }),
   setRoleMcpEnabled: (roleName: string, mcpServerName: string, enabled: boolean) =>
     call<void>("set_role_mcp_enabled_cmd", { roleName, mcpServerName, enabled }),
+  resetRoleMcpSessions: (roleName: string) =>
+    call<string[]>("reset_role_mcp_sessions_cmd", { roleName }),
 };
 
 export type AppRule = {

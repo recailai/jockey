@@ -283,6 +283,20 @@ pub(crate) async fn respond_permission(
 }
 
 #[tauri::command]
+pub(crate) async fn reset_role_mcp_sessions_cmd(role_name: String) -> Vec<String> {
+    let conns = acp::active_connections_snapshot().await;
+    let mut reset_ids = Vec::new();
+    for conn in conns {
+        if conn.role_name != role_name {
+            continue;
+        }
+        let _ = acp::reset_session(&conn.runtime_key, &role_name, Some(&conn.app_session_id)).await;
+        reset_ids.push(conn.app_session_id);
+    }
+    reset_ids
+}
+
+#[tauri::command]
 pub(crate) async fn sync_role_mode_cmd(
     state: State<'_, AppState>,
     role_name: String,

@@ -5,7 +5,8 @@ import { RUNTIME_COLOR, RUNTIMES, flattenConfigValues } from "../types";
 import { EmptyState, FieldRow, TextInput, InlineSelect, ActionButton, Badge } from "./primitives";
 import type { AcpMcpServer } from "./primitives";
 import { mcpTransport, mcpDisplayUri, parseCommandArgs } from "./primitives";
-import { roleApi, assistantApi, parseError } from "../../lib/tauriApi";
+import { roleApi, assistantApi, globalMcpApi, parseError } from "../../lib/tauriApi";
+import type { RoleMcpEntry } from "../../lib/tauriApi";
 
 export function RolesTab(props: {
   roles: Accessor<Role[]>;
@@ -50,6 +51,8 @@ export function RolesTab(props: {
   const [eMcpUrl, setEMcpUrl] = createSignal("");
   const [eCfgJson, setECfgJson] = createSignal("{}");
   const [eConfigOpts, setEConfigOpts] = createSignal<AcpConfigOption[]>([]);
+  const [eGlobalMcp, setEGlobalMcp] = createSignal<RoleMcpEntry[]>([]);
+  const [mcpResetting, setMcpResetting] = createSignal(false);
 
   const editingRole = createMemo(() =>
     selectedId() ? userRoles().find((r) => r.id === selectedId()) ?? null : null,
@@ -85,6 +88,7 @@ export function RolesTab(props: {
     setECfgJson(role.configOptionsJson || "{}");
     setEConfigOpts([]);
     void props.fetchConfigOptions(role.runtimeKind, role.roleName).then(setEConfigOpts);
+    void globalMcpApi.listRoleMcp(role.roleName).then(setEGlobalMcp).catch(() => {});
   };
 
   // Auto-open edit when panel is opened from sidebar with a pre-selected role name.
@@ -182,6 +186,16 @@ export function RolesTab(props: {
       setDeletingId(null);
       await props.refreshRoles();
     } catch (e) { const err = parseError(e); props.pushMessage("event", `Failed to delete role: ${err.message}`); }
+  };
+
+  const handleToggleGlobalMcp = async (entry: RoleMcpEntry, enabled: boolean) => {
+    const role = editingRole();
+    if (!role) return;
+    await globalMcpApi.setRoleMcpEnabled(role.roleName, entry.mcpServerName, enabled).catch(() => {});
+    setEGlobalMcp((prev) => prev.map((e) => e.mcpServerName === entry.mcpServerName ? { ...e, enabled } : e));
+    setMcpResetting(true);
+    await globalMcpApi.resetRoleMcpSessions(role.roleName).catch(() => {});
+    setMcpResetting(false);
   };
 
   const runtimeOptions = RUNTIMES.map((r) => ({ value: r, label: r }));
@@ -510,6 +524,29 @@ export function RolesTab(props: {
                       </Show>
                     </div>
                   </FieldRow>
+                  <Show when={eGlobalMcp().length > 0}>
+                    <FieldRow label="Global MCP">
+                      <div class="space-y-1">
+                        <For each={eGlobalMcp()}>{(entry) => (
+                          <div class="flex items-center gap-2 rounded-md border theme-border bg-[var(--ui-surface)] px-2 py-1">
+                            <input
+                              type="checkbox"
+                              checked={entry.enabled}
+                              onChange={(e) => void handleToggleGlobalMcp(entry, e.currentTarget.checked)}
+                              class="accent-indigo-400 h-3 w-3 shrink-0"
+                            />
+                            <span class="flex-1 truncate font-mono text-[10px] theme-text">{entry.mcpServerName}</span>
+                            <Show when={entry.isBuiltin}>
+                              <span class="text-[9px] theme-muted italic">builtin</span>
+                            </Show>
+                          </div>
+                        )}</For>
+                        <Show when={mcpResetting()}>
+                          <div class="text-[9.5px] text-amber-300 font-mono pt-0.5">MCP changed — reconnecting live sessions…</div>
+                        </Show>
+                      </div>
+                    </FieldRow>
+                  </Show>
                   <FieldRow label="Auto-approve">
                     <label class="flex items-center gap-2 cursor-pointer">
                       <input type="checkbox" checked={eAutoApprove()} onChange={(e) => setEAutoApprove(e.currentTarget.checked)} class="rounded accent-emerald-500" />
