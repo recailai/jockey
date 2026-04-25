@@ -216,7 +216,7 @@ export default function App() {
     refreshInputCompletions,
     applyMentionCandidate, applySlashCandidate,
   } = completions;
-  const { registerAcpEventListeners } = useAcpEventListeners();
+  const { registerAcpEventListeners, clearSessionStream } = useAcpEventListeners();
 
   const { bootstrapApp } = useAppBootstrap({
     setSessions,
@@ -237,6 +237,7 @@ export default function App() {
     closeMentionMenu,
     closeSlashMenu,
     showToast,
+    clearSessionStream,
   });
 
   const inputHistory = useInputHistory(setInput);

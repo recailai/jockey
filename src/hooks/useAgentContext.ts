@@ -228,7 +228,7 @@ export function useAgentContext(
     }
   };
 
-  const cancelCurrentRun = async (runNextQueued: () => void) => {
+  const cancelCurrentRun = async (runNextQueued: () => void, clearSessionStream?: (sid: string) => void) => {
     const sid = activeSessionId();
     const cidx = sid ? getSessionIndex(sid) : -1;
     const sess = cidx !== -1 ? sessions[cidx] : null;
@@ -242,6 +242,7 @@ export function useAgentContext(
 
     runTokens.markCancelled();
     acceptingStreams.delete(sid);
+    clearSessionStream?.(sid);
     updateSession(sid, {
       currentPlan: null,
       pendingPermission: null,

@@ -698,11 +698,20 @@ pub(crate) async fn handle_execute(
     match prompt_result {
         Ok(Ok(resp)) => {
             record_prompt_latency(runtime_key, prompt_started.elapsed().as_millis());
-            CONN_MAP.with(|m| {
-                if let Some(conn) = m.borrow_mut().get_mut(&key) {
-                    conn.last_active = Instant::now();
-                }
-            });
+            if resp.stop_reason == acp::StopReason::Cancelled {
+                CONN_MAP.with(|m| {
+                    let mut map = m.borrow_mut();
+                    if map.get(&key).map(|c| c.instance_id == instance_id).unwrap_or(false) {
+                        map.remove(&key);
+                    }
+                });
+            } else {
+                CONN_MAP.with(|m| {
+                    if let Some(conn) = m.borrow_mut().get_mut(&key) {
+                        conn.last_active = Instant::now();
+                    }
+                });
+            }
             acp_log(
                 "stage.ok",
                 json!({

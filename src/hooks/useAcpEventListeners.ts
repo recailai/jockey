@@ -38,6 +38,12 @@ type RegisterAcpEventListenersInput = {
 };
 
 export function useAcpEventListeners() {
+  let busRef: ReturnType<typeof createAcpEventBus> | null = null;
+
+  const clearSessionStream = (sid: string) => {
+    busRef?.clearSession(sid);
+  };
+
   const registerAcpEventListeners = async (
     input: RegisterAcpEventListenersInput,
   ): Promise<UnlistenFn[]> => {
@@ -78,6 +84,7 @@ export function useAcpEventListeners() {
       commandCacheKey,
       scheduleScrollToBottom,
     });
+    busRef = bus;
 
     const listeners = await Promise.all([
       listen<string>("jockey-mcp/error", (ev) => {
@@ -114,10 +121,11 @@ export function useAcpEventListeners() {
 
     listeners.push(() => {
       bus.clear();
+      busRef = null;
     });
 
     return listeners;
   };
 
-  return { registerAcpEventListeners };
+  return { registerAcpEventListeners, clearSessionStream };
 }

@@ -74,6 +74,10 @@ pub(crate) fn upsert_rule(
                name = excluded.name,
                content = excluded.content,
                description = excluded.description,
+               updated_at = excluded.updated_at
+             ON CONFLICT(name) DO UPDATE SET
+               content = excluded.content,
+               description = excluded.description,
                updated_at = excluded.updated_at",
             params![id, name, content, description, now],
         )

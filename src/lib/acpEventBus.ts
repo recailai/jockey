@@ -170,6 +170,13 @@ export function createAcpEventBus(deps: AcpEventBusDeps) {
         console.debug("[acp/stream] dropped (not accepting)", { sid, seq: payload.seq, kind: payload.event?.kind });
         return;
       }
+      const currentToken = deps.acceptingStreams.get(sid);
+      const idx = deps.getSessionIndex(sid);
+      const sessionRunToken = idx !== -1 ? deps.sessions[idx]?.streamingRunToken : undefined;
+      if (currentToken !== undefined && sessionRunToken !== currentToken) {
+        console.debug("[acp/stream] dropped (stale run token)", { sid, seq: payload.seq, kind: payload.event?.kind });
+        return;
+      }
       const seq = payload.seq;
       if (typeof seq === "number") {
         const prev = lastSeqBySession.get(sid);
@@ -193,6 +200,10 @@ export function createAcpEventBus(deps: AcpEventBusDeps) {
         commandCacheKey: deps.commandCacheKey,
         scheduleScrollToBottom: deps.scheduleScrollToBottom,
       });
+    },
+    clearSession(sid: string) {
+      lastSeqBySession.delete(sid);
+      prewarmState.delete(sid);
     },
     clear() {
       prewarmState.clear();

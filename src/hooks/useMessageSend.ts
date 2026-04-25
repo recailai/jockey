@@ -18,6 +18,7 @@ type MessageSendDeps = {
   closeMentionMenu: () => void;
   closeSlashMenu: () => void;
   showToast: (msg: string, severity?: "error" | "info") => void;
+  clearSessionStream?: (sid: string) => void;
 };
 
 export function useMessageSend({
@@ -27,6 +28,7 @@ export function useMessageSend({
   closeMentionMenu,
   closeSlashMenu,
   showToast,
+  clearSessionStream,
 }: MessageSendDeps) {
   const {
     sessions, setSessions,
@@ -157,7 +159,7 @@ export function useMessageSend({
   };
 
   const cancelCurrentRun = async () => {
-    await cancelCurrentRunBase(runNextQueued);
+    await cancelCurrentRunBase(runNextQueued, clearSessionStream);
   };
 
   const sendRaw = async (text: string, silent = false, targetSessionId?: string | null, attachments?: ImageAttachment[], sourceImages?: ImageAttachment[]) => {

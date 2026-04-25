@@ -246,7 +246,6 @@ export default function RichInput(props: Props) {
   let el: HTMLDivElement | undefined;
   let suppressEffect = false;
   let composing = false;
-  let justFinishedComposing = false;
 
   onMount(() => {
     if (!el) return;
@@ -295,15 +294,12 @@ export default function RichInput(props: Props) {
     <div
       ref={(d) => { el = d; props.ref?.(d); }}
       contentEditable
-      onCompositionStart={() => { composing = true; justFinishedComposing = false; }}
-      onCompositionEnd={() => { composing = false; justFinishedComposing = true; emitChange(); }}
+      onCompositionStart={() => { composing = true; }}
+      onCompositionEnd={() => { composing = false; emitChange(); }}
       onInput={emitChange}
       onPaste={handlePaste}
       onKeyDown={(e) => {
-        if (justFinishedComposing) {
-          justFinishedComposing = false;
-          if (e.key === "Enter") return;
-        }
+        if (e.isComposing || e.keyCode === 229) return;
         props.onKeyDown(e);
       }}
       onFocus={props.onFocus}
