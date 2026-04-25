@@ -157,6 +157,22 @@
 
 ## Completed
 
+### UX — Zed-style approval + plan (P1.5-c)
+- [x] Inline permission approval inside tool-call card — approval buttons appear directly under the pending tool call instead of a floating modal; modal kept as fallback when no tool call is in-flight
+- [x] Tool-call group auto-expands and highlights with amber border when approval is waiting
+- [x] Plan block redesigned: numbered rows, in-progress left-border highlight, completed strikethrough text, `high`/`medium` priority badges
+
+### Media input
+- [x] Image attachment support — file picker (PNG/JPG/GIF/WebP/SVG), clipboard paste, drag-and-drop; thumbnail strip shown above input bar with hover-to-remove
+- [x] Voice input via Web Speech API — microphone button activates recording; transcript appended to text input on speech end
+- [x] Backend: `ImageAttachment` type threaded from `AssistantChatInput` → `WorkerMsg::Execute` → `build_prompt_blocks`; images sent as `ContentBlock::Image` ACP blocks
+
+### UI polish — panel separators
+- [x] `--ui-separator` token added across all themes — stronger structural divider distinct from `--ui-border`
+- [x] ActivityBar, sidebar, and preview/chat divider all use `--ui-separator` + subtle `box-shadow` for clear depth
+- [x] Resizer handles (`.resizer-x` / `.resizer-y`) show grip-dot pattern on hover; hit zone widened to ±5px; smooth `150ms` transition
+
+### Prior completed work
 - [x] Role model redesign (model, mode, MCP servers, auto-approve fields)
 - [x] Database migration for extended role schema
 - [x] Role CRUD with full field support

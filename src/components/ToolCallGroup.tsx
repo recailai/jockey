@@ -1,5 +1,6 @@
-import { For, Show, createMemo, createSignal } from "solid-js";
-import type { AppToolCall, TerminalEntry } from "./types";
+import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import type { AppPermission, AppToolCall, TerminalEntry } from "./types";
+import { INTERACTIVE_MOTION } from "./types";
 
 function tcStatusDot(status: string): string {
   if (status === "success" || status === "completed") return "bg-emerald-400 shadow-emerald-400/40";
@@ -55,15 +56,28 @@ function TerminalView(props: { entry: TerminalEntry }) {
   );
 }
 
-function ToolCallItem(props: { tc: AppToolCall; terminals?: Record<string, TerminalEntry> }) {
+type ToolCallItemProps = {
+  tc: AppToolCall;
+  terminals?: Record<string, TerminalEntry>;
+  inlinePermission?: AppPermission | null;
+  onApprove?: (optionId: string) => void;
+  onDeny?: () => void;
+};
+
+function ToolCallItem(props: ToolCallItemProps) {
   const tc = () => props.tc;
   const terminalEntry = () => {
     const tid = terminalIdOf(tc());
     if (!tid) return null;
     return props.terminals?.[tid] ?? null;
   };
+  const showPermission = () =>
+    !!props.inlinePermission && tc().status === "pending";
   return (
-    <details class="group/tc rounded-lg border theme-border theme-surface overflow-hidden transition-all duration-200 hover:bg-[var(--ui-surface-muted)] hover:border-[var(--ui-border-strong)]">
+    <details
+      class="group/tc rounded-lg border theme-border theme-surface overflow-hidden transition-all duration-200 hover:bg-[var(--ui-surface-muted)] hover:border-[var(--ui-border-strong)]"
+      classList={{ "border-amber-500/50 bg-amber-500/5": showPermission() }}
+    >
       <summary class="flex cursor-pointer items-center gap-2 px-2.5 py-1.5 text-[11px] theme-muted select-none">
         <span class={`h-1.5 w-1.5 shrink-0 rounded-full shadow-[0_0_6px_rgba(0,0,0,0.4)] ${tcStatusDot(tc().status)}`} />
         <span class="theme-text font-mono tracking-tight font-medium group-hover/tc:text-white transition-colors truncate">{tc().title || tc().toolCallId}</span>
@@ -72,8 +86,42 @@ function ToolCallItem(props: { tc: AppToolCall; terminals?: Record<string, Termi
             term
           </span>
         </Show>
+        <Show when={showPermission()}>
+          <span class="shrink-0 rounded-md border border-amber-500/40 bg-amber-500/15 px-1.5 py-[1px] text-[9px] font-bold uppercase tracking-widest text-amber-300">
+            approval
+          </span>
+        </Show>
         <span class="ml-auto text-[9px] theme-muted uppercase tracking-widest font-bold bg-[var(--ui-panel-2)] px-1.5 py-0.5 rounded-md shrink-0">{tc().kind}</span>
       </summary>
+      <Show when={showPermission()}>
+        {(_) => {
+          const perm = () => props.inlinePermission!;
+          return (
+            <div class="border-t border-amber-500/30 bg-amber-500/8 px-3 py-2.5">
+              <div class="mb-1 text-[11px] font-semibold text-amber-300">{perm().title}</div>
+              <Show when={perm().description}>
+                <p class="mb-2 text-[10.5px] theme-muted">{perm().description}</p>
+              </Show>
+              <div class="flex flex-wrap gap-2">
+                <For each={perm().options}>{(opt) => (
+                  <button
+                    class={`min-h-7 rounded border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-[11px] text-emerald-300 hover:bg-emerald-500/20 ${INTERACTIVE_MOTION}`}
+                    onClick={(e) => { e.preventDefault(); props.onApprove?.(opt.optionId); }}
+                  >
+                    {opt.title ?? opt.optionId}
+                  </button>
+                )}</For>
+                <button
+                  class={`min-h-7 rounded border border-rose-500/40 bg-rose-500/10 px-2.5 py-1 text-[11px] text-rose-300 hover:bg-rose-500/20 ${INTERACTIVE_MOTION}`}
+                  onClick={(e) => { e.preventDefault(); props.onDeny?.(); }}
+                >
+                  Deny
+                </button>
+              </div>
+            </div>
+          );
+        }}
+      </Show>
       <Show when={terminalEntry()}>
         <TerminalView entry={terminalEntry()!} />
       </Show>
@@ -102,8 +150,16 @@ export function ToolCallGroup(props: {
   tools: AppToolCall[];
   streaming: boolean;
   terminals?: Record<string, TerminalEntry>;
+  pendingPermission?: AppPermission | null;
+  onApprove?: (optionId: string) => void;
+  onDeny?: () => void;
 }) {
+  const hasPendingPermission = () => !!props.pendingPermission;
   const [expanded, setExpanded] = createSignal(false);
+
+  createEffect(() => {
+    if (hasPendingPermission()) setExpanded(true);
+  });
 
   const count = () => props.tools.length;
   const lastTool = () => props.tools[props.tools.length - 1];
@@ -116,8 +172,19 @@ export function ToolCallGroup(props: {
     return { success, error, pending: props.tools.length - success - error };
   });
 
+  const pendingToolCallIndex = createMemo(() => {
+    if (!props.pendingPermission) return -1;
+    for (let i = props.tools.length - 1; i >= 0; i--) {
+      if (props.tools[i].status === "pending") return i;
+    }
+    return props.tools.length - 1;
+  });
+
   return (
-    <div class="rounded-xl border theme-border theme-panel overflow-hidden shadow-sm my-1.5">
+    <div
+      class="rounded-xl border theme-border theme-panel overflow-hidden shadow-sm my-1.5"
+      classList={{ "border-amber-500/40": hasPendingPermission() }}
+    >
       <button
         class="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-[11.5px] theme-text select-none hover:bg-[var(--ui-accent-soft)] transition-colors"
         onClick={() => setExpanded(v => !v)}
@@ -125,6 +192,12 @@ export function ToolCallGroup(props: {
         <span class={`h-2 w-2 shrink-0 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)] ${tcStatusDot(lastTool()?.status ?? "pending")}`} />
         <span class="theme-text font-mono tracking-tight font-medium">{lastTool()?.title || "tool calls"}</span>
         <span class="flex items-center gap-1.5 ml-auto">
+          <Show when={hasPendingPermission()}>
+            <span class="flex items-center gap-1 text-[9px] text-amber-300 rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 font-bold uppercase tracking-widest">
+              <span class="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse inline-block" />
+              approval
+            </span>
+          </Show>
           <Show when={statusCounts().success > 0}>
             <span class="flex items-center gap-0.5 text-[9px] text-emerald-400">
               <span class="h-1.5 w-1.5 rounded-full bg-emerald-400 inline-block" />
@@ -137,7 +210,7 @@ export function ToolCallGroup(props: {
               {statusCounts().error}
             </span>
           </Show>
-          <Show when={statusCounts().pending > 0}>
+          <Show when={statusCounts().pending > 0 && !hasPendingPermission()}>
             <span class="flex items-center gap-0.5 text-[9px] text-amber-400">
               <span class="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse inline-block" />
               {statusCounts().pending}
@@ -149,8 +222,14 @@ export function ToolCallGroup(props: {
       </button>
       <Show when={expanded()}>
         <div class="border-t border-white/[0.05] px-2 py-1.5 space-y-1">
-          <For each={props.tools}>{(tc) => (
-            <ToolCallItem tc={tc} terminals={props.terminals} />
+          <For each={props.tools}>{(tc, i) => (
+            <ToolCallItem
+              tc={tc}
+              terminals={props.terminals}
+              inlinePermission={i() === pendingToolCallIndex() ? props.pendingPermission : null}
+              onApprove={props.onApprove}
+              onDeny={props.onDeny}
+            />
           )}</For>
         </div>
       </Show>

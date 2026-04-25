@@ -314,6 +314,7 @@ pub(crate) async fn assistant_chat(
             &role_name,
             &prepared,
             &[],
+            &input.attachments,
             &cwd,
             &app,
             auto_approve,

@@ -108,8 +108,10 @@ export const workflowApi = {
   remove: (id: string) => call<void>("delete_workflow", { id }),
 };
 
+export type ImageAttachment = { data: string; mimeType: string };
+
 export const assistantApi = {
-  chat: (input: { input: string; runtimeKind: string | null; appSessionId: string | null }) =>
+  chat: (input: { input: string; runtimeKind: string | null; appSessionId: string | null; attachments?: ImageAttachment[] }) =>
     call<AssistantChatResponse>("assistant_chat", { input }),
   detect: () => call<AssistantRuntime[]>("detect_assistants"),
   cancelSession: (roleName: string, appSessionId: string) =>

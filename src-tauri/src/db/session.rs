@@ -260,6 +260,7 @@ pub(crate) async fn run_workflow(
             role_name,
             &prompt,
             &context_pairs,
+            &[],
             &workspace_path,
             &app,
             auto_approve,

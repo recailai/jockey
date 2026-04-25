@@ -17,6 +17,8 @@ import { useInputHistory } from "./hooks/useInputHistory";
 import { uniqueName, makeDefaultSession } from "./lib/sessionHelpers";
 import { createSessionEventBuffer } from "./lib/sessionEventBuffer";
 import { appSessionApi } from "./lib/tauriApi";
+import type { RichNode } from "./components/RichInput";
+import { getPlainText, isImageNode, placeCaretAfterChip } from "./components/RichInput";
 import { useToast } from "./lib/useToast";
 import { useTheme } from "./lib/useTheme";
 import { useGitPoller } from "./hooks/useGitPoller";
@@ -95,25 +97,16 @@ export default function App() {
   };
 
   const insertMentionAtCaret = (p: string) => {
-    const target = inputEl;
-    const mention = `@${p}`;
-    const current = input();
-    if (target) {
-      const caret = target.selectionStart ?? current.length;
-      const left = current.slice(0, caret);
-      const right = current.slice(caret);
-      const needsLead = left.length > 0 && !left.endsWith(" ");
-      const insert = `${needsLead ? " " : ""}${mention} `;
-      const next = `${left}${insert}${right}`;
-      setInput(next);
-      const pos = caret + insert.length;
-      queueMicrotask(() => {
-        target.focus();
-        target.setSelectionRange(pos, pos);
-      });
-    } else {
-      setInput(current ? `${current} ${mention} ` : `${mention} `);
-    }
+    const mention = `@${p} `;
+    setRichNodes((prev) => {
+      const nodes = prev.length > 0 ? prev : [{ kind: "text" as const, text: "" }];
+      const last = nodes[nodes.length - 1];
+      if (last.kind === "text") {
+        return [...nodes.slice(0, -1), { kind: "text" as const, text: last.text + mention }];
+      }
+      return [...nodes, { kind: "text" as const, text: mention }];
+    });
+    queueMicrotask(() => richInputEl?.focus());
   };
 
   const sidebarResize = useResize({
@@ -137,8 +130,21 @@ export default function App() {
   const [managementInitialTab, setManagementInitialTab] = createSignal<"sessions" | "workflows" | "roles" | "mcp" | "skills">("sessions");
   const [managementInitialRole, setManagementInitialRole] = createSignal<string | undefined>(undefined);
 
-  const [input, setInput] = createSignal("");
-  let inputEl: HTMLInputElement | undefined;
+  const [richNodes, setRichNodes] = createSignal<RichNode[]>([]);
+  let richInputEl: HTMLDivElement | undefined;
+
+  const input = () => getPlainText(richNodes());
+  const setInput = (v: string) => setRichNodes([{ kind: "text", text: v }]);
+
+  const fakeInputEl = (): HTMLInputElement => {
+    const plain = input();
+    return {
+      value: plain,
+      selectionStart: plain.length,
+      focus() { richInputEl?.focus(); },
+      setSelectionRange() {},
+    } as unknown as HTMLInputElement;
+  };
 
   const sessionManager = useSessionManager();
   const {
@@ -192,8 +198,13 @@ export default function App() {
     agentContext,
     sessionManager,
     input,
-    setInput,
-    () => inputEl,
+    (v) => {
+      setRichNodes((prev) => {
+        const imgs = prev.filter(isImageNode);
+        return imgs.length ? [...imgs, { kind: "text", text: v }] : [{ kind: "text", text: v }];
+      });
+    },
+    fakeInputEl,
   );
   const {
     mentionOpen, mentionItems, mentionActiveIndex,
@@ -232,12 +243,44 @@ export default function App() {
   const chatSubmitting = createMemo(() => activeSession()?.submitting ?? false);
   const chatQueuedCount = createMemo(() => activeSession()?.queuedMessages.length ?? 0);
 
+  const handlePasteImage = (items: DataTransferItemList, currentNodes: RichNode[]) => {
+    const imageItems = Array.from(items).filter((it) => it.kind === "file" && it.type.startsWith("image/"));
+    imageItems.forEach((item) => {
+      const file = item.getAsFile();
+      if (!file) return;
+      const mimeType = file.type;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const result = ev.target?.result as string | undefined;
+        if (!result) return;
+        const base64 = result.split(",")[1];
+        if (!base64) return;
+        let chipIndex = -1;
+        setRichNodes((prev) => {
+          const nodes = prev.length > 0 ? prev : currentNodes;
+          chipIndex = nodes.filter(isImageNode).length;
+          const newChip: RichNode = { kind: "image", index: chipIndex, img: { data: base64, mimeType } };
+          return [...nodes, newChip, { kind: "text", text: " " }];
+        });
+        queueMicrotask(() => {
+          if (richInputEl) placeCaretAfterChip(richInputEl, chipIndex);
+        });
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
   const handleSend = async (e: SubmitEvent) => {
     e.preventDefault();
-    const text = input().trim();
-    if (!text) return;
+    const nodes = richNodes();
+    const text = getPlainText(nodes).trim();
+    const imageNodes = nodes.filter(isImageNode);
+    if (!text && imageNodes.length === 0) return;
     if (activeSession()?.submitting) {
-      setInput("");
+      if (imageNodes.length > 0) {
+        showToast("Images can't be queued and will be dropped.", "info");
+      }
+      setRichNodes([]);
       const sid = activeSessionId();
       if (sid) {
         const qidx = getSessionIndex(sid);
@@ -251,20 +294,9 @@ export default function App() {
       return;
     }
     inputHistory.push(text);
-    setInput("");
-    await sendRaw(text);
-  };
-
-  const handleInputEvent = (el: HTMLInputElement) => {
-    const value = el.value;
-    const caret = el.selectionStart ?? value.length;
-    setInput(value);
-    inputHistory.resetIndex();
-    if (mentionDebounceTimerRef.current !== null) window.clearTimeout(mentionDebounceTimerRef.current);
-    mentionDebounceTimerRef.current = window.setTimeout(() => {
-      mentionDebounceTimerRef.current = null;
-      refreshInputCompletions(value, caret);
-    }, 90);
+    setRichNodes([]);
+    const attachments = imageNodes.map((n) => n.img);
+    await sendRaw(text, false, null, attachments.length > 0 ? attachments : undefined, attachments.length > 0 ? attachments : undefined);
   };
 
   const handleInputKeyDownFinal = (e: KeyboardEvent) => {
@@ -438,8 +470,8 @@ export default function App() {
         <ActivityBar activePanel={sidebarPanel} onSelect={(p) => setSidebarPanel(p)} gitChangeCount={gitChangeCount} />
         <Show when={sidebarPanel() !== null}>
           <div
-            class="shrink-0 border-r theme-border flex flex-col min-h-0 theme-bg"
-            style={{ width: `${sidebarWidth()}px` }}
+            class="shrink-0 flex flex-col min-h-0 theme-bg"
+            style={{ width: `${sidebarWidth()}px`, "border-right": "1px solid var(--ui-separator, var(--ui-border-strong))", "box-shadow": "2px 0 8px rgba(0,0,0,0.18)" }}
           >
             <div data-tauri-drag-region class="h-[34px] shrink-0" />
             <Suspense fallback={<div class="flex-1 theme-bg" />}>
@@ -522,8 +554,8 @@ export default function App() {
             >
               <Show when={(activeSession()?.previewTabs.length ?? 0) > 0}>
                 <div
-                  class="shrink-0 overflow-hidden border-b theme-border"
-                  style={{ height: `${Math.round(editorRatio() * splitContainerHeight())}px` }}
+                  class="shrink-0 overflow-hidden"
+                  style={{ height: `${Math.round(editorRatio() * splitContainerHeight())}px`, "border-bottom": "1px solid var(--ui-separator, var(--ui-border-strong))" }}
                 >
                   <Suspense fallback={<div class="flex-1 theme-bg" />}>
                     <PreviewArea
@@ -582,13 +614,14 @@ export default function App() {
           <ChatInput
             input={input}
             setInput={setInput}
+            richNodes={richNodes}
+            setRichNodes={setRichNodes}
             activeRole={chatActiveRole}
             submitting={chatSubmitting}
             queuedCount={chatQueuedCount}
             onResetRole={() => patchActiveSession({ activeRole: DEFAULT_ROLE_ALIAS })}
             isCustomRole={isCustomRole}
             onSubmit={handleSend}
-            onInputEvent={handleInputEvent}
             onInputKeyDown={handleInputKeyDownFinal}
             refreshInputCompletions={refreshInputCompletions}
             mentionOpen={mentionOpen}
@@ -601,9 +634,18 @@ export default function App() {
             applySlashCandidate={applySlashCandidate}
             closeMentionMenu={closeMentionMenu}
             closeSlashMenu={closeSlashMenu}
-            inputElRef={(el) => { inputEl = el; }}
+            richInputRef={(el) => { richInputEl = el; }}
             mentionCloseTimerRef={mentionCloseTimerRef}
             mentionDebounceTimerRef={mentionDebounceTimerRef}
+            hasImages={() => richNodes().some(isImageNode)}
+            onPasteImage={handlePasteImage}
+            onRemoveImage={(removeIdx) => {
+              setRichNodes((prev) => {
+                const without = prev.filter((n) => !(isImageNode(n) && n.index === removeIdx));
+                let imgCounter = 0;
+                return without.map((n) => isImageNode(n) ? { ...n, index: imgCounter++ } : n);
+              });
+            }}
           />
         </div>
       </div>

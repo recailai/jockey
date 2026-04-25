@@ -143,6 +143,7 @@ pub(crate) enum WorkerMsg {
         app_session_id: String,
         prompt: String,
         context: Vec<(String, String)>,
+        attachments: Vec<crate::types::ImageAttachment>,
         cwd: String,
         delta_tx: mpsc::Sender<AcpEvent>,
         result_tx: oneshot::Sender<Result<(String, String), String>>,

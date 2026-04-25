@@ -36,8 +36,8 @@ export default function ActivityBar(props: ActivityBarProps) {
   return (
     <div
       data-tauri-drag-region
-      class="w-11 shrink-0 border-r theme-border flex flex-col items-center gap-0.5 theme-bg"
-      style={{ "padding-top": "44px", "padding-bottom": "8px" }}
+      class="w-11 shrink-0 flex flex-col items-center gap-0.5 theme-bg"
+      style={{ "border-right": "1px solid var(--ui-separator, var(--ui-border-strong))", "box-shadow": "2px 0 6px rgba(0,0,0,0.15)", "padding-top": "44px", "padding-bottom": "8px" }}
     >
       <For each={items}>
         {(item) => {

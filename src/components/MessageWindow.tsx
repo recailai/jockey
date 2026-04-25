@@ -1,13 +1,30 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { For, Index, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { Accessor } from "solid-js";
-import type { AppSession, AppMessage, AppToolCall, AppSegment } from "./types";
+import type { AppSession, AppMessage, AppToolCall, AppSegment, AppPermission } from "./types";
 import { RUNTIME_COLOR, MESSAGE_RENDER_WINDOW, fmt } from "./types";
 import { identicon } from "../lib/identicon";
 import { renderMd, renderMdCached } from "../lib/markdown";
 import { ToolCallGroup } from "./ToolCallGroup";
 import { PermissionModal } from "./PermissionModal";
 import SessionErrorBanner from "./SessionErrorBanner";
+import { assistantApi } from "../lib/tauriApi";
+
+type UserSegment = { kind: "text"; text: string } | { kind: "image"; idx: number };
+
+function buildUserSegments(text: string): UserSegment[] {
+  const parts: UserSegment[] = [];
+  const re = /\[image:(\d+)\]/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push({ kind: "text", text: text.slice(last, m.index) });
+    parts.push({ kind: "image", idx: parseInt(m[1], 10) });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push({ kind: "text", text: text.slice(last) });
+  return parts;
+}
 
 function highlightText(text: string, query: string): string {
   if (!query) return text;
@@ -222,18 +239,42 @@ export default function MessageWindow(props: MessageWindowProps) {
         {(item) => {
           const msg = item.msg;
           const q = searchQuery();
-          if (msg.roleName === "user") return (
-            <div class="flex flex-col items-end w-full mb-3 group/user">
-              <div class="user-bubble max-w-[85%] rounded-2xl rounded-tr-md px-4 py-2 text-[13px]">
-                <Show when={q} fallback={
-                  <div class="whitespace-pre-wrap break-words leading-relaxed font-mono">{msg.text}</div>
-                }>
-                  <div class="whitespace-pre-wrap break-words leading-relaxed font-mono" innerHTML={highlightText(msg.text, q)} />
-                </Show>
+          if (msg.roleName === "user") {
+            const segments = buildUserSegments(msg.text);
+            return (
+              <div class="flex flex-col items-end w-full mb-3 group/user">
+                <div class="user-bubble max-w-[85%] rounded-2xl rounded-tr-md px-4 py-2 text-[13px]">
+                  <div class="whitespace-pre-wrap break-words leading-relaxed font-mono">
+                    <For each={segments}>
+                      {(seg) => {
+                        if (seg.kind === "image") {
+                          const img = msg.images?.[seg.idx];
+                          if (!img) return <span class="opacity-40 text-[11px]">[image:{seg.idx}]</span>;
+                          return (
+                            <span class="relative group/img inline-flex items-center align-baseline mx-0.5">
+                              <span class="inline-flex items-center gap-1 rounded border border-white/20 bg-white/10 px-1.5 py-0.5 text-[11px] leading-tight opacity-80 select-none cursor-default">
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                                Image {seg.idx + 1}
+                              </span>
+                              <span class="absolute bottom-full left-0 mb-2 hidden group-hover/img:block z-50 pointer-events-none">
+                                <img
+                                  src={`data:${img.mimeType};base64,${img.data}`}
+                                  class="max-w-56 max-h-48 rounded-lg shadow-2xl border border-white/10 object-contain bg-black/60"
+                                  alt={`image ${seg.idx + 1}`}
+                                />
+                              </span>
+                            </span>
+                          );
+                        }
+                        return <Show when={q} fallback={<>{seg.text}</>}><span innerHTML={highlightText(seg.text, q)} /></Show>;
+                      }}
+                    </For>
+                  </div>
+                </div>
+                <div class="mt-1.5 text-[10px] theme-muted mr-1 opacity-0 transition-opacity duration-300 group-hover/user:opacity-100 tracking-wide">{fmt(msg.at)}</div>
               </div>
-              <div class="mt-1.5 text-[10px] theme-muted mr-1 opacity-0 transition-opacity duration-300 group-hover/user:opacity-100 tracking-wide">{fmt(msg.at)}</div>
-            </div>
-          );
+            );
+          }
           if (msg.roleName === "system" || msg.roleName === "event") return (
             <div class="flex justify-center my-3 relative">
               <div class="absolute inset-x-0 top-1/2 h-px bg-gradient-to-r from-transparent via-[var(--ui-border)] to-transparent -z-10"></div>
@@ -326,6 +367,19 @@ export default function MessageWindow(props: MessageWindowProps) {
                 <StreamSegmentList
                   segments={props.activeSession()?.streamSegments ?? []}
                   terminals={props.activeSession()?.terminals}
+                  pendingPermission={props.activeSession()?.pendingPermission}
+                  onApprove={(optionId) => {
+                    const perm = props.activeSession()?.pendingPermission;
+                    if (!perm) return;
+                    void assistantApi.respondPermission(perm.requestId, optionId, false);
+                    props.patchActiveSession({ pendingPermission: null });
+                  }}
+                  onDeny={() => {
+                    const perm = props.activeSession()?.pendingPermission;
+                    if (!perm) return;
+                    void assistantApi.respondPermission(perm.requestId, "", true);
+                    props.patchActiveSession({ pendingPermission: null });
+                  }}
                 />
               </Show>
               <Show when={props.activeSession()?.thoughtText}>
@@ -349,31 +403,64 @@ export default function MessageWindow(props: MessageWindowProps) {
         activeBackendRole={props.activeBackendRole}
         patchActiveSession={props.patchActiveSession}
       />
-      <PermissionModal
-        activeSession={props.activeSession}
-        patchActiveSession={props.patchActiveSession}
-      />
+      <Show when={(props.activeSession()?.streamSegments ?? []).length === 0}>
+        <PermissionModal
+          activeSession={props.activeSession}
+          patchActiveSession={props.patchActiveSession}
+        />
+      </Show>
       <Show when={props.activeSession()?.currentPlan}>
         {(plan) => {
           const total = () => plan().length;
           const done = () => plan().filter((e) => e.status === "completed").length;
           const running = () => plan().some((e) => e.status === "in_progress");
+          const allDone = () => done() === total() && total() > 0;
+          const priorityBadge = (p?: string) => {
+            if (p === "high") return "border-rose-500/30 bg-rose-500/10 text-rose-300";
+            if (p === "medium") return "border-amber-500/30 bg-amber-500/10 text-amber-300";
+            return null;
+          };
           return (
-            <details class="group/plan rounded-lg border theme-border theme-surface px-3 py-2 my-2">
-              <summary class="flex cursor-pointer items-center gap-2 text-xs font-semibold theme-muted select-none list-none">
-                <span class={`inline-block h-1.5 w-1.5 rounded-full ${running() ? "bg-amber-400 animate-pulse" : done() === total() && total() > 0 ? "bg-emerald-400" : "bg-zinc-500"}`} />
-                <span class="theme-text">Plan</span>
+            <details class="group/plan rounded-lg border theme-border theme-surface my-2 overflow-hidden">
+              <summary class="flex cursor-pointer items-center gap-2 px-3 py-2 text-[11.5px] font-semibold theme-muted select-none list-none hover:bg-[var(--ui-accent-soft)] transition-colors">
+                <span class={`inline-block h-2 w-2 rounded-full shadow-[0_0_6px] ${running() ? "bg-amber-400 animate-pulse shadow-amber-400/40" : allDone() ? "bg-emerald-400 shadow-emerald-400/40" : "bg-zinc-500 shadow-zinc-500/20"}`} />
+                <span class="theme-text tracking-tight">Plan</span>
+                <Show when={running()}>
+                  <span class="text-[9px] text-amber-300 font-normal theme-muted italic">running</span>
+                </Show>
+                <Show when={allDone()}>
+                  <span class="text-[9px] text-emerald-300 font-normal">done</span>
+                </Show>
                 <span class="ml-auto text-[10px] theme-muted font-mono bg-[var(--ui-panel-2)] px-1.5 py-0.5 rounded-md">{done()}/{total()}</span>
                 <svg class="w-3 h-3 theme-muted transition-transform duration-150 group-open/plan:rotate-180" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
               </summary>
-              <ol class="list-inside list-decimal space-y-0.5 text-xs mt-2">
-                <For each={plan()}>{(entry) => (
-                  <li class="flex items-center gap-1.5">
-                    <span class={`inline-block h-1.5 w-1.5 rounded-full ${entry.status === "completed" ? "bg-emerald-400" : entry.status === "in_progress" ? "bg-amber-400 animate-pulse" : "bg-zinc-500"}`} />
-                    <span class="theme-text">{entry.content ?? entry.title ?? entry.description ?? "step"}</span>
-                  </li>
-                )}</For>
-              </ol>
+              <div class="border-t theme-border">
+                <For each={plan()}>{(entry, i) => {
+                  const isRunning = () => entry.status === "in_progress";
+                  const isCompleted = () => entry.status === "completed";
+                  const pb = priorityBadge(entry.priority);
+                  return (
+                    <div
+                      class="flex items-start gap-2.5 px-3 py-1.5 text-[11px] border-b theme-border last:border-b-0 transition-colors"
+                      classList={{
+                        "bg-amber-500/5 border-l-2 border-l-amber-500/40": isRunning(),
+                        "theme-muted/50": isCompleted(),
+                      }}
+                    >
+                      <span class="mt-[3px] shrink-0 text-[9px] font-mono theme-muted w-4 text-right">{i() + 1}</span>
+                      <span class={`mt-[4px] h-1.5 w-1.5 shrink-0 rounded-full ${isCompleted() ? "bg-emerald-400" : isRunning() ? "bg-amber-400 animate-pulse" : "bg-zinc-600"}`} />
+                      <span class={`flex-1 leading-relaxed ${isCompleted() ? "theme-muted line-through decoration-zinc-600" : "theme-text"}`}>
+                        {entry.content ?? entry.title ?? entry.description ?? "step"}
+                      </span>
+                      <Show when={pb}>
+                        <span class={`shrink-0 mt-[2px] rounded border px-1.5 py-[1px] text-[8.5px] font-bold uppercase tracking-widest ${pb}`}>
+                          {entry.priority}
+                        </span>
+                      </Show>
+                    </div>
+                  );
+                }}</For>
+              </div>
             </details>
           );
         }}
@@ -471,10 +558,16 @@ function SegmentList(props: { segments: AppSegment[]; terminals?: AppSession["te
   );
 }
 
-function StreamSegmentList(props: { segments: AppSegment[]; terminals?: AppSession["terminals"] }) {
+function StreamSegmentList(props: {
+  segments: AppSegment[];
+  terminals?: AppSession["terminals"];
+  pendingPermission?: AppPermission | null;
+  onApprove?: (optionId: string) => void;
+  onDeny?: () => void;
+}) {
   const groups = createMemo(() => collectToolGroups(props.segments));
   return (
-    <Index each={groups()}>{(g) => (
+    <Index each={groups()}>{(g, i) => (
       <Switch>
         <Match when={g().kind === "text"}>
           <div class="md-prose" innerHTML={renderMd((g() as { kind: "text"; text: string }).text)} />
@@ -484,6 +577,9 @@ function StreamSegmentList(props: { segments: AppSegment[]; terminals?: AppSessi
             tools={(g() as { kind: "tools"; tools: AppToolCall[] }).tools}
             streaming={true}
             terminals={props.terminals}
+            pendingPermission={i === groups().length - 1 ? props.pendingPermission : null}
+            onApprove={props.onApprove}
+            onDeny={props.onDeny}
           />
         </Match>
       </Switch>

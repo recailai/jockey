@@ -424,6 +424,7 @@ pub(crate) async fn apply_cold_start_config(
 pub(crate) fn build_prompt_blocks(
     prompt: String,
     context: &[(String, String)],
+    attachments: &[crate::types::ImageAttachment],
 ) -> Vec<acp::ContentBlock> {
     let mut blocks: Vec<acp::ContentBlock> =
         vec![acp::ContentBlock::Text(acp::TextContent::new(prompt))];
@@ -436,6 +437,19 @@ pub(crate) fn build_prompt_blocks(
         blocks.push(acp::ContentBlock::Text(acp::TextContent::new(format!(
             "[context]\n{ctx}"
         ))));
+    }
+    const ALLOWED_MIME: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+    for att in attachments {
+        if !ALLOWED_MIME.contains(&att.mime_type.as_str()) {
+            continue;
+        }
+        if att.data.is_empty() || !att.data.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=') {
+            continue;
+        }
+        blocks.push(acp::ContentBlock::Image(acp::ImageContent::new(
+            att.data.clone(),
+            att.mime_type.clone(),
+        )));
     }
     blocks
 }
@@ -490,6 +504,7 @@ pub(crate) async fn handle_execute(
     app_session_id: String,
     prompt: String,
     context: Vec<(String, String)>,
+    attachments: Vec<crate::types::ImageAttachment>,
     cwd: String,
     delta_tx: mpsc::Sender<AcpEvent>,
     result_tx: oneshot::Sender<Result<(String, String), String>>,
@@ -600,7 +615,7 @@ pub(crate) async fn handle_execute(
         }
     }
 
-    let blocks = build_prompt_blocks(prompt, &context);
+    let blocks = build_prompt_blocks(prompt, &context, &attachments);
 
     // Install cancel handle so the Cancel message handler can send ACP cancel
     // without touching CONN_MAP.

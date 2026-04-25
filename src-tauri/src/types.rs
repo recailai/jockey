@@ -126,12 +126,21 @@ pub(crate) struct AssistantRuntime {
     pub(crate) install_hint: Option<String>,
 }
 
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImageAttachment {
+    pub(crate) data: String,
+    pub(crate) mime_type: String,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AssistantChatInput {
     pub(crate) input: String,
     pub(crate) runtime_kind: Option<String>,
     pub(crate) app_session_id: Option<String>,
+    #[serde(default)]
+    pub(crate) attachments: Vec<ImageAttachment>,
 }
 
 #[derive(Serialize)]

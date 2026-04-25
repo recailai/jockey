@@ -73,7 +73,7 @@ export type SessionUpdateEvent = { sessionId: string; roleName: string; delta: s
 export type WorkflowStateEvent = { sessionId: string; status: string; activeRole: string | null; message: string };
 export type AcpDeltaEvent = { role: string; delta: string; appSessionId?: string };
 export type AppSegment = { kind: "text"; text: string } | { kind: "tool"; tc: AppToolCall };
-export type AppMessage = { id: string; roleName: string; text: string; at: number; toolCalls?: AppToolCall[]; segments?: AppSegment[] };
+export type AppMessage = { id: string; roleName: string; text: string; at: number; toolCalls?: AppToolCall[]; segments?: AppSegment[]; images?: { data: string; mimeType: string }[] };
 export type AppMentionItem = { value: string; kind: "role" | "file" | "dir" | "hint" | "command" | "skill"; detail: string };
 
 export type PreviewMode = "diff" | "file" | "preview" | "image";

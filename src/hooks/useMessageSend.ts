@@ -1,6 +1,7 @@
 import type { AppSession } from "../components/types";
 import { now, DEFAULT_BACKEND_ROLE, DEFAULT_ROLE_ALIAS } from "../components/types";
 import { appSessionApi, assistantApi } from "../lib/tauriApi";
+import type { ImageAttachment } from "../lib/tauriApi";
 import { parseAgentControlCommand, resolveRoute } from "../lib/chatPipeline";
 import { shouldAutoTitleSession, computeAutoTitleForSession } from "../lib/sessionHelpers";
 import { queuedInputsFor as queuedInputsFromStore, projectNextDequeue } from "../lib/messageQueue";
@@ -159,7 +160,7 @@ export function useMessageSend({
     await cancelCurrentRunBase(runNextQueued);
   };
 
-  const sendRaw = async (text: string, silent = false, targetSessionId?: string | null) => {
+  const sendRaw = async (text: string, silent = false, targetSessionId?: string | null, attachments?: ImageAttachment[], sourceImages?: ImageAttachment[]) => {
     const runToken = bumpRunToken();
     const originSessionId = targetSessionId ?? activeSessionId();
     closeMentionMenu();
@@ -194,6 +195,7 @@ export function useMessageSend({
         appendMessageToSession(originSessionId, {
           id: `${now()}-${Math.random().toString(36).slice(2)}`,
           roleName: "user", text, at: now(),
+          images: (sourceImages ?? attachments)?.length ? (sourceImages ?? attachments)!.map((a) => ({ data: a.data, mimeType: a.mimeType })) : undefined,
         });
         maybeAutoTitleSession(originSessionId, text);
       } else {
@@ -214,6 +216,7 @@ export function useMessageSend({
         input: routedText,
         runtimeKind: s?.runtimeKind ?? null,
         appSessionId: originSessionId ?? null,
+        attachments: attachments && attachments.length > 0 ? attachments : undefined,
       });
       if (isRunCancelled(runToken)) { return; }
       if (res.runtimeKind && originSessionId === activeSessionId()) setPreferredAssistant(res.runtimeKind);
