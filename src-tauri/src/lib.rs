@@ -389,6 +389,8 @@ pub fn run() {
             db::global_mcp::list_global_mcp_servers_cmd,
             db::global_mcp::upsert_global_mcp_server_cmd,
             db::global_mcp::delete_global_mcp_server_cmd,
+            db::global_mcp::list_role_mcp_servers_cmd,
+            db::global_mcp::set_role_mcp_enabled_cmd,
             db::rule::list_rules_cmd,
             db::rule::upsert_rule_cmd,
             db::rule::delete_rule_cmd,

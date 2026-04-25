@@ -27,6 +27,7 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 
 const ConfigDrawer = lazy(() => import("./components/ConfigDrawer"));
 const ManagementPanel = lazy(() => import("./components/ManagementPanel"));
+const QuickAddMcpModal = lazy(() => import("./components/QuickAddMcpModal"));
 const GitPanel = lazy(() => import("./components/GitPanel"));
 const FilesPanel = lazy(() => import("./components/FilesPanel"));
 const PreviewArea = lazy(() => import("./components/PreviewArea"));
@@ -51,6 +52,7 @@ export default function App() {
 
   const [showDrawer, setShowDrawer] = createSignal(false);
   const [showManagement, setShowManagement] = createSignal(false);
+  const [showQuickAddMcp, setShowQuickAddMcp] = createSignal(false);
 
   // Sidebar is always hidden on startup; SIDEBAR_PANEL_KEY is only consulted by
   // Cmd/Ctrl+B restore to reopen the user's last-chosen panel.
@@ -548,6 +550,13 @@ export default function App() {
                   },
                 },
                 {
+                  id: "mcp-add",
+                  label: "Add custom server…",
+                  section: "MCP Servers",
+                  icon: "+",
+                  onSelect: () => setShowQuickAddMcp(true),
+                },
+                {
                   id: "roles",
                   label: "Roles",
                   section: "Agent",
@@ -807,6 +816,15 @@ export default function App() {
           />
         </Suspense>
       </Show>
+
+      <Suspense fallback={null}>
+        <QuickAddMcpModal
+          open={showQuickAddMcp}
+          onClose={() => setShowQuickAddMcp(false)}
+          defaultRoleName={activeSession()?.activeRole}
+          onAdded={() => {}}
+        />
+      </Suspense>
 
       <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
         <For each={toasts()}>

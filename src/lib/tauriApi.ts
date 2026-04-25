@@ -87,11 +87,21 @@ export const roleApi = {
 
 export type GlobalMcpEntry = { name: string; configJson: string; isBuiltin: boolean };
 
+export type RoleMcpEntry = {
+  mcpServerName: string;
+  configJson: string;
+  isBuiltin: boolean;
+  enabled: boolean;
+};
+
 export const globalMcpApi = {
   list: () => call<GlobalMcpEntry[]>("list_global_mcp_servers_cmd"),
   upsert: (name: string, configJson: string) =>
     call<void>("upsert_global_mcp_server_cmd", { name, configJson }),
   remove: (name: string) => call<void>("delete_global_mcp_server_cmd", { name }),
+  listRoleMcp: (roleName: string) => call<RoleMcpEntry[]>("list_role_mcp_servers_cmd", { roleName }),
+  setRoleMcpEnabled: (roleName: string, mcpServerName: string, enabled: boolean) =>
+    call<void>("set_role_mcp_enabled_cmd", { roleName, mcpServerName, enabled }),
 };
 
 export type AppRule = {

@@ -176,6 +176,15 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           updated_at INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS role_mcp_servers (
+          role_name TEXT NOT NULL,
+          mcp_server_name TEXT NOT NULL REFERENCES global_mcp_servers(name) ON DELETE CASCADE,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          PRIMARY KEY(role_name, mcp_server_name)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_role_mcp_servers_role ON role_mcp_servers(role_name);
+
         CREATE TABLE IF NOT EXISTS rules (
           id TEXT PRIMARY KEY,
           name TEXT NOT NULL UNIQUE,
@@ -196,7 +205,7 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_rules_name ON rules(name ASC);
         CREATE INDEX IF NOT EXISTS idx_role_rules_role ON role_rules(role_name, ord ASC);
 
-        PRAGMA user_version = 5;
+        PRAGMA user_version = 6;
         ",
     )
     .map_err(|e| e.to_string())?;

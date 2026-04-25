@@ -44,6 +44,15 @@ pub(crate) struct GlobalMcpEntry {
     pub is_builtin: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RoleMcpEntry {
+    pub mcp_server_name: String,
+    pub config_json: String,
+    pub is_builtin: bool,
+    pub enabled: bool,
+}
+
 pub(crate) fn list_global_mcp_servers(state: &AppState) -> Result<Vec<GlobalMcpEntry>, String> {
     let key = cache_key(state);
     if let Ok(r) = global_mcp_cache().read() {
@@ -256,6 +265,113 @@ pub(crate) fn delete_global_mcp_server_cmd(
     name: String,
 ) -> Result<(), String> {
     delete_global_mcp_server(get_state(&state), &name)
+}
+
+pub(crate) fn list_role_mcp_servers(
+    state: &AppState,
+    role_name: &str,
+) -> Result<Vec<RoleMcpEntry>, String> {
+    with_db(state, |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT g.name, g.config_json, g.is_builtin, COALESCE(r.enabled, 0)
+                 FROM global_mcp_servers g
+                 LEFT JOIN role_mcp_servers r ON r.mcp_server_name = g.name AND r.role_name = ?1
+                 ORDER BY g.is_builtin DESC, g.name ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![role_name], |row| {
+                Ok(RoleMcpEntry {
+                    mcp_server_name: row.get(0)?,
+                    config_json: row.get(1)?,
+                    is_builtin: row.get::<_, i64>(2)? != 0,
+                    enabled: row.get::<_, i64>(3)? != 0,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(result)
+    })
+}
+
+pub(crate) fn set_role_mcp_enabled(
+    state: &AppState,
+    role_name: &str,
+    mcp_server_name: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    with_db(state, |conn| {
+        if enabled {
+            conn.execute(
+                "INSERT INTO role_mcp_servers (role_name, mcp_server_name, enabled)
+                 VALUES (?1, ?2, 1)
+                 ON CONFLICT(role_name, mcp_server_name) DO UPDATE SET enabled = 1",
+                params![role_name, mcp_server_name],
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
+            conn.execute(
+                "INSERT INTO role_mcp_servers (role_name, mcp_server_name, enabled)
+                 VALUES (?1, ?2, 0)
+                 ON CONFLICT(role_name, mcp_server_name) DO UPDATE SET enabled = 0",
+                params![role_name, mcp_server_name],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
+}
+
+pub(crate) fn get_enabled_mcp_for_role(state: &AppState, role_name: &str) -> Vec<acp::McpServer> {
+    with_db(state, |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT g.config_json, g.name
+                 FROM global_mcp_servers g
+                 JOIN role_mcp_servers r ON r.mcp_server_name = g.name AND r.role_name = ?1
+                 WHERE r.enabled = 1
+                 ORDER BY g.is_builtin DESC, g.name ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![role_name], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut result = Vec::new();
+        for row in rows {
+            if let Ok((cfg, name)) = row {
+                let injected = inject_name_if_missing(&cfg, &name);
+                if let Some(srv) = parse_mcp_server_json_compat(&injected) {
+                    result.push(srv);
+                }
+            }
+        }
+        Ok(result)
+    })
+    .unwrap_or_default()
+}
+
+#[tauri::command]
+pub(crate) fn list_role_mcp_servers_cmd(
+    state: State<'_, AppState>,
+    role_name: String,
+) -> Result<Vec<RoleMcpEntry>, String> {
+    list_role_mcp_servers(get_state(&state), &role_name)
+}
+
+#[tauri::command]
+pub(crate) fn set_role_mcp_enabled_cmd(
+    state: State<'_, AppState>,
+    role_name: String,
+    mcp_server_name: String,
+    enabled: bool,
+) -> Result<(), String> {
+    set_role_mcp_enabled(get_state(&state), &role_name, &mcp_server_name, enabled)
 }
 
 pub(crate) fn seed_builtin_jockey_mcp(state: &AppState, port: u16, token: &str) {
