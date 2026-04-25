@@ -94,6 +94,34 @@ export const globalMcpApi = {
   remove: (name: string) => call<void>("delete_global_mcp_server_cmd", { name }),
 };
 
+export type AppRule = {
+  id: string;
+  name: string;
+  content: string;
+  description: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type RoleRule = {
+  ruleId: string;
+  name: string;
+  content: string;
+  description: string | null;
+  enabled: boolean;
+  ord: number;
+};
+
+export const ruleApi = {
+  list: () => call<AppRule[]>("list_rules_cmd"),
+  upsert: (id: string, name: string, content: string, description?: string | null) =>
+    call<void>("upsert_rule_cmd", { id, name, content, description: description ?? null }),
+  remove: (id: string) => call<void>("delete_rule_cmd", { id }),
+  setRoleRules: (roleName: string, rules: [string, boolean, number][]) =>
+    call<void>("set_role_rules_cmd", { roleName, rules }),
+  listRoleRules: (roleName: string) => call<RoleRule[]>("list_role_rules_cmd", { roleName }),
+};
+
 export const skillApi = {
   list: () => call<AppSkill[]>("list_app_skills"),
   upsert: (input: { id?: string; name: string; description: string; content: string }) =>

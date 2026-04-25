@@ -127,7 +127,7 @@ export default function App() {
       if (h > 0) persistEditorRatio(px / h);
     },
   });
-  const [managementInitialTab, setManagementInitialTab] = createSignal<"sessions" | "workflows" | "roles" | "mcp" | "skills">("sessions");
+  const [managementInitialTab, setManagementInitialTab] = createSignal<"sessions" | "workflows" | "roles" | "mcp" | "skills" | "rules">("sessions");
   const [managementInitialRole, setManagementInitialRole] = createSignal<string | undefined>(undefined);
 
   const [richNodes, setRichNodes] = createSignal<RichNode[]>([]);
@@ -228,7 +228,7 @@ export default function App() {
     showToast,
   });
 
-  const { sendRaw, cancelCurrentRun, runNextQueued } = useMessageSend({
+  const { sendRaw, cancelCurrentRun } = useMessageSend({
     sessionManager,
     streamEngine,
     agentContext,
@@ -554,6 +554,18 @@ export default function App() {
                   icon: "◈",
                   onSelect: () => {
                     setManagementInitialTab("roles");
+                    setManagementInitialRole(undefined);
+                    setShowManagement(true);
+                  },
+                },
+                {
+                  id: "rules",
+                  label: "Rules",
+                  section: "Agent",
+                  shortcut: "⌥⌘L",
+                  icon: "≣",
+                  onSelect: () => {
+                    setManagementInitialTab("rules");
                     setManagementInitialRole(undefined);
                     setShowManagement(true);
                   },

@@ -1,6 +1,7 @@
 use crate::db::app_session_role::load_app_session_role_state;
 use crate::db::context::{list_shared_context_internal, sanitize_dynamic_item_name};
 use crate::db::role::load_role;
+use crate::db::rule::get_enabled_rules_for_role;
 use crate::db::session_context::app_session_role_scope;
 use crate::runtime_kind::RuntimeKind;
 use crate::types::AppState;
@@ -14,6 +15,7 @@ pub(super) struct RoleRuntimeData {
     pub(super) role_mode: Option<String>,
     pub(super) role_config: Vec<(String, String)>,
     pub(super) role_system_prompt: Option<String>,
+    pub(super) enabled_rules: Vec<(String, String)>,
     pub(super) context_log: Option<(usize, Option<String>)>,
     pub(super) mcp_servers: Vec<agent_client_protocol::McpServer>,
 }
@@ -379,6 +381,8 @@ pub(super) fn load_role_runtime_data(
         None => meta_header,
     });
 
+    let enabled_rules = get_enabled_rules_for_role(state, role_name).unwrap_or_default();
+
     Ok(RoleRuntimeData {
         runtime,
         context_pairs,
@@ -386,6 +390,7 @@ pub(super) fn load_role_runtime_data(
         role_mode,
         role_config,
         role_system_prompt,
+        enabled_rules,
         context_log,
         mcp_servers,
     })

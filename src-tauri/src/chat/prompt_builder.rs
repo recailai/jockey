@@ -2,6 +2,7 @@ pub(super) fn build_prepared_prompt(
     is_union_assistant: bool,
     tool_prompt: &str,
     role_system_prompt: Option<&str>,
+    enabled_rules: &[(String, String)],
     context_pairs: &[(String, String)],
     message: &str,
 ) -> String {
@@ -27,6 +28,15 @@ pub(super) fn build_prepared_prompt(
         }
         prepared.push_str("System:\n");
         prepared.push_str(sp);
+    }
+    for (name, content) in enabled_rules {
+        if !prepared.is_empty() {
+            prepared.push_str("\n\n");
+        }
+        prepared.push_str("Rule: ");
+        prepared.push_str(name);
+        prepared.push('\n');
+        prepared.push_str(content);
     }
     let is_slash_cmd = message.starts_with('/');
     if !is_slash_cmd {

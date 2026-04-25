@@ -388,7 +388,12 @@ pub fn run() {
             db::skill::delete_app_skill,
             db::global_mcp::list_global_mcp_servers_cmd,
             db::global_mcp::upsert_global_mcp_server_cmd,
-            db::global_mcp::delete_global_mcp_server_cmd
+            db::global_mcp::delete_global_mcp_server_cmd,
+            db::rule::list_rules_cmd,
+            db::rule::upsert_rule_cmd,
+            db::rule::delete_rule_cmd,
+            db::rule::set_role_rules_cmd,
+            db::rule::list_role_rules_cmd
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

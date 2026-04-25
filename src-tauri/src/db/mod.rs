@@ -4,6 +4,7 @@ pub(crate) mod context;
 pub(crate) mod global_mcp;
 pub(crate) mod pool;
 pub(crate) mod role;
+pub(crate) mod rule;
 pub(crate) mod session;
 pub(crate) mod session_context;
 pub(crate) mod skill;
@@ -175,7 +176,27 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           updated_at INTEGER NOT NULL
         );
 
-        PRAGMA user_version = 4;
+        CREATE TABLE IF NOT EXISTS rules (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          content TEXT NOT NULL,
+          description TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS role_rules (
+          role_name TEXT NOT NULL,
+          rule_id TEXT NOT NULL REFERENCES rules(id) ON DELETE CASCADE,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          ord INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY(role_name, rule_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_rules_name ON rules(name ASC);
+        CREATE INDEX IF NOT EXISTS idx_role_rules_role ON role_rules(role_name, ord ASC);
+
+        PRAGMA user_version = 5;
         ",
     )
     .map_err(|e| e.to_string())?;

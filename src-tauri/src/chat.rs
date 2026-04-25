@@ -268,6 +268,7 @@ pub(crate) async fn assistant_chat(
         let role_mode = db_data.role_mode;
         let role_config = db_data.role_config;
         let role_system_prompt = db_data.role_system_prompt;
+        let enabled_rules = db_data.enabled_rules;
         let mcp_servers = db_data.mcp_servers;
 
         if let Some((count, inherited_cwd)) = db_data.context_log {
@@ -294,6 +295,7 @@ pub(crate) async fn assistant_chat(
             is_union_assistant,
             &tool_prompt,
             role_system_prompt.as_deref(),
+            &enabled_rules,
             &context_pairs,
             &message,
         );
