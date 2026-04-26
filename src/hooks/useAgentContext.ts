@@ -54,7 +54,10 @@ export function useAgentContext(
     return roles().find((r) => r.roleName === roleName)?.runtimeKind ?? null;
   };
 
-  const fetchConfigOptions = async (runtimeKey: string, roleName?: string): Promise<AcpConfigOption[]> => {
+  const fetchRoleConfig = async (runtimeKey: string, roleName?: string): Promise<{ options: AcpConfigOption[]; modes: string[] }> => {
+    const empty = { options: [] as AcpConfigOption[], modes: [] as string[] };
+    const hasConfig = (entry: { options: AcpConfigOption[]; modes: string[] }) =>
+      entry.options.length > 0 || entry.modes.length > 0;
     try {
       const resolvedRole = roleName ?? normalizeRuntimeKey(runtimeKey);
       const roleStoredOptions = (): AcpConfigOption[] => {
@@ -63,47 +66,47 @@ export function useAgentContext(
         try {
           const parsed = JSON.parse(role.configOptionDefsJson || "[]");
           return Array.isArray(parsed) ? (parsed as AcpConfigOption[]) : [];
-        } catch {
-          return [];
-        }
+        } catch { return []; }
       };
       const sid = activeSessionId();
-      if (!sid) return roleStoredOptions();
+      if (!sid) return { options: roleStoredOptions(), modes: [] };
       const hit = runtimeConfigCache.get(resolvedRole);
-      if (hit) {
-        void assistantApi.prewarmRoleConfig(resolvedRole, sid).catch(() => {});
-        return hit.options;
+      if (hit && hasConfig(hit)) {
+        void assistantApi.prewarmRoleConfig(resolvedRole, sid)
+          .then(() => refreshRoles())
+          .catch(() => {});
+        return hit;
       }
       const cached = await assistantApi.listDiscoveredConfig(resolvedRole);
       if ((cached as AcpConfigOption[]).length > 0) {
-        runtimeConfigCache.set(resolvedRole, { options: cached as AcpConfigOption[], modes: [] });
-        void assistantApi.prewarmRoleConfig(resolvedRole, sid).catch(() => {});
-        return cached as AcpConfigOption[];
+        const modes = await assistantApi.listDiscoveredModes(resolvedRole).catch(() => [] as string[]);
+        const entry = { options: cached as AcpConfigOption[], modes };
+        runtimeConfigCache.set(resolvedRole, entry);
+        void assistantApi.prewarmRoleConfig(resolvedRole, sid)
+          .then(() => refreshRoles())
+          .catch(() => {});
+        return entry;
       }
       const result = await assistantApi.prewarmRoleConfig(resolvedRole, sid);
       const opts = result.configOptions as AcpConfigOption[];
-      runtimeConfigCache.set(resolvedRole, { options: opts, modes: result.modes });
-      return opts.length > 0 ? opts : roleStoredOptions();
+      const modes = result.modes as string[];
+      const entry = { options: opts.length > 0 ? opts : roleStoredOptions(), modes };
+      if (hasConfig(entry)) runtimeConfigCache.set(resolvedRole, entry);
+      if (hasConfig(entry)) void refreshRoles();
+      return entry;
     } catch {
-      const resolvedRole = roleName ?? normalizeRuntimeKey(runtimeKey);
-      const role = roles().find((r) => r.roleName === resolvedRole);
-      if (!role) return [];
-      try {
-        const parsed = JSON.parse(role.configOptionDefsJson || "[]");
-        return Array.isArray(parsed) ? (parsed as AcpConfigOption[]) : [];
-      } catch {
-        return [];
-      }
+      return empty;
     }
   };
 
   const fetchModes = async (runtimeKey: string, roleName?: string): Promise<string[]> => {
-    try {
-      const resolvedRole = roleName ?? normalizeRuntimeKey(runtimeKey);
-      const hit = runtimeConfigCache.get(resolvedRole);
-      if (hit?.modes.length) return hit.modes;
-      return await assistantApi.listDiscoveredModes(resolvedRole);
-    } catch { return []; }
+    const { modes } = await fetchRoleConfig(runtimeKey, roleName);
+    return modes;
+  };
+
+  const fetchConfigOptions = async (runtimeKey: string, roleName?: string): Promise<AcpConfigOption[]> => {
+    const { options } = await fetchRoleConfig(runtimeKey, roleName);
+    return options;
   };
 
   const parseAgentCommands = (raw: unknown[]): Array<{ name: string; description: string; hint?: string }> => {
@@ -276,6 +279,7 @@ export function useAgentContext(
     runtimeForRole,
     refreshRoles,
     refreshSkills,
+    fetchRoleConfig,
     fetchConfigOptions,
     fetchModes,
     parseAgentCommands,

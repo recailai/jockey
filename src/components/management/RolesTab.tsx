@@ -2,11 +2,10 @@ import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import type { Accessor } from "solid-js";
 import type { AppSession, Role, RoleUpsertInput, AcpConfigOption } from "../types";
 import { RUNTIME_COLOR, RUNTIMES, flattenConfigValues } from "../types";
-import { EmptyState, FieldRow, TextInput, InlineSelect, ActionButton, Badge } from "./primitives";
-import type { AcpMcpServer } from "./primitives";
-import { mcpTransport, mcpDisplayUri, parseCommandArgs } from "./primitives";
-import { roleApi, assistantApi, globalMcpApi, parseError } from "../../lib/tauriApi";
-import type { RoleMcpEntry } from "../../lib/tauriApi";
+import { EmptyState, FieldRow, TextInput, InlineSelect, ActionButton } from "./primitives";
+import { roleApi, assistantApi, globalMcpApi, ruleApi, skillApi, parseError } from "../../lib/tauriApi";
+import type { RoleMcpEntry, RoleRule, RoleSkill } from "../../lib/tauriApi";
+import { isEffortOption, isModeOption, isModelOption, optionCurrentValue, optionId, optionName } from "../../lib/configOptions";
 
 export function RolesTab(props: {
   roles: Accessor<Role[]>;
@@ -14,7 +13,7 @@ export function RolesTab(props: {
   patchActiveSession: (patch: Partial<AppSession>) => void;
   updateSession: (id: string, patch: Partial<AppSession>) => void;
   refreshRoles: () => Promise<void>;
-  fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
+  fetchRoleConfig: (runtimeKey: string, roleName?: string) => Promise<{ options: AcpConfigOption[]; modes: string[] }>;
   pushMessage: (role: string, text: string) => void;
   initialRoleName?: string;
 }) {
@@ -26,6 +25,8 @@ export function RolesTab(props: {
   const [creating, setCreating] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [deletingId, setDeletingId] = createSignal<string | null>(null);
+  const [deleteError, setDeleteError] = createSignal<string | null>(null);
+  const [deletingRole, setDeletingRole] = createSignal<string | null>(null);
 
   // ── Create form state ───────────────────────────────────────────────────────
   const [cName, setCName] = createSignal("Developer");
@@ -33,62 +34,105 @@ export function RolesTab(props: {
   const [cPrompt, setCPrompt] = createSignal("You are a senior developer. Implement the solution step by step.");
   const [cModel, setCModel] = createSignal("");
   const [cMode, setCMode] = createSignal("");
-  const [cAutoApprove, setCAutoApprove] = createSignal(true);
   const [cConfigOpts, setCConfigOpts] = createSignal<AcpConfigOption[]>([]);
   const [cConfigSel, setCConfigSel] = createSignal<Record<string, string>>({});
+  const [cConfigLoading, setCConfigLoading] = createSignal(false);
+  const [cModes, setCModes] = createSignal<string[]>([]);
+  const [cGlobalMcp, setCGlobalMcp] = createSignal<RoleMcpEntry[]>([]);
+  const [cRoleRules, setCRoleRules] = createSignal<RoleRule[]>([]);
+  const [cRoleSkills, setCRoleSkills] = createSignal<RoleSkill[]>([]);
 
   // ── Edit form state ─────────────────────────────────────────────────────────
   const [ePrompt, setEPrompt] = createSignal("");
   const [eModel, setEModel] = createSignal("");
   const [eMode, setEMode] = createSignal("");
-  const [eAutoApprove, setEAutoApprove] = createSignal(true);
-  const [eMcpServers, setEMcpServers] = createSignal<AcpMcpServer[]>([]);
-  const [eMcpAdding, setEMcpAdding] = createSignal(false);
-  const [eMcpName, setEMcpName] = createSignal("");
-  const [eMcpTransport, setEMcpTransport] = createSignal<"stdio" | "http" | "sse">("stdio");
-  const [eMcpCommand, setEMcpCommand] = createSignal("");
-  const [eMcpArgs, setEMcpArgs] = createSignal("");
-  const [eMcpUrl, setEMcpUrl] = createSignal("");
   const [eCfgJson, setECfgJson] = createSignal("{}");
   const [eConfigOpts, setEConfigOpts] = createSignal<AcpConfigOption[]>([]);
+  const [eModes, setEModes] = createSignal<string[]>([]);
   const [eGlobalMcp, setEGlobalMcp] = createSignal<RoleMcpEntry[]>([]);
   const [mcpResetting, setMcpResetting] = createSignal(false);
+  const [eRoleRules, setERoleRules] = createSignal<RoleRule[]>([]);
+  const [eRoleSkills, setERoleSkills] = createSignal<RoleSkill[]>([]);
+  const [roleConfigCache, setRoleConfigCache] = createSignal<Record<string, { options: AcpConfigOption[]; modes: string[] }>>({});
+  let createConfigReqSeq = 0;
+  let editConfigReqSeq = 0;
 
   const editingRole = createMemo(() =>
     selectedId() ? userRoles().find((r) => r.id === selectedId()) ?? null : null,
   );
 
+  const loadCreateBindings = () => {
+    void globalMcpApi.listRoleMcp("__new_role__").then(setCGlobalMcp).catch(() => setCGlobalMcp([]));
+    void ruleApi.listAllRulesForRole("__new_role__").then(setCRoleRules).catch(() => setCRoleRules([]));
+    void skillApi.listAllSkillsForRole("__new_role__").then(setCRoleSkills).catch(() => setCRoleSkills([]));
+  };
+
   // ── Open create ─────────────────────────────────────────────────────────────
   const openCreate = () => {
     const defaultRuntime = "claude-code";
+    const reqSeq = ++createConfigReqSeq;
     setCName("Developer");
     setCRuntime(defaultRuntime);
     setCPrompt("You are a senior developer. Implement the solution step by step.");
     setCModel("");
     setCMode("");
-    setCAutoApprove(true);
     setCConfigOpts([]);
     setCConfigSel({});
-    setSelectedId(null);  // 退出 edit 状态
+    setCGlobalMcp([]);
+    setCRoleRules([]);
+    setCRoleSkills([]);
+    setSelectedId(null);
     setDeletingId(null);
-    setCreating(true);    // 最后设，避免被 effect 覆盖
-    void props.fetchConfigOptions(defaultRuntime).then(setCConfigOpts);
+    setDeleteError(null);
+    setCreating(true);
+    setCModes([]);
+    setCConfigLoading(true);
+    void props.fetchRoleConfig(`runtime:${defaultRuntime}`)
+      .then(({ options, modes }) => {
+        if (reqSeq !== createConfigReqSeq || !creating() || cRuntime() !== defaultRuntime) return;
+        setCConfigOpts(options);
+        setCModes(modes);
+      })
+      .catch(() => {
+        if (reqSeq !== createConfigReqSeq) return;
+        setCConfigOpts([]);
+        setCModes([]);
+      })
+      .finally(() => {
+        if (reqSeq === createConfigReqSeq) setCConfigLoading(false);
+      });
+    loadCreateBindings();
   };
 
   // ── Open edit ───────────────────────────────────────────────────────────────
   const openEdit = (role: Role) => {
+    const reqSeq = ++editConfigReqSeq;
     setCreating(false);
+    setDeleteError(null);
     setSelectedId(role.id);
     setEPrompt(role.systemPrompt ?? "");
     setEModel(role.model ?? "");
     setEMode(role.mode ?? "");
-    setEAutoApprove(role.autoApprove);
-    try { setEMcpServers(JSON.parse(role.mcpServersJson || "[]")); } catch { setEMcpServers([]); }
-    setEMcpAdding(false);
     setECfgJson(role.configOptionsJson || "{}");
     setEConfigOpts([]);
-    void props.fetchConfigOptions(role.runtimeKind, role.roleName).then(setEConfigOpts);
+    setEModes([]);
+    setERoleRules([]);
+    setERoleSkills([]);
+    void props.fetchRoleConfig(role.runtimeKind, role.roleName)
+      .then(({ options, modes }) => {
+        if (reqSeq !== editConfigReqSeq || creating() || selectedId() !== role.id) return;
+        setEConfigOpts(options);
+        setEModes(modes);
+        setRoleConfigCache((prev) => ({ ...prev, [role.roleName]: { options, modes } }));
+      })
+      .catch(() => {
+        if (reqSeq !== editConfigReqSeq) return;
+        setEConfigOpts([]);
+        setEModes([]);
+      });
     void globalMcpApi.listRoleMcp(role.roleName).then(setEGlobalMcp).catch(() => {});
+    void ruleApi.listAllRulesForRole(role.roleName).then(setERoleRules).catch(() => {});
+    void skillApi.listAllSkillsForRole(role.roleName).then(setERoleSkills).catch(() => {});
   };
 
   // Auto-open edit when panel is opened from sidebar with a pre-selected role name.
@@ -110,12 +154,71 @@ export function RolesTab(props: {
     return candidate;
   };
 
-  const isModelOrMode = (o: AcpConfigOption) => {
-    const id = o.id.toLowerCase();
-    const cat = o.category?.toLowerCase();
-    const name = o.name.toLowerCase();
-    return id === "model" || id === "mode" || cat === "model" || cat === "mode" || name === "model" || name === "mode";
+  const resolvedModes = (configOpts: AcpConfigOption[], modesArr: string[]) => {
+    const modeOpt = configOpts.find(isModeOption);
+    if (modeOpt) return { kind: "option" as const, opt: modeOpt };
+    if (modesArr.length > 0) return { kind: "list" as const, modes: modesArr };
+    return null;
   };
+
+  const parseRoleConfigMap = (json?: string | null): Record<string, string> => {
+    try {
+      const parsed = JSON.parse(json || "{}");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      return Object.fromEntries(
+        Object.entries(parsed)
+          .filter(([, value]) => typeof value === "string" && value.trim().length > 0)
+          .map(([key, value]) => [key, value as string]),
+      );
+    } catch {
+      return {};
+    }
+  };
+
+  const parseRoleConfigDefs = (json?: string | null): AcpConfigOption[] => {
+    try {
+      const parsed = JSON.parse(json || "[]");
+      return Array.isArray(parsed) ? (parsed as AcpConfigOption[]) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const roleConfigDefs = (role: Role): AcpConfigOption[] => {
+    const cached = roleConfigCache()[role.roleName]?.options;
+    if (cached?.length) return cached;
+    return parseRoleConfigDefs(role.configOptionDefsJson);
+  };
+
+  const roleEffort = (role: Role) => {
+    const cfg = parseRoleConfigMap(role.configOptionsJson);
+    const override = cfg.reasoning_effort ?? cfg.thinking_effort ?? cfg.effort ?? cfg.thought_level;
+    if (override) return override;
+    const defs = roleConfigDefs(role);
+    const opt = defs.find(isEffortOption);
+    return opt ? optionCurrentValue(opt) || null : null;
+  };
+
+  const roleMode = (role: Role) => {
+    if (role.mode) return role.mode;
+    const cfg = parseRoleConfigMap(role.configOptionsJson);
+    if (cfg.mode) return cfg.mode;
+    const defs = roleConfigDefs(role);
+    const opt = defs.find(isModeOption);
+    return opt ? optionCurrentValue(opt) || null : null;
+  };
+
+  const roleModel = (role: Role) => {
+    if (role.model) return role.model;
+    const cfg = parseRoleConfigMap(role.configOptionsJson);
+    if (cfg.model) return cfg.model;
+    const defs = roleConfigDefs(role);
+    const opt = defs.find(isModelOption);
+    return opt ? optionCurrentValue(opt) || null : null;
+  };
+
+  const configOptionSelectOptions = (opt: AcpConfigOption, defaultLabel = "default") =>
+    [{ value: "", label: `${defaultLabel}: ${optionCurrentValue(opt) || "runtime"}` }, ...flattenConfigValues(opt.options).map((v) => ({ value: v.value, label: v.description ? `${v.name} — ${v.description}` : v.name }))];
 
   // ── Create submit ───────────────────────────────────────────────────────────
   const handleCreate = async () => {
@@ -132,8 +235,20 @@ export function RolesTab(props: {
         systemPrompt: cPrompt().trim() || "You are a helpful AI assistant.",
         model: cModel().trim() || null, mode: cMode().trim() || null,
         mcpServersJson: "[]", configOptionsJson: JSON.stringify(configMap),
-        autoApprove: cAutoApprove(),
+        configOptionDefsJson: JSON.stringify(cConfigOpts()),
+        autoApprove: true,
       } satisfies RoleUpsertInput);
+      await Promise.all(cGlobalMcp().map((entry) =>
+        globalMcpApi.setRoleMcpEnabled(name, entry.mcpServerName, entry.enabled).catch(() => {}),
+      ));
+      await ruleApi.setRoleRules(
+        name,
+        cRoleRules().map((r) => [r.ruleId, r.enabled, r.ord] as [string, boolean, number]),
+      ).catch(() => {});
+      await skillApi.setRoleSkills(
+        name,
+        cRoleSkills().map((s) => [s.skillId, s.enabled, s.ord] as [string, boolean, number]),
+      ).catch(() => {});
       await props.refreshRoles();
       // 创建成功后直接进入编辑状态
       const created = props.roles().find((r) => r.roleName === saved.roleName);
@@ -142,7 +257,7 @@ export function RolesTab(props: {
       } else {
         setCreating(false);
       }
-      setCConfigSel({}); setCConfigOpts([]);
+      setCConfigSel({}); setCConfigOpts([]); setCGlobalMcp([]); setCRoleRules([]); setCRoleSkills([]);
       props.pushMessage("event", `role created: ${saved.roleName} (${saved.runtimeKind})`);
     } catch (e) { const err = parseError(e); props.pushMessage("event", `Failed to create role: ${err.message}`); }
     finally { setSaving(false); }
@@ -163,8 +278,10 @@ export function RolesTab(props: {
       await roleApi.upsert({
         roleName: role.roleName, runtimeKind: role.runtimeKind,
         systemPrompt: ePrompt().trim(), model: eModel().trim() || null,
-        mode: newMode, mcpServersJson: JSON.stringify(eMcpServers()),
-        configOptionsJson: JSON.stringify(parsedCfg), autoApprove: eAutoApprove(),
+        mode: newMode, mcpServersJson: "[]",
+        configOptionsJson: JSON.stringify(parsedCfg),
+        configOptionDefsJson: JSON.stringify(eConfigOpts()),
+        autoApprove: true,
       } satisfies RoleUpsertInput);
       await props.refreshRoles();
       if (modeChanged && newMode) {
@@ -180,12 +297,22 @@ export function RolesTab(props: {
 
   // ── Delete ──────────────────────────────────────────────────────────────────
   const handleDelete = async (roleName: string) => {
+    if (deletingRole()) return;
+    setDeleteError(null);
+    setDeletingRole(roleName);
     try {
       await roleApi.remove(roleName);
       if (editingRole()?.roleName === roleName) setSelectedId(null);
       setDeletingId(null);
       await props.refreshRoles();
-    } catch (e) { const err = parseError(e); props.pushMessage("event", `Failed to delete role: ${err.message}`); }
+      props.pushMessage("event", `role deleted: ${roleName}`);
+    } catch (e) {
+      const err = parseError(e);
+      setDeleteError(err.message);
+      props.pushMessage("event", `Failed to delete role: ${err.message}`);
+    } finally {
+      setDeletingRole(null);
+    }
   };
 
   const handleToggleGlobalMcp = async (entry: RoleMcpEntry, enabled: boolean) => {
@@ -196,6 +323,24 @@ export function RolesTab(props: {
     setMcpResetting(true);
     await globalMcpApi.resetRoleMcpSessions(role.roleName).catch(() => {});
     setMcpResetting(false);
+  };
+
+  const handleToggleRule = async (rule: RoleRule, enabled: boolean) => {
+    const role = editingRole();
+    if (!role) return;
+    const updated = eRoleRules().map((r) => r.ruleId === rule.ruleId ? { ...r, enabled } : r);
+    setERoleRules(updated);
+    const payload: [string, boolean, number][] = updated.map((r) => [r.ruleId, r.enabled, r.ord]);
+    await ruleApi.setRoleRules(role.roleName, payload).catch(() => {});
+  };
+
+  const handleToggleSkill = async (skill: RoleSkill, enabled: boolean) => {
+    const role = editingRole();
+    if (!role) return;
+    const updated = eRoleSkills().map((s) => s.skillId === skill.skillId ? { ...s, enabled } : s);
+    setERoleSkills(updated);
+    const payload: [string, boolean, number][] = updated.map((s) => [s.skillId, s.enabled, s.ord]);
+    await skillApi.setRoleSkills(role.roleName, payload).catch(() => {});
   };
 
   const runtimeOptions = RUNTIMES.map((r) => ({ value: r, label: r }));
@@ -253,10 +398,11 @@ export function RolesTab(props: {
                       </div>
                     </Show>
                   </div>
-                  <div class="flex items-center gap-1.5">
+                  <div class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                     <span class={`font-mono text-[9px] ${color()}`}>{role.runtimeKind}</span>
-                    <Show when={role.model}><span class="font-mono text-[9px] text-blue-400">{role.model}</span></Show>
-                    <Show when={!role.autoApprove}><span class="font-mono text-[9px] text-amber-400">manual</span></Show>
+                    <Show when={roleModel(role)}><span class="min-w-0 max-w-full truncate font-mono text-[9px] text-blue-400">{roleModel(role)}</span></Show>
+                    <Show when={roleMode(role)}><span class="min-w-0 max-w-full truncate font-mono text-[9px] text-violet-300">mode:{roleMode(role)}</span></Show>
+                    <Show when={roleEffort(role)}><span class="min-w-0 max-w-full truncate font-mono text-[9px] text-amber-300">effort:{roleEffort(role)}</span></Show>
                   </div>
                 </div>
               );
@@ -289,67 +435,144 @@ export function RolesTab(props: {
               </FieldRow>
               <FieldRow label="Runtime">
                 <InlineSelect value={cRuntime()} options={runtimeOptions} onChange={(v) => {
-                  setCRuntime(v); setCModel(""); setCMode(""); setCConfigSel({});
-                  void props.fetchConfigOptions(v).then(setCConfigOpts);
+                  const reqSeq = ++createConfigReqSeq;
+                  setCRuntime(v); setCModel(""); setCMode(""); setCConfigSel({}); setCConfigOpts([]); setCModes([]);
+                  setCConfigLoading(true);
+                  void props.fetchRoleConfig(`runtime:${v}`)
+                    .then(({ options, modes }) => {
+                      if (reqSeq !== createConfigReqSeq || !creating() || cRuntime() !== v) return;
+                      setCConfigOpts(options);
+                      setCModes(modes);
+                    })
+                    .catch(() => {
+                      if (reqSeq !== createConfigReqSeq) return;
+                      setCConfigOpts([]);
+                      setCModes([]);
+                    })
+                    .finally(() => {
+                      if (reqSeq === createConfigReqSeq) setCConfigLoading(false);
+                    });
                 }} />
               </FieldRow>
               <FieldRow label="Prompt">
                 <TextInput value={cPrompt()} onInput={setCPrompt} placeholder="System prompt…" multiline rows={4} />
               </FieldRow>
-              {/* Model — dropdown if runtime provides options, otherwise plain text */}
               <FieldRow label="Model">
-                <Show when={cConfigOpts().find((o) => o.category?.toLowerCase() === "model" || o.id.toLowerCase() === "model")} fallback={
-                  <TextInput value={cModel()} onInput={setCModel} placeholder="Optional model override" monospace />
-                }>
-                  {(mo) => {
-                    const values = () => flattenConfigValues(mo().options);
-                    return (
-                      <InlineSelect
-                        value={cModel()}
-                        options={[{ value: "", label: `default: ${mo().currentValue}` }, ...values().map((v) => ({ value: v.value, label: v.description ? `${v.name} — ${v.description}` : v.name }))]}
-                        onChange={setCModel}
-                      />
-                    );
-                  }}
+                <Show when={!cConfigLoading()} fallback={<span class="font-mono text-[10px] theme-muted">loading…</span>}>
+                  <Show when={cConfigOpts().find(isModelOption)} fallback={
+                    <TextInput value={cModel()} onInput={setCModel} placeholder="Optional model override" monospace />
+                  }>
+                    {(mo) => {
+                      return (
+                        <InlineSelect
+                          value={cModel()}
+                          options={configOptionSelectOptions(mo())}
+                          onChange={setCModel}
+                        />
+                      );
+                    }}
+                  </Show>
                 </Show>
               </FieldRow>
-              {/* Mode — only shown when runtime provides it */}
-              <Show when={cConfigOpts().find((o) => o.category?.toLowerCase() === "mode" || o.id.toLowerCase() === "mode")}>
-                {(mo) => {
-                  const values = () => flattenConfigValues(mo().options);
+              <Show when={resolvedModes(cConfigOpts(), cModes())}>
+                {(mr) => {
+                  const opts = () => mr().kind === "option"
+                    ? configOptionSelectOptions(mr().opt!)
+                    : [{ value: "", label: "default" }, ...mr().modes!.map((m) => ({ value: m, label: m }))];
                   return (
                     <FieldRow label="Mode">
+                      <InlineSelect value={cMode()} options={opts()} onChange={setCMode} />
+                    </FieldRow>
+                  );
+                }}
+              </Show>
+              <Show when={cConfigOpts().find(isEffortOption)}>
+                {(opt) => {
+                  return (
+                    <FieldRow label={optionName(opt()) || "Effort"}>
                       <InlineSelect
-                        value={cMode()}
-                        options={[{ value: "", label: `default: ${mo().currentValue}` }, ...values().map((v) => ({ value: v.value, label: v.description ? `${v.name} — ${v.description}` : v.name }))]}
-                        onChange={setCMode}
+                        value={cConfigSel()[optionId(opt())] ?? ""}
+                        options={configOptionSelectOptions(opt())}
+                        onChange={(val) => setCConfigSel((s) => ({ ...s, [optionId(opt())]: val }))}
                       />
                     </FieldRow>
                   );
                 }}
               </Show>
-              <FieldRow label="Auto-approve">
-                <label class="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={cAutoApprove()} onChange={(e) => setCAutoApprove(e.currentTarget.checked)} class="rounded accent-emerald-500" />
-                  <span class="font-mono text-[10px] theme-muted">auto-approve permissions</span>
-                </label>
-              </FieldRow>
-              {/* Other runtime-specific options (excluding model/mode) */}
               <Show when={cConfigOpts().length > 0}>
-                <For each={cConfigOpts().filter((o) => !isModelOrMode(o))}>
+                <For each={cConfigOpts().filter((o) => !isModelOption(o) && !isModeOption(o) && !isEffortOption(o))}>
                   {(opt) => {
-                    const values = () => flattenConfigValues(opt.options);
                     return (
-                      <FieldRow label={opt.name}>
+                      <FieldRow label={optionName(opt)}>
                         <InlineSelect
-                          value={cConfigSel()[opt.id] ?? ""}
-                          options={[{ value: "", label: `default: ${opt.currentValue}` }, ...values().map((v) => ({ value: v.value, label: v.name }))]}
-                          onChange={(val) => setCConfigSel((s) => ({ ...s, [opt.id]: val }))}
+                          value={cConfigSel()[optionId(opt)] ?? ""}
+                          options={configOptionSelectOptions(opt)}
+                          onChange={(val) => setCConfigSel((s) => ({ ...s, [optionId(opt)]: val }))}
                         />
                       </FieldRow>
                     );
                   }}
                 </For>
+              </Show>
+              <Show when={cGlobalMcp().length > 0}>
+                <FieldRow label="MCP">
+                  <div class="space-y-1">
+                    <For each={cGlobalMcp()}>{(entry) => (
+                      <div class="flex items-center gap-2 rounded-md border theme-border bg-[var(--ui-surface)] px-2 py-1">
+                        <input
+                          type="checkbox"
+                          checked={entry.enabled}
+                          onChange={(e) => setCGlobalMcp((prev) => prev.map((m) => m.mcpServerName === entry.mcpServerName ? { ...m, enabled: e.currentTarget.checked } : m))}
+                          class="accent-indigo-400 h-3 w-3 shrink-0"
+                        />
+                        <span class="flex-1 truncate font-mono text-[10px] theme-text">{entry.mcpServerName}</span>
+                        <Show when={entry.isBuiltin}>
+                          <span class="text-[9px] theme-muted italic">builtin</span>
+                        </Show>
+                      </div>
+                    )}</For>
+                  </div>
+                </FieldRow>
+              </Show>
+              <Show when={cRoleRules().length > 0}>
+                <FieldRow label="Rules">
+                  <div class="space-y-1">
+                    <For each={cRoleRules()}>{(rule) => (
+                      <div class="flex items-center gap-2 rounded-md border theme-border bg-[var(--ui-surface)] px-2 py-1">
+                        <input
+                          type="checkbox"
+                          checked={rule.enabled}
+                          onChange={(e) => setCRoleRules((prev) => prev.map((r) => r.ruleId === rule.ruleId ? { ...r, enabled: e.currentTarget.checked } : r))}
+                          class="accent-violet-400 h-3 w-3 shrink-0"
+                        />
+                        <span class="flex-1 truncate font-mono text-[10px] theme-text">{rule.name}</span>
+                        <Show when={rule.description}>
+                          <span class="text-[9px] theme-muted italic truncate max-w-[120px]">{rule.description}</span>
+                        </Show>
+                      </div>
+                    )}</For>
+                  </div>
+                </FieldRow>
+              </Show>
+              <Show when={cRoleSkills().length > 0}>
+                <FieldRow label="Skills">
+                  <div class="space-y-1">
+                    <For each={cRoleSkills()}>{(skill) => (
+                      <div class="flex items-center gap-2 rounded-md border theme-border bg-[var(--ui-surface)] px-2 py-1">
+                        <input
+                          type="checkbox"
+                          checked={skill.enabled}
+                          onChange={(e) => setCRoleSkills((prev) => prev.map((s) => s.skillId === skill.skillId ? { ...s, enabled: e.currentTarget.checked } : s))}
+                          class="accent-teal-400 h-3 w-3 shrink-0"
+                        />
+                        <span class="flex-1 truncate font-mono text-[10px] theme-text">{skill.name}</span>
+                        <Show when={skill.description}>
+                          <span class="text-[9px] theme-muted italic truncate max-w-[120px]">{skill.description}</span>
+                        </Show>
+                      </div>
+                    )}</For>
+                  </div>
+                </FieldRow>
               </Show>
             </div>
             <div class="flex gap-2">
@@ -362,9 +585,10 @@ export function RolesTab(props: {
         {/* Edit form */}
         <Show when={!creating() && editingRole()}>
           {(role) => {
-            const modelOpt = createMemo(() => editConfigOpts().find((o) => o.category?.toLowerCase() === "model" || o.id.toLowerCase() === "model"));
-            const modeOpt = createMemo(() => editConfigOpts().find((o) => o.category?.toLowerCase() === "mode" || o.id.toLowerCase() === "mode"));
-            const otherOpts = createMemo(() => editConfigOpts().filter((o) => !isModelOrMode(o)));
+            const modelOpt = createMemo(() => editConfigOpts().find(isModelOption));
+            const modeResolved = createMemo(() => resolvedModes(editConfigOpts(), eModes()));
+            const effortOpt = createMemo(() => editConfigOpts().find(isEffortOption));
+            const otherOpts = createMemo(() => editConfigOpts().filter((o) => !isModelOption(o) && !isModeOption(o) && !isEffortOption(o)));
             return (
               <div class="space-y-4">
                 <div class="flex items-start justify-between gap-4">
@@ -377,11 +601,21 @@ export function RolesTab(props: {
                     <ActionButton label="Delete" variant="danger" onClick={() => setDeletingId(role().roleName)} />
                   }>
                     <div class="flex items-center gap-2">
-                      <ActionButton label="Confirm delete" variant="danger" onClick={() => void handleDelete(role().roleName)} />
+                      <ActionButton
+                        label={deletingRole() === role().roleName ? "Deleting..." : "Confirm delete"}
+                        variant="danger"
+                        disabled={deletingRole() === role().roleName}
+                        onClick={() => void handleDelete(role().roleName)}
+                      />
                       <ActionButton label="Cancel" variant="ghost" onClick={() => setDeletingId(null)} />
                     </div>
                   </Show>
                 </div>
+                <Show when={deleteError()}>
+                  <div class="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 font-mono text-[10px] text-rose-200">
+                    {deleteError()}
+                  </div>
+                </Show>
 
                 <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
                   <FieldRow label="Prompt">
@@ -392,26 +626,36 @@ export function RolesTab(props: {
                       <TextInput value={eModel()} onInput={setEModel} placeholder="Optional model" monospace />
                     }>
                       {(mo) => {
-                        const values = () => flattenConfigValues(mo().options);
                         return (
                           <InlineSelect
                             value={eModel()}
-                            options={[{ value: "", label: `default: ${mo().currentValue}` }, ...values().map((v) => ({ value: v.value, label: v.description ? `${v.name} — ${v.description}` : v.name }))]}
+                            options={configOptionSelectOptions(mo())}
                             onChange={setEModel}
                           />
                         );
                       }}
                     </Show>
                   </FieldRow>
-                  <Show when={modeOpt()}>
-                    {(mo) => {
-                      const values = () => flattenConfigValues(mo().options);
+                  <Show when={modeResolved()}>
+                    {(mr) => {
+                      const opts = () => mr().kind === "option"
+                        ? configOptionSelectOptions(mr().opt!)
+                        : [{ value: "", label: "default" }, ...mr().modes!.map((m) => ({ value: m, label: m }))];
                       return (
                         <FieldRow label="Mode">
+                          <InlineSelect value={eMode()} options={opts()} onChange={setEMode} />
+                        </FieldRow>
+                      );
+                    }}
+                  </Show>
+                  <Show when={effortOpt()}>
+                    {(opt) => {
+                      return (
+                        <FieldRow label={optionName(opt()) || "Effort"}>
                           <InlineSelect
-                            value={eMode()}
-                            options={[{ value: "", label: `default: ${mo().currentValue}` }, ...values().map((v) => ({ value: v.value, label: v.description ? `${v.name} — ${v.description}` : v.name }))]}
-                            onChange={setEMode}
+                            value={editCfgMap()[optionId(opt())] ?? ""}
+                            options={configOptionSelectOptions(opt())}
+                            onChange={(val) => updateEditCfg(optionId(opt()), val)}
                           />
                         </FieldRow>
                       );
@@ -419,113 +663,19 @@ export function RolesTab(props: {
                   </Show>
                   <For each={otherOpts()}>
                     {(opt) => {
-                      const values = () => flattenConfigValues(opt.options);
                       return (
-                        <FieldRow label={opt.name}>
+                        <FieldRow label={optionName(opt)}>
                           <InlineSelect
-                            value={editCfgMap()[opt.id] ?? ""}
-                            options={[{ value: "", label: `default: ${opt.currentValue}` }, ...values().map((v) => ({ value: v.value, label: v.description ? `${v.name} — ${v.description}` : v.name }))]}
-                            onChange={(val) => updateEditCfg(opt.id, val)}
+                            value={editCfgMap()[optionId(opt)] ?? ""}
+                            options={configOptionSelectOptions(opt)}
+                            onChange={(val) => updateEditCfg(optionId(opt), val)}
                           />
                         </FieldRow>
                       );
                     }}
                   </For>
-                  <FieldRow label="MCP">
-                    <div class="space-y-2">
-                      <Show when={eMcpServers().length > 0}>
-                        <div class="space-y-1">
-                          <For each={eMcpServers()}>
-                            {(srv, idx) => {
-                              const t = () => mcpTransport(srv);
-                              const tColor = () => ({ stdio: "bg-amber-500/15 text-amber-300", http: "bg-sky-500/15 text-sky-300", sse: "bg-violet-500/15 text-violet-300" }[t()] ?? "");
-                              return (
-                                <div class="flex items-center gap-2 rounded-md border theme-border bg-[var(--ui-surface)] px-2 py-1.5">
-                                  <Badge label={t()} color={tColor()} />
-                                  <span class="flex-1 truncate font-mono text-[10px] theme-text">{srv.name}</span>
-                                  <span class="truncate font-mono text-[9px] theme-muted max-w-[200px]">{mcpDisplayUri(srv)}</span>
-                                  <button
-                                    onClick={() => setEMcpServers((s) => s.filter((_, i) => i !== idx()))}
-                                    class="shrink-0 theme-muted hover:text-rose-400"
-                                  >
-                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                                  </button>
-                                </div>
-                              );
-                            }}
-                          </For>
-                        </div>
-                      </Show>
-                      <Show when={eMcpAdding()} fallback={
-                        <button
-                          onClick={() => { setEMcpAdding(true); setEMcpName(""); setEMcpCommand(""); setEMcpArgs(""); setEMcpUrl(""); setEMcpTransport("stdio"); }}
-                          class="font-mono text-[10px] theme-muted hover:theme-text"
-                        >
-                          + add MCP server
-                        </button>
-                      }>
-                        <div class="space-y-1.5 rounded-md border theme-border bg-[var(--ui-surface)] p-2.5">
-                          <div class="flex gap-2">
-                            <input
-                              value={eMcpName()} onInput={(e) => setEMcpName(e.currentTarget.value)}
-                              placeholder="name" class="h-6 flex-1 rounded border theme-border theme-surface px-1.5 font-mono text-[10px] theme-text placeholder:theme-muted focus:outline-none"
-                            />
-                            <InlineSelect
-                              value={eMcpTransport()}
-                              options={[{ value: "stdio", label: "stdio" }, { value: "http", label: "http" }, { value: "sse", label: "sse" }]}
-                              onChange={(v) => setEMcpTransport(v as "stdio" | "http" | "sse")}
-                              class="w-24"
-                            />
-                          </div>
-                          <Show when={eMcpTransport() === "stdio"}>
-                            <input
-                              value={eMcpCommand()} onInput={(e) => setEMcpCommand(e.currentTarget.value)}
-                              placeholder="command (e.g. npx)" class="h-6 w-full rounded border theme-border theme-surface px-1.5 font-mono text-[10px] theme-text placeholder:theme-muted focus:outline-none"
-                            />
-                            <input
-                              value={eMcpArgs()} onInput={(e) => setEMcpArgs(e.currentTarget.value)}
-                              placeholder="args (e.g. -y @anthropic-ai/chrome-devtools-mcp@latest)" class="h-6 w-full rounded border theme-border theme-surface px-1.5 font-mono text-[10px] theme-text placeholder:theme-muted focus:outline-none"
-                            />
-                          </Show>
-                          <Show when={eMcpTransport() !== "stdio"}>
-                            <input
-                              value={eMcpUrl()} onInput={(e) => setEMcpUrl(e.currentTarget.value)}
-                              placeholder="url (e.g. https://mcp.example.com)" class="h-6 w-full rounded border theme-border theme-surface px-1.5 font-mono text-[10px] theme-text placeholder:theme-muted focus:outline-none"
-                            />
-                          </Show>
-                          <div class="flex gap-2 pt-1">
-                            <button
-                              onClick={() => {
-                                const name = eMcpName().trim();
-                                if (!name) return;
-                                let srv: AcpMcpServer;
-                                if (eMcpTransport() === "stdio") {
-                                  const cmd = eMcpCommand().trim();
-                                  if (!cmd) return;
-                                  const parsedArgs = parseCommandArgs(eMcpArgs().trim());
-                                  if (parsedArgs === null) {
-                                    props.pushMessage("event", "Invalid MCP args: check quotes/escaping.");
-                                    return;
-                                  }
-                                  srv = { name, command: cmd, args: parsedArgs, env: [] };
-                                } else {
-                                  const url = eMcpUrl().trim();
-                                  if (!url) return;
-                                  srv = { type: eMcpTransport() as "http" | "sse", name, url, headers: [] };
-                                }
-                                setEMcpServers((s) => [...s, srv]);
-                                setEMcpAdding(false);
-                              }}
-                              class="font-mono text-[10px] text-emerald-400 hover:text-emerald-300"
-                            >add</button>
-                            <button onClick={() => setEMcpAdding(false)} class="font-mono text-[10px] theme-muted hover:theme-text">cancel</button>
-                          </div>
-                        </div>
-                      </Show>
-                    </div>
-                  </FieldRow>
                   <Show when={eGlobalMcp().length > 0}>
-                    <FieldRow label="Global MCP">
+                    <FieldRow label="MCP">
                       <div class="space-y-1">
                         <For each={eGlobalMcp()}>{(entry) => (
                           <div class="flex items-center gap-2 rounded-md border theme-border bg-[var(--ui-surface)] px-2 py-1">
@@ -547,12 +697,46 @@ export function RolesTab(props: {
                       </div>
                     </FieldRow>
                   </Show>
-                  <FieldRow label="Auto-approve">
-                    <label class="flex items-center gap-2 cursor-pointer">
-                      <input type="checkbox" checked={eAutoApprove()} onChange={(e) => setEAutoApprove(e.currentTarget.checked)} class="rounded accent-emerald-500" />
-                      <span class="font-mono text-[10px] theme-muted">auto-approve permissions</span>
-                    </label>
-                  </FieldRow>
+                  <Show when={eRoleRules().length > 0}>
+                    <FieldRow label="Rules">
+                      <div class="space-y-1">
+                        <For each={eRoleRules()}>{(rule) => (
+                          <div class="flex items-center gap-2 rounded-md border theme-border bg-[var(--ui-surface)] px-2 py-1">
+                            <input
+                              type="checkbox"
+                              checked={rule.enabled}
+                              onChange={(e) => void handleToggleRule(rule, e.currentTarget.checked)}
+                              class="accent-violet-400 h-3 w-3 shrink-0"
+                            />
+                            <span class="flex-1 truncate font-mono text-[10px] theme-text">{rule.name}</span>
+                            <Show when={rule.description}>
+                              <span class="text-[9px] theme-muted italic truncate max-w-[120px]">{rule.description}</span>
+                            </Show>
+                          </div>
+                        )}</For>
+                      </div>
+                    </FieldRow>
+                  </Show>
+                  <Show when={eRoleSkills().length > 0}>
+                    <FieldRow label="Skills">
+                      <div class="space-y-1">
+                        <For each={eRoleSkills()}>{(skill) => (
+                          <div class="flex items-center gap-2 rounded-md border theme-border bg-[var(--ui-surface)] px-2 py-1">
+                            <input
+                              type="checkbox"
+                              checked={skill.enabled}
+                              onChange={(e) => void handleToggleSkill(skill, e.currentTarget.checked)}
+                              class="accent-teal-400 h-3 w-3 shrink-0"
+                            />
+                            <span class="flex-1 truncate font-mono text-[10px] theme-text">{skill.name}</span>
+                            <Show when={skill.description}>
+                              <span class="text-[9px] theme-muted italic truncate max-w-[120px]">{skill.description}</span>
+                            </Show>
+                          </div>
+                        )}</For>
+                      </div>
+                    </FieldRow>
+                  </Show>
                 </div>
 
                 <div class="flex gap-2">

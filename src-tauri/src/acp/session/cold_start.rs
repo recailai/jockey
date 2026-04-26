@@ -312,7 +312,16 @@ pub(crate) async fn cold_start(
             json!({
                 "runtime": runtime_key,
                 "count": serialized.len(),
-                "ids": serialized.iter().filter_map(|v| v.get("id").and_then(|i| i.as_str()).map(|s| s.to_string())).collect::<Vec<_>>()
+                "ids": serialized.iter().filter_map(|v| v.get("id").and_then(|i| i.as_str()).map(|s| s.to_string())).collect::<Vec<_>>(),
+                "options": serialized.iter().map(|v| {
+                    json!({
+                        "id": v.get("id"),
+                        "name": v.get("name"),
+                        "category": v.get("category"),
+                        "currentValue": v.get("currentValue"),
+                        "optionCount": v.get("options").and_then(|opts| opts.as_array()).map(|opts| opts.len()).unwrap_or(0)
+                    })
+                }).collect::<Vec<_>>()
             }),
         );
         remember_runtime_config_options(runtime_key, serialized);
@@ -340,7 +349,16 @@ pub(crate) async fn cold_start(
                 .collect()
         })
         .unwrap_or_default();
-    remember_runtime_modes(runtime_key, available_modes_ids);
+    remember_runtime_modes(runtime_key, available_modes_ids.clone());
+    acp_log(
+        "modes.discovered",
+        json!({
+            "runtime": runtime_key,
+            "count": available_modes_ids.len(),
+            "ids": available_modes_ids,
+            "current": start_result.modes.as_ref().map(|m| m.current_mode_id.to_string())
+        }),
+    );
 
     acp_log(
         "stage.ok",

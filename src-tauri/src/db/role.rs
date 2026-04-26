@@ -245,22 +245,6 @@ pub(crate) fn delete_role_internal(state: &AppState, role_name: &str) -> Result<
             ))
             .to_string());
         }
-        let mapped_open_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(1)
-                 FROM app_session_roles r
-                 JOIN app_sessions s ON s.id = r.app_session_id
-                 WHERE s.closed_at IS NULL AND r.role_name = ?1",
-                params![&role_name],
-                |row| row.get(0),
-            )
-            .map_err(|e| AppError::db(e.to_string()).to_string())?;
-        if mapped_open_count > 0 {
-            return Err(AppError::invalid_input(format!(
-                "role \"{role_name}\" is used in {mapped_open_count} open session(s) — close those sessions first, then delete the role",
-            ))
-            .to_string());
-        }
         conn.execute(
             "DELETE FROM roles WHERE role_name = ?1",
             params![&role_name],
@@ -268,6 +252,21 @@ pub(crate) fn delete_role_internal(state: &AppState, role_name: &str) -> Result<
         .map_err(|e| AppError::db(e.to_string()).to_string())?;
         conn.execute(
             "DELETE FROM app_session_roles WHERE role_name = ?1",
+            params![&role_name],
+        )
+        .map_err(|e| AppError::db(e.to_string()).to_string())?;
+        conn.execute(
+            "DELETE FROM role_mcp_servers WHERE role_name = ?1",
+            params![&role_name],
+        )
+        .map_err(|e| AppError::db(e.to_string()).to_string())?;
+        conn.execute(
+            "DELETE FROM role_rules WHERE role_name = ?1",
+            params![&role_name],
+        )
+        .map_err(|e| AppError::db(e.to_string()).to_string())?;
+        conn.execute(
+            "DELETE FROM role_skills WHERE role_name = ?1",
             params![&role_name],
         )
         .map_err(|e| AppError::db(e.to_string()).to_string())?;

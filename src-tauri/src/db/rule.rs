@@ -191,7 +191,13 @@ pub(crate) fn upsert_rule_cmd(
     content: String,
     description: Option<String>,
 ) -> Result<(), String> {
-    upsert_rule(get_state(&state), &id, &name, &content, description.as_deref())
+    upsert_rule(
+        get_state(&state),
+        &id,
+        &name,
+        &content,
+        description.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -214,4 +220,38 @@ pub(crate) fn list_role_rules_cmd(
     role_name: String,
 ) -> Result<Vec<RoleRule>, String> {
     list_role_rules(get_state(&state), &role_name)
+}
+
+#[tauri::command]
+pub(crate) fn list_all_rules_for_role_cmd(
+    state: State<'_, AppState>,
+    role_name: String,
+) -> Result<Vec<RoleRule>, String> {
+    with_db(get_state(&state), |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT r.id, r.name, r.content, r.description, COALESCE(rr.enabled, 0), COALESCE(rr.ord, 0)
+                 FROM rules r
+                 LEFT JOIN role_rules rr ON rr.rule_id = r.id AND rr.role_name = ?1
+                 ORDER BY COALESCE(rr.ord, 999) ASC, r.name ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![role_name], |row| {
+                Ok(RoleRule {
+                    rule_id: row.get(0)?,
+                    name: row.get(1)?,
+                    content: row.get(2)?,
+                    description: row.get(3)?,
+                    enabled: row.get::<_, i64>(4)? != 0,
+                    ord: row.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(result)
+    })
 }

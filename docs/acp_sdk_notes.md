@@ -199,3 +199,19 @@ enum AcpEvent {
 开了之后变成 `SessionConfigOptionValue` 枚举。
 
 **当前做法**: 不开 unstable feature，统一用 `SessionConfigValueId::from(value_string)`。
+
+---
+
+## 14. Zed UI 控件与 ACP ConfigOptions 的差异
+
+**发现**: 在 Zed 的底栏中，`Mode`、`Model` 和 `Effort` (Thinking Effort) 并不完全是从 ACP 的 `config_options.discovered` 中解析出来的。
+
+**细节**:
+1. **Thinking Effort (High/Medium/Low)**: 
+   - 并不是 ACP `config_options` 里的字段。
+   - 而是 Zed 的 `render_thinking_control()` 直接从 native `LanguageModel.supported_effort_levels()` 获取的。
+   - 这解释了为什么某些 ACP Agent (如 Claude) 虽然没在 `config_options` 里广播 effort，但在 Zed 中仍然能显示 Effort 切换器。
+2. **Modes (Codex 等)**:
+   - 可能通过 ACP 的 `available_modes` 和 `default_mode` 字段独立处理，而不是混在通用 `config_options` 里。
+   
+**结论**: UnionAI 的 Role UI 目前主要基于 `config_options` / `available_modes` 渲染，如果某些控件（如 Effort）在 ACP 层面不 advertise，我们需要参考 Zed 的做法，从 Language Model 的 capability 层“合成”这些控件，或者确认这些字段是否“藏”在 ACP 响应的非标准位置。

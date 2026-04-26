@@ -1,20 +1,10 @@
-import { For, Show, createSignal, onCleanup } from "solid-js";
+import { For, Show, createSignal } from "solid-js";
 import type { Accessor, Setter } from "solid-js";
 import type { AppSession } from "./types";
 import { INTERACTIVE_MOTION } from "./types";
 import { appSessionApi } from "../lib/tauriApi";
 
 export type SessionTab = { id: string; title: string; status: AppSession["status"] };
-
-export type AgentMenuItem = {
-  id: string;
-  label: string;
-  section?: string;
-  shortcut?: string;
-  icon?: string;
-  onSelect: () => void;
-  when?: () => boolean;
-};
 
 type SessionTabsProps = {
   sessions: SessionTab[];
@@ -26,35 +16,12 @@ type SessionTabsProps = {
   onRefresh: () => void;
   onToggleDrawer: () => void;
   onToggleManagement?: () => void;
-  agentMenuItems?: AgentMenuItem[];
   leadingInsetPx?: number;
 };
 
 export default function SessionTabs(props: SessionTabsProps) {
   const [renamingSessionId, setRenamingSessionId] = createSignal<string | null>(null);
   const [renameValue, setRenameValue] = createSignal("");
-  const [menuOpen, setMenuOpen] = createSignal(false);
-  let menuAnchorEl: HTMLButtonElement | undefined;
-
-  const handleGlobalClick = () => setMenuOpen(false);
-  window.addEventListener("click", handleGlobalClick);
-  onCleanup(() => window.removeEventListener("click", handleGlobalClick));
-
-  const visibleItems = () => (props.agentMenuItems ?? []).filter((item) => !item.when || item.when());
-
-  const groupedItems = () => {
-    const items = visibleItems();
-    const sections: { label: string | undefined; items: AgentMenuItem[] }[] = [];
-    for (const item of items) {
-      const last = sections[sections.length - 1];
-      if (last && last.label === item.section) {
-        last.items.push(item);
-      } else {
-        sections.push({ label: item.section, items: [item] });
-      }
-    }
-    return sections;
-  };
   const isValidSessionName = (sessionId: string, raw: string): string | null => {
     const val = raw.trim();
     if (!val) return null;
@@ -164,52 +131,6 @@ export default function SessionTabs(props: SessionTabsProps) {
           <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
         </svg>
       </button>
-      <Show when={visibleItems().length > 0}>
-        <div class="relative">
-          <button
-            ref={menuAnchorEl}
-            onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}
-            class={`flex h-6 w-6 items-center justify-center rounded-md theme-muted hover:text-primary hover:bg-[var(--ui-accent-soft)] transition-all motion-safe:hover:scale-105 ${INTERACTIVE_MOTION}`}
-            classList={{ "text-primary bg-[var(--ui-accent-soft)]": menuOpen() }}
-            title="Agent menu"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-            </svg>
-          </button>
-          <Show when={menuOpen()}>
-            <div
-              class="absolute right-0 top-full mt-1 z-50 min-w-[200px] overflow-hidden rounded-lg shadow-xl shadow-black/60 backdrop-blur-md py-1 theme-dropdown"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <For each={groupedItems()}>{(group, gi) => (
-                <>
-                  <Show when={group.label && gi() > 0}>
-                    <div class="mx-2 my-1 border-t theme-border" />
-                  </Show>
-                  <Show when={group.label}>
-                    <div class="px-3 py-1 text-[9px] uppercase tracking-widest theme-muted font-bold">{group.label}</div>
-                  </Show>
-                  <For each={group.items}>{(item) => (
-                    <button
-                      class={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] theme-text hover:bg-[var(--ui-accent-soft)] transition-colors ${INTERACTIVE_MOTION}`}
-                      onClick={() => { setMenuOpen(false); item.onSelect(); }}
-                    >
-                      <Show when={item.icon}>
-                        <span class="shrink-0 theme-muted text-[13px]">{item.icon}</span>
-                      </Show>
-                      <span class="flex-1">{item.label}</span>
-                      <Show when={item.shortcut}>
-                        <span class="shrink-0 text-[9px] theme-muted font-mono bg-[var(--ui-panel-2)] px-1 py-0.5 rounded">{item.shortcut}</span>
-                      </Show>
-                    </button>
-                  )}</For>
-                </>
-              )}</For>
-            </div>
-          </Show>
-        </div>
-      </Show>
     </div>
   );
 }

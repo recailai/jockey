@@ -3,6 +3,7 @@ use crate::db::context::{list_shared_context_internal, sanitize_dynamic_item_nam
 use crate::db::role::load_role;
 use crate::db::rule::get_enabled_rules_for_role;
 use crate::db::session_context::app_session_role_scope;
+use crate::db::skill::get_enabled_skills_for_role;
 use crate::runtime_kind::RuntimeKind;
 use crate::types::AppState;
 
@@ -300,6 +301,12 @@ pub(super) fn load_role_runtime_data(
         &context_pairs,
     ) {
         role_config.push(("model".to_string(), model));
+    }
+
+    for (name, content) in get_enabled_skills_for_role(state, role_name).unwrap_or_default() {
+        if !content.is_empty() {
+            upsert_context_pair(&mut context_pairs, &format!("skill:{name}"), content);
+        }
     }
 
     let role_system_prompt = role_data

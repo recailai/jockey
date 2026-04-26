@@ -11,6 +11,7 @@ use super::worker::{
 };
 
 const RAW_PAYLOAD_LIMIT: usize = 64 * 1024;
+const DEFAULT_TERMINAL_OUTPUT_LIMIT: u64 = 256 * 1024;
 
 fn cap_raw(v: Option<Value>) -> Option<Value> {
     let v = v?;
@@ -545,17 +546,20 @@ impl acp::Client for JockeyUiClient {
             output: String::new(),
             original_bytes_written: 0,
         }));
+        let output_byte_limit = args
+            .output_byte_limit
+            .or(Some(DEFAULT_TERMINAL_OUTPUT_LIMIT));
         if let Some(stdout) = stdout {
-            spawn_terminal_drain(stdout, state.clone(), args.output_byte_limit);
+            spawn_terminal_drain(stdout, state.clone(), output_byte_limit);
         }
         if let Some(stderr) = stderr {
-            spawn_terminal_drain(stderr, state.clone(), args.output_byte_limit);
+            spawn_terminal_drain(stderr, state.clone(), output_byte_limit);
         }
         let (exit_tx, exit_rx) = tokio::sync::watch::channel(None);
         tokio::task::spawn_local(async move {
             let status = child.wait().await.ok();
-            let exit_status =
-                status.map(|s| acp::TerminalExitStatus::new().exit_code(s.code().map(|c| c as u32)));
+            let exit_status = status
+                .map(|s| acp::TerminalExitStatus::new().exit_code(s.code().map(|c| c as u32)));
             let _ = exit_tx.send(exit_status);
         });
         self.terminals.borrow_mut().insert(

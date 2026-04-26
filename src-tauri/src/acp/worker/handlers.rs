@@ -16,9 +16,9 @@ use super::pool::{
     child_pids, pool_key, CANCEL_HANDLES, CONN_MAP, DELTA_CHANNEL_CAPACITY, PENDING_COLD_STARTS,
     PROMPT_LOCKS, PROMPT_WAITERS,
 };
-use futures::future::FutureExt;
 use super::types::{AcpEvent, ConnectionDeathEvent, PrewarmStatus};
 use super::{cancel_all_permissions, cancel_permissions_for};
+use futures::future::FutureExt;
 
 const PROMPT_LIVENESS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 const IDLE_RECLAIM_AFTER: std::time::Duration = std::time::Duration::from_secs(300);
@@ -334,7 +334,11 @@ pub(crate) async fn apply_cold_start_config(
         }
     }
 
-    let conn_rc = CONN_MAP.with(|m| m.borrow().get(key).map(|c| crate::acp::AgentConnection::rpc_handle(c)));
+    let conn_rc = CONN_MAP.with(|m| {
+        m.borrow()
+            .get(key)
+            .map(|c| crate::acp::AgentConnection::rpc_handle(c))
+    });
     let Some(conn_rc) = conn_rc else { return };
 
     if let Some(mode) = role_mode {
@@ -351,9 +355,8 @@ pub(crate) async fn apply_cold_start_config(
             })
             .unwrap_or(true); // no snapshot yet — let the agent decide
         if !is_supported {
-            let msg = format!(
-                "saved role mode '{mode}' is not advertised by runtime '{runtime_key}'"
-            );
+            let msg =
+                format!("saved role mode '{mode}' is not advertised by runtime '{runtime_key}'");
             acp_log(
                 "config.unsupported",
                 json!({ "mode": mode, "runtime": runtime_key, "reason": "not in available_modes" }),
@@ -388,9 +391,8 @@ pub(crate) async fn apply_cold_start_config(
 
     for (k, value) in role_config_options {
         if !supported_keys.is_empty() && !supported_keys.contains(k.as_str()) {
-            let msg = format!(
-                "saved role config '{k}' is not advertised by runtime '{runtime_key}'"
-            );
+            let msg =
+                format!("saved role config '{k}' is not advertised by runtime '{runtime_key}'");
             acp_log(
                 "config.unsupported",
                 json!({ "key": k, "runtime": runtime_key, "reason": "not in discovered options" }),
@@ -443,7 +445,12 @@ pub(crate) fn build_prompt_blocks(
         if !ALLOWED_MIME.contains(&att.mime_type.as_str()) {
             continue;
         }
-        if att.data.is_empty() || !att.data.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=') {
+        if att.data.is_empty()
+            || !att
+                .data
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
+        {
             continue;
         }
         blocks.push(acp::ContentBlock::Image(acp::ImageContent::new(
@@ -547,8 +554,8 @@ pub(crate) async fn handle_execute(
             // returns `AcpLayerError::into_message()`). If parsing fails we fall
             // back to a generic connection failure which is the most common cold
             // start outcome.
-            let (code, retryable) = parse_layer_error_prefix(&e)
-                .unwrap_or((AcpErrorCode::ConnectionFailed, true));
+            let (code, retryable) =
+                parse_layer_error_prefix(&e).unwrap_or((AcpErrorCode::ConnectionFailed, true));
             emit_session_error(&delta_tx, code, e.clone(), retryable);
             let _ = result_tx.send(Err(e));
             return;
@@ -701,7 +708,11 @@ pub(crate) async fn handle_execute(
             if resp.stop_reason == acp::StopReason::Cancelled {
                 CONN_MAP.with(|m| {
                     let mut map = m.borrow_mut();
-                    if map.get(&key).map(|c| c.instance_id == instance_id).unwrap_or(false) {
+                    if map
+                        .get(&key)
+                        .map(|c| c.instance_id == instance_id)
+                        .unwrap_or(false)
+                    {
                         map.remove(&key);
                     }
                 });
@@ -730,7 +741,12 @@ pub(crate) async fn handle_execute(
                 json!({ "runtime": runtime_key, "error": e.to_string() }),
             );
             let layer = AcpLayerError::from(e.clone());
-            emit_session_error(&delta_tx, layer.code, layer.message.clone(), layer.retryable);
+            emit_session_error(
+                &delta_tx,
+                layer.code,
+                layer.message.clone(),
+                layer.retryable,
+            );
             // Invalidate connection only if still the same instance.
             let is_same = CONN_MAP.with(|m| {
                 m.borrow()

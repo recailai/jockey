@@ -386,6 +386,8 @@ pub fn run() {
             db::skill::list_app_skills,
             db::skill::upsert_app_skill,
             db::skill::delete_app_skill,
+            db::skill::list_all_skills_for_role_cmd,
+            db::skill::set_role_skills_cmd,
             db::global_mcp::list_global_mcp_servers_cmd,
             db::global_mcp::upsert_global_mcp_server_cmd,
             db::global_mcp::delete_global_mcp_server_cmd,
@@ -396,7 +398,8 @@ pub fn run() {
             db::rule::upsert_rule_cmd,
             db::rule::delete_rule_cmd,
             db::rule::set_role_rules_cmd,
-            db::rule::list_role_rules_cmd
+            db::rule::list_role_rules_cmd,
+            db::rule::list_all_rules_for_role_cmd
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

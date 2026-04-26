@@ -2,8 +2,9 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "so
 import type { Accessor, Setter } from "solid-js";
 import type { Role, RoleUpsertInput, AppSession, AssistantRuntime, AcpConfigOption, AppSkill } from "./types";
 import { INTERACTIVE_MOTION, RUNTIME_COLOR, flattenConfigValues } from "./types";
-import { assistantApi, configApi, roleApi } from "../lib/tauriApi";
+import { roleApi } from "../lib/tauriApi";
 import { type UiTheme, UI_THEMES } from "../lib/theme";
+import { isModeOption, isModelOption, optionCurrentValue, optionId, optionName } from "../lib/configOptions";
 
 type SelectOption = { value: string; label: string };
 
@@ -33,9 +34,10 @@ function Select(props: {
       <button
         type="button"
         onClick={toggle}
+        title={selected()?.label ?? props.placeholder ?? "Select..."}
         class={`flex h-7 w-full items-center justify-between gap-2 rounded-md border theme-border theme-surface px-2.5 text-xs text-left ${INTERACTIVE_MOTION} ${open() ? "border-[var(--ui-border-strong)]" : "hover:border-[var(--ui-border-strong)]"}`}
       >
-        <span class={selected() ? "theme-text" : "theme-muted"}>
+        <span class={`min-w-0 flex-1 truncate ${selected() ? "theme-text" : "theme-muted"}`}>
           {selected()?.label ?? props.placeholder ?? "Select…"}
         </span>
         <svg class={`h-3.5 w-3.5 shrink-0 theme-muted transition-transform ${open() ? "rotate-180" : ""}`} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4l4 4 4-4"/></svg>
@@ -46,15 +48,16 @@ function Select(props: {
             {(opt) => (
               <button
                 type="button"
+                title={opt.label}
                 onClick={() => { props.onChange(opt.value); close(); }}
-                class={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs ${INTERACTIVE_MOTION} ${
+                class={`flex w-full items-start gap-2 px-2.5 py-1.5 text-left text-xs ${INTERACTIVE_MOTION} ${
                   opt.value === props.value
                     ? "theme-dropdown-item-active"
                     : "theme-dropdown-item"
                 }`}
               >
-                <span class={`h-1 w-1 shrink-0 rounded-full ${opt.value === props.value ? "bg-emerald-400" : "bg-transparent"}`} />
-                {opt.label}
+                <span class={`mt-1.5 h-1 w-1 shrink-0 rounded-full ${opt.value === props.value ? "bg-emerald-400" : "bg-transparent"}`} />
+                <span class="min-w-0 break-words">{opt.label}</span>
               </button>
             )}
           </For>
@@ -77,8 +80,7 @@ type ConfigDrawerProps = {
   refreshSkills: () => Promise<void>;
   refreshAssistants: () => Promise<void>;
   pushMessage: (role: string, text: string) => void;
-  fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
-  fetchModes: (runtimeKey: string, roleName?: string) => Promise<string[]>;
+  fetchRoleConfig: (runtimeKey: string, roleName?: string) => Promise<{ options: AcpConfigOption[]; modes: string[] }>;
   onOpenManagement?: (tab?: "roles" | "skills" | "sessions" | "workflows" | "mcp", roleName?: string) => void;
   uiTheme: Accessor<UiTheme>;
   setUiTheme: (th: UiTheme) => void;
@@ -129,8 +131,7 @@ export default function ConfigDrawer(props: ConfigDrawerProps) {
               activeSession={props.activeSession}
               patchActiveSession={props.patchActiveSession}
               pushMessage={props.pushMessage}
-              fetchConfigOptions={props.fetchConfigOptions}
-              fetchModes={props.fetchModes}
+              fetchRoleConfig={props.fetchRoleConfig}
               refreshRoles={props.refreshRoles}
               refreshAssistants={props.refreshAssistants}
             />
@@ -176,8 +177,7 @@ type AssistantSectionProps = {
   activeSession: Accessor<AppSession | null>;
   patchActiveSession: (patch: Partial<AppSession>) => void;
   pushMessage: (role: string, text: string) => void;
-  fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
-  fetchModes: (runtimeKey: string, roleName?: string) => Promise<string[]>;
+  fetchRoleConfig: (runtimeKey: string, roleName?: string) => Promise<{ options: AcpConfigOption[]; modes: string[] }>;
   refreshRoles: () => Promise<void>;
   refreshAssistants: () => Promise<void>;
 };
@@ -240,8 +240,7 @@ function AssistantSection(props: AssistantSectionProps) {
         <AssistantConfigPanel
           activeSession={props.activeSession}
           pushMessage={props.pushMessage}
-          fetchConfigOptions={props.fetchConfigOptions}
-          fetchModes={props.fetchModes}
+          fetchRoleConfig={props.fetchRoleConfig}
           refreshRoles={props.refreshRoles}
           onClose={() => setShowConfig(false)}
         />
@@ -253,8 +252,7 @@ function AssistantSection(props: AssistantSectionProps) {
 type AssistantConfigPanelProps = {
   activeSession: Accessor<AppSession | null>;
   pushMessage: (role: string, text: string) => void;
-  fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>;
-  fetchModes: (runtimeKey: string, roleName?: string) => Promise<string[]>;
+  fetchRoleConfig: (runtimeKey: string, roleName?: string) => Promise<{ options: AcpConfigOption[]; modes: string[] }>;
   refreshRoles: () => Promise<void>;
   onClose: () => void;
 };
@@ -278,9 +276,9 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
     if (val) map[id] = val; else delete map[id];
     setConfigOptionsJson(JSON.stringify(map));
   };
-  const modelOpt = createMemo(() => configOptions().find((o) => o.category?.toLowerCase() === "model" || o.id.toLowerCase() === "model"));
-  const modeOpt = createMemo(() => configOptions().find((o) => o.category?.toLowerCase() === "mode" || o.id.toLowerCase() === "mode"));
-  const otherOpts = createMemo(() => configOptions().filter((o) => o.id.toLowerCase() !== "model" && o.id.toLowerCase() !== "mode" && o.category?.toLowerCase() !== "model" && o.category?.toLowerCase() !== "mode"));
+  const modelOpt = createMemo(() => configOptions().find(isModelOption));
+  const modeOpt = createMemo(() => configOptions().find(isModeOption));
+  const otherOpts = createMemo(() => configOptions().filter((o) => !isModelOption(o) && !isModeOption(o)));
 
   // Load existing Jockey role on mount
   const initRole = async () => {
@@ -297,7 +295,7 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
   };
 
   const mergeModesIntoOptions = (opts: AcpConfigOption[], modes: string[]): AcpConfigOption[] => {
-    if (modes.length === 0 || opts.some((o) => o.category === "mode" || o.id === "mode")) return opts;
+    if (modes.length === 0 || opts.some(isModeOption)) return opts;
     const modeOpt: AcpConfigOption = {
       id: "mode",
       name: "Mode",
@@ -311,34 +309,17 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
 
   const refreshOptions = async (_runtime: string) => {
     const reqSeq = ++optionsReqSeq;
-    const sid = props.activeSession()?.id ?? "";
     setOptionsLoading(true);
     try {
-      const [cachedRaw, cachedModes] = await Promise.all([
-        assistantApi.listDiscoveredConfig(UNION_ASSISTANT_ROLE),
-        props.fetchModes(runtimeKind(), UNION_ASSISTANT_ROLE),
-      ]);
+      const { options, modes } = await props.fetchRoleConfig(runtimeKind(), UNION_ASSISTANT_ROLE);
       if (reqSeq !== optionsReqSeq) return;
-      setConfigOptions(mergeModesIntoOptions(configApi.asOptions(cachedRaw), cachedModes));
+      setConfigOptions(mergeModesIntoOptions(options, modes));
     } catch {
       if (reqSeq !== optionsReqSeq) return;
       setConfigOptions([]);
-    }
-    if (!sid) {
+    } finally {
       if (reqSeq === optionsReqSeq) setOptionsLoading(false);
-      return;
     }
-    void assistantApi.prewarmRoleConfig(UNION_ASSISTANT_ROLE, sid).then(async (result) => {
-      if (reqSeq !== optionsReqSeq) return;
-      const modes = result.modes.length > 0
-        ? result.modes
-        : await props.fetchModes(runtimeKind(), UNION_ASSISTANT_ROLE);
-      setConfigOptions(mergeModesIntoOptions(configApi.asOptions(result.configOptions), modes));
-    }).catch(() => {
-    }).finally(() => {
-      if (reqSeq !== optionsReqSeq) return;
-      setOptionsLoading(false);
-    });
   };
 
   void initRole();
@@ -390,7 +371,7 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
             return (
               <Select
                 value={model()}
-                options={[{ value: "", label: `Model (default: ${mo().currentValue})` }, ...values().map((v) => ({ value: v.value, label: v.description ? `${v.name} — ${v.description}` : v.name }))]}
+                options={[{ value: "", label: `Model (default: ${optionCurrentValue(mo())})` }, ...values().map((v) => ({ value: v.value, label: v.description ? `${v.name} — ${v.description}` : v.name }))]}
                 onChange={setModel}
               />
             );
@@ -402,7 +383,7 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
             return (
               <Select
                 value={mode()}
-                options={[{ value: "", label: `Mode (default: ${mo().currentValue})` }, ...values().map((v) => ({ value: v.value, label: v.description ? `${v.name} — ${v.description}` : v.name }))]}
+                options={[{ value: "", label: `Mode (default: ${optionCurrentValue(mo())})` }, ...values().map((v) => ({ value: v.value, label: v.description ? `${v.name} — ${v.description}` : v.name }))]}
                 onChange={setMode}
               />
             );
@@ -411,14 +392,14 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
         <For each={otherOpts()}>
           {(opt) => {
             const values = () => flattenConfigValues(opt.options);
-            const sel = () => currentCfg()[opt.id] ?? "";
+            const sel = () => currentCfg()[optionId(opt)] ?? "";
             return (
               <div class="flex flex-col gap-0.5">
-                <label class="text-[10px] theme-muted mb-0.5">{opt.name}{opt.description ? ` — ${opt.description}` : ""}</label>
+                <label class="text-[10px] theme-muted mb-0.5">{optionName(opt)}{opt.description ? ` — ${opt.description}` : ""}</label>
                 <Select
                   value={sel()}
-                  options={[{ value: "", label: `(default: ${opt.currentValue})` }, ...values().map((v) => ({ value: v.value, label: v.description ? `${v.name} — ${v.description}` : v.name }))]}
-                  onChange={(val) => updateCfg(opt.id, val)}
+                  options={[{ value: "", label: `(default: ${optionCurrentValue(opt)})` }, ...values().map((v) => ({ value: v.value, label: v.description ? `${v.name} — ${v.description}` : v.name }))]}
+                  onChange={(val) => updateCfg(optionId(opt), val)}
                 />
               </div>
             );

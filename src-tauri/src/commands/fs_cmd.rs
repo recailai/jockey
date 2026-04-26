@@ -54,11 +54,7 @@ pub(crate) async fn list_dir_cmd(
         if should_skip_name(&name, show_hidden) {
             continue;
         }
-        let is_dir = dent
-            .file_type()
-            .await
-            .map(|t| t.is_dir())
-            .unwrap_or(false);
+        let is_dir = dent.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
         entries.push(DirEntry { name, is_dir });
     }
 

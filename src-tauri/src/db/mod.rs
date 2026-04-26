@@ -202,10 +202,19 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           PRIMARY KEY(role_name, rule_id)
         );
 
+        CREATE TABLE IF NOT EXISTS role_skills (
+          role_name TEXT NOT NULL,
+          skill_id TEXT NOT NULL REFERENCES app_skills(id) ON DELETE CASCADE,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          ord INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY(role_name, skill_id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_rules_name ON rules(name ASC);
         CREATE INDEX IF NOT EXISTS idx_role_rules_role ON role_rules(role_name, ord ASC);
+        CREATE INDEX IF NOT EXISTS idx_role_skills_role ON role_skills(role_name, ord ASC);
 
-        PRAGMA user_version = 6;
+        PRAGMA user_version = 7;
         ",
     )
     .map_err(|e| e.to_string())?;

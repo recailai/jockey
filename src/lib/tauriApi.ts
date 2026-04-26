@@ -124,6 +124,15 @@ export type RoleRule = {
   ord: number;
 };
 
+export type RoleSkill = {
+  skillId: string;
+  name: string;
+  content: string;
+  description: string;
+  enabled: boolean;
+  ord: number;
+};
+
 export const ruleApi = {
   list: () => call<AppRule[]>("list_rules_cmd"),
   upsert: (id: string, name: string, content: string, description?: string | null) =>
@@ -132,6 +141,7 @@ export const ruleApi = {
   setRoleRules: (roleName: string, rules: [string, boolean, number][]) =>
     call<void>("set_role_rules_cmd", { roleName, rules }),
   listRoleRules: (roleName: string) => call<RoleRule[]>("list_role_rules_cmd", { roleName }),
+  listAllRulesForRole: (roleName: string) => call<RoleRule[]>("list_all_rules_for_role_cmd", { roleName }),
 };
 
 export const skillApi = {
@@ -139,6 +149,10 @@ export const skillApi = {
   upsert: (input: { id?: string; name: string; description: string; content: string }) =>
     call("upsert_app_skill", { input }),
   remove: (id: string) => call<void>("delete_app_skill", { id }),
+  listAllSkillsForRole: (roleName: string) =>
+    call<RoleSkill[]>("list_all_skills_for_role_cmd", { roleName }),
+  setRoleSkills: (roleName: string, skills: [string, boolean, number][]) =>
+    call<void>("set_role_skills_cmd", { roleName, skills }),
 };
 
 export const workflowApi = {

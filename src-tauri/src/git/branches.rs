@@ -18,7 +18,11 @@ pub async fn list_branches(cwd: &Path) -> Result<Vec<BranchInfo>, GitError> {
     let output = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["branch", "--format=%(refname:short)\t%(upstream:short)\t%(HEAD)", "-a"])
+        .args([
+            "branch",
+            "--format=%(refname:short)\t%(upstream:short)\t%(HEAD)",
+            "-a",
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -55,7 +59,11 @@ pub async fn list_branches(cwd: &Path) -> Result<Vec<BranchInfo>, GitError> {
         if name.starts_with("remotes/") {
             continue;
         }
-        let upstream = parts.get(1).map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+        let upstream = parts
+            .get(1)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
         let is_current = parts.get(2).map(|s| s.trim() == "*").unwrap_or(false);
         branches.push(BranchInfo {
             name: name.to_string(),

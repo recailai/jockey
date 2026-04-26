@@ -65,7 +65,9 @@ pub(crate) async fn git_checkout_cmd(
     branch: String,
 ) -> Result<(), String> {
     let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
-    git::checkout(&cwd, &branch).await.map_err(|e| e.to_string())?;
+    git::checkout(&cwd, &branch)
+        .await
+        .map_err(|e| e.to_string())?;
     let head_path = cwd.join(".git").join("HEAD");
     git::notify_changed(&head_path);
     Ok(())
@@ -143,15 +145,14 @@ async fn read_remote_origin(cwd: &std::path::Path) -> Option<String> {
         return None;
     }
     let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
-fn build_remote_info(
-    host: &str,
-    owner: &str,
-    repo: &str,
-    branch: Option<&str>,
-) -> GitRemoteInfo {
+fn build_remote_info(host: &str, owner: &str, repo: &str, branch: Option<&str>) -> GitRemoteInfo {
     let web_url = format!("https://{host}/{owner}/{repo}");
     let (branch_url, pr_url, compare_url) = match branch {
         Some(b) if !b.is_empty() => {
@@ -204,7 +205,12 @@ pub(crate) async fn git_remote_info_cmd(
         Ok(st) => st.branch,
         Err(_) => None,
     };
-    Ok(Some(build_remote_info(&host, &owner, &repo, branch.as_deref())))
+    Ok(Some(build_remote_info(
+        &host,
+        &owner,
+        &repo,
+        branch.as_deref(),
+    )))
 }
 
 #[tauri::command]

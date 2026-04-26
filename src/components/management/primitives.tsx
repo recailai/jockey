@@ -245,6 +245,7 @@ export function InlineSelect(props: {
         ref={triggerRef}
         type="button"
         onClick={toggle}
+        title={selected()?.label ?? "Select..."}
         class={`flex h-7 w-full items-center justify-between gap-2 rounded-md border theme-border theme-surface px-2 text-xs text-left ${INTERACTIVE_MOTION} ${open() ? "border-[var(--ui-border-strong)]" : "hover:border-[var(--ui-border-strong)]"}`}
       >
         <span class={`min-w-0 flex-1 truncate ${selected() ? "theme-text" : "theme-muted"}`}>
@@ -256,7 +257,7 @@ export function InlineSelect(props: {
         <Portal mount={document.body}>
           <div
             data-isel
-            style={{ position: "fixed", top: `${pos().top}px`, left: `${pos().left}px`, width: `${pos().width}px` }}
+            style={{ position: "fixed", top: `${pos().top}px`, left: `${pos().left}px`, width: `${Math.max(pos().width, 260)}px`, "max-width": "min(520px, calc(100vw - 24px))" }}
             class="z-[9999] max-h-44 overflow-y-auto rounded-md shadow-xl shadow-black/60 theme-dropdown"
           >
             <For each={props.options}>
@@ -264,11 +265,12 @@ export function InlineSelect(props: {
                 <button
                   data-isel
                   type="button"
+                  title={opt.label}
                   onClick={() => { props.onChange(opt.value); close(); }}
-                  class={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs ${INTERACTIVE_MOTION} ${opt.value === props.value ? "theme-dropdown-item-active" : "theme-dropdown-item"}`}
+                  class={`flex w-full items-start gap-2 px-2.5 py-1.5 text-left text-xs ${INTERACTIVE_MOTION} ${opt.value === props.value ? "theme-dropdown-item-active" : "theme-dropdown-item"}`}
                 >
-                  <span class={`h-1 w-1 shrink-0 rounded-full ${opt.value === props.value ? "bg-emerald-400" : "bg-transparent"}`} />
-                  {opt.label}
+                  <span class={`mt-1.5 h-1 w-1 shrink-0 rounded-full ${opt.value === props.value ? "bg-emerald-400" : "bg-transparent"}`} />
+                  <span class="min-w-0 break-words">{opt.label}</span>
                 </button>
               )}
             </For>

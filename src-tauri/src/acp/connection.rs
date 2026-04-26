@@ -26,10 +26,7 @@ use super::worker::{ConfigStateCell, DeltaSlot, ModeStateCell};
 
 #[async_trait(?Send)]
 pub(crate) trait AgentRpc {
-    async fn prompt(
-        &self,
-        req: acp::PromptRequest,
-    ) -> Result<acp::PromptResponse, acp::Error>;
+    async fn prompt(&self, req: acp::PromptRequest) -> Result<acp::PromptResponse, acp::Error>;
 
     async fn cancel(&self, note: acp::CancelNotification);
 
@@ -46,10 +43,7 @@ pub(crate) trait AgentRpc {
 
 #[async_trait(?Send)]
 impl AgentRpc for acp::ClientSideConnection {
-    async fn prompt(
-        &self,
-        req: acp::PromptRequest,
-    ) -> Result<acp::PromptResponse, acp::Error> {
+    async fn prompt(&self, req: acp::PromptRequest) -> Result<acp::PromptResponse, acp::Error> {
         <acp::ClientSideConnection as acp::Agent>::prompt(self, req).await
     }
 

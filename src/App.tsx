@@ -1,6 +1,6 @@
 import { For, Show, Suspense, createMemo, createSignal, lazy, onCleanup, onMount } from "solid-js";
 
-import SessionTabs, { type SessionTab, type AgentMenuItem } from "./components/SessionTabs";
+import SessionTabs, { type SessionTab } from "./components/SessionTabs";
 import MessageWindow from "./components/MessageWindow";
 import ChatInput from "./components/ChatInput";
 import { now, DEFAULT_ROLE_ALIAS } from "./components/types";
@@ -27,7 +27,6 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 
 const ConfigDrawer = lazy(() => import("./components/ConfigDrawer"));
 const ManagementPanel = lazy(() => import("./components/ManagementPanel"));
-const QuickAddMcpModal = lazy(() => import("./components/QuickAddMcpModal"));
 const GitPanel = lazy(() => import("./components/GitPanel"));
 const FilesPanel = lazy(() => import("./components/FilesPanel"));
 const PreviewArea = lazy(() => import("./components/PreviewArea"));
@@ -52,7 +51,6 @@ export default function App() {
 
   const [showDrawer, setShowDrawer] = createSignal(false);
   const [showManagement, setShowManagement] = createSignal(false);
-  const [showQuickAddMcp, setShowQuickAddMcp] = createSignal(false);
 
   // Sidebar is always hidden on startup; SIDEBAR_PANEL_KEY is only consulted by
   // Cmd/Ctrl+B restore to reopen the user's last-chosen panel.
@@ -189,7 +187,7 @@ export default function App() {
     normalizeRuntimeKey, commandCacheKey,
     isCustomRole, activeBackendRole,
     refreshRoles, refreshSkills,
-    fetchConfigOptions, fetchModes,
+    fetchRoleConfig, fetchConfigOptions,
     parseAgentCommands,
     refreshAssistants,
     resetActiveAgentContext,
@@ -537,84 +535,6 @@ export default function App() {
               onRefresh={() => { void refreshAssistants(); void refreshRoles(); void refreshSkills(); }}
               onToggleDrawer={() => setShowDrawer((v) => !v)}
               onToggleManagement={() => setShowManagement((v) => !v)}
-              agentMenuItems={[
-                {
-                  id: "mcp-view",
-                  label: "View all MCP Servers",
-                  section: "MCP Servers",
-                  shortcut: "⌥⌘M",
-                  icon: "⚡",
-                  onSelect: () => {
-                    setManagementInitialTab("mcp");
-                    setManagementInitialRole(undefined);
-                    setShowManagement(true);
-                  },
-                },
-                {
-                  id: "mcp-add",
-                  label: "Add custom server…",
-                  section: "MCP Servers",
-                  icon: "+",
-                  onSelect: () => setShowQuickAddMcp(true),
-                },
-                {
-                  id: "roles",
-                  label: "Roles",
-                  section: "Agent",
-                  icon: "◈",
-                  onSelect: () => {
-                    setManagementInitialTab("roles");
-                    setManagementInitialRole(undefined);
-                    setShowManagement(true);
-                  },
-                },
-                {
-                  id: "rules",
-                  label: "Rules",
-                  section: "Agent",
-                  shortcut: "⌥⌘L",
-                  icon: "≣",
-                  onSelect: () => {
-                    setManagementInitialTab("rules");
-                    setManagementInitialRole(undefined);
-                    setShowManagement(true);
-                  },
-                },
-                {
-                  id: "skills",
-                  label: "Skills",
-                  section: "Agent",
-                  shortcut: "⌥⌘K",
-                  icon: "◆",
-                  onSelect: () => {
-                    setManagementInitialTab("skills");
-                    setManagementInitialRole(undefined);
-                    setShowManagement(true);
-                  },
-                },
-                {
-                  id: "system-prompt",
-                  label: "System Prompt",
-                  section: "Agent",
-                  shortcut: "⌥⌘P",
-                  icon: "≡",
-                  when: () => !!activeSession() && isCustomRole(),
-                  onSelect: () => {
-                    const role = activeSession()?.activeRole;
-                    setManagementInitialTab("roles");
-                    setManagementInitialRole(role);
-                    setShowManagement(true);
-                  },
-                },
-                {
-                  id: "settings",
-                  label: "Settings",
-                  section: "Interface",
-                  shortcut: "⌥⌘,",
-                  icon: "⚙",
-                  onSelect: () => setShowDrawer(true),
-                },
-              ] satisfies AgentMenuItem[]}
             />
 
             <div
@@ -771,8 +691,7 @@ export default function App() {
             refreshSkills={refreshSkills}
             refreshAssistants={refreshAssistants}
             pushMessage={pushMessage}
-            fetchConfigOptions={fetchConfigOptions}
-            fetchModes={fetchModes}
+            fetchRoleConfig={fetchRoleConfig}
             onOpenManagement={(tab, roleName) => {
               setManagementInitialTab(tab ?? "sessions");
               setManagementInitialRole(roleName);
@@ -815,20 +734,11 @@ export default function App() {
             patchActiveSession={patchActiveSession}
             updateSession={updateSession}
             refreshRoles={refreshRoles}
-            fetchConfigOptions={fetchConfigOptions}
+            fetchRoleConfig={fetchRoleConfig}
             pushMessage={pushMessage}
           />
         </Suspense>
       </Show>
-
-      <Suspense fallback={null}>
-        <QuickAddMcpModal
-          open={showQuickAddMcp}
-          onClose={() => setShowQuickAddMcp(false)}
-          defaultRoleName={activeSession()?.activeRole}
-          onAdded={() => {}}
-        />
-      </Suspense>
 
       <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
         <For each={toasts()}>
