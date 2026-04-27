@@ -274,6 +274,8 @@ pub fn run() {
                         }).unwrap_or_else(|e| { eprintln!("[refresh] list session roles error: {e}"); vec![] });
 
                         let refresh_sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
+                        let mut refresh_tasks = tokio::task::JoinSet::new();
+                        let refresh_timeout = std::time::Duration::from_secs(120);
                         let mut active_role_names: std::collections::HashSet<String> =
                             std::collections::HashSet::new();
                         for (session_id, role_name, runtime_kind) in session_roles {
@@ -284,17 +286,18 @@ pub fn run() {
                             let rn_clone = role_name.clone();
                             let rk_clone = runtime_kind.clone();
                             let permit = refresh_sem.clone().acquire_owned().await.ok();
-                            tokio::spawn(async move {
+                            refresh_tasks.spawn(async move {
                                 let _permit = permit;
                                 let cwd = crate::db::app_session::get_app_session_cwd(&tmp, &sid_clone)
                                     .unwrap_or_else(resolve_chat_cwd);
-                                acp::prewarm_role_for_config(
+                                let refresh = acp::prewarm_role_for_config(
                                     &rk_clone,
                                     &rn_clone,
                                     &cwd,
                                     Some((&tmp, &sid_clone)),
                                     false,
-                                ).await;
+                                );
+                                let _ = tokio::time::timeout(refresh_timeout, refresh).await;
                             });
                         }
 
@@ -322,13 +325,15 @@ pub fn run() {
                             let rn_clone = role_name.clone();
                             let rk_clone = runtime_kind.clone();
                             let permit = refresh_sem.clone().acquire_owned().await.ok();
-                            tokio::spawn(async move {
+                            refresh_tasks.spawn(async move {
                                 let _permit = permit;
                                 let cwd = resolve_chat_cwd();
-                                acp::refresh_role_config_defs(&rk_clone, &rn_clone, &cwd, &tmp)
-                                    .await;
+                                let refresh = acp::refresh_role_config_defs(&rk_clone, &rn_clone, &cwd, &tmp);
+                                let _ = tokio::time::timeout(refresh_timeout, refresh).await;
                             });
                         }
+
+                        while refresh_tasks.join_next().await.is_some() {}
                     }
                 });
             }

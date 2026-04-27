@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { Accessor, Setter } from "solid-js";
 import type { Role, RoleUpsertInput, AppSession, AssistantRuntime, AcpConfigOption, AppSkill } from "./types";
 import { INTERACTIVE_MOTION, RUNTIME_COLOR, flattenConfigValues } from "./types";
@@ -295,7 +295,8 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
   };
 
   const mergeModesIntoOptions = (opts: AcpConfigOption[], modes: string[]): AcpConfigOption[] => {
-    if (modes.length === 0 || opts.some(isModeOption)) return opts;
+    if (modes.length === 0) return opts;
+    const nonModeOpts = opts.filter((opt) => !isModeOption(opt));
     const modeOpt: AcpConfigOption = {
       id: "mode",
       name: "Mode",
@@ -304,7 +305,7 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
       currentValue: "",
       options: modes.map((m) => ({ value: m, name: m })),
     };
-    return [modeOpt, ...opts];
+    return [modeOpt, ...nonModeOpts];
   };
 
   const refreshOptions = async (_runtime: string) => {
@@ -322,7 +323,10 @@ function AssistantConfigPanel(props: AssistantConfigPanelProps) {
     }
   };
 
-  void initRole();
+  onMount(() => {
+    void initRole();
+  });
+
   createEffect(() => {
     const runtime = runtimeKind();
     void refreshOptions(runtime);

@@ -14,6 +14,7 @@ pub(crate) fn list_roles(state: &AppState) -> Result<Value, String> {
             json!({
                 "roleName": r.role_name,
                 "runtimeKind": r.runtime_kind,
+                "runtimeLaunchMethod": r.runtime_launch_method,
                 "model": r.model,
                 "mode": r.mode,
                 "mcpServers": serde_json::from_str::<Value>(&r.mcp_servers_json).unwrap_or(json!([])),
@@ -36,6 +37,7 @@ pub(crate) fn get_role(state: &AppState, params: Value) -> Result<Value, String>
     Ok(json!({
         "roleName": role.role_name,
         "runtimeKind": role.runtime_kind,
+        "runtimeLaunchMethod": role.runtime_launch_method,
         "systemPrompt": role.system_prompt,
         "model": role.model,
         "mode": role.mode,

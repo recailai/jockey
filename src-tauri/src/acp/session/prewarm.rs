@@ -57,6 +57,23 @@ async fn send_prewarm(
     Some(rx)
 }
 
+fn persist_config_option_defs(state: &AppState, role_name: &str, opts: &[Value]) {
+    if opts.is_empty() {
+        return;
+    }
+    match serde_json::to_string(opts) {
+        Ok(serialized) => {
+            if let Err(e) = update_role_config_option_defs_if_changed(state, role_name, &serialized)
+            {
+                eprintln!("[prewarm] failed to persist config option defs for {role_name}: {e}");
+            }
+        }
+        Err(e) => {
+            eprintln!("[prewarm] failed to serialize config option defs for {role_name}: {e}");
+        }
+    }
+}
+
 fn persist_prewarm_result(
     state: &AppState,
     app_sid: &str,
@@ -65,25 +82,54 @@ fn persist_prewarm_result(
     opts: &[Value],
     sid: &str,
 ) {
-    if !opts.is_empty() {
-        match serde_json::to_string(opts) {
-            Ok(serialized) => {
-                if let Err(e) =
-                    update_role_config_option_defs_if_changed(state, role_name, &serialized)
-                {
-                    eprintln!(
-                        "[prewarm] failed to persist config option defs for {role_name}: {e}"
-                    );
-                }
-            }
-            Err(e) => {
-                eprintln!("[prewarm] failed to serialize config option defs for {role_name}: {e}");
-            }
-        }
-    }
+    persist_config_option_defs(state, role_name, opts);
     if !sid.is_empty() {
         let _ = save_app_session_role_cli_id(state, app_sid, runtime_key, role_name, sid);
     }
+}
+
+struct ConfigPrewarmRequest<'a> {
+    runtime_kind: &'a str,
+    role_name: &'a str,
+    cwd: &'a str,
+    state: Option<&'a AppState>,
+    app_session_id: Option<&'a str>,
+    resume_session_id: Option<String>,
+    force_refresh: bool,
+    persist_cli_id: bool,
+}
+
+async fn prewarm_config_impl(req: ConfigPrewarmRequest<'_>) -> (Vec<Value>, Vec<String>) {
+    let runtime_key = normalize_runtime_key(req.runtime_kind).unwrap_or(req.runtime_kind);
+    let mcp_servers = req
+        .state
+        .map(|s| load_role_mcp_servers(s, req.role_name))
+        .unwrap_or_default();
+    let Some(rx) = send_prewarm(PrewarmOpts {
+        runtime_kind: req.runtime_kind,
+        role_name: req.role_name,
+        cwd: req.cwd,
+        resume_session_id: req.resume_session_id,
+        app_session_id: req.app_session_id,
+        mcp_servers,
+        force_refresh: req.force_refresh,
+    })
+    .await
+    else {
+        return (vec![], vec![]);
+    };
+
+    let (opts, modes, sid) = rx.await.unwrap_or_default();
+    if let Some(s) = req.state {
+        if req.persist_cli_id {
+            if let Some(app_sid) = req.app_session_id {
+                persist_prewarm_result(s, app_sid, runtime_key, req.role_name, &opts, &sid);
+            }
+        } else {
+            persist_config_option_defs(s, req.role_name, &opts);
+        }
+    }
+    (opts, modes)
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -141,30 +187,17 @@ pub async fn prewarm_role_for_config(
             .and_then(|(s, sid)| load_app_session_role_cli_id(s, sid, runtime_key, role_name))
     };
     let app_session_id = state.as_ref().map(|(_, sid)| *sid);
-    let mcp_servers = state
-        .as_ref()
-        .map(|(s, _)| load_role_mcp_servers(s, role_name))
-        .unwrap_or_default();
-
-    let Some(rx) = send_prewarm(PrewarmOpts {
+    prewarm_config_impl(ConfigPrewarmRequest {
         runtime_kind,
         role_name,
         cwd,
-        resume_session_id,
+        state: state.as_ref().map(|(s, _)| *s),
         app_session_id,
-        mcp_servers,
+        resume_session_id,
         force_refresh,
+        persist_cli_id: true,
     })
     .await
-    else {
-        return (vec![], vec![]);
-    };
-
-    let (opts, modes, sid) = rx.await.unwrap_or_default();
-    if let Some((s, app_sid)) = state {
-        persist_prewarm_result(s, app_sid, runtime_key, role_name, &opts, &sid);
-    }
-    (opts, modes)
 }
 
 /// Prewarm to refresh config option definitions only (no session ID involved).
@@ -174,27 +207,17 @@ pub async fn refresh_role_config_defs(
     cwd: &str,
     state: &AppState,
 ) -> (Vec<Value>, Vec<String>) {
-    let mcp_servers = load_role_mcp_servers(state, role_name);
-    let Some(rx) = send_prewarm(PrewarmOpts {
+    prewarm_config_impl(ConfigPrewarmRequest {
         runtime_kind,
         role_name,
         cwd,
-        resume_session_id: None,
+        state: Some(state),
         app_session_id: None,
-        mcp_servers,
+        resume_session_id: None,
         force_refresh: true,
+        persist_cli_id: false,
     })
     .await
-    else {
-        return (vec![], vec![]);
-    };
-    let (opts, modes, _sid) = rx.await.unwrap_or_default();
-    if !opts.is_empty() {
-        if let Ok(serialized) = serde_json::to_string(&opts) {
-            let _ = update_role_config_option_defs_if_changed(state, role_name, &serialized);
-        }
-    }
-    (opts, modes)
 }
 
 /// Prewarm with an explicit session ID (used when resuming a known session).

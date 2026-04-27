@@ -2,17 +2,23 @@ use crate::runtime_kind::RuntimeKind;
 use dashmap::DashMap;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use which::which;
 
-static ADAPTER_CACHE: OnceLock<
-    DashMap<RuntimeKind, Result<(String, Vec<String>, Vec<(String, String)>), String>>,
-> = OnceLock::new();
-fn adapter_cache(
-) -> &'static DashMap<RuntimeKind, Result<(String, Vec<String>, Vec<(String, String)>), String>> {
+#[derive(Clone)]
+struct AdapterResolution {
+    binary: String,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+    launch_method: String,
+}
+
+static ADAPTER_CACHE: OnceLock<DashMap<RuntimeKind, Result<AdapterResolution, String>>> =
+    OnceLock::new();
+fn adapter_cache() -> &'static DashMap<RuntimeKind, Result<AdapterResolution, String>> {
     ADAPTER_CACHE.get_or_init(DashMap::new)
 }
 
@@ -56,6 +62,7 @@ pub(super) struct StdioAdapterSpec {
     pub(super) binary: String,
     pub(super) args: Vec<String>,
     pub(super) env: Vec<(String, String)>,
+    pub(super) launch_method: String,
 }
 
 pub(super) fn build_stdio_adapter(runtime: &str) -> Result<Option<StdioAdapterSpec>, String> {
@@ -73,101 +80,116 @@ pub(super) fn build_stdio_adapter(runtime: &str) -> Result<Option<StdioAdapterSp
         adapter_cache().insert(kind, r.clone());
         r
     };
-    let (binary, args, env) = resolved?;
+    let resolved = resolved?;
     Ok(Some(StdioAdapterSpec {
         kind,
         runtime_key: kind.runtime_key(),
-        binary,
-        args,
-        env,
+        binary: resolved.binary,
+        args: resolved.args,
+        env: resolved.env,
+        launch_method: resolved.launch_method,
     }))
 }
 
-fn resolve_adapter_for_kind(
-    kind: RuntimeKind,
-) -> Result<(String, Vec<String>, Vec<(String, String)>), String> {
+fn resolve_adapter_for_kind(kind: RuntimeKind) -> Result<AdapterResolution, String> {
     match kind {
-        RuntimeKind::ClaudeCode => resolve_candidate(
+        RuntimeKind::ClaudeCode => resolve_node_adapter(
             "claude-code",
-            &[
-                ("claude-agent-acp", &[][..]),
-                (
-                    "pnpm",
-                    &["dlx", "@agentclientprotocol/claude-agent-acp@latest"][..],
-                ),
-                (
-                    "npx",
-                    &["-y", "@agentclientprotocol/claude-agent-acp@latest"][..],
-                ),
-            ],
+            "claude-agent-acp",
+            "@agentclientprotocol/claude-agent-acp@latest",
+            &[],
+            None,
         ),
-        RuntimeKind::GeminiCli => {
-            if let Ok(path) = which("gemini") {
-                let binary = path.to_string_lossy().to_string();
-                if supports_arg_in_help(&binary, "--experimental-acp") {
-                    return Ok((binary, vec!["--experimental-acp".to_string()], vec![]));
-                }
-                return Err(
-                    "gemini-cli installed but unsupported: missing --experimental-acp".to_string(),
-                );
-            }
-            resolve_candidate(
-                "gemini-cli",
-                &[
-                    (
-                        "pnpm",
-                        &["dlx", "@google/gemini-cli@latest", "--experimental-acp"][..],
-                    ),
-                    (
-                        "npx",
-                        &["-y", "@google/gemini-cli@latest", "--experimental-acp"][..],
-                    ),
-                ],
-            )
-        }
-        RuntimeKind::CodexCli => resolve_candidate(
+        RuntimeKind::GeminiCli => resolve_node_adapter(
+            "gemini-cli",
+            "gemini",
+            "@google/gemini-cli@latest",
+            &["--experimental-acp"],
+            Some("--experimental-acp"),
+        ),
+        RuntimeKind::CodexCli => resolve_node_adapter(
             "codex-cli",
-            &[
-                ("codex-acp", &[][..]),
-                ("pnpm", &["dlx", "@zed-industries/codex-acp@latest"][..]),
-                ("npx", &["-y", "@zed-industries/codex-acp@latest"][..]),
-            ],
+            "codex-acp",
+            "@zed-industries/codex-acp@0.12.0",
+            &[],
+            None,
         ),
         RuntimeKind::Mock => unreachable!(),
     }
 }
 
-fn resolve_candidate(
+fn resolve_node_adapter(
     runtime: &str,
-    candidates: &[(&str, &[&str])],
-) -> Result<(String, Vec<String>, Vec<(String, String)>), String> {
-    let mut missing = Vec::new();
-    let mut seen = HashSet::new();
-    for (binary, args) in candidates {
-        if !seen.insert(*binary) {
-            continue;
+    adapter_binary: &str,
+    package: &str,
+    package_args: &[&str],
+    required_help_arg: Option<&str>,
+) -> Result<AdapterResolution, String> {
+    if let Some(path) = app_data_adapter_bin(adapter_binary) {
+        let binary = path.to_string_lossy().to_string();
+        if required_help_arg
+            .map(|arg| supports_arg_in_help(&binary, arg))
+            .unwrap_or(true)
+        {
+            return Ok(AdapterResolution {
+                binary,
+                args: package_args.iter().map(|s| s.to_string()).collect(),
+                env: vec![],
+                launch_method: "managed-binary".to_string(),
+            });
         }
-        if let Some(app_data_path) = app_data_adapter_bin(binary) {
-            return Ok((
-                app_data_path.to_string_lossy().to_string(),
-                args.iter().map(|s| s.to_string()).collect(),
-                vec![],
-            ));
-        }
-        if let Ok(path) = which(binary) {
-            return Ok((
-                path.to_string_lossy().to_string(),
-                args.iter().map(|s| s.to_string()).collect(),
-                vec![],
-            ));
-        }
-        missing.push(*binary);
     }
+
+    if let Ok(path) = which(adapter_binary) {
+        let binary = path.to_string_lossy().to_string();
+        if required_help_arg
+            .map(|arg| supports_arg_in_help(&binary, arg))
+            .unwrap_or(true)
+        {
+            return Ok(AdapterResolution {
+                binary,
+                args: package_args.iter().map(|s| s.to_string()).collect(),
+                env: vec![],
+                launch_method: "path-binary".to_string(),
+            });
+        }
+    }
+
+    let package_candidates = [
+        ("pnpm", vec!["dlx", package]),
+        ("npx", vec!["-y", package]),
+    ];
+    let mut missing = vec![adapter_binary.to_string()];
+    for (binary, base_args) in package_candidates {
+        if let Ok(path) = which(binary) {
+            let mut args = base_args.into_iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            args.extend(package_args.iter().map(|s| s.to_string()));
+            return Ok(AdapterResolution {
+                binary: path.to_string_lossy().to_string(),
+                args,
+                env: vec![],
+                launch_method: format!("package-runner:{binary}"),
+            });
+        }
+        missing.push(binary.to_string());
+    }
+
     Err(format!(
         "{} adapter unavailable, missing: {}",
         runtime,
         missing.join(", ")
     ))
+}
+
+pub fn adapter_launch_method(runtime_kind: &str) -> Option<String> {
+    let n = runtime_kind.trim().to_ascii_lowercase();
+    if n.is_empty() || n == "mock" {
+        return Some("mock".to_string());
+    }
+    match build_stdio_adapter(&n) {
+        Ok(Some(a)) => Some(a.launch_method),
+        _ => None,
+    }
 }
 
 pub fn probe_runtime(runtime_kind: &str) -> Option<(bool, String)> {
@@ -176,7 +198,7 @@ pub fn probe_runtime(runtime_kind: &str) -> Option<(bool, String)> {
         return Some((true, "mock".to_string()));
     }
     match build_stdio_adapter(&n) {
-        Ok(Some(a)) => Some((true, a.binary)),
+        Ok(Some(a)) => Some((true, format!("{} ({})", a.binary, a.launch_method))),
         Ok(None) => Some((false, format!("unsupported runtime kind: {}", n))),
         Err(e) => Some((false, e)),
     }

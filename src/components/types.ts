@@ -1,5 +1,5 @@
 export type Role = {
-  id: string; roleName: string; runtimeKind: string;
+  id: string; roleName: string; runtimeKind: string; runtimeLaunchMethod?: string | null;
   systemPrompt: string; model: string | null; mode: string | null;
   mcpServersJson: string; configOptionsJson: string; configOptionDefsJson: string; autoApprove: boolean;
 };

@@ -126,10 +126,12 @@ pub(crate) fn upsert_role(
         Ok(())
     })?;
 
+    let runtime_launch_method = crate::acp::adapter_launch_method(&runtime_kind);
     let role = Role {
         id,
         role_name,
         runtime_kind,
+        runtime_launch_method,
         system_prompt,
         model,
         mode,
@@ -180,10 +182,13 @@ pub(crate) async fn upsert_role_cmd(
 }
 
 fn role_from_row(row: &rusqlite::Row) -> rusqlite::Result<Role> {
+    let runtime_kind = row.get::<_, String>(2)?;
+    let runtime_launch_method = crate::acp::adapter_launch_method(&runtime_kind);
     Ok(Role {
         id: row.get(0)?,
         role_name: row.get(1)?,
-        runtime_kind: row.get(2)?,
+        runtime_kind,
+        runtime_launch_method,
         system_prompt: row.get(3)?,
         model: row.get(4)?,
         mode: row.get(5)?,

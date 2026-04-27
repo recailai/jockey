@@ -155,9 +155,9 @@ export function RolesTab(props: {
   };
 
   const resolvedModes = (configOpts: AcpConfigOption[], modesArr: string[]) => {
+    if (modesArr.length > 0) return { kind: "list" as const, modes: modesArr };
     const modeOpt = configOpts.find(isModeOption);
     if (modeOpt) return { kind: "option" as const, opt: modeOpt };
-    if (modesArr.length > 0) return { kind: "list" as const, modes: modesArr };
     return null;
   };
 
@@ -595,7 +595,9 @@ export function RolesTab(props: {
                   <div>
                     <h2 class="font-mono text-sm font-bold theme-text">{role().roleName}</h2>
                     <span class={`font-mono text-[10px] ${RUNTIME_COLOR[role().runtimeKind] ?? "theme-muted"}`}>{role().runtimeKind}</span>
-                    <span class="font-mono text-[9px] theme-muted ml-2">provider locked</span>
+                    <Show when={role().runtimeLaunchMethod}>
+                      {(method) => <span class="font-mono text-[9px] theme-muted ml-2">{method()}</span>}
+                    </Show>
                   </div>
                   <Show when={deletingId() === role().roleName} fallback={
                     <ActionButton label="Delete" variant="danger" onClick={() => setDeletingId(role().roleName)} />

@@ -10,7 +10,8 @@ mod worker;
 pub(crate) use connection::{AgentConnection, AgentRpc};
 
 pub use adapter::{
-    acp_log_snapshot, clear_adapter_cache, probe_runtime, set_app_data_dir, AcpLogEntry,
+    acp_log_snapshot, adapter_launch_method, clear_adapter_cache, probe_runtime, set_app_data_dir,
+    AcpLogEntry,
 };
 pub use metrics::{snapshot as metrics_snapshot, AcpRuntimeMetrics};
 pub use runtime_state::{

@@ -30,6 +30,7 @@ pub(crate) struct Role {
     pub(crate) id: String,
     pub(crate) role_name: String,
     pub(crate) runtime_kind: String,
+    pub(crate) runtime_launch_method: Option<String>,
     pub(crate) system_prompt: String,
     pub(crate) model: Option<String>,
     pub(crate) mode: Option<String>,
