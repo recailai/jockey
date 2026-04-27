@@ -5,7 +5,7 @@ import { RUNTIME_COLOR, RUNTIMES, flattenConfigValues } from "../types";
 import { EmptyState, FieldRow, TextInput, InlineSelect, ActionButton } from "./primitives";
 import { roleApi, assistantApi, globalMcpApi, ruleApi, skillApi, parseError } from "../../lib/tauriApi";
 import type { RoleMcpEntry, RoleRule, RoleSkill } from "../../lib/tauriApi";
-import { isEffortOption, isModeOption, isModelOption, optionCurrentValue, optionId, optionName } from "../../lib/configOptions";
+import { codexReasoningEffortOption, isEffortOption, isModeOption, isModelOption, optionCurrentValue, optionId, optionName } from "../../lib/configOptions";
 
 export function RolesTab(props: {
   roles: Accessor<Role[]>;
@@ -192,11 +192,19 @@ export function RolesTab(props: {
 
   const roleEffort = (role: Role) => {
     const cfg = parseRoleConfigMap(role.configOptionsJson);
-    const override = cfg.reasoning_effort ?? cfg.thinking_effort ?? cfg.effort ?? cfg.thought_level;
-    if (override) return override;
     const defs = roleConfigDefs(role);
     const opt = defs.find(isEffortOption);
-    return opt ? optionCurrentValue(opt) || null : null;
+    const exactId = opt ? optionId(opt) : "";
+    if (role.runtimeKind === "codex-cli") {
+      if (exactId && cfg[exactId]) return cfg[exactId];
+      const override = cfg.reasoning_effort ?? cfg.thinking_effort ?? cfg.effort ?? cfg.thought_level;
+      if (override) return override;
+      return opt ? optionCurrentValue(opt) || null : null;
+    }
+    if (cfg.effort) {
+      return cfg.effort;
+    }
+    return exactId === "effort" && opt ? optionCurrentValue(opt) || null : null;
   };
 
   const roleMode = (role: Role) => {
@@ -235,7 +243,7 @@ export function RolesTab(props: {
         systemPrompt: cPrompt().trim() || "You are a helpful AI assistant.",
         model: cModel().trim() || null, mode: cMode().trim() || null,
         mcpServersJson: "[]", configOptionsJson: JSON.stringify(configMap),
-        configOptionDefsJson: JSON.stringify(cConfigOpts()),
+        configOptionDefsJson: JSON.stringify(resolvedCreateConfigOpts()),
         autoApprove: true,
       } satisfies RoleUpsertInput);
       await Promise.all(cGlobalMcp().map((entry) =>
@@ -280,7 +288,7 @@ export function RolesTab(props: {
         systemPrompt: ePrompt().trim(), model: eModel().trim() || null,
         mode: newMode, mcpServersJson: "[]",
         configOptionsJson: JSON.stringify(parsedCfg),
-        configOptionDefsJson: JSON.stringify(eConfigOpts()),
+        configOptionDefsJson: JSON.stringify(resolvedEditConfigOpts()),
         autoApprove: true,
       } satisfies RoleUpsertInput);
       await props.refreshRoles();
@@ -347,8 +355,20 @@ export function RolesTab(props: {
 
   // Edit form config options (local, not tied to global activeSession)
   const editConfigOpts = createMemo(() => eConfigOpts());
+  const createConfigOpts = createMemo(() => {
+    const opts = cConfigOpts();
+    if (cRuntime() !== "codex-cli" || opts.some(isEffortOption) || !cModel()) return opts;
+    return [...opts, codexReasoningEffortOption()];
+  });
+  const resolvedCreateConfigOpts = createMemo(() => createConfigOpts());
   const editCfgMap = createMemo((): Record<string, string> => {
     try { return JSON.parse(eCfgJson() || "{}"); } catch { return {}; }
+  });
+  const resolvedEditConfigOpts = createMemo(() => {
+    const opts = editConfigOpts();
+    if (editingRole()?.runtimeKind !== "codex-cli" || opts.some(isEffortOption) || !eModel()) return opts;
+    const saved = editCfgMap().reasoning_effort || "medium";
+    return [...opts, codexReasoningEffortOption(saved)];
   });
   const updateEditCfg = (id: string, val: string) => {
     const map = { ...editCfgMap() };
@@ -459,7 +479,7 @@ export function RolesTab(props: {
               </FieldRow>
               <FieldRow label="Model">
                 <Show when={!cConfigLoading()} fallback={<span class="font-mono text-[10px] theme-muted">loading…</span>}>
-                  <Show when={cConfigOpts().find(isModelOption)} fallback={
+                  <Show when={resolvedCreateConfigOpts().find(isModelOption)} fallback={
                     <TextInput value={cModel()} onInput={setCModel} placeholder="Optional model override" monospace />
                   }>
                     {(mo) => {
@@ -474,7 +494,7 @@ export function RolesTab(props: {
                   </Show>
                 </Show>
               </FieldRow>
-              <Show when={resolvedModes(cConfigOpts(), cModes())}>
+              <Show when={resolvedModes(resolvedCreateConfigOpts(), cModes())}>
                 {(mr) => {
                   const opts = () => mr().kind === "option"
                     ? configOptionSelectOptions(mr().opt!)
@@ -486,7 +506,7 @@ export function RolesTab(props: {
                   );
                 }}
               </Show>
-              <Show when={cConfigOpts().find(isEffortOption)}>
+              <Show when={resolvedCreateConfigOpts().find(isEffortOption)}>
                 {(opt) => {
                   return (
                     <FieldRow label={optionName(opt()) || "Effort"}>
@@ -499,8 +519,8 @@ export function RolesTab(props: {
                   );
                 }}
               </Show>
-              <Show when={cConfigOpts().length > 0}>
-                <For each={cConfigOpts().filter((o) => !isModelOption(o) && !isModeOption(o) && !isEffortOption(o))}>
+              <Show when={resolvedCreateConfigOpts().length > 0}>
+                <For each={resolvedCreateConfigOpts().filter((o) => !isModelOption(o) && !isModeOption(o) && !isEffortOption(o))}>
                   {(opt) => {
                     return (
                       <FieldRow label={optionName(opt)}>
@@ -585,10 +605,10 @@ export function RolesTab(props: {
         {/* Edit form */}
         <Show when={!creating() && editingRole()}>
           {(role) => {
-            const modelOpt = createMemo(() => editConfigOpts().find(isModelOption));
-            const modeResolved = createMemo(() => resolvedModes(editConfigOpts(), eModes()));
-            const effortOpt = createMemo(() => editConfigOpts().find(isEffortOption));
-            const otherOpts = createMemo(() => editConfigOpts().filter((o) => !isModelOption(o) && !isModeOption(o) && !isEffortOption(o)));
+            const modelOpt = createMemo(() => resolvedEditConfigOpts().find(isModelOption));
+            const modeResolved = createMemo(() => resolvedModes(resolvedEditConfigOpts(), eModes()));
+            const effortOpt = createMemo(() => resolvedEditConfigOpts().find(isEffortOption));
+            const otherOpts = createMemo(() => resolvedEditConfigOpts().filter((o) => !isModelOption(o) && !isModeOption(o) && !isEffortOption(o)));
             return (
               <div class="space-y-4">
                 <div class="flex items-start justify-between gap-4">

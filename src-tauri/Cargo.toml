@@ -16,7 +16,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-agent-client-protocol = "0.10.4"
+agent-client-protocol = { version = "0.10.4", features = ["unstable_session_model"] }
 base64 = "0.22"
 async-trait = "0.1.89"
 dashmap = "6.1.0"

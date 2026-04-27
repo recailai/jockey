@@ -1,7 +1,7 @@
 use agent_client_protocol::{self as acp, Agent as _};
 use serde_json::{json, Value};
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,7 +18,7 @@ use super::super::runtime_state::{
     remember_runtime_config_options, remember_runtime_models, remember_runtime_modes,
 };
 use super::super::worker::{
-    register_child_pid, ConfigStateCell, DeltaSlot, LiveConnection, ModeStateCell,
+    register_child_pid, ConfigStateCell, DeltaSlot, LiveConnection, ModeStateCell, ModelStateCell,
 };
 
 pub(super) const INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -70,6 +70,133 @@ pub(super) fn extract_models_from_config_options(
     let mut models = out.into_iter().collect::<Vec<_>>();
     models.sort_unstable();
     models
+}
+
+pub(super) fn split_model_effort(model_id: &str) -> (String, Option<String>) {
+    if let Some(open) = model_id.rfind('[') {
+        if model_id.ends_with(']') && open > 0 {
+            let model = model_id[..open].to_string();
+            let effort = model_id[open + 1..model_id.len() - 1].to_string();
+            if !model.is_empty() && !effort.is_empty() {
+                return (model, Some(effort));
+            }
+        }
+    }
+    (model_id.to_string(), None)
+}
+
+fn effort_label(effort: &str) -> String {
+    let mut chars = effort.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+pub(crate) fn config_options_from_model_state(state: &acp::SessionModelState) -> Vec<Value> {
+    let (current_model, current_effort) = split_model_effort(&state.current_model_id.to_string());
+    let mut models: BTreeMap<String, Value> = BTreeMap::new();
+    let mut efforts: BTreeSet<String> = BTreeSet::new();
+
+    for model in &state.available_models {
+        let model_id = model.model_id.to_string();
+        let (base_model, effort) = split_model_effort(&model_id);
+        if let Some(effort) = effort {
+            efforts.insert(effort);
+        }
+        models.entry(base_model.clone()).or_insert_with(|| {
+            let mut name = model.name.clone();
+            if let Some(open) = name.rfind(" (") {
+                if name.ends_with(')') {
+                    name.truncate(open);
+                }
+            }
+            json!({
+                "value": base_model,
+                "name": name,
+                "description": model.description
+            })
+        });
+    }
+
+    let mut out = vec![json!({
+        "id": "model",
+        "name": "Model",
+        "description": "Codex model",
+        "category": "model",
+        "type": "select",
+        "currentValue": current_model,
+        "options": models.into_values().collect::<Vec<_>>()
+    })];
+
+    if !efforts.is_empty() {
+        out.push(json!({
+            "id": "reasoning_effort",
+            "name": "Reasoning Effort",
+            "description": "Choose how much reasoning effort Codex should use",
+            "category": "thought_level",
+            "type": "select",
+            "currentValue": current_effort.unwrap_or_else(|| "medium".to_string()),
+            "options": efforts.into_iter().map(|effort| {
+                json!({
+                    "value": effort,
+                    "name": effort_label(&effort)
+                })
+            }).collect::<Vec<_>>()
+        }));
+    }
+
+    out
+}
+
+pub(crate) fn model_ids_from_model_state(state: &acp::SessionModelState) -> Vec<String> {
+    let mut models = state
+        .available_models
+        .iter()
+        .map(|model| split_model_effort(&model.model_id.to_string()).0)
+        .collect::<Vec<_>>();
+    models.sort_unstable();
+    models.dedup();
+    models
+}
+
+pub(crate) fn resolve_model_id(
+    state: &acp::SessionModelState,
+    model_override: Option<&str>,
+    effort_override: Option<&str>,
+) -> Option<String> {
+    let available = state
+        .available_models
+        .iter()
+        .map(|model| model.model_id.to_string())
+        .collect::<Vec<_>>();
+    let current = state.current_model_id.to_string();
+    let (current_model, current_effort) = split_model_effort(&current);
+    let requested_model_raw = model_override
+        .filter(|model| !model.trim().is_empty())
+        .unwrap_or(&current_model);
+
+    if effort_override.is_none() && available.iter().any(|id| id == requested_model_raw) {
+        return Some(requested_model_raw.to_string());
+    }
+
+    let (requested_model, embedded_effort) = split_model_effort(requested_model_raw);
+    let requested_effort = effort_override
+        .filter(|effort| !effort.trim().is_empty())
+        .map(|effort| effort.to_string())
+        .or(embedded_effort)
+        .or(current_effort);
+
+    if let Some(effort) = requested_effort {
+        let candidate = format!("{requested_model}[{effort}]");
+        if available.iter().any(|id| id == &candidate) {
+            return Some(candidate);
+        }
+    }
+
+    available
+        .into_iter()
+        .find(|id| split_model_effort(id).0 == requested_model)
 }
 
 pub(crate) async fn cold_start(
@@ -214,6 +341,7 @@ pub(crate) async fn cold_start(
     struct SessionStartResult {
         session_id: acp::SessionId,
         config_options: Option<Vec<acp::SessionConfigOption>>,
+        models: Option<acp::SessionModelState>,
         modes: Option<acp::SessionModeState>,
         resumed: bool,
     }
@@ -245,6 +373,7 @@ pub(crate) async fn cold_start(
         Ok(SessionStartResult {
             session_id: resp.session_id,
             config_options: resp.config_options,
+            models: resp.models,
             modes: resp.modes,
             resumed: false,
         })
@@ -280,6 +409,7 @@ pub(crate) async fn cold_start(
                     SessionStartResult {
                         session_id: acp::SessionId::from(sid),
                         config_options: resp.config_options,
+                        models: resp.models,
                         modes: resp.modes,
                         resumed: true,
                     }
@@ -299,8 +429,18 @@ pub(crate) async fn cold_start(
         do_new_session(&conn, abs_cwd, mcp_servers, stderr_buf.clone()).await?
     };
 
-    let discovered_models =
-        extract_models_from_config_options(start_result.config_options.as_ref());
+    let has_config_options = start_result
+        .config_options
+        .as_ref()
+        .map(|opts| !opts.is_empty())
+        .unwrap_or(false);
+    let discovered_models = if has_config_options {
+        extract_models_from_config_options(start_result.config_options.as_ref())
+    } else if let Some(ref models) = start_result.models {
+        model_ids_from_model_state(models)
+    } else {
+        Vec::new()
+    };
     remember_runtime_models(runtime_key, discovered_models.clone());
     if let Some(ref opts) = start_result.config_options {
         let serialized: Vec<Value> = opts
@@ -328,9 +468,25 @@ pub(crate) async fn cold_start(
     } else {
         acp_log("config_options.none", json!({ "runtime": runtime_key }));
     }
+    if let Some(ref models) = start_result.models {
+        let serialized = config_options_from_model_state(models);
+        acp_log(
+            "models.discovered",
+            json!({
+                "runtime": runtime_key,
+                "count": models.available_models.len(),
+                "current": models.current_model_id.to_string(),
+                "syntheticConfigCount": serialized.len()
+            }),
+        );
+        if !has_config_options {
+            remember_runtime_config_options(runtime_key, serialized);
+        }
+    }
     if let Some(ref opts) = start_result.config_options {
         *config_state.borrow_mut() = opts.clone();
     }
+    let model_state: ModelStateCell = Rc::new(RefCell::new(start_result.models.clone()));
     let session_id = start_result.session_id;
     if let Ok(mut guard) = expected_session_id.lock() {
         *guard = Some(session_id.clone());
@@ -380,6 +536,7 @@ pub(crate) async fn cold_start(
         cwd: abs_cwd.to_string(),
         delta_slot,
         mode_state,
+        model_state,
         config_state,
         child_pid: child.id(),
         last_active: Instant::now(),

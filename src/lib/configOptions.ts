@@ -49,3 +49,18 @@ export const isEffortOption = (option: AcpConfigOption): boolean => {
     name.includes("thought")
   );
 };
+
+export const codexReasoningEffortOption = (currentValue = "medium"): AcpConfigOption => ({
+  id: "reasoning_effort",
+  name: "Reasoning Effort",
+  description: "Choose how much reasoning effort Codex should use",
+  category: "thought_level",
+  type: "select",
+  currentValue,
+  options: [
+    { value: "low", name: "Low", description: "Fast responses with lighter reasoning" },
+    { value: "medium", name: "Medium", description: "Balances speed and reasoning depth" },
+    { value: "high", name: "High", description: "Greater reasoning depth" },
+    { value: "xhigh", name: "Xhigh", description: "Extra high reasoning depth" },
+  ],
+});

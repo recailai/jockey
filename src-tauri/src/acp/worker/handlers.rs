@@ -8,9 +8,12 @@ use super::super::error::{AcpErrorCode, AcpLayerError};
 use super::super::metrics::{record_error, record_idle_reclaim, record_prompt_latency};
 use super::super::runtime_state::{
     list_discovered_config_options, list_discovered_modes, remember_runtime_available_commands,
-    remember_runtime_modes,
+    remember_runtime_config_options, remember_runtime_models, remember_runtime_modes,
 };
-use super::super::session::cold_start;
+use super::super::session::{
+    cold_start,
+    config_options_from_model_state, model_ids_from_model_state, resolve_model_id,
+};
 use super::notify::{notify_connection_death, notify_prewarm};
 use super::pool::{
     child_pids, pool_key, CANCEL_HANDLES, CONN_MAP, DELTA_CHANNEL_CAPACITY, PENDING_COLD_STARTS,
@@ -334,12 +337,18 @@ pub(crate) async fn apply_cold_start_config(
         }
     }
 
-    let conn_rc = CONN_MAP.with(|m| {
-        m.borrow()
-            .get(key)
-            .map(|c| crate::acp::AgentConnection::rpc_handle(c))
+    let conn_state = CONN_MAP.with(|m| {
+        m.borrow().get(key).map(|c| {
+            (
+                crate::acp::AgentConnection::rpc_handle(c),
+                c.config_state.clone(),
+                c.model_state.clone(),
+            )
+        })
     });
-    let Some(conn_rc) = conn_rc else { return };
+    let Some((conn_rc, config_state, model_state)) = conn_state else {
+        return;
+    };
 
     if let Some(mode) = role_mode {
         // Pre-validate: if the saved mode isn't in the agent's advertised list,
@@ -383,13 +392,90 @@ pub(crate) async fn apply_cold_start_config(
         }
     }
 
-    let discovered = list_discovered_config_options(runtime_key);
-    let supported_keys: std::collections::HashSet<String> = discovered
+    let model_override = role_config_options
         .iter()
-        .filter_map(|v| v.get("id").and_then(|i| i.as_str()).map(|s| s.to_string()))
-        .collect();
+        .find(|(k, _)| k == "model")
+        .map(|(_, v)| v.as_str());
+    let effort_override = role_config_options
+        .iter()
+        .find(|(k, _)| {
+            matches!(
+                k.as_str(),
+                "reasoning_effort" | "thinking_effort" | "thought_level" | "effort"
+            )
+        })
+        .map(|(_, v)| v.as_str());
 
-    for (k, value) in role_config_options {
+    let native_config_keys: std::collections::HashSet<String> = config_state
+        .borrow()
+        .iter()
+        .map(|opt| opt.id.to_string())
+        .collect();
+    let use_model_state_config = model_state.borrow().is_some()
+        && !native_config_keys.contains("model")
+        && (model_override.is_some() || effort_override.is_some());
+
+    let model_snapshot = model_state.borrow().clone();
+    if use_model_state_config {
+        let Some(mut state) = model_snapshot else {
+            return;
+        };
+        if let Some(model_id) = resolve_model_id(&state, model_override, effort_override) {
+            if model_id != state.current_model_id.to_string() {
+                match conn_rc
+                    .set_session_model(acp::SetSessionModelRequest::new(
+                        session_id.clone(),
+                        acp::ModelId::from(model_id.clone()),
+                    ))
+                    .await
+                {
+                    Ok(_) => {
+                        state.current_model_id = acp::ModelId::from(model_id);
+                        *model_state.borrow_mut() = Some(state.clone());
+                        remember_runtime_models(runtime_key, model_ids_from_model_state(&state));
+                        remember_runtime_config_options(
+                            runtime_key,
+                            config_options_from_model_state(&state),
+                        );
+                    }
+                    Err(e) => {
+                        let layer = AcpLayerError::from(e);
+                        acp_log(
+                            "config.set_model.error",
+                            json!({ "model": model_override, "effort": effort_override, "error": layer.message }),
+                        );
+                        emit_session_error(
+                            delta_tx,
+                            layer.code,
+                            "failed to set model",
+                            layer.retryable,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    let mut ordered_role_config_options: Vec<&(String, String)> = role_config_options
+        .iter()
+        .filter(|(k, _)| k == "model")
+        .collect();
+    ordered_role_config_options.extend(role_config_options.iter().filter(|(k, _)| k != "model"));
+
+    for (k, value) in ordered_role_config_options {
+        if use_model_state_config
+            && matches!(
+                k.as_str(),
+                "model" | "reasoning_effort" | "thinking_effort" | "thought_level" | "effort"
+            )
+        {
+            continue;
+        }
+        let discovered = list_discovered_config_options(runtime_key);
+        let supported_keys: std::collections::HashSet<String> = discovered
+            .iter()
+            .filter_map(|v| v.get("id").and_then(|i| i.as_str()).map(|s| s.to_string()))
+            .collect();
         if !supported_keys.is_empty() && !supported_keys.contains(k.as_str()) {
             let msg =
                 format!("saved role config '{k}' is not advertised by runtime '{runtime_key}'");
@@ -400,7 +486,7 @@ pub(crate) async fn apply_cold_start_config(
             emit_session_error(delta_tx, AcpErrorCode::InvalidParams, msg, false);
             continue;
         }
-        if let Err(e) = conn_rc
+        match conn_rc
             .set_session_config_option(acp::SetSessionConfigOptionRequest::new(
                 session_id.clone(),
                 acp::SessionConfigId::from(k.clone()),
@@ -408,17 +494,30 @@ pub(crate) async fn apply_cold_start_config(
             ))
             .await
         {
-            let layer = AcpLayerError::from(e);
-            acp_log(
-                "config.set_option.error",
-                json!({ "key": k, "error": layer.message }),
-            );
-            emit_session_error(
-                delta_tx,
-                layer.code,
-                format!("failed to apply config '{k}'"),
-                layer.retryable,
-            );
+            Ok(resp) => {
+                if !resp.config_options.is_empty() {
+                    *config_state.borrow_mut() = resp.config_options.clone();
+                    let serialized: Vec<Value> = resp
+                        .config_options
+                        .iter()
+                        .filter_map(|o| serde_json::to_value(o).ok())
+                        .collect();
+                    remember_runtime_config_options(runtime_key, serialized);
+                }
+            }
+            Err(e) => {
+                let layer = AcpLayerError::from(e);
+                acp_log(
+                    "config.set_option.error",
+                    json!({ "key": k, "error": layer.message }),
+                );
+                emit_session_error(
+                    delta_tx,
+                    layer.code,
+                    format!("failed to apply config '{k}'"),
+                    layer.retryable,
+                );
+            }
         }
     }
 }

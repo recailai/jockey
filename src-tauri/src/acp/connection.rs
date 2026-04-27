@@ -22,7 +22,7 @@ use std::rc::Rc;
 use std::time::Instant;
 use tokio::sync::watch;
 
-use super::worker::{ConfigStateCell, DeltaSlot, ModeStateCell};
+use super::worker::{ConfigStateCell, DeltaSlot, ModeStateCell, ModelStateCell};
 
 #[async_trait(?Send)]
 pub(crate) trait AgentRpc {
@@ -39,6 +39,11 @@ pub(crate) trait AgentRpc {
         &self,
         req: acp::SetSessionConfigOptionRequest,
     ) -> Result<acp::SetSessionConfigOptionResponse, acp::Error>;
+
+    async fn set_session_model(
+        &self,
+        req: acp::SetSessionModelRequest,
+    ) -> Result<acp::SetSessionModelResponse, acp::Error>;
 }
 
 #[async_trait(?Send)]
@@ -64,6 +69,13 @@ impl AgentRpc for acp::ClientSideConnection {
     ) -> Result<acp::SetSessionConfigOptionResponse, acp::Error> {
         <acp::ClientSideConnection as acp::Agent>::set_session_config_option(self, req).await
     }
+
+    async fn set_session_model(
+        &self,
+        req: acp::SetSessionModelRequest,
+    ) -> Result<acp::SetSessionModelResponse, acp::Error> {
+        <acp::ClientSideConnection as acp::Agent>::set_session_model(self, req).await
+    }
 }
 
 #[allow(dead_code)]
@@ -74,6 +86,7 @@ pub(crate) trait AgentConnection {
     fn child_pid(&self) -> Option<u32>;
     fn delta_slot(&self) -> DeltaSlot;
     fn mode_state(&self) -> ModeStateCell;
+    fn model_state(&self) -> ModelStateCell;
     fn config_state(&self) -> ConfigStateCell;
     fn health_rx(&self) -> watch::Receiver<bool>;
     fn last_active(&self) -> Instant;

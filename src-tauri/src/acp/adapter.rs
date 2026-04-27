@@ -113,6 +113,8 @@ fn resolve_adapter_for_kind(kind: RuntimeKind) -> Result<AdapterResolution, Stri
             "@agentclientprotocol/claude-agent-acp@latest",
             &[],
             None,
+            None,
+            false,
         ),
         RuntimeKind::GeminiCli => resolve_node_adapter(
             "gemini-cli",
@@ -120,13 +122,17 @@ fn resolve_adapter_for_kind(kind: RuntimeKind) -> Result<AdapterResolution, Stri
             "@google/gemini-cli@latest",
             &["--experimental-acp"],
             Some("--experimental-acp"),
+            None,
+            false,
         ),
         RuntimeKind::CodexCli => resolve_node_adapter(
             "codex-cli",
             "codex-acp",
-            "@zed-industries/codex-acp@0.12.0",
+            "@agentclientprotocol/codex-acp@0.0.40",
             &[],
             None,
+            Some(("--version", "@agentclientprotocol/codex-acp")),
+            false,
         ),
         RuntimeKind::Mock => unreachable!(),
     }
@@ -138,12 +144,17 @@ fn resolve_node_adapter(
     package: &str,
     package_args: &[&str],
     required_help_arg: Option<&str>,
+    required_probe_contains: Option<(&str, &str)>,
+    prefer_package: bool,
 ) -> Result<AdapterResolution, String> {
     if let Some(path) = app_data_adapter_bin(adapter_binary) {
         let binary = path.to_string_lossy().to_string();
         if required_help_arg
             .map(|arg| supports_arg_in_help(&binary, arg))
             .unwrap_or(true)
+            && required_probe_contains
+                .map(|(arg, needle)| command_output_contains(&binary, arg, needle))
+                .unwrap_or(true)
         {
             return Ok(AdapterResolution {
                 binary,
@@ -154,18 +165,16 @@ fn resolve_node_adapter(
         }
     }
 
-    if let Ok(path) = which(adapter_binary) {
-        let binary = path.to_string_lossy().to_string();
-        if required_help_arg
-            .map(|arg| supports_arg_in_help(&binary, arg))
-            .unwrap_or(true)
+    if !prefer_package {
+        if let Some(resolved) =
+            resolve_path_adapter(
+                adapter_binary,
+                package_args,
+                required_help_arg,
+                required_probe_contains,
+            )
         {
-            return Ok(AdapterResolution {
-                binary,
-                args: package_args.iter().map(|s| s.to_string()).collect(),
-                env: agent_env_overrides(),
-                launch_method: "path-binary".to_string(),
-            });
+            return Ok(resolved);
         }
     }
 
@@ -188,11 +197,52 @@ fn resolve_node_adapter(
         missing.push(binary.to_string());
     }
 
+    if prefer_package {
+        if let Some(resolved) =
+            resolve_path_adapter(
+                adapter_binary,
+                package_args,
+                required_help_arg,
+                required_probe_contains,
+            )
+        {
+            return Ok(resolved);
+        }
+    }
+
     Err(format!(
         "{} adapter unavailable, missing: {}",
         runtime,
         missing.join(", ")
     ))
+}
+
+fn resolve_path_adapter(
+    adapter_binary: &str,
+    package_args: &[&str],
+    required_help_arg: Option<&str>,
+    required_probe_contains: Option<(&str, &str)>,
+) -> Option<AdapterResolution> {
+    let path = which(adapter_binary).ok()?;
+    let binary = path.to_string_lossy().to_string();
+    if !required_help_arg
+        .map(|arg| supports_arg_in_help(&binary, arg))
+        .unwrap_or(true)
+    {
+        return None;
+    }
+    if !required_probe_contains
+        .map(|(arg, needle)| command_output_contains(&binary, arg, needle))
+        .unwrap_or(true)
+    {
+        return None;
+    }
+    Some(AdapterResolution {
+        binary,
+        args: package_args.iter().map(|s| s.to_string()).collect(),
+        env: agent_env_overrides(),
+        launch_method: "path-binary".to_string(),
+    })
 }
 
 fn agent_env_overrides() -> Vec<(String, String)> {
@@ -380,6 +430,16 @@ fn supports_arg_in_help(binary: &str, arg_flag: &str) -> bool {
     let stdout = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
     let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
     stdout.contains(&arg_lc) || stderr.contains(&arg_lc)
+}
+
+fn command_output_contains(binary: &str, arg: &str, needle: &str) -> bool {
+    let Ok(output) = std::process::Command::new(binary).arg(arg).output() else {
+        return false;
+    };
+    let needle_lc = needle.to_ascii_lowercase();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+    stdout.contains(&needle_lc) || stderr.contains(&needle_lc)
 }
 
 pub(super) fn acp_log(event: &str, payload: Value) {

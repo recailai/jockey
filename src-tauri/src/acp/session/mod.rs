@@ -5,7 +5,9 @@ mod prewarm;
 mod session_cmds;
 
 // cold_start is called by worker/handlers.rs via super::super::session::cold_start
-pub(crate) use cold_start::cold_start;
+pub(crate) use cold_start::{
+    cold_start, config_options_from_model_state, model_ids_from_model_state, resolve_model_id,
+};
 
 pub use execute::execute_runtime;
 pub use prewarm::{

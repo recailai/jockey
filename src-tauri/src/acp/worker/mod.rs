@@ -17,7 +17,7 @@ pub(crate) use permission::{
 };
 pub(crate) use pool::{
     pool_key, register_child_pid, ConfigStateCell, DeltaSlot, LiveConnection, ModeStateCell,
-    CANCEL_HANDLES, CONN_MAP, DELTA_CHANNEL_CAPACITY,
+    ModelStateCell, CANCEL_HANDLES, CONN_MAP, DELTA_CHANNEL_CAPACITY,
 };
 pub(crate) use types::WorkerMsg;
 
@@ -340,13 +340,77 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                                 crate::acp::AgentConnection::rpc_handle(live),
                                 live.session_id.clone(),
                                 live.config_state.clone(),
+                                live.model_state.clone(),
                             )
                         })
                     });
-                    let Some((conn, session_id, config_state)) = lookup else {
+                    let Some((conn, session_id, config_state, model_state)) = lookup else {
                         let _ = result_tx.send(Err("no active session".to_string()));
                         return;
                     };
+                    let has_native_config = config_state
+                        .borrow()
+                        .iter()
+                        .any(|opt| opt.id.to_string() == config_id);
+                    if !has_native_config
+                        && model_state.borrow().is_some()
+                        && matches!(
+                            config_id.as_str(),
+                            "model"
+                                | "reasoning_effort"
+                                | "thinking_effort"
+                                | "thought_level"
+                                | "effort"
+                        )
+                    {
+                        let snapshot = model_state.borrow().clone();
+                        let Some(mut state) = snapshot else {
+                            let _ = result_tx.send(Err("no active model state".to_string()));
+                            return;
+                        };
+                        let (model_override, effort_override) = if config_id == "model" {
+                            (Some(value.as_str()), None)
+                        } else {
+                            (None, Some(value.as_str()))
+                        };
+                        let Some(model_id) = super::session::resolve_model_id(
+                            &state,
+                            model_override,
+                            effort_override,
+                        ) else {
+                            let _ = result_tx.send(Err(format!(
+                                "unsupported model config '{config_id}'='{value}'"
+                            )));
+                            return;
+                        };
+                        let previous_model_id = state.current_model_id.clone();
+                        state.current_model_id =
+                            agent_client_protocol::ModelId::from(model_id.clone());
+                        *model_state.borrow_mut() = Some(state.clone());
+                        super::runtime_state::remember_runtime_models(
+                            runtime_key,
+                            super::session::model_ids_from_model_state(&state),
+                        );
+                        super::runtime_state::remember_runtime_config_options(
+                            runtime_key,
+                            super::session::config_options_from_model_state(&state),
+                        );
+                        let result = conn
+                            .set_session_model(agent_client_protocol::SetSessionModelRequest::new(
+                                session_id,
+                                agent_client_protocol::ModelId::from(model_id),
+                            ))
+                            .await
+                            .map(|_| ())
+                            .map_err(|e| AcpLayerError::from(e).into_message());
+                        if result.is_err() {
+                            if let Some(state) = model_state.borrow_mut().as_mut() {
+                                state.current_model_id = previous_model_id;
+                            }
+                        }
+                        let _ = result_tx.send(result);
+                        return;
+                    }
                     // Optimistic update: mutate the select option's current_value,
                     // remember the old value so we can roll back on failure.
                     let target_config_id = acp::SessionConfigId::from(config_id.clone());
@@ -374,7 +438,20 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                             new_value_id,
                         ))
                         .await
-                        .map(|_| ())
+                        .map(|resp| {
+                            if !resp.config_options.is_empty() {
+                                *config_state.borrow_mut() = resp.config_options.clone();
+                                let serialized = resp
+                                    .config_options
+                                    .iter()
+                                    .filter_map(|o| serde_json::to_value(o).ok())
+                                    .collect::<Vec<_>>();
+                                super::runtime_state::remember_runtime_config_options(
+                                    runtime_key,
+                                    serialized,
+                                );
+                            }
+                        })
                         .map_err(|e| AcpLayerError::from(e).into_message());
                     if result.is_err() {
                         if let Some(prev) = previous_value {

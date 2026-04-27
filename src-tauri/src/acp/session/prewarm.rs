@@ -22,6 +22,8 @@ struct PrewarmOpts<'a> {
     resume_session_id: Option<String>,
     app_session_id: Option<&'a str>,
     mcp_servers: Vec<agent_client_protocol::McpServer>,
+    role_mode: Option<String>,
+    role_config_options: Vec<(String, String)>,
     force_refresh: bool,
 }
 
@@ -48,8 +50,8 @@ async fn send_prewarm(
         cwd: opts.cwd.to_string(),
         auto_approve: true,
         mcp_servers: opts.mcp_servers,
-        role_mode: None,
-        role_config_options: vec![],
+        role_mode: opts.role_mode,
+        role_config_options: opts.role_config_options,
         result_tx: Some(tx),
         resume_session_id: opts.resume_session_id,
         force_refresh: opts.force_refresh,
@@ -88,6 +90,35 @@ fn persist_prewarm_result(
     }
 }
 
+fn parse_config_map(raw: &str) -> Vec<(String, String)> {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|v| {
+            v.as_object().map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .filter(|(_, v)| !v.trim().is_empty())
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn load_role_default_config(
+    state: &AppState,
+    role_name: &str,
+) -> (Option<String>, Vec<(String, String)>) {
+    let Ok(Some(role)) = crate::db::role::load_role(state, role_name) else {
+        return (None, Vec::new());
+    };
+    let mut config = parse_config_map(&role.config_options_json);
+    if let Some(model) = role.model.filter(|m| !m.trim().is_empty()) {
+        config.retain(|(k, _)| k != "model");
+        config.push(("model".to_string(), model));
+    }
+    (role.mode, config)
+}
+
 struct ConfigPrewarmRequest<'a> {
     runtime_kind: &'a str,
     role_name: &'a str,
@@ -95,6 +126,8 @@ struct ConfigPrewarmRequest<'a> {
     state: Option<&'a AppState>,
     app_session_id: Option<&'a str>,
     resume_session_id: Option<String>,
+    role_mode: Option<String>,
+    role_config_options: Vec<(String, String)>,
     force_refresh: bool,
     persist_cli_id: bool,
 }
@@ -112,6 +145,8 @@ async fn prewarm_config_impl(req: ConfigPrewarmRequest<'_>) -> (Vec<Value>, Vec<
         resume_session_id: req.resume_session_id,
         app_session_id: req.app_session_id,
         mcp_servers,
+        role_mode: req.role_mode,
+        role_config_options: req.role_config_options,
         force_refresh: req.force_refresh,
     })
     .await
@@ -158,6 +193,8 @@ pub async fn prewarm_role(
         resume_session_id,
         app_session_id,
         mcp_servers,
+        role_mode: None,
+        role_config_options: vec![],
         force_refresh: false,
     })
     .await
@@ -194,6 +231,8 @@ pub async fn prewarm_role_for_config(
         state: state.as_ref().map(|(s, _)| *s),
         app_session_id,
         resume_session_id,
+        role_mode: None,
+        role_config_options: vec![],
         force_refresh,
         persist_cli_id: true,
     })
@@ -207,6 +246,7 @@ pub async fn refresh_role_config_defs(
     cwd: &str,
     state: &AppState,
 ) -> (Vec<Value>, Vec<String>) {
+    let (role_mode, role_config_options) = load_role_default_config(state, role_name);
     prewarm_config_impl(ConfigPrewarmRequest {
         runtime_kind,
         role_name,
@@ -214,6 +254,8 @@ pub async fn refresh_role_config_defs(
         state: Some(state),
         app_session_id: None,
         resume_session_id: None,
+        role_mode,
+        role_config_options,
         force_refresh: true,
         persist_cli_id: false,
     })
@@ -238,6 +280,8 @@ pub async fn prewarm_role_with_session_id(
         resume_session_id,
         app_session_id: Some(app_session_id),
         mcp_servers,
+        role_mode: None,
+        role_config_options: vec![],
         force_refresh: false,
     })
     .await
