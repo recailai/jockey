@@ -27,8 +27,22 @@ pub fn clear_adapter_cache() {
 }
 
 static APP_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+static SHELL_ENV_CACHE: OnceLock<Vec<(String, String)>> = OnceLock::new();
 static ACP_LOG_RING: OnceLock<Mutex<VecDeque<AcpLogEntry>>> = OnceLock::new();
 const ACP_LOG_RING_LIMIT: usize = 512;
+const AGENT_ENV_ALLOWLIST: &[&str] = &[
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_ORG_ID",
+    "OPENAI_ORGANIZATION",
+    "OPENAI_PROJECT",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+];
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -134,7 +148,7 @@ fn resolve_node_adapter(
             return Ok(AdapterResolution {
                 binary,
                 args: package_args.iter().map(|s| s.to_string()).collect(),
-                env: vec![],
+                env: agent_env_overrides(),
                 launch_method: "managed-binary".to_string(),
             });
         }
@@ -149,25 +163,25 @@ fn resolve_node_adapter(
             return Ok(AdapterResolution {
                 binary,
                 args: package_args.iter().map(|s| s.to_string()).collect(),
-                env: vec![],
+                env: agent_env_overrides(),
                 launch_method: "path-binary".to_string(),
             });
         }
     }
 
-    let package_candidates = [
-        ("pnpm", vec!["dlx", package]),
-        ("npx", vec!["-y", package]),
-    ];
+    let package_candidates = [("pnpm", vec!["dlx", package]), ("npx", vec!["-y", package])];
     let mut missing = vec![adapter_binary.to_string()];
     for (binary, base_args) in package_candidates {
         if let Ok(path) = which(binary) {
-            let mut args = base_args.into_iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            let mut args = base_args
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>();
             args.extend(package_args.iter().map(|s| s.to_string()));
             return Ok(AdapterResolution {
                 binary: path.to_string_lossy().to_string(),
                 args,
-                env: vec![],
+                env: agent_env_overrides(),
                 launch_method: format!("package-runner:{binary}"),
             });
         }
@@ -179,6 +193,68 @@ fn resolve_node_adapter(
         runtime,
         missing.join(", ")
     ))
+}
+
+fn agent_env_overrides() -> Vec<(String, String)> {
+    SHELL_ENV_CACHE
+        .get_or_init(load_shell_agent_env)
+        .iter()
+        .filter(|(key, value)| {
+            !value.trim().is_empty()
+                && !std::env::var(key)
+                    .map(|existing| !existing.trim().is_empty())
+                    .unwrap_or(false)
+        })
+        .cloned()
+        .collect()
+}
+
+fn load_shell_agent_env() -> Vec<(String, String)> {
+    let shell_env = load_interactive_shell_env();
+    let mut out = Vec::new();
+    for key in AGENT_ENV_ALLOWLIST {
+        if let Some(value) = shell_env
+            .iter()
+            .find_map(|(k, v)| (k == key).then(|| v.clone()))
+            .filter(|v| !v.trim().is_empty())
+        {
+            out.push(((*key).to_string(), value));
+        }
+    }
+    if !out.is_empty() {
+        acp_log(
+            "adapter.shell_env.loaded",
+            serde_json::json!({ "keys": out.iter().map(|(k, _)| k).collect::<Vec<_>>() }),
+        );
+    }
+    out
+}
+
+#[cfg(unix)]
+fn load_interactive_shell_env() -> Vec<(String, String)> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let output = std::process::Command::new(shell)
+        .arg("-lic")
+        .arg("env")
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            Some((key.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+#[cfg(not(unix))]
+fn load_interactive_shell_env() -> Vec<(String, String)> {
+    Vec::new()
 }
 
 pub fn adapter_launch_method(runtime_kind: &str) -> Option<String> {
