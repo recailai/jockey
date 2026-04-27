@@ -239,22 +239,24 @@ export default function FilesPanel(props: FilesPanelProps) {
   };
 
   return (
-    <div class="flex flex-col h-full overflow-hidden theme-bg">
+    <div class="flex flex-col h-full overflow-hidden theme-sidebar">
       <div class="panel-header">
         <span class="panel-header-title">Explorer</span>
-        <button
-          type="button"
-          class="icon-btn"
-          title={showHidden() ? "Hide dotfiles" : "Show dotfiles"}
-          onClick={() => setShowHidden((v) => !v)}
-        >
-          <Show when={showHidden()} fallback={<Eye size={13} />}>
-            <EyeOff size={13} />
-          </Show>
-        </button>
-        <button type="button" class="icon-btn" title="Refresh" onClick={() => reset()}>
-          <RefreshCw size={13} />
-        </button>
+        <div class="flex items-center gap-0.5">
+          <button
+            type="button"
+            class="icon-btn"
+            title={showHidden() ? "Hide dotfiles" : "Show dotfiles"}
+            onClick={() => setShowHidden((v) => !v)}
+          >
+            <Show when={showHidden()} fallback={<Eye size={13} />}>
+              <EyeOff size={13} />
+            </Show>
+          </button>
+          <button type="button" class="icon-btn" title="Refresh" onClick={() => reset()}>
+            <RefreshCw size={13} />
+          </button>
+        </div>
       </div>
       <div class="flex-1 overflow-auto py-1">
         <Show when={!props.appSessionId() || !props.cwd()}>

@@ -45,7 +45,7 @@ export default function SessionTabs(props: SessionTabsProps) {
   return (
     <div
       data-tauri-drag-region
-      class="flex h-[38px] shrink-0 items-center gap-1.5 relative z-10"
+      class="session-tabs-bar flex h-[40px] shrink-0 items-center gap-1.5 relative z-10"
       style={{
         "padding-left": `${10 + (props.leadingInsetPx ?? 0)}px`,
         "padding-right": "10px",
@@ -59,12 +59,8 @@ export default function SessionTabs(props: SessionTabsProps) {
               setRenamingSessionId(s.id);
               setRenameValue(s.title);
             }}
-            class={`group relative flex items-center gap-1.5 rounded-full px-3 py-1 text-[10.5px] font-bold tracking-wide transition-all duration-200 cursor-default select-none border shadow-sm ${
-              s.id === props.activeSessionId()
-                ? "text-primary border-theme-strong ring-1 ring-black/20"
-                : "border-transparent theme-muted hover:text-primary"
-            }`}
-            style={s.id === props.activeSessionId() ? { background: "var(--ui-surface-muted)" } : { background: "var(--ui-panel)" }}
+            class="session-tab group relative flex min-h-7 items-center gap-1.5 px-3 py-1 text-[10.5px] font-semibold tracking-wide transition-all duration-150 cursor-default select-none"
+            classList={{ "is-active": s.id === props.activeSessionId() }}
           >
             <Show when={s.status === "running"}>
               <span class="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse shadow-[0_0_6px_rgba(96,165,250,0.6)]" />

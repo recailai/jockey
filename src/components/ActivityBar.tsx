@@ -36,8 +36,8 @@ export default function ActivityBar(props: ActivityBarProps) {
   return (
     <div
       data-tauri-drag-region
-      class="w-11 shrink-0 flex flex-col items-center gap-0.5 theme-bg"
-      style={{ "border-right": "1px solid var(--ui-separator, var(--ui-border-strong))", "box-shadow": "2px 0 6px rgba(0,0,0,0.15)", "padding-top": "44px", "padding-bottom": "8px" }}
+      class="activity-bar w-11 shrink-0 flex flex-col items-center gap-1"
+      style={{ "padding-top": "44px", "padding-bottom": "8px" }}
     >
       <For each={items}>
         {(item) => {
@@ -48,23 +48,13 @@ export default function ActivityBar(props: ActivityBarProps) {
               type="button"
               onClick={() => props.onSelect(isActive() ? null : item.id)}
               title={`${item.title} (${item.hint})`}
-              class={`relative flex h-10 w-10 items-center justify-center ${INTERACTIVE_MOTION} ${
-                isActive() ? "theme-text" : "theme-muted hover:theme-text"
-              }`}
+              class={`activity-button relative flex h-9 w-9 items-center justify-center ${INTERACTIVE_MOTION}`}
+              classList={{ "is-active": isActive() }}
             >
-              <span
-                class={`absolute left-0 top-0 bottom-0 w-[2px] ${
-                  isActive() ? "bg-[var(--ui-accent)] opacity-80" : "bg-transparent"
-                }`}
-              />
               {item.icon()}
               <Show when={count() > 0}>
                 <span
-                  class="absolute top-1 right-1 min-w-[14px] h-[14px] px-[3px] rounded-full flex items-center justify-center text-[9px] font-bold leading-none"
-                  style={{
-                    "background-color": "var(--ui-accent)",
-                    color: "var(--ui-bg)",
-                  }}
+                  class="activity-badge absolute top-0.5 right-0.5 min-w-[14px] h-[14px] px-[3px] rounded-full flex items-center justify-center text-[9px] font-bold leading-none"
                 >
                   {count() > 99 ? "99+" : count()}
                 </span>

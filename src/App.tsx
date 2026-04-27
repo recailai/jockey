@@ -470,11 +470,11 @@ export default function App() {
         <ActivityBar activePanel={sidebarPanel} onSelect={(p) => setSidebarPanel(p)} gitChangeCount={gitChangeCount} />
         <Show when={sidebarPanel() !== null}>
           <div
-            class="shrink-0 flex flex-col min-h-0 theme-bg"
-            style={{ width: `${sidebarWidth()}px`, "border-right": "1px solid var(--ui-separator, var(--ui-border-strong))", "box-shadow": "2px 0 8px rgba(0,0,0,0.18)" }}
+            class="theme-sidebar-shell shrink-0 flex flex-col min-h-0"
+            style={{ width: `${sidebarWidth()}px` }}
           >
             <div data-tauri-drag-region class="h-[34px] shrink-0" />
-            <Suspense fallback={<div class="flex-1 theme-bg" />}>
+            <Suspense fallback={<div class="flex-1 theme-sidebar" />}>
               <Show when={sidebarPanel() === "git"}>
                 <GitPanel
                   appSessionId={() => activeSession()?.id}
@@ -523,7 +523,7 @@ export default function App() {
         </Show>
 
         <div class="flex flex-1 flex-col min-h-0 min-w-0">
-          <div class="flex flex-1 flex-col min-h-0" style={{ "background-color": "var(--ui-bg)", "background-image": "radial-gradient(ellipse 80% 50% at 50% 0%, var(--ui-accent-soft), rgba(255,255,255,0))" }}>
+          <div class="flex flex-1 flex-col min-h-0" style={{ "background-color": "var(--ui-bg)", "background-image": "radial-gradient(ellipse 80% 50% at 50% 0%, var(--ui-selection), rgba(255,255,255,0))" }}>
             <SessionTabs
               leadingInsetPx={sidebarPanel() === null ? 36 : 0}
               sessions={sessionTabs()}

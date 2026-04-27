@@ -237,7 +237,7 @@ export default function GitPanel(props: GitPanelProps) {
   };
 
   return (
-    <div class="flex flex-col h-full overflow-hidden theme-bg">
+    <div class="flex flex-col h-full overflow-hidden theme-sidebar">
       <div class="panel-header">
         <span class="panel-header-title">Source Control</span>
         <div class="flex items-center gap-0.5">
@@ -290,7 +290,7 @@ export default function GitPanel(props: GitPanelProps) {
                   type="button"
                   onClick={openBranchMenu}
                   onContextMenu={openContextMenu}
-                  class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded border theme-border hover:bg-[var(--ui-accent-soft)] transition-colors group"
+                  class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md border theme-border theme-control hover:bg-[var(--ui-control-hover)] transition-colors group"
                   title="Left-click: switch branch · Right-click: more actions"
                 >
                   <GitBranch size={13} class="shrink-0 theme-muted" />
@@ -327,7 +327,7 @@ export default function GitPanel(props: GitPanelProps) {
                         placeholder="Filter branches…"
                         value={branchFilter()}
                         onInput={(e) => setBranchFilter(e.currentTarget.value)}
-                        class="w-full px-2 py-1 text-[11px] rounded bg-transparent border theme-border theme-text outline-none focus:border-[var(--ui-accent)]"
+                        class="w-full px-2 py-1 text-[11px] rounded theme-input outline-none focus:border-[var(--ui-accent)]"
                       />
                     </div>
                     <Show when={checkoutError()}>

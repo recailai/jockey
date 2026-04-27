@@ -91,17 +91,17 @@ export default function ChatInput(props: ChatInputProps) {
         class="relative max-w-5xl mx-auto w-full"
       >
         <div
-          class="flex flex-col rounded-xl border theme-border backdrop-blur-xl shadow-lg focus-within:ring-2 focus-within:ring-[var(--ui-accent-soft)] motion-safe:transition-shadow motion-safe:duration-150 theme-surface"
+          class="theme-input-shell flex flex-col rounded-xl backdrop-blur-xl motion-safe:transition-shadow motion-safe:duration-150"
           onPaste={handlePaste}
         >
           <div class="flex items-center px-2.5 py-1.5 gap-2">
             <button
               type="button"
               onClick={() => props.onResetRole()}
-              class="shrink-0 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-bold tracking-wide motion-safe:transition-colors motion-safe:duration-150"
+              class="shrink-0 flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-semibold tracking-wide motion-safe:transition-colors motion-safe:duration-150"
               classList={{
-                "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 shadow-[0_0_10px_rgba(99,102,241,0.1)]": props.isCustomRole(),
-                "border theme-border theme-muted hover:text-primary theme-surface-muted": !props.isCustomRole(),
+                "theme-primary-action": props.isCustomRole(),
+                "border theme-border theme-muted hover:text-primary theme-control": !props.isCustomRole(),
               }}
               title={props.isCustomRole() ? "Click to return to Jockey" : "Jockey mode"}
             >
@@ -152,11 +152,11 @@ export default function ChatInput(props: ChatInputProps) {
 
             <button
               type="submit"
-              class={`shrink-0 flex h-8 w-8 items-center justify-center rounded-xl motion-safe:transition-colors motion-safe:duration-150 ${INTERACTIVE_MOTION}`}
+              class={`shrink-0 flex h-8 w-8 items-center justify-center rounded-lg motion-safe:transition-colors motion-safe:duration-150 ${INTERACTIVE_MOTION}`}
               classList={{
-                "bg-gradient-to-t from-indigo-600 to-indigo-500 text-white shadow-md shadow-indigo-500/25 border border-indigo-400/30 hover:shadow-indigo-500/40 hover:scale-105": hasContent() && !props.submitting(),
+                "theme-primary-action hover:scale-105": hasContent() && !props.submitting(),
                 "bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25": hasContent() && props.submitting(),
-                "theme-surface-muted theme-muted border border-transparent": !hasContent(),
+                "theme-primary-action is-disabled": !hasContent(),
               }}
               title={props.submitting() ? `Add to queue (${props.queuedCount() + 1})` : "Send"}
             >
