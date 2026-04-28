@@ -66,10 +66,10 @@ export default function DiffView(props: DiffViewProps) {
       </Show>
       <Show when={!props.loading && rows().length > 0}>
         <div
-          class="min-w-max"
+          class="diff-grid"
           style={{
             display: "grid",
-            "grid-template-columns": "auto auto auto 1fr",
+            "grid-template-columns": "auto auto auto minmax(max-content, 1fr)",
           }}
         >
           <For each={rows()}>

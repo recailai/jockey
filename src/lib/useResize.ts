@@ -6,6 +6,7 @@ type UseResizeOpts = {
   max: number;
   getStart: () => number;
   onCommit: (px: number) => void;
+  invert?: boolean;
 };
 
 export type UseResize = {
@@ -27,7 +28,8 @@ export function useResize(opts: UseResizeOpts): UseResize {
 
     const onMove = (ev: MouseEvent) => {
       const cur = opts.axis === "x" ? ev.clientX : ev.clientY;
-      setPreviewPx(clamp(startPx + (cur - startCoord)));
+      const delta = cur - startCoord;
+      setPreviewPx(clamp(startPx + (opts.invert ? -delta : delta)));
     };
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);

@@ -2,7 +2,7 @@ import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
 import {
   ChevronRight,
   RefreshCw,
-  PanelLeftClose,
+  PanelRightClose,
   GitBranch,
   ChevronDown,
   Check,
@@ -21,6 +21,7 @@ import {
 } from "../lib/tauriApi";
 import type { GitStatusStore } from "../hooks/useGitPoller";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { Badge, ContextMenuItem, ContextMenuSeparator, ContextMenuSurface, EmptyState, Input, ListRow, Panel, PanelBody, PanelHeader, PanelHeaderAction } from "./ui";
 
 type GitPanelProps = {
   appSessionId: () => string | undefined;
@@ -202,8 +203,8 @@ export default function GitPanel(props: GitPanelProps) {
                 return i === -1 ? "" : entry.path.slice(0, i);
               };
               return (
-                <div
-                  class="row-item group"
+                <ListRow
+                  class="git-change-row group"
                   onClick={() => props.onOpenDiff(entry.path, staged, entry.untracked)}
                   title={entry.path}
                 >
@@ -222,7 +223,7 @@ export default function GitPanel(props: GitPanelProps) {
                   <span class={`git-status ${statusClass(entry)}`}>
                     {vscodeLetter(entry)}
                   </span>
-                </div>
+                </ListRow>
               );
             }}
           </For>
@@ -237,39 +238,39 @@ export default function GitPanel(props: GitPanelProps) {
   };
 
   return (
-    <div class="flex flex-col h-full overflow-hidden theme-sidebar">
-      <div class="panel-header">
+    <Panel class="tool-panel flex h-full flex-col overflow-hidden">
+      <PanelHeader class="panel-header">
         <span class="panel-header-title">Source Control</span>
         <div class="flex items-center gap-0.5">
-          <button type="button" class="icon-btn" title="Refresh" onClick={() => props.onRefresh()}>
+          <PanelHeaderAction title="Refresh" onClick={() => props.onRefresh()}>
             <RefreshCw size={13} />
-          </button>
-          <button type="button" class="icon-btn" title="Collapse (Cmd/Ctrl+G)" onClick={() => props.onCollapse()}>
-            <PanelLeftClose size={13} />
-          </button>
+          </PanelHeaderAction>
+          <PanelHeaderAction title="Collapse (Cmd/Ctrl+G)" onClick={() => props.onCollapse()}>
+            <PanelRightClose size={13} />
+          </PanelHeaderAction>
         </div>
-      </div>
+      </PanelHeader>
 
       <Show when={state()?.kind === "git_missing"}>
-        <div class="flex-1 flex items-center justify-center p-6 text-center text-xs theme-muted">
+        <EmptyState class="flex-1">
           git binary not found on PATH.
-        </div>
+        </EmptyState>
       </Show>
 
       <Show when={state()?.kind === "not_repo"}>
         {(_s) => {
           const s = state() as Extract<GitState, { kind: "not_repo" }>;
           return (
-            <div class="flex-1 flex flex-col items-center justify-center p-6 text-center text-xs theme-muted gap-2">
+            <EmptyState class="flex-1">
               <div>Not a git repository</div>
               <div class="font-mono text-[10px] opacity-70 break-all">{s.cwd}</div>
-            </div>
+            </EmptyState>
           );
         }}
       </Show>
 
       <Show when={!state() && statusObj().loading}>
-        <div class="flex-1 flex items-center justify-center text-xs theme-muted">Loading…</div>
+        <EmptyState class="flex-1">Loading…</EmptyState>
       </Show>
 
       <Show when={statusView()}>
@@ -285,12 +286,12 @@ export default function GitPanel(props: GitPanelProps) {
 
           return (
             <>
-              <div class="relative px-3 py-2 border-b theme-border">
+              <div class="tool-panel-section relative">
                 <button
                   type="button"
                   onClick={openBranchMenu}
                   onContextMenu={openContextMenu}
-                  class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md border theme-border theme-control hover:bg-[var(--ui-control-hover)] transition-colors group"
+                  class="tool-panel-card w-full flex items-center gap-2 group"
                   title="Left-click: switch branch · Right-click: more actions"
                 >
                   <GitBranch size={13} class="shrink-0 theme-muted" />
@@ -309,29 +310,29 @@ export default function GitPanel(props: GitPanelProps) {
                     </div>
                   </Show>
                   <Show when={s.detached}>
-                    <span class="chip text-[9px]">detached</span>
+                    <Badge class="git-detached-badge">detached</Badge>
                   </Show>
                   <ChevronDown size={12} class="shrink-0 theme-muted opacity-60 group-hover:opacity-100 transition-opacity" />
                 </button>
 
                 <Show when={branchMenuOpen()}>
                   <div
-                    class="absolute left-3 right-3 top-[calc(100%-4px)] z-50 rounded-md border theme-border shadow-xl overflow-hidden"
+                    class="git-branch-menu"
                     style={{ "background-color": "var(--ui-bg)" }}
                     onClick={(e) => e.stopPropagation()}
                   >
                     <div class="px-2.5 py-1.5 border-b theme-border">
-                      <input
+                      <Input
                         type="text"
                         autofocus
                         placeholder="Filter branches…"
                         value={branchFilter()}
                         onInput={(e) => setBranchFilter(e.currentTarget.value)}
-                        class="w-full px-2 py-1 text-[11px] rounded theme-input outline-none focus:border-[var(--ui-accent)]"
+                        class="git-branch-filter"
                       />
                     </div>
                     <Show when={checkoutError()}>
-                      <div class="px-3 py-1.5 text-rose-400 text-[10px] border-b theme-border">
+                      <div class="px-3 py-1.5 text-[var(--ui-state-danger-text)] text-[10px] border-b theme-border">
                         {checkoutError()}
                       </div>
                     </Show>
@@ -344,7 +345,7 @@ export default function GitPanel(props: GitPanelProps) {
                             type="button"
                             disabled={checking()}
                             onClick={() => !b.isCurrent && void switchBranch(b.name)}
-                            class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[11px] theme-text hover:bg-[var(--ui-accent-soft)] transition-colors disabled:opacity-50"
+                            class="git-branch-row"
                             classList={{ "cursor-default": b.isCurrent }}
                           >
                             <Show when={b.isCurrent} fallback={<span class="w-3 shrink-0" />}>
@@ -368,11 +369,11 @@ export default function GitPanel(props: GitPanelProps) {
                 </Show>
               </div>
 
-              <div class="flex-1 overflow-auto py-2 min-h-0">
+              <PanelBody class="tool-panel-body flex-1 overflow-auto min-h-0">
                 <Show when={!dirty}>
-                  <div class="text-xs theme-muted text-center py-10 px-6 leading-relaxed">
+                  <EmptyState>
                     Working tree clean
-                  </div>
+                  </EmptyState>
                 </Show>
                 <Show when={stagedEntries().length > 0}>
                   {renderGroup("Staged Changes", stagedOpen, setStagedOpen, stagedEntries(), true)}
@@ -380,7 +381,7 @@ export default function GitPanel(props: GitPanelProps) {
                 <Show when={changesEntries().length > 0}>
                   {renderGroup("Changes", changesOpen, setChangesOpen, changesEntries(), false)}
                 </Show>
-              </div>
+              </PanelBody>
             </>
           );
         }}
@@ -392,65 +393,60 @@ export default function GitPanel(props: GitPanelProps) {
           const branch = statusView()?.branch ?? null;
           const onGh = isGithub();
           return (
-            <div
-              class="fixed z-[200] min-w-[220px] overflow-hidden rounded-lg shadow-xl shadow-black/60 backdrop-blur-md py-1 theme-dropdown"
-              style={`left:${pos().x}px;top:${pos().y}px`}
+            <ContextMenuSurface
+              x={pos().x}
+              y={pos().y}
+              width={220}
               onClick={(e) => e.stopPropagation()}
             >
               <Show when={r && branch}>
-                <button
-                  class="ctx-menu-item"
-                  onClick={() => { void safeOpen(r?.branchUrl ?? r?.webUrl); setCtxMenu(null); }}
+                <ContextMenuItem
+                  icon={<Globe size={12} />}
+                  onSelect={() => { void safeOpen(r?.branchUrl ?? r?.webUrl); setCtxMenu(null); }}
                 >
-                  <Globe size={12} />{onGh ? null : null}
                   <span>View branch on {onGh ? "GitHub" : r?.host}</span>
-                </button>
-                <button
-                  class="ctx-menu-item"
-                  onClick={() => { void safeOpen(r?.prUrl); setCtxMenu(null); }}
+                </ContextMenuItem>
+                <ContextMenuItem
+                  icon={<GitPullRequest size={12} />}
+                  onSelect={() => { void safeOpen(r?.prUrl); setCtxMenu(null); }}
                 >
-                  <GitPullRequest size={12} />
                   <span>View pull request</span>
-                </button>
-                <button
-                  class="ctx-menu-item"
-                  onClick={() => { void safeOpen(r?.compareUrl); setCtxMenu(null); }}
+                </ContextMenuItem>
+                <ContextMenuItem
+                  icon={<ExternalLink size={12} />}
+                  onSelect={() => { void safeOpen(r?.compareUrl); setCtxMenu(null); }}
                 >
-                  <ExternalLink size={12} />
                   <span>Open new pull request</span>
-                </button>
-                <div class="ctx-menu-sep" />
+                </ContextMenuItem>
+                <ContextMenuSeparator />
               </Show>
               <Show when={r && !branch}>
-                <button
-                  class="ctx-menu-item"
-                  onClick={() => { void safeOpen(r?.webUrl); setCtxMenu(null); }}
+                <ContextMenuItem
+                  icon={<Globe size={12} />}
+                  onSelect={() => { void safeOpen(r?.webUrl); setCtxMenu(null); }}
                 >
-                  <Globe size={12} />{onGh ? null : null}
                   <span>View repository on {onGh ? "GitHub" : r?.host}</span>
-                </button>
-                <div class="ctx-menu-sep" />
+                </ContextMenuItem>
+                <ContextMenuSeparator />
               </Show>
               <Show when={branch}>
-                <button
-                  class="ctx-menu-item"
-                  onClick={() => { void copyBranch(); setCtxMenu(null); }}
+                <ContextMenuItem
+                  icon={<Copy size={12} />}
+                  onSelect={() => { void copyBranch(); setCtxMenu(null); }}
                 >
-                  <Copy size={12} />
                   <span>Copy branch name</span>
-                </button>
+                </ContextMenuItem>
               </Show>
-              <button
-                class="ctx-menu-item"
-                onClick={() => { void revealInFinder(); setCtxMenu(null); }}
+              <ContextMenuItem
+                icon={<FolderOpen size={12} />}
+                onSelect={() => { void revealInFinder(); setCtxMenu(null); }}
               >
-                <FolderOpen size={12} />
                 <span>Reveal in Finder</span>
-              </button>
-            </div>
+              </ContextMenuItem>
+            </ContextMenuSurface>
           );
         }}
       </Show>
-    </div>
+    </Panel>
   );
 }

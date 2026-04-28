@@ -43,10 +43,10 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
   onMount(() => { void refresh(); });
 
   const transportBadge = (t: string) => ({
-    stdio: "bg-amber-500/15 text-amber-300",
-    http: "bg-sky-500/15 text-sky-300",
-    sse: "bg-violet-500/15 text-violet-300",
-  }[t] ?? "bg-[var(--ui-surface-muted)] theme-muted");
+    stdio: "management-badge-warning",
+    http: "management-badge-info",
+    sse: "management-badge-muted",
+  }[t] ?? "management-badge-muted");
 
   function parseEnvPairs(text: string): Array<{ name: string; value: string }> {
     return text.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
@@ -138,7 +138,7 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
                   <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400" />
                   <span class="truncate font-mono text-[10px] font-semibold theme-text">{entry.server.name}</span>
                   <Show when={entry.isBuiltin}>
-                    <Badge label="built-in" color="bg-zinc-500/20 text-zinc-400" />
+                    <Badge label="built-in" color="management-badge-muted" />
                   </Show>
                 </div>
                 <div class="flex items-center gap-1.5 pl-3">
@@ -219,7 +219,7 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
                     <h2 class="font-mono text-sm font-bold theme-text">{s().name}</h2>
                     <Badge label={t()} color={transportBadge(t())} />
                     <Show when={entry().isBuiltin}>
-                      <Badge label="built-in" color="bg-zinc-500/20 text-zinc-400" />
+                      <Badge label="built-in" color="management-badge-muted" />
                     </Show>
                   </div>
                   <Show when={!entry().isBuiltin}>

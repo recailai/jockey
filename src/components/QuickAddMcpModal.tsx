@@ -1,10 +1,9 @@
 import { Show, createMemo, createSignal } from "solid-js";
-import { Portal } from "solid-js/web";
-import { INTERACTIVE_MOTION } from "./types";
 import { FieldRow, TextInput, InlineSelect } from "./management/primitives";
 import type { AcpMcpServer } from "./management/primitives";
 import { parseCommandArgs } from "./management/primitives";
 import { globalMcpApi } from "../lib/tauriApi";
+import { Button, Dialog, DialogContent, Switch as UiSwitch } from "./ui";
 
 type Props = {
   open: () => boolean;
@@ -89,24 +88,13 @@ export default function QuickAddMcpModal(props: Props) {
   };
 
   return (
-    <Show when={props.open()}>
-      <Portal>
-        <div
-          class="fixed inset-0 z-50 flex items-center justify-center"
-          onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}
-        >
-          <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-          <div class="relative z-10 w-full max-w-md rounded-xl border theme-border shadow-2xl shadow-black/60 theme-surface overflow-hidden">
-            <div class="flex items-center justify-between border-b theme-border px-4 py-3">
-              <span class="text-[13px] font-bold theme-text">Add MCP Server</span>
-              <button
-                onClick={handleClose}
-                class="theme-muted hover:text-primary transition-colors"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
-            </div>
-            <div class="p-4 space-y-3 overflow-y-auto max-h-[70vh]">
+    <Dialog open={props.open()} onOpenChange={(open) => { if (!open) handleClose(); }}>
+      <DialogContent
+        class="quick-add-mcp-dialog"
+        title="Add MCP Server"
+        description="Create a global MCP server and optionally enable it for this role"
+      >
+            <div class="space-y-3 overflow-y-auto max-h-[70vh]">
               <FieldRow label="Name">
                 <TextInput value={name()} onInput={setName} placeholder="e.g. chrome-devtools" monospace />
               </FieldRow>
@@ -129,7 +117,7 @@ export default function QuickAddMcpModal(props: Props) {
                   <TextInput value={args()} onInput={setArgs} placeholder="-y @scope/pkg@latest" monospace />
                 </FieldRow>
                 <Show when={argsInvalid()}>
-                  <p class="ml-24 text-[10px] text-rose-400 font-mono">Invalid args: check quotes/escaping.</p>
+                  <p class="ml-24 text-[10px] text-[var(--ui-state-danger-text)] font-mono">Invalid args: check quotes/escaping.</p>
                 </Show>
                 <FieldRow label="Env">
                   <TextInput value={envText()} onInput={setEnvText} placeholder="KEY=value (one per line)" multiline rows={2} monospace />
@@ -145,39 +133,37 @@ export default function QuickAddMcpModal(props: Props) {
               </Show>
               <Show when={props.defaultRoleName}>
                 <label class="flex items-center gap-2 cursor-pointer select-none pt-1">
-                  <input
-                    type="checkbox"
+                  <UiSwitch
                     checked={enableForRole()}
-                    onChange={(e) => setEnableForRole(e.currentTarget.checked)}
-                    class="accent-indigo-400 h-3.5 w-3.5"
+                    onChange={setEnableForRole}
                   />
-                  <span class="text-[11px] theme-muted">Enable for <span class="font-mono text-indigo-300">{props.defaultRoleName}</span></span>
+                  <span class="text-[11px] theme-muted">Enable for <span class="font-mono theme-text">{props.defaultRoleName}</span></span>
                 </label>
               </Show>
             </div>
-            <div class="flex items-center justify-between border-t theme-border px-4 py-3">
+            <div class="mt-4 flex items-center justify-between border-t theme-border pt-3">
               <Show when={error()}>
-                <span class="text-[10px] text-rose-400 flex-1 mr-3">{error()}</span>
+                <span class="text-[10px] text-[var(--ui-state-danger-text)] flex-1 mr-3">{error()}</span>
               </Show>
               <div class="flex gap-2 ml-auto">
-                <button
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={handleClose}
-                  class={`rounded-md border theme-border px-3 py-1.5 text-[11px] theme-muted hover:text-primary transition-colors ${INTERACTIVE_MOTION}`}
                 >
                   Cancel
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="default"
+                  size="sm"
                   onClick={() => void handleAdd()}
                   disabled={saving() || !server() || argsInvalid()}
-                  class={`rounded-md border border-indigo-500/40 bg-indigo-500/10 px-3 py-1.5 text-[11px] font-semibold text-indigo-300 hover:bg-indigo-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors ${INTERACTIVE_MOTION}`}
                 >
                   {saving() ? "Adding…" : "Add Server"}
-                </button>
+                </Button>
               </div>
             </div>
-          </div>
-        </div>
-      </Portal>
-    </Show>
+      </DialogContent>
+    </Dialog>
   );
 }

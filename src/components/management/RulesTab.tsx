@@ -135,12 +135,12 @@ export function RulesTab() {
             </span>
             <div class="flex items-center gap-2">
               <Show when={error()}>
-                <span class="text-[10px] text-rose-400">{error()}</span>
+                <span class="management-error-text">{error()}</span>
               </Show>
               <button
                 onClick={() => void handleSave()}
                 disabled={saving()}
-                class={`rounded-md border border-indigo-500/40 bg-indigo-500/10 px-3 py-1 text-[10px] font-bold text-indigo-300 hover:bg-indigo-500/20 transition-colors ${INTERACTIVE_MOTION}`}
+                class={`management-primary-button ${INTERACTIVE_MOTION}`}
               >
                 {saving() ? "Saving..." : "Save"}
               </button>

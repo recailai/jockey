@@ -4,6 +4,7 @@ import { X } from "lucide-solid";
 import type { AppSession } from "./types";
 import PreviewContent from "./PreviewContent";
 import { useGitChanged } from "../hooks/useGitChanged";
+import { ContextMenuItem, ContextMenuSurface, IconButton } from "./ui";
 
 type PreviewAreaProps = {
   session: () => AppSession | null;
@@ -138,29 +139,21 @@ export default function PreviewArea(props: PreviewAreaProps) {
       tabindex="-1"
       class="flex flex-col h-full overflow-hidden theme-bg outline-none"
     >
-      <div class="flex items-stretch border-b theme-border shrink-0 overflow-x-hidden h-[34px] min-w-0">
+      <div class="preview-tabs-bar">
         <For each={tabs()}>
           {(tab) => {
             const isActive = () => tab.id === activeId();
             return (
               <div
-                class={`group relative flex items-center min-w-0 select-none transition-colors ${
-                  isActive() ? "theme-text" : "theme-muted hover:theme-text"
-                }`}
-                style={{
-                  "border-right": "1px solid var(--ui-border)",
-                  "background-color": isActive() ? "var(--ui-surface-muted)" : "transparent",
-                }}
+                class="preview-tab group"
+                classList={{ "is-active": isActive() }}
                 onMouseDown={(e) => onTabMiddleClick(e, tab.id)}
                 onContextMenu={(e) => onTabContextMenu(e, tab.id)}
               >
-                <Show when={isActive()}>
-                  <span class="absolute top-0 left-0 right-0 h-[2px] bg-[var(--ui-accent)] opacity-80" />
-                </Show>
                 <button
                   type="button"
                   onClick={() => handleActivate(tab.id)}
-                  class="flex items-center gap-1.5 pl-3 pr-1 py-1.5 text-[11.5px] font-mono min-w-0"
+                  class="preview-tab-button"
                   title={tab.path}
                 >
                   <Show when={isDirty(tab.id)}>
@@ -171,7 +164,7 @@ export default function PreviewArea(props: PreviewAreaProps) {
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); removeTabState(tab.id); props.onCloseTab(tab.id); }}
-                  class="mr-1 ml-0.5 flex h-5 w-5 items-center justify-center rounded theme-muted hover:theme-text hover:bg-[var(--ui-accent-soft)] transition-opacity opacity-0 group-hover:opacity-100 focus:opacity-100"
+                  class="preview-tab-close"
                   title="Close (Middle-click)"
                 >
                   <X size={12} />
@@ -181,14 +174,14 @@ export default function PreviewArea(props: PreviewAreaProps) {
           }}
         </For>
         <div class="flex-1 min-w-2" />
-        <button
-          type="button"
+        <IconButton
+          size="sm"
           onClick={() => { for (const t of tabs()) removeTabState(t.id); props.onCloseAll(); }}
           title="Close All (Esc)"
-          class="shrink-0 icon-btn mr-1.5 self-center"
+          class="shrink-0 mr-1.5 self-center"
         >
           <X size={13} />
-        </button>
+        </IconButton>
       </div>
 
       <div class="flex-1 min-h-0">
@@ -210,26 +203,23 @@ export default function PreviewArea(props: PreviewAreaProps) {
 
       <Show when={menu()} keyed>
         {(m) => (
-          <div
+          <ContextMenuSurface
             data-preview-tab-menu
-            class="fixed z-[90] min-w-[170px] rounded-md border theme-border theme-dropdown py-1 text-[12px]"
-            style={{ top: `${m.y}px`, left: `${m.x}px` }}
+            x={m.x}
+            y={m.y}
+            width={170}
           >
             <For each={menuItems()}>
               {(item) => (
-                <button
-                  type="button"
+                <ContextMenuItem
                   disabled={item.disabled}
-                  onClick={item.onSelect}
-                  class={`flex w-full items-center px-3 py-1.5 text-left theme-dropdown-item ${
-                    item.disabled ? "opacity-40 cursor-not-allowed" : ""
-                  }`}
+                  onSelect={item.onSelect}
                 >
                   {item.label}
-                </button>
+                </ContextMenuItem>
               )}
             </For>
-          </div>
+          </ContextMenuSurface>
         )}
       </Show>
     </div>

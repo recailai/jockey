@@ -11,6 +11,8 @@ mod role_templates;
 pub(crate) mod runtime_cmd;
 pub(crate) mod session_context_cmd;
 mod shell_cmd;
+pub(crate) mod terminal_cmd;
+pub(crate) mod workspace_cmd;
 
 use crate::db::get_state;
 use crate::types::*;

@@ -32,5 +32,5 @@ export const UI_THEMES: UiThemeDefinition[] = [
 
 export const normalizeUiTheme = (value: string | null | undefined): UiTheme => {
   if (value === "dark" || value === "light") return value as UiTheme;
-  return "dark";
+  return "light";
 };

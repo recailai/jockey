@@ -68,7 +68,7 @@ export function WorkflowsTab(props: { roles: Role[] }) {
       <div class="flex w-56 shrink-0 flex-col border-r theme-border">
         <div class="p-3">
           <ActionButton
-            label="+ New Workflow"
+            label="+ New Automation"
             variant="ghost"
             class="w-full justify-center text-center"
             onClick={() => { setCreating(true); setSelectedId(null); }}
@@ -79,7 +79,7 @@ export function WorkflowsTab(props: { roles: Role[] }) {
             <p class="p-4 font-mono text-[10px] theme-muted">Loading…</p>
           </Show>
           <Show when={!loading() && workflows().length === 0}>
-            <EmptyState icon="⬡" title="No workflows" sub="Create your first workflow" />
+            <EmptyState icon="⬡" title="No automations" sub="Create your first automation" />
           </Show>
           <For each={workflows()}>
             {(wf) => (
@@ -103,7 +103,7 @@ export function WorkflowsTab(props: { roles: Role[] }) {
       <div class="flex-1 overflow-y-auto p-5">
         <Show when={creating()}>
           <div class="space-y-4">
-            <h3 class="font-mono text-xs font-bold theme-text uppercase tracking-widest">New Workflow</h3>
+            <h3 class="font-mono text-xs font-bold theme-text uppercase tracking-widest">New Automation</h3>
             <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
               <FieldRow label="Name">
                 <TextInput value={wfName()} onInput={setWfName} placeholder="e.g. code-review" />
@@ -201,7 +201,7 @@ export function WorkflowsTab(props: { roles: Role[] }) {
         </Show>
 
         <Show when={!creating() && !selected()}>
-          <EmptyState icon="⬡" title="Select a workflow" sub="Or create a new one" />
+          <EmptyState icon="⬡" title="Select an automation" sub="Or create a new one" />
         </Show>
       </div>
     </div>

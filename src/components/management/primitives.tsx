@@ -1,6 +1,7 @@
 import { For, Show, createSignal, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import { INTERACTIVE_MOTION } from "../types";
+import { Button, EmptyState as UiEmptyState, Input, Textarea } from "../ui";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Domain types (backend shape — add to types.ts when wiring real invokes)
@@ -135,7 +136,7 @@ export const fmtRelative = (ts: number) => {
 
 export function Badge(props: { label: string; color?: string; class?: string }) {
   return (
-    <span class={`inline-flex items-center rounded-sm px-1.5 py-px font-mono text-[9px] font-semibold tracking-wide uppercase ${props.color ?? "theme-surface-muted theme-muted"} ${props.class ?? ""}`}>
+    <span class={`ui-badge ${props.color ?? ""} ${props.class ?? ""}`}>
       {props.label}
     </span>
   );
@@ -143,11 +144,11 @@ export function Badge(props: { label: string; color?: string; class?: string }) 
 
 export function EmptyState(props: { icon: string; title: string; sub?: string }) {
   return (
-    <div class="flex flex-col items-center justify-center gap-2 py-16 text-center">
+    <UiEmptyState>
       <span class="text-3xl opacity-20">{props.icon}</span>
       <p class="text-xs font-medium theme-muted">{props.title}</p>
       {props.sub && <p class="max-w-[200px] text-[10px] theme-muted opacity-60">{props.sub}</p>}
-    </div>
+    </UiEmptyState>
   );
 }
 
@@ -158,12 +159,14 @@ export function PanelSection(props: { title: string; action?: { label: string; o
         <span class="font-mono text-[9px] font-semibold uppercase tracking-[0.12em] theme-muted">{props.title}</span>
         <Show when={props.action}>
           {(action) => (
-            <button
+            <Button
+              variant="outline"
+              size="sm"
               onClick={action().onClick}
-              class={`min-h-6 rounded border theme-border px-2 py-0.5 font-mono text-[9px] theme-muted hover:border-[var(--ui-border-strong)] hover:theme-text ${INTERACTIVE_MOTION}`}
+              class="font-mono text-[10px]"
             >
               {action().label}
-            </button>
+            </Button>
           )}
         </Show>
       </div>
@@ -185,10 +188,10 @@ export function TextInput(props: {
   value: string; onInput: (v: string) => void; placeholder?: string;
   multiline?: boolean; rows?: number; class?: string; monospace?: boolean; error?: boolean;
 }) {
-  const base = () => `w-full rounded-md border ${props.error ? "border-rose-600" : "theme-border"} theme-surface px-2 py-1 text-xs theme-text placeholder:text-[var(--ui-muted)] focus:border-[var(--ui-border-strong)] focus:outline-none ${props.monospace ? "font-mono" : ""} ${props.class ?? ""}`;
+  const base = () => `text-xs placeholder:text-[var(--ui-muted)] ${props.error ? "border-[var(--ui-state-danger-text)]" : ""} ${props.monospace ? "font-mono" : ""} ${props.class ?? ""}`;
   if (props.multiline) {
     return (
-      <textarea
+      <Textarea
         value={props.value}
         onInput={(e) => props.onInput(e.currentTarget.value)}
         placeholder={props.placeholder}
@@ -198,11 +201,11 @@ export function TextInput(props: {
     );
   }
   return (
-    <input
+    <Input
       value={props.value}
       onInput={(e) => props.onInput(e.currentTarget.value)}
       placeholder={props.placeholder}
-      class={`h-7 ${base()}`}
+      class={base()}
     />
   );
 }
@@ -246,7 +249,7 @@ export function InlineSelect(props: {
         type="button"
         onClick={toggle}
         title={selected()?.label ?? "Select..."}
-        class={`flex h-7 w-full items-center justify-between gap-2 rounded-md border theme-border theme-surface px-2 text-xs text-left ${INTERACTIVE_MOTION} ${open() ? "border-[var(--ui-border-strong)]" : "hover:border-[var(--ui-border-strong)]"}`}
+        class={`jui-field flex h-[var(--ui-control-height-sm)] w-full items-center justify-between gap-2 px-2 text-xs text-left ${INTERACTIVE_MOTION} ${open() ? "border-[var(--ui-border-strong)]" : "hover:border-[var(--ui-border-strong)]"}`}
       >
         <span class={`min-w-0 flex-1 truncate ${selected() ? "theme-text" : "theme-muted"}`}>
           {selected()?.label ?? "Select…"}
@@ -258,7 +261,7 @@ export function InlineSelect(props: {
           <div
             data-isel
             style={{ position: "fixed", top: `${pos().top}px`, left: `${pos().left}px`, width: `${Math.max(pos().width, 260)}px`, "max-width": "min(520px, calc(100vw - 24px))" }}
-            class="z-[9999] max-h-44 overflow-y-auto rounded-md shadow-xl shadow-black/60 theme-dropdown"
+            class="z-[9999] max-h-44 overflow-y-auto theme-dropdown"
           >
             <For each={props.options}>
               {(opt) => (
@@ -267,7 +270,7 @@ export function InlineSelect(props: {
                   type="button"
                   title={opt.label}
                   onClick={() => { props.onChange(opt.value); close(); }}
-                  class={`flex w-full items-start gap-2 px-2.5 py-1.5 text-left text-xs ${INTERACTIVE_MOTION} ${opt.value === props.value ? "theme-dropdown-item-active" : "theme-dropdown-item"}`}
+                  class={`completion-row items-start py-1.5 text-xs ${INTERACTIVE_MOTION} ${opt.value === props.value ? "theme-dropdown-item-active" : "theme-dropdown-item"}`}
                 >
                   <span class={`mt-1.5 h-1 w-1 shrink-0 rounded-full ${opt.value === props.value ? "bg-emerald-400" : "bg-transparent"}`} />
                   <span class="min-w-0 break-words">{opt.label}</span>
@@ -284,19 +287,16 @@ export function InlineSelect(props: {
 export function ActionButton(props: {
   onClick: () => void; label: string; variant?: "primary" | "danger" | "ghost"; class?: string; disabled?: boolean;
 }) {
-  const cls = () => ({
-    primary: "bg-[var(--ui-text)] text-[var(--ui-bg)] hover:opacity-90 border-transparent",
-    danger: "border-rose-800/60 text-rose-400 hover:bg-rose-500/10 hover:border-rose-600",
-    ghost: "border-[var(--ui-border)] text-[var(--ui-muted)] hover:border-[var(--ui-border-strong)] hover:text-[var(--ui-text)]",
-  }[props.variant ?? "ghost"]);
   return (
-    <button
+    <Button
       onClick={props.onClick}
       disabled={props.disabled}
-      class={`min-h-7 rounded-md border px-3 text-xs font-medium transition-all duration-150 active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none ${cls()} ${props.class ?? ""}`}
+      variant={props.variant === "primary" ? "default" : props.variant === "danger" ? "destructive" : "outline"}
+      size="sm"
+      class={`text-xs ${props.class ?? ""}`}
     >
       {props.label}
-    </button>
+    </Button>
   );
 }
 
@@ -324,7 +324,7 @@ export const TABS: Array<{ id: TabId; label: string; icon: () => any }> = [
     ),
   },
   {
-    id: "workflows", label: "Workflows",
+    id: "workflows", label: "Automations",
     icon: () => (
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />

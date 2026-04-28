@@ -1,6 +1,7 @@
 import { Show } from "solid-js";
 import type { AppSession, SessionErrorInfo } from "./types";
 import { assistantApi } from "../lib/tauriApi";
+import { Badge, Button } from "./ui";
 
 type Props = {
   activeSession: () => AppSession | null;
@@ -21,13 +22,13 @@ function toneFor(code: string): Tone {
 function toneClasses(tone: Tone): string {
   switch (tone) {
     case "auth":
-      return "border-amber-500/30 bg-amber-500/[0.08] text-amber-200";
+      return "is-warning";
     case "connection":
-      return "border-rose-500/30 bg-rose-500/[0.08] text-rose-200";
+      return "is-danger";
     case "timeout":
-      return "border-indigo-500/30 bg-indigo-500/[0.08] text-indigo-200";
+      return "is-info";
     default:
-      return "border-[var(--ui-border-strong)] bg-[var(--ui-surface-muted)] theme-text";
+      return "is-muted";
   }
 }
 
@@ -77,7 +78,7 @@ export default function SessionErrorBanner(props: Props) {
         const isTimeout = tone === "timeout";
         return (
           <div
-            class={`flex items-start gap-2 rounded-lg border px-3 py-2 my-2 text-[11.5px] ${toneClasses(tone)}`}
+            class={`session-error-banner ${toneClasses(tone)}`}
             role="alert"
           >
             <div class="flex-1 min-w-0">
@@ -93,30 +94,28 @@ export default function SessionErrorBanner(props: Props) {
             </div>
             <div class="flex shrink-0 items-center gap-1">
               <Show when={isAuth}>
-                <span class="rounded-md border border-amber-500/40 bg-amber-500/15 px-2 py-[2px] text-[10px] font-medium uppercase tracking-wider">
-                  Re-auth via CLI
-                </span>
+                <Badge tone="warning">Re-auth via CLI</Badge>
               </Show>
               <Show when={isConn}>
-                <button
+                <Button
+                  variant="secondary"
+                  size="sm"
                   onClick={reconnect}
-                  class="rounded-md border border-rose-500/40 bg-rose-500/15 px-2 py-[2px] text-[10px] font-medium uppercase tracking-wider hover:bg-rose-500/25 transition-colors"
                 >
                   Reconnect
-                </button>
+                </Button>
               </Show>
               <Show when={isTimeout}>
-                <span class="rounded-md border border-indigo-500/40 bg-indigo-500/15 px-2 py-[2px] text-[10px] font-medium uppercase tracking-wider">
-                  Retry next turn
-                </span>
+                <Badge tone="info">Retry next turn</Badge>
               </Show>
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={dismiss}
-                class="rounded-md theme-muted hover:text-primary hover:bg-white/10 transition-colors px-2 py-[2px] text-[10px] font-medium uppercase tracking-wider"
                 title="Dismiss"
               >
                 Dismiss
-              </button>
+              </Button>
             </div>
           </div>
         );

@@ -4,22 +4,23 @@ import { gitApi, fsApi } from "../lib/tauriApi";
 import { renderMd } from "../lib/markdown";
 import type { PreviewMode } from "./types";
 import DiffView from "./DiffView";
+import { Badge, IconButton, SegmentButton, SegmentedControl } from "./ui";
 
 function FileWithLineNumbers(props: { text: string }) {
   const lines = () => props.text.split("\n");
   const lineCount = () => lines().length;
   const gutterWidth = () => String(lineCount()).length;
   return (
-    <div class="flex font-mono text-[12px] leading-[1.55] py-3 min-w-0">
+    <div class="file-code-view flex font-mono text-[12px] leading-[1.55] min-w-full">
       <div
-        class="shrink-0 select-none text-right pr-4 theme-muted border-r theme-border"
+        class="file-code-gutter shrink-0 select-none text-right pr-4 theme-muted border-r theme-border"
         style={{ "min-width": `${gutterWidth() * 0.6 + 1.5}em`, "padding-left": "1rem" }}
       >
         <For each={lines()}>
           {(_, i) => <div>{i() + 1}</div>}
         </For>
       </div>
-      <pre class="flex-1 overflow-x-auto whitespace-pre theme-text pl-4 pr-4">{props.text}</pre>
+      <pre class="file-code-pre flex-1 overflow-x-auto whitespace-pre theme-text pl-4 pr-4">{props.text}</pre>
     </div>
   );
 }
@@ -166,27 +167,21 @@ export default function PreviewContent(props: PreviewContentProps) {
   });
 
   const TabButton = (p: { label: string; value: PreviewMode; disabled?: boolean; title?: string }) => (
-    <button
-      type="button"
+    <SegmentButton
       title={p.title}
       disabled={p.disabled}
       onClick={() => !p.disabled && setMode(p.value)}
-      class={`px-2.5 h-[22px] text-[11px] rounded transition-colors ${
-        p.disabled
-          ? "theme-muted opacity-40 cursor-not-allowed"
-          : mode() === p.value
-          ? "theme-text bg-[var(--ui-accent-soft)]"
-          : "theme-muted hover:theme-text hover:bg-[var(--ui-surface-muted)]"
-      }`}
+      class="preview-mode-tab transition-colors"
+      active={mode() === p.value}
     >
       {p.label}
-    </button>
+    </SegmentButton>
   );
 
   return (
     <div class="flex flex-col h-full overflow-hidden theme-bg">
       <div class="panel-subheader">
-        <div class="flex items-center gap-0.5 rounded border theme-border p-0.5">
+        <SegmentedControl class="preview-mode-tabs">
           <Show when={props.initialMode === "diff"}>
             <TabButton label="Diff" value="diff" disabled={isFolder()} />
           </Show>
@@ -201,13 +196,13 @@ export default function PreviewContent(props: PreviewContentProps) {
             <TabButton label="Preview" value="preview" disabled={isFolder()} title="Rendered Markdown" />
             <TabButton label="Source" value="file" disabled={isFolder()} title="Raw text" />
           </Show>
-        </div>
+        </SegmentedControl>
         <span class="font-mono text-[11px] theme-muted truncate min-w-0">{props.path}</span>
         <Show when={props.staged}>
-          <span class="chip text-[9px] shrink-0" style={{ "border-color": "rgba(152,195,121,0.4)", "color": "#98c379" }}>staged</span>
+          <Badge tone="success" class="preview-status-badge">staged</Badge>
         </Show>
         <Show when={props.untracked}>
-          <span class="chip text-[9px] shrink-0" style={{ "border-color": "rgba(115,208,255,0.4)", "color": "#73d0ff" }}>untracked</span>
+          <Badge tone="info" class="preview-status-badge">untracked</Badge>
         </Show>
         <div class="ml-auto flex items-center gap-2 shrink-0">
           <Show when={mode() === "diff" && !props.untracked}>
@@ -222,14 +217,13 @@ export default function PreviewContent(props: PreviewContentProps) {
             </label>
           </Show>
           <Show when={props.onAddMention}>
-            <button
-              type="button"
+            <IconButton
+              size="sm"
               onClick={() => props.onAddMention?.(props.path)}
               title="Add to chat as @mention"
-              class="icon-btn"
             >
               <AtSign size={13} />
-            </button>
+            </IconButton>
           </Show>
         </div>
       </div>
@@ -245,7 +239,7 @@ export default function PreviewContent(props: PreviewContentProps) {
               <div class="text-xs theme-muted">Loading image…</div>
             </Show>
             <Show when={imgRes.error}>
-              <div class="text-xs text-rose-400">{String(imgRes.error)}</div>
+              <div class="preview-error-text">{String(imgRes.error)}</div>
             </Show>
             <Show when={!imgRes.loading && !imgRes.error && imgSrc()}>
               <img
@@ -263,7 +257,7 @@ export default function PreviewContent(props: PreviewContentProps) {
               <div class="px-4 py-3 text-xs theme-muted">Loading file…</div>
             </Show>
             <Show when={fileRes.error}>
-              <div class="px-4 py-3 text-xs text-rose-400">{String(fileRes.error)}</div>
+              <div class="preview-error-text px-4 py-3">{String(fileRes.error)}</div>
             </Show>
             <Show when={!fileRes.loading && !fileRes.error && fileRes() !== undefined}>
               <FileWithLineNumbers text={fileRes()!} />
@@ -277,7 +271,7 @@ export default function PreviewContent(props: PreviewContentProps) {
               <div class="px-4 py-3 text-xs theme-muted">Loading…</div>
             </Show>
             <Show when={fileRes.error}>
-              <div class="px-4 py-3 text-xs text-rose-400">{String(fileRes.error)}</div>
+              <div class="preview-error-text px-4 py-3">{String(fileRes.error)}</div>
             </Show>
             <Show when={!fileRes.loading && !fileRes.error}>
               <div

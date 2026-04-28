@@ -398,7 +398,7 @@ export function SessionsTab(props: {
                       <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400 shadow-[0_0_4px_rgba(52,211,153,0.5)]" />
                     </Show>
                     <Show when={isClosed()}>
-                      <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-zinc-600" />
+                      <span class="management-muted-dot" />
                     </Show>
                     <span class={`truncate font-mono text-[10px] font-semibold ${isClosed() ? "theme-muted" : selectedId() === s.id ? "theme-text" : "theme-muted"}`}>{s.title}</span>
                     <Show when={isReopening()}>

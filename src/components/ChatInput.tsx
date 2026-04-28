@@ -3,6 +3,7 @@ import type { Accessor, Setter } from "solid-js";
 import type { AppMentionItem } from "./types";
 import { INTERACTIVE_MOTION } from "./types";
 import RichInput, { type RichNode, getPlainText } from "./RichInput";
+import { Badge, Button, IconButton } from "./ui";
 
 type ChatInputProps = {
   input: Accessor<string>;
@@ -37,12 +38,12 @@ type ChatInputProps = {
 };
 
 function mentionKindColor(kind: string): string {
-  if (kind === "role") return "bg-blue-500/20 text-blue-200";
-  if (kind === "dir") return "bg-emerald-500/20 text-emerald-200";
-  if (kind === "file") return "bg-amber-500/20 text-amber-200";
-  if (kind === "command") return "bg-indigo-500/20 text-indigo-200";
-  if (kind === "skill") return "bg-violet-500/20 text-violet-200";
-  return "bg-zinc-500/20 text-zinc-300";
+  if (kind === "role") return "is-role";
+  if (kind === "dir") return "is-dir";
+  if (kind === "file") return "is-file";
+  if (kind === "command") return "is-command";
+  if (kind === "skill") return "is-skill";
+  return "is-default";
 }
 
 export default function ChatInput(props: ChatInputProps) {
@@ -85,36 +86,33 @@ export default function ChatInput(props: ChatInputProps) {
   };
 
   return (
-    <div class="shrink-0 px-4 pb-4 pt-2 theme-bg">
+    <div class="composer-shell">
       <form
         onSubmit={props.onSubmit}
-        class="relative max-w-5xl mx-auto w-full"
+        class="composer-form"
       >
         <div
-          class="theme-input-shell flex flex-col rounded-xl backdrop-blur-xl motion-safe:transition-shadow motion-safe:duration-150"
+          class="composer-card"
           onPaste={handlePaste}
         >
-          <div class="flex items-center px-2.5 py-1.5 gap-2">
-            <button
-              type="button"
+          <div class="composer-row">
+            <Button
+              variant={props.isCustomRole() ? "default" : "outline"}
+              size="sm"
               onClick={() => props.onResetRole()}
-              class="shrink-0 flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-semibold tracking-wide motion-safe:transition-colors motion-safe:duration-150"
-              classList={{
-                "theme-primary-action": props.isCustomRole(),
-                "border theme-border theme-muted hover:text-primary theme-control": !props.isCustomRole(),
-              }}
+              class="composer-role-button motion-safe:transition-colors motion-safe:duration-150"
               title={props.isCustomRole() ? "Click to return to Jockey" : "Jockey mode"}
             >
               {props.activeRole()}
               <svg class="opacity-40" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
-            </button>
+            </Button>
 
             <RichInput
               ref={props.richInputRef}
               nodes={props.richNodes}
               onRemoveImage={props.onRemoveImage}
               placeholder={props.isCustomRole() ? `Chat with ${props.activeRole()}... (type / for agent commands)` : "Natural language / commands / @role @file:path"}
-              class="flex-1 bg-transparent py-1.5 px-1 text-[14px] outline-none min-w-0 theme-text font-sans tracking-wide rich-input"
+              class="composer-rich-input rich-input"
               onNodesChange={(nodes) => props.setRichNodes(nodes)}
               onCaretText={(text, caret) => {
                 props.setInput(text);
@@ -150,27 +148,27 @@ export default function ChatInput(props: ChatInputProps) {
               }}
             />
 
-            <button
+            <IconButton
               type="submit"
-              class={`shrink-0 flex h-8 w-8 items-center justify-center rounded-lg motion-safe:transition-colors motion-safe:duration-150 ${INTERACTIVE_MOTION}`}
+              variant={hasContent() ? "default" : "ghost"}
+              class={`composer-send-button motion-safe:transition-colors motion-safe:duration-150 ${INTERACTIVE_MOTION}`}
               classList={{
-                "theme-primary-action hover:scale-105": hasContent() && !props.submitting(),
-                "bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25": hasContent() && props.submitting(),
-                "theme-primary-action is-disabled": !hasContent(),
+                "is-queueing": hasContent() && props.submitting(),
+                "is-disabled": !hasContent(),
               }}
               title={props.submitting() ? `Add to queue (${props.queuedCount() + 1})` : "Send"}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" classList={{ "drop-shadow-[0_1px_2px_rgba(0,0,0,0.3)]": hasContent() }}><line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" /></svg>
-            </button>
+            </IconButton>
             <Show when={props.queuedCount() > 0}>
-              <span class="shrink-0 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-amber-300">
+              <Badge tone="warning" class="composer-queue-badge">
                 Q{props.queuedCount()}
-              </span>
+              </Badge>
             </Show>
           </div>
         </div>
         <Show when={props.slashOpen() && props.slashItems().length > 0}>
-          <div ref={(el) => { slashListEl = el; }} class="absolute bottom-14 left-0 right-0 z-30 max-h-56 overflow-auto rounded-lg p-1 theme-dropdown">
+          <div ref={(el) => { slashListEl = el; }} class="completion-menu">
             <For each={props.slashItems()}>
               {(item, i) => (
                 <button
@@ -179,9 +177,10 @@ export default function ChatInput(props: ChatInputProps) {
                     e.preventDefault();
                     props.applySlashCandidate(item);
                   }}
-                  class={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors ${i() === props.slashActiveIndex() ? "theme-dropdown-item-active" : "theme-dropdown-item theme-dropdown-item:hover"}`}
+                  class="completion-row"
+                  classList={{ "is-active": i() === props.slashActiveIndex() }}
                 >
-                  <span class="rounded bg-indigo-500/20 px-1 text-[10px] uppercase tracking-wide text-indigo-200">cmd</span>
+                  <span class="mention-kind-badge">cmd</span>
                   <span class="truncate font-mono text-xs">{item.value}</span>
                   <span class="ml-auto truncate text-[10px] opacity-70">{item.detail}</span>
                 </button>
@@ -190,7 +189,7 @@ export default function ChatInput(props: ChatInputProps) {
           </div>
         </Show>
         <Show when={props.mentionOpen() && props.mentionItems().length > 0}>
-          <div ref={(el) => { mentionListEl = el; }} class="absolute bottom-14 left-0 right-0 z-30 max-h-56 overflow-auto rounded-lg p-1 theme-dropdown">
+          <div ref={(el) => { mentionListEl = el; }} class="completion-menu">
             <For each={props.mentionItems()}>
               {(item, i) => (
                 <button
@@ -199,9 +198,10 @@ export default function ChatInput(props: ChatInputProps) {
                     e.preventDefault();
                     props.applyMentionCandidate(item);
                   }}
-                  class={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors ${i() === props.mentionActiveIndex() ? "theme-dropdown-item-active" : "theme-dropdown-item theme-dropdown-item:hover"}`}
+                  class="completion-row"
+                  classList={{ "is-active": i() === props.mentionActiveIndex() }}
                 >
-                  <span class={`rounded px-1 text-[10px] uppercase tracking-wide ${mentionKindColor(item.kind)}`}>
+                  <span class={`mention-kind-badge ${mentionKindColor(item.kind)}`}>
                     {item.kind}
                   </span>
                   <span class="truncate font-mono text-xs">{item.value}</span>

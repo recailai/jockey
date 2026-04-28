@@ -1,17 +1,17 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { AppPermission, AppToolCall, TerminalEntry } from "./types";
-import { INTERACTIVE_MOTION } from "./types";
 import { DiffViewer } from "./DiffViewer";
 import { parseDiff, isDiffLike, hunkToRejectPrompt } from "../lib/diffParser";
 import type { DiffHunk } from "../lib/diffParser";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import { Badge, Button, Switch as UiSwitch } from "./ui";
 
 function tcStatusDot(status: string): string {
-  if (status === "success" || status === "completed") return "bg-emerald-400 shadow-emerald-400/40";
-  if (status === "failure" || status === "error") return "bg-rose-400 shadow-rose-400/40";
-  return "bg-amber-400 animate-pulse shadow-amber-400/40";
+  if (status === "success" || status === "completed") return "ui-tool-status-success";
+  if (status === "failure" || status === "error") return "ui-tool-status-danger";
+  return "ui-tool-status-warning animate-pulse";
 }
 
 /** Extract `{ terminalId }` from a tool call's terminalMeta.terminalInfo, if any. */
@@ -38,25 +38,28 @@ function TerminalView(props: { entry: TerminalEntry }) {
     if (typeof ex.exitCode === "number") return `exit ${ex.exitCode}`;
     return "done";
   };
-  const exitTone = () => {
+  const exitTone = (): "success" | "warning" | "danger" => {
     const ex = entry().exitStatus;
-    if (!ex) return "bg-amber-400/15 text-amber-300 border-amber-500/30";
-    if (ex.signal) return "bg-rose-500/15 text-rose-300 border-rose-500/30";
-    if (ex.exitCode === 0) return "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
-    return "bg-rose-500/15 text-rose-300 border-rose-500/30";
+    if (!ex) return "warning";
+    if (ex.signal) return "danger";
+    if (ex.exitCode === 0) return "success";
+    return "danger";
   };
 
   onMount(() => {
     if (!containerEl) return;
+    const styles = getComputedStyle(containerEl);
+    const terminalBg = styles.getPropertyValue("--ui-terminal-bg").trim() || "#0b0b0d";
+    const terminalText = styles.getPropertyValue("--ui-terminal-text").trim() || "#d4d4d8";
     term = new Terminal({
       disableStdin: true,
       scrollback: 1000,
       rows: 12,
       convertEol: true,
       theme: {
-        background: "#0b0b0d",
-        foreground: "#d4d4d8",
-        cursor: "#d4d4d8",
+        background: terminalBg,
+        foreground: terminalText,
+        cursor: terminalText,
       },
       fontSize: 11,
       fontFamily: "ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace",
@@ -89,7 +92,7 @@ function TerminalView(props: { entry: TerminalEntry }) {
   onCleanup(() => { term?.dispose(); });
 
   return (
-    <div class="border-t theme-border bg-[#0b0b0d]">
+    <div class="inline-terminal">
       <div class="flex items-center justify-between px-3 py-1.5 text-[9.5px] theme-muted uppercase tracking-widest border-b theme-border">
         <span class="font-mono truncate">
           {entry().label ?? "terminal"}
@@ -98,9 +101,9 @@ function TerminalView(props: { entry: TerminalEntry }) {
           </Show>
         </span>
         <Show when={exitLabel()}>
-          <span class={`ml-2 shrink-0 rounded-md border px-1.5 py-[1px] text-[9px] font-bold ${exitTone()}`}>
+          <Badge tone={exitTone()}>
             {exitLabel()}
-          </span>
+          </Badge>
         </Show>
       </div>
       <div
@@ -109,7 +112,7 @@ function TerminalView(props: { entry: TerminalEntry }) {
         style={{ "max-height": "280px" }}
       />
       <Show when={!entry().output}>
-        <div class="px-3 py-2 text-[11px] font-mono text-zinc-500 italic">(waiting for output...)</div>
+        <div class="px-3 py-2 text-[11px] font-mono theme-muted italic">(waiting for output...)</div>
       </Show>
     </div>
   );
@@ -142,23 +145,19 @@ function ToolCallItem(props: ToolCallItemProps) {
 
   return (
     <details
-      class="group/tc rounded-lg border theme-border theme-surface overflow-hidden transition-all duration-200 hover:bg-[var(--ui-surface-muted)] hover:border-[var(--ui-border-strong)]"
-      classList={{ "border-amber-500/50 bg-amber-500/5": showPermission() }}
+      class="tool-call-item group/tc"
+      classList={{ "needs-approval": showPermission() }}
     >
-      <summary class="flex cursor-pointer items-center gap-2 px-2.5 py-1.5 text-[11px] theme-muted select-none">
-        <span class={`h-1.5 w-1.5 shrink-0 rounded-full shadow-[0_0_6px_rgba(0,0,0,0.4)] ${tcStatusDot(tc().status)}`} />
-        <span class="theme-text font-mono tracking-tight font-medium group-hover/tc:text-white transition-colors truncate">{tc().title || tc().toolCallId}</span>
+      <summary class="tool-call-item-summary select-none">
+        <span class={`ui-tool-status-dot ${tcStatusDot(tc().status)}`} />
+        <span class="theme-text font-mono tracking-tight font-medium transition-colors truncate">{tc().title || tc().toolCallId}</span>
         <Show when={terminalEntry()}>
-          <span class="shrink-0 rounded-md border border-indigo-500/30 bg-indigo-500/10 px-1.5 py-[1px] text-[9px] font-bold uppercase tracking-widest text-indigo-300">
-            term
-          </span>
+          <Badge tone="info">term</Badge>
         </Show>
         <Show when={showPermission()}>
-          <span class="shrink-0 rounded-md border border-amber-500/40 bg-amber-500/15 px-1.5 py-[1px] text-[9px] font-bold uppercase tracking-widest text-amber-300">
-            approval
-          </span>
+          <Badge tone="warning">approval</Badge>
         </Show>
-        <span class="ml-auto text-[9px] theme-muted uppercase tracking-widest font-bold bg-[var(--ui-panel-2)] px-1.5 py-0.5 rounded-md shrink-0">{tc().kind}</span>
+        <Badge class="ml-auto">{tc().kind}</Badge>
       </summary>
       <Show when={showPermission()}>
         {(_) => {
@@ -169,34 +168,34 @@ function ToolCallItem(props: ToolCallItemProps) {
             return all.filter((o) => o.kind !== "allow_always");
           };
           return (
-            <div class="border-t border-amber-500/30 bg-amber-500/8 px-3 py-2.5">
-              <div class="mb-1 text-[11px] font-semibold text-amber-300">{perm().title}</div>
+            <div class="tool-permission-block">
+              <div class="mb-1 text-[11px] font-semibold text-[var(--ui-state-warning-text)]">{perm().title}</div>
               <Show when={perm().description}>
                 <p class="mb-2 text-[10.5px] theme-muted">{perm().description}</p>
               </Show>
               <div class="flex flex-wrap gap-2">
                 <For each={opts()}>{(opt) => (
-                  <button
-                    class={`min-h-7 rounded border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-[11px] text-emerald-300 hover:bg-emerald-500/20 ${INTERACTIVE_MOTION}`}
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={(e) => { e.preventDefault(); props.onApprove?.(opt.optionId); }}
                   >
                     {opt.title ?? opt.optionId}
-                  </button>
+                  </Button>
                 )}</For>
-                <button
-                  class={`min-h-7 rounded border border-rose-500/40 bg-rose-500/10 px-2.5 py-1 text-[11px] text-rose-300 hover:bg-rose-500/20 ${INTERACTIVE_MOTION}`}
+                <Button
+                  variant="destructive"
+                  size="sm"
                   onClick={(e) => { e.preventDefault(); props.onDeny?.(); }}
                 >
                   Deny
-                </button>
+                </Button>
               </div>
               <Show when={hasRememberableOptions()}>
                 <label class="mt-2 flex items-center gap-1.5 cursor-pointer select-none w-fit">
-                  <input
-                    type="checkbox"
+                  <UiSwitch
                     checked={remember()}
-                    onChange={(e) => setRemember(e.currentTarget.checked)}
-                    class="accent-amber-400 h-3 w-3"
+                    onChange={setRemember}
                   />
                   <span class="text-[10px] theme-muted">Remember my choice</span>
                 </label>
@@ -217,7 +216,7 @@ function ToolCallItem(props: ToolCallItemProps) {
           <For each={tc().locations}>{(loc) => (
             <button
               type="button"
-              class={`block w-full text-left font-mono break-all hover:text-indigo-300 transition-colors ${props.onFileClick ? "cursor-pointer" : "cursor-default"}`}
+              class={`block w-full text-left font-mono break-all hover:text-[var(--ui-accent)] transition-colors ${props.onFileClick ? "cursor-pointer" : "cursor-default"}`}
               onClick={() => props.onFileClick?.(loc.path, tc().kind)}
             >
               {loc.path}{loc.line ? `:${loc.line}` : ""}
@@ -305,47 +304,44 @@ export function ToolCallGroup(props: {
   });
 
   return (
-    <div
-      class="rounded-xl border theme-border theme-panel overflow-hidden shadow-sm my-1.5"
-      classList={{ "border-amber-500/40": hasPendingPermission() }}
-    >
+    <div class="tool-call-card" classList={{ "needs-approval": hasPendingPermission() }}>
       <button
-        class="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-[11.5px] theme-text select-none hover:bg-[var(--ui-accent-soft)] transition-colors"
+        class="tool-call-summary select-none"
         onClick={() => setExpanded(v => !v)}
       >
-        <span class={`h-2 w-2 shrink-0 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)] ${tcStatusDot(lastTool()?.status ?? "pending")}`} />
+        <span class={`ui-tool-status-dot ${tcStatusDot(lastTool()?.status ?? "pending")}`} />
         <span class="theme-text font-mono tracking-tight font-medium">{lastTool()?.title || "tool calls"}</span>
         <span class="flex items-center gap-1.5 ml-auto">
           <Show when={hasPendingPermission()}>
-            <span class="flex items-center gap-1 text-[9px] text-amber-300 rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 font-bold uppercase tracking-widest">
-              <span class="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse inline-block" />
+            <span class="tool-summary-badge is-warning">
+              <span class="ui-tool-status-dot ui-tool-status-warning animate-pulse" />
               approval
             </span>
           </Show>
           <Show when={statusCounts().success > 0}>
-            <span class="flex items-center gap-0.5 text-[9px] text-emerald-400">
-              <span class="h-1.5 w-1.5 rounded-full bg-emerald-400 inline-block" />
+            <span class="tool-summary-badge is-success">
+              <span class="ui-tool-status-dot ui-tool-status-success" />
               {statusCounts().success}
             </span>
           </Show>
           <Show when={statusCounts().error > 0}>
-            <span class="flex items-center gap-0.5 text-[9px] text-rose-400">
-              <span class="h-1.5 w-1.5 rounded-full bg-rose-400 inline-block" />
+            <span class="tool-summary-badge is-danger">
+              <span class="ui-tool-status-dot ui-tool-status-danger" />
               {statusCounts().error}
             </span>
           </Show>
           <Show when={statusCounts().pending > 0 && !hasPendingPermission()}>
-            <span class="flex items-center gap-0.5 text-[9px] text-amber-400">
-              <span class="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse inline-block" />
+            <span class="tool-summary-badge is-warning">
+              <span class="ui-tool-status-dot ui-tool-status-warning animate-pulse" />
               {statusCounts().pending}
             </span>
           </Show>
-          <span class="text-[9px] theme-muted font-bold tracking-widest uppercase bg-[var(--ui-panel-2)] px-1.5 py-0.5 rounded-md ml-1">{count()} calls</span>
-          <svg class={`w-3 h-3 text-zinc-500 transition-transform duration-150 ${expanded() ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+          <Badge class="ml-1">{count()} calls</Badge>
+          <svg class={`w-3 h-3 theme-muted transition-transform duration-150 ${expanded() ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
         </span>
       </button>
       <Show when={expanded()}>
-        <div class="border-t border-white/[0.05] px-2 py-1.5 space-y-1">
+        <div class="tool-call-list space-y-1">
           <For each={props.tools}>{(tc, i) => (
             <ToolCallItem
               tc={tc}

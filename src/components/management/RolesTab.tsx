@@ -634,7 +634,7 @@ export function RolesTab(props: {
                   </Show>
                 </div>
                 <Show when={deleteError()}>
-                  <div class="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 font-mono text-[10px] text-rose-200">
+                  <div class="management-error-box font-mono">
                     {deleteError()}
                   </div>
                 </Show>

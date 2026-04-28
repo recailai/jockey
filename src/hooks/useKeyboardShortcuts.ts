@@ -1,11 +1,12 @@
 import { onMount, onCleanup } from "solid-js";
-import type { ActivityPanel } from "../components/ActivityBar";
+
+export type WorkspaceToolPanel = "git" | "files" | "terminal";
 
 export function useKeyboardShortcuts(handlers: {
   newSession: () => void;
   toggleManagement: () => void;
   toggleSidebarRestore: () => void;
-  setSidebarPanel: (p: ActivityPanel | null) => void;
+  setSidebarPanel: (p: WorkspaceToolPanel | null) => void;
   cancelCurrentRun: () => void;
 }): void {
   onMount(() => {
@@ -26,6 +27,9 @@ export function useKeyboardShortcuts(handlers: {
           return;
         case "2":
           if (!inEditableTarget) { e.preventDefault(); handlers.setSidebarPanel("files"); }
+          return;
+        case "3":
+          if (!inEditableTarget) { e.preventDefault(); handlers.setSidebarPanel("terminal"); }
           return;
         case "b":
           if (!e.shiftKey && !e.altKey) { e.preventDefault(); handlers.toggleSidebarRestore(); }

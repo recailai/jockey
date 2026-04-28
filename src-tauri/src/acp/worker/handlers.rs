@@ -11,8 +11,7 @@ use super::super::runtime_state::{
     remember_runtime_config_options, remember_runtime_models, remember_runtime_modes,
 };
 use super::super::session::{
-    cold_start,
-    config_options_from_model_state, model_ids_from_model_state, resolve_model_id,
+    cold_start, config_options_from_model_state, model_ids_from_model_state, resolve_model_id,
 };
 use super::notify::{notify_connection_death, notify_prewarm};
 use super::pool::{

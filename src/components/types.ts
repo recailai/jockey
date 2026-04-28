@@ -131,10 +131,10 @@ export type AppSession = {
 
 export const RUNTIMES = ["gemini-cli", "claude-code", "codex-cli", "mock"];
 export const RUNTIME_COLOR: Record<string, string> = {
-  "gemini-cli": "text-blue-300",
-  "claude-code": "text-orange-300",
-  "codex-cli": "text-purple-300",
-  mock: "text-zinc-400",
+  "gemini-cli": "runtime-color-gemini",
+  "claude-code": "runtime-color-claude",
+  "codex-cli": "runtime-color-codex",
+  mock: "runtime-color-muted",
 };
 export const INTERACTIVE_MOTION = "motion-safe:transition-colors motion-safe:transition-transform motion-safe:duration-150 motion-safe:ease-out active:scale-[0.98]";
 export const DEFAULT_BACKEND_ROLE = "Jockey";

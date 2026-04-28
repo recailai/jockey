@@ -9,8 +9,8 @@ export function useTheme() {
       document.documentElement.setAttribute("data-theme", theme);
       return theme;
     } catch {
-      document.documentElement.setAttribute("data-theme", "dark");
-      return "dark";
+      document.documentElement.setAttribute("data-theme", "light");
+      return "light";
     }
   };
 

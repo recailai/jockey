@@ -11,9 +11,7 @@ function runtimeIcon(key: string): string {
 }
 
 function runtimeStatusColor(available: boolean) {
-  return available
-    ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
-    : "bg-zinc-500/15 text-zinc-400 border-zinc-500/30";
+  return available ? "management-badge-success" : "management-badge-muted";
 }
 
 export function ExternalAgentsTab() {
@@ -54,7 +52,7 @@ export function ExternalAgentsTab() {
       </div>
 
       <Show when={error()}>
-        <div class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-300">{error()}</div>
+        <div class="management-error-box">{error()}</div>
       </Show>
 
       <Show when={loading() && runtimes().length === 0}>
@@ -64,7 +62,7 @@ export function ExternalAgentsTab() {
       <div class="space-y-2">
         <For each={runtimes()}>{(rt) => (
           <div class="flex items-center gap-3 rounded-xl border theme-border theme-surface px-4 py-3">
-            <span class={`text-[18px] ${RUNTIME_COLOR[rt.key] ?? "text-zinc-400"}`}>{runtimeIcon(rt.key)}</span>
+            <span class={`text-[18px] ${RUNTIME_COLOR[rt.key] ?? "runtime-color-muted"}`}>{runtimeIcon(rt.key)}</span>
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2">
                 <span class="text-[12px] font-semibold theme-text font-mono">{rt.label}</span>
@@ -86,8 +84,8 @@ export function ExternalAgentsTab() {
 
       <div class="rounded-lg border theme-border bg-[var(--ui-panel-2)] px-4 py-3 text-[10.5px] theme-muted leading-relaxed">
         Runtimes are tied to installed binaries. To add a new runtime, install the corresponding CLI tool
-        (e.g. <span class="font-mono text-indigo-300">claude</span>, <span class="font-mono text-blue-300">gemini</span>,{" "}
-        <span class="font-mono text-violet-300">codex</span>) and click Refresh.
+        (e.g. <span class="font-mono runtime-color-claude">claude</span>, <span class="font-mono runtime-color-gemini">gemini</span>,{" "}
+        <span class="font-mono runtime-color-codex">codex</span>) and click Refresh.
       </div>
     </div>
   );

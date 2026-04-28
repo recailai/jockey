@@ -9,6 +9,7 @@ import { ToolCallGroup } from "./ToolCallGroup";
 import { PermissionModal } from "./PermissionModal";
 import SessionErrorBanner from "./SessionErrorBanner";
 import { assistantApi } from "../lib/tauriApi";
+import { ContextMenuItem, ContextMenuSurface } from "./ui";
 
 type UserSegment = { kind: "text"; text: string } | { kind: "image"; idx: number };
 
@@ -247,7 +248,7 @@ export default function MessageWindow(props: MessageWindowProps) {
             const segments = buildUserSegments(msg.text);
             return (
               <div class="flex flex-col items-end w-full mb-3 group/user">
-                <div class="user-bubble max-w-[85%] rounded-2xl rounded-tr-md px-4 py-2 text-[13px]">
+                <div class="user-bubble max-w-[85%] px-4 py-2 text-[13px]">
                   <div class="whitespace-pre-wrap break-words leading-relaxed font-mono">
                     <For each={segments}>
                       {(seg) => {
@@ -283,14 +284,14 @@ export default function MessageWindow(props: MessageWindowProps) {
             <div class="flex justify-center my-3 relative">
               <div class="absolute inset-x-0 top-1/2 h-px bg-gradient-to-r from-transparent via-[var(--ui-border)] to-transparent -z-10"></div>
               <div class="max-w-[90%] px-4 py-1.5 border rounded-full text-[11.5px] flex items-center gap-2.5 backdrop-blur-md shadow-sm theme-panel theme-border theme-muted">
-                <span class="opacity-70 text-indigo-400 mt-[1px] font-serif">✧</span>
+                <span class="system-event-mark">✧</span>
                 <Show when={q} fallback={
                   <span class="whitespace-pre-wrap break-words tracking-wide">{msg.text}</span>
                 }>
                   <span class="whitespace-pre-wrap break-words tracking-wide" innerHTML={highlightText(msg.text, q)} />
                 </Show>
                 <Show when={item.count > 1}>
-                  <span class="bg-indigo-500/15 border border-indigo-500/20 text-indigo-300 font-mono rounded-full px-1.5 py-0.5 text-[9px] min-w-[20px] text-center">{item.count}</span>
+                  <span class="system-event-count">{item.count}</span>
                 </Show>
               </div>
             </div>
@@ -302,24 +303,28 @@ export default function MessageWindow(props: MessageWindowProps) {
               <button
                 type="button"
                 onContextMenu={handleResetContextMenu}
-                class="relative h-8 w-8 shrink-0 rounded-xl border hover:border-indigo-400/60 transition-colors flex items-center justify-center shadow-lg ring-1 ring-black/20 mt-0.5 overflow-hidden cursor-pointer theme-border"
+                class="agent-avatar"
                 title="Right-click to reset current agent CLI context"
                 innerHTML={identicon(msg.roleName)}
               />
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2.5 mb-1.5 opacity-90">
-                  <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.runtimeKind ?? ""] ?? "text-zinc-300"}`}>
+                  <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.runtimeKind ?? ""] ?? "theme-text"}`}>
                     {msg.roleName}
                   </span>
                   <span class="text-[10px] theme-muted font-medium">{fmt(msg.at)}</span>
                   <Show when={props.activeSession()?.currentMode}>
-                    <span class="rounded-md bg-indigo-500/15 border border-indigo-500/30 px-2 py-0.5 text-[9px] font-semibold text-indigo-300 uppercase tracking-wider">{props.activeSession()?.currentMode}</span>
+                    <span class="message-mode-badge">{props.activeSession()?.currentMode}</span>
                   </Show>
                 </div>
                 <Show when={msg.segments && msg.segments.length > 0} fallback={
-                  <div class="md-prose" innerHTML={q ? highlightText(renderMdCached(msg.id, msg.text), q) : renderMdCached(msg.id, msg.text)} />
+                  <div class="agent-message-card">
+                    <div class="md-prose" innerHTML={q ? highlightText(renderMdCached(msg.id, msg.text), q) : renderMdCached(msg.id, msg.text)} />
+                  </div>
                 }>
-                  <SegmentList segments={msg.segments!} terminals={props.activeSession()?.terminals} onFileClick={props.onFileClick} onRejectHunk={props.onRejectHunk} />
+                  <div class="agent-message-card">
+                    <SegmentList segments={msg.segments!} terminals={props.activeSession()?.terminals} onFileClick={props.onFileClick} onRejectHunk={props.onRejectHunk} />
+                  </div>
                 </Show>
                 <Show when={msg.thoughtText}>
                   <ThoughtBlock text={msg.thoughtText!} />
@@ -335,8 +340,7 @@ export default function MessageWindow(props: MessageWindowProps) {
             <button
               type="button"
               onContextMenu={handleResetContextMenu}
-              class="relative h-8 w-8 shrink-0 rounded-xl border border-indigo-500/30 transition-colors flex items-center justify-center shadow-[0_0_16px_rgba(99,102,241,0.3)] ring-1 ring-indigo-500/20 mt-0.5 overflow-hidden cursor-pointer"
-              style={{ background: "radial-gradient(circle at 50% 50%, rgba(99,102,241,0.15), transparent 70%)" }}
+              class="agent-avatar is-streaming"
               title="Right-click to reset current agent CLI context"
             >
               <svg class="absolute inset-0 h-full w-full" viewBox="0 0 32 32" fill="none">
@@ -357,14 +361,16 @@ export default function MessageWindow(props: MessageWindowProps) {
             </button>
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2.5 mb-2">
-                <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.runtimeKind ?? ""] ?? "text-zinc-300"}`}>
+                <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.runtimeKind ?? ""] ?? "theme-text"}`}>
                   {props.activeSession()?.activeRole ?? "Agent"}
                 </span>
               </div>
               <Show when={(props.activeSession()?.streamSegments ?? []).length > 0} fallback={
                 <>
                   <Show when={streaming().text}>
-                    <div class="md-prose" innerHTML={renderMd(streaming().text)} />
+                    <div class="agent-message-card">
+                      <div class="md-prose" innerHTML={renderMd(streaming().text)} />
+                    </div>
                   </Show>
                   <Show when={!streaming().text && props.activeSession()?.agentState}>
                     <div class="text-[11px] theme-muted italic">{props.activeSession()?.agentState}</div>
@@ -423,20 +429,20 @@ export default function MessageWindow(props: MessageWindowProps) {
           const running = () => plan().some((e) => e.status === "in_progress");
           const allDone = () => done() === total() && total() > 0;
           const priorityBadge = (p?: string) => {
-            if (p === "high") return "border-rose-500/30 bg-rose-500/10 text-rose-300";
-            if (p === "medium") return "border-amber-500/30 bg-amber-500/10 text-amber-300";
+            if (p === "high") return "is-high";
+            if (p === "medium") return "is-medium";
             return null;
           };
           return (
             <details class="group/plan rounded-lg border theme-border theme-surface my-2 overflow-hidden">
               <summary class="flex cursor-pointer items-center gap-2 px-3 py-2 text-[11.5px] font-semibold theme-muted select-none list-none hover:bg-[var(--ui-accent-soft)] transition-colors">
-                <span class={`inline-block h-2 w-2 rounded-full shadow-[0_0_6px] ${running() ? "bg-amber-400 animate-pulse shadow-amber-400/40" : allDone() ? "bg-emerald-400 shadow-emerald-400/40" : "bg-zinc-500 shadow-zinc-500/20"}`} />
+                <span class="plan-status-dot" classList={{ "is-running": running(), "is-done": allDone(), "is-idle": !running() && !allDone() }} />
                 <span class="theme-text tracking-tight">Plan</span>
                 <Show when={running()}>
-                  <span class="text-[9px] text-amber-300 font-normal theme-muted italic">running</span>
+                  <span class="plan-state-label is-running">running</span>
                 </Show>
                 <Show when={allDone()}>
-                  <span class="text-[9px] text-emerald-300 font-normal">done</span>
+                  <span class="plan-state-label is-done">done</span>
                 </Show>
                 <span class="ml-auto text-[10px] theme-muted font-mono bg-[var(--ui-panel-2)] px-1.5 py-0.5 rounded-md">{done()}/{total()}</span>
                 <svg class="w-3 h-3 theme-muted transition-transform duration-150 group-open/plan:rotate-180" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
@@ -450,17 +456,17 @@ export default function MessageWindow(props: MessageWindowProps) {
                     <div
                       class="flex items-start gap-2.5 px-3 py-1.5 text-[11px] border-b theme-border last:border-b-0 transition-colors"
                       classList={{
-                        "bg-amber-500/5 border-l-2 border-l-amber-500/40": isRunning(),
+                        "plan-step-running": isRunning(),
                         "theme-muted/50": isCompleted(),
                       }}
                     >
                       <span class="mt-[3px] shrink-0 text-[9px] font-mono theme-muted w-4 text-right">{i() + 1}</span>
-                      <span class={`mt-[4px] h-1.5 w-1.5 shrink-0 rounded-full ${isCompleted() ? "bg-emerald-400" : isRunning() ? "bg-amber-400 animate-pulse" : "bg-zinc-600"}`} />
-                      <span class={`flex-1 leading-relaxed ${isCompleted() ? "theme-muted line-through decoration-zinc-600" : "theme-text"}`}>
+                      <span class="plan-step-dot" classList={{ "is-done": isCompleted(), "is-running": isRunning(), "is-idle": !isCompleted() && !isRunning() }} />
+                      <span class={`flex-1 leading-relaxed ${isCompleted() ? "theme-muted line-through decoration-[var(--ui-muted)]" : "theme-text"}`}>
                         {entry.content ?? entry.title ?? entry.description ?? "step"}
                       </span>
                       <Show when={pb}>
-                        <span class={`shrink-0 mt-[2px] rounded border px-1.5 py-[1px] text-[8.5px] font-bold uppercase tracking-widest ${pb}`}>
+                        <span class={`plan-priority-badge ${pb}`}>
                           {entry.priority}
                         </span>
                       </Show>
@@ -488,7 +494,7 @@ export default function MessageWindow(props: MessageWindowProps) {
               class="flex flex-1 items-center gap-2 text-left"
               onClick={() => setQueueCollapsed(v => !v)}
             >
-              <span class="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse shrink-0" />
+              <span class="queued-status-dot" />
               <span class="text-[10px] theme-muted font-medium uppercase tracking-wider">Queued</span>
               <span class="text-[9px] theme-muted font-mono bg-[var(--ui-panel-2)] px-1.5 py-0.5 rounded-md">{props.activeSession()!.queuedMessages.length}</span>
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="theme-muted transition-transform" classList={{ "rotate-180": !queueCollapsed() }}>
@@ -499,7 +505,7 @@ export default function MessageWindow(props: MessageWindowProps) {
               <button
                 type="button"
                 onClick={() => props.onFlushQueue!()}
-                class="shrink-0 flex items-center gap-1 rounded-md border border-indigo-500/40 bg-indigo-500/10 px-2 py-0.5 text-[9px] font-semibold text-indigo-300 hover:bg-indigo-500/20 transition-colors"
+                class="queued-flush-button"
                 title="Interrupt current turn and send queued messages"
               >
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 11 12 6 7 11"/><polyline points="17 18 12 13 7 18"/></svg>
@@ -516,7 +522,7 @@ export default function MessageWindow(props: MessageWindowProps) {
                   <button
                     type="button"
                     onClick={() => props.onRemoveQueuedMessage(i())}
-                    class="shrink-0 opacity-0 group-hover:opacity-100 theme-muted hover:text-rose-400 transition-all mt-0.5"
+                    class="queued-remove-button"
                     title="Remove from queue"
                   >
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -529,30 +535,33 @@ export default function MessageWindow(props: MessageWindowProps) {
       </Show>
       <Show when={ctxMenu()}>
         {(pos) => (
-          <div
-            class="fixed z-[200] min-w-[140px] overflow-hidden rounded-lg shadow-xl shadow-black/60 backdrop-blur-md py-1 theme-dropdown"
-            style={`left:${pos().x}px;top:${pos().y}px`}
+          <ContextMenuSurface
+            x={pos().x}
+            y={pos().y}
+            width={150}
             onClick={(e) => e.stopPropagation()}
           >
-            <button
-              class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] theme-text hover:bg-[var(--ui-accent-soft)] transition-colors"
-              onClick={() => { closeCtxMenu(); props.onResetAgentContext?.(); }}
+            <ContextMenuItem
+              onSelect={() => { closeCtxMenu(); props.onResetAgentContext?.(); }}
+              icon={
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>
+                </svg>
+              }
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-zinc-500">
-                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>
-              </svg>
               Reset context
-            </button>
-            <button
-              class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] theme-text hover:bg-[var(--ui-accent-soft)] transition-colors"
-              onClick={() => { closeCtxMenu(); props.onReconnectAgent?.(); }}
+            </ContextMenuItem>
+            <ContextMenuItem
+              onSelect={() => { closeCtxMenu(); props.onReconnectAgent?.(); }}
+              icon={
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>
+                </svg>
+              }
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-zinc-500">
-                <path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>
-              </svg>
               Reconnect agent
-            </button>
-          </div>
+            </ContextMenuItem>
+          </ContextMenuSurface>
         )}
       </Show>
     </div>
@@ -661,4 +670,3 @@ function StreamSegmentList(props: {
     )}</Index>
   );
 }
-

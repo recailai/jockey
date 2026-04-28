@@ -201,6 +201,35 @@ export const commandApi = {
     call<Omit<ApplyChatCommandResult, "payload"> & { payload: P }>("apply_chat_command", { input, appSessionId }),
 };
 
+export type TerminalStartResponse = {
+  terminalId: string;
+  cwd: string;
+  shell: string;
+};
+
+export const terminalApi = {
+  start: (appSessionId: string) =>
+    call<TerminalStartResponse>("start_terminal_session", { appSessionId }),
+  write: (terminalId: string, data: string) =>
+    call<void>("write_terminal_session", { terminalId, data }),
+  stop: (terminalId: string) =>
+    call<void>("stop_terminal_session", { terminalId }),
+};
+
+export type WorkspaceOpenTarget =
+  | "vscode"
+  | "cursor"
+  | "sublime"
+  | "zed"
+  | "antigravity"
+  | "finder"
+  | "terminal";
+
+export const workspaceApi = {
+  open: (target: WorkspaceOpenTarget, appSessionId?: string | null) =>
+    call<void>("open_workspace_cmd", { target, appSessionId: appSessionId ?? null }),
+};
+
 export const contextApi = {
   list: (appSessionId: string) =>
     call<Array<{ scope: string; key: string; value: string; updatedAt: number }>>(

@@ -166,14 +166,12 @@ fn resolve_node_adapter(
     }
 
     if !prefer_package {
-        if let Some(resolved) =
-            resolve_path_adapter(
-                adapter_binary,
-                package_args,
-                required_help_arg,
-                required_probe_contains,
-            )
-        {
+        if let Some(resolved) = resolve_path_adapter(
+            adapter_binary,
+            package_args,
+            required_help_arg,
+            required_probe_contains,
+        ) {
             return Ok(resolved);
         }
     }
@@ -198,14 +196,12 @@ fn resolve_node_adapter(
     }
 
     if prefer_package {
-        if let Some(resolved) =
-            resolve_path_adapter(
-                adapter_binary,
-                package_args,
-                required_help_arg,
-                required_probe_contains,
-            )
-        {
+        if let Some(resolved) = resolve_path_adapter(
+            adapter_binary,
+            package_args,
+            required_help_arg,
+            required_probe_contains,
+        ) {
             return Ok(resolved);
         }
     }

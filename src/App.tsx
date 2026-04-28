@@ -1,10 +1,16 @@
 import { For, Show, Suspense, createMemo, createSignal, lazy, onCleanup, onMount } from "solid-js";
 
-import SessionTabs, { type SessionTab } from "./components/SessionTabs";
 import MessageWindow from "./components/MessageWindow";
 import ChatInput from "./components/ChatInput";
 import { now, DEFAULT_ROLE_ALIAS } from "./components/types";
 import { UI_THEME_KEY } from "./lib/theme";
+import SessionSidebar from "./components/SessionSidebar";
+import WorkspaceHeader, { type WorkspaceToolPanel } from "./components/WorkspaceHeader";
+import TerminalPanel from "./components/TerminalPanel";
+import type { SettingsTab } from "./components/SettingsPage";
+import WindowChrome from "./components/chrome/WindowChrome";
+import AppShell from "./components/shell/AppShell";
+import ToolPanelDock from "./components/shell/ToolPanelDock";
 
 import { useSessionManager } from "./hooks/useSessionManager";
 import { useStreamEngine } from "./hooks/useStreamEngine";
@@ -25,44 +31,46 @@ import { useGitPoller } from "./hooks/useGitPoller";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 
 
-const ConfigDrawer = lazy(() => import("./components/ConfigDrawer"));
-const ManagementPanel = lazy(() => import("./components/ManagementPanel"));
 const GitPanel = lazy(() => import("./components/GitPanel"));
 const FilesPanel = lazy(() => import("./components/FilesPanel"));
 const PreviewArea = lazy(() => import("./components/PreviewArea"));
-const StatusBar = lazy(() => import("./components/StatusBar"));
-import ActivityBar, { type ActivityPanel } from "./components/ActivityBar";
+const SettingsPage = lazy(() => import("./components/SettingsPage"));
 import { useResize } from "./lib/useResize";
 import { openPreviewTab, closePreviewTab, setActivePreviewTab, closeAllPreviewTabs, closeOtherPreviewTabs } from "./lib/previewTabs";
 
-const SIDEBAR_WIDTH_KEY = "jockey:sidebar.width";
-const SIDEBAR_PANEL_KEY = "jockey:sidebar.panel";
-const SIDEBAR_DEFAULT_WIDTH = 280;
-const SIDEBAR_MIN_WIDTH = 200;
-const SIDEBAR_MAX_WIDTH = 520;
+const TOOL_PANEL_KEY = "jockey:tool.panel";
+const LEFT_RAIL_WIDTH_KEY = "jockey:leftRailWidth";
+const RIGHT_TOOL_WIDTH_KEY = "jockey:rightToolPanelWidth";
 const EDITOR_RATIO_KEY = "jockey:editorChatRatio";
 const EDITOR_DEFAULT_RATIO = 0.6;
 const EDITOR_MIN_RATIO = 0.15;
 const EDITOR_MAX_RATIO = 0.85;
+const LEFT_RAIL_DEFAULT_WIDTH = 326;
+const LEFT_RAIL_MIN_WIDTH = 260;
+const LEFT_RAIL_MAX_WIDTH = 420;
+const RIGHT_TOOL_DEFAULT_WIDTH = 432;
+const RIGHT_TOOL_MIN_WIDTH = 320;
+const RIGHT_TOOL_MAX_WIDTH = 620;
 
 export default function App() {
   const { toasts, showToast } = useToast();
   const { uiTheme, setUiTheme } = useTheme();
 
-  const [showDrawer, setShowDrawer] = createSignal(false);
-  const [showManagement, setShowManagement] = createSignal(false);
+  const [showSettings, setShowSettings] = createSignal(false);
+  const [settingsInitialTab, setSettingsInitialTab] = createSignal<SettingsTab>("general");
+  const [settingsInitialRole, setSettingsInitialRole] = createSignal<string | undefined>(undefined);
+  const [leftRailOpen, setLeftRailOpen] = createSignal(true);
 
-  // Sidebar is always hidden on startup; SIDEBAR_PANEL_KEY is only consulted by
-  // Cmd/Ctrl+B restore to reopen the user's last-chosen panel.
-  const initialSidebarPanel = (): ActivityPanel | null => null;
-  const initialSidebarWidth = (): number => {
+  const initialPanelWidth = (key: string, fallback: number, min: number, max: number): number => {
     try {
-      const raw = window.localStorage.getItem(SIDEBAR_WIDTH_KEY);
-      const n = raw ? parseInt(raw, 10) : NaN;
-      if (Number.isFinite(n)) return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, n));
+      const raw = window.localStorage.getItem(key);
+      const n = raw ? parseFloat(raw) : NaN;
+      if (Number.isFinite(n)) return Math.min(max, Math.max(min, n));
     } catch { /* ignore */ }
-    return SIDEBAR_DEFAULT_WIDTH;
+    return fallback;
   };
+
+  const initialToolPanel = (): WorkspaceToolPanel | null => null;
   const initialEditorRatio = (): number => {
     try {
       const raw = window.localStorage.getItem(EDITOR_RATIO_KEY);
@@ -72,28 +80,34 @@ export default function App() {
     return EDITOR_DEFAULT_RATIO;
   };
 
-  const [sidebarPanel, setSidebarPanelInternal] = createSignal<ActivityPanel | null>(initialSidebarPanel());
-  const [sidebarWidth, setSidebarWidth] = createSignal(initialSidebarWidth());
+  const [toolPanel, setToolPanelInternal] = createSignal<WorkspaceToolPanel | null>(initialToolPanel());
+  const [terminalCommandRequest, setTerminalCommandRequest] = createSignal<{ id: number; command: string } | null>(null);
+  const [leftRailWidth, setLeftRailWidth] = createSignal(initialPanelWidth(LEFT_RAIL_WIDTH_KEY, LEFT_RAIL_DEFAULT_WIDTH, LEFT_RAIL_MIN_WIDTH, LEFT_RAIL_MAX_WIDTH));
+  const [rightToolWidth, setRightToolWidth] = createSignal(initialPanelWidth(RIGHT_TOOL_WIDTH_KEY, RIGHT_TOOL_DEFAULT_WIDTH, RIGHT_TOOL_MIN_WIDTH, RIGHT_TOOL_MAX_WIDTH));
   const [editorRatio, setEditorRatio] = createSignal(initialEditorRatio());
   const [splitContainerEl, setSplitContainerEl] = createSignal<HTMLDivElement | null>(null);
   const [splitContainerHeight, setSplitContainerHeight] = createSignal(0);
 
-  const setSidebarPanel = (p: ActivityPanel | null) => {
-    setSidebarPanelInternal(p);
+  const setToolPanel = (p: WorkspaceToolPanel | null) => {
+    setToolPanelInternal(p);
     try {
-      // Remember last-opened panel for Cmd/Ctrl+B restore; only clear when a new value is set.
-      if (p !== null) window.localStorage.setItem(SIDEBAR_PANEL_KEY, p);
+      if (p !== null) window.localStorage.setItem(TOOL_PANEL_KEY, p);
     } catch { /* ignore */ }
-  };
-  const persistSidebarWidth = (w: number) => {
-    const clamped = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, w));
-    setSidebarWidth(clamped);
-    try { window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(clamped)); } catch { /* ignore */ }
   };
   const persistEditorRatio = (r: number) => {
     const clamped = Math.min(EDITOR_MAX_RATIO, Math.max(EDITOR_MIN_RATIO, r));
     setEditorRatio(clamped);
     try { window.localStorage.setItem(EDITOR_RATIO_KEY, String(clamped)); } catch { /* ignore */ }
+  };
+  const persistLeftRailWidth = (px: number) => {
+    const clamped = Math.min(LEFT_RAIL_MAX_WIDTH, Math.max(LEFT_RAIL_MIN_WIDTH, px));
+    setLeftRailWidth(clamped);
+    try { window.localStorage.setItem(LEFT_RAIL_WIDTH_KEY, String(clamped)); } catch { /* ignore */ }
+  };
+  const persistRightToolWidth = (px: number) => {
+    const clamped = Math.min(RIGHT_TOOL_MAX_WIDTH, Math.max(RIGHT_TOOL_MIN_WIDTH, px));
+    setRightToolWidth(clamped);
+    try { window.localStorage.setItem(RIGHT_TOOL_WIDTH_KEY, String(clamped)); } catch { /* ignore */ }
   };
 
   const insertMentionAtCaret = (p: string) => {
@@ -109,14 +123,6 @@ export default function App() {
     queueMicrotask(() => richInputEl?.focus());
   };
 
-  const sidebarResize = useResize({
-    axis: "x",
-    min: SIDEBAR_MIN_WIDTH,
-    max: SIDEBAR_MAX_WIDTH,
-    getStart: () => sidebarWidth(),
-    onCommit: persistSidebarWidth,
-  });
-
   const editorResize = useResize({
     axis: "y",
     min: 80,
@@ -127,14 +133,38 @@ export default function App() {
       if (h > 0) persistEditorRatio(px / h);
     },
   });
-  const [managementInitialTab, setManagementInitialTab] = createSignal<"sessions" | "workflows" | "roles" | "mcp" | "skills" | "rules" | "agents">("sessions");
-  const [managementInitialRole, setManagementInitialRole] = createSignal<string | undefined>(undefined);
+  const leftRailResize = useResize({
+    axis: "x",
+    min: LEFT_RAIL_MIN_WIDTH,
+    max: LEFT_RAIL_MAX_WIDTH,
+    getStart: () => leftRailWidth(),
+    onCommit: persistLeftRailWidth,
+  });
+  const rightToolResize = useResize({
+    axis: "x",
+    min: RIGHT_TOOL_MIN_WIDTH,
+    max: RIGHT_TOOL_MAX_WIDTH,
+    getStart: () => rightToolWidth(),
+    onCommit: persistRightToolWidth,
+    invert: true,
+  });
+
+  const openSettings = (tab: SettingsTab = "general", roleName?: string) => {
+    setSettingsInitialTab(tab);
+    setSettingsInitialRole(roleName);
+    setShowSettings(true);
+  };
 
   const [richNodes, setRichNodes] = createSignal<RichNode[]>([]);
   let richInputEl: HTMLDivElement | undefined;
 
   const input = () => getPlainText(richNodes());
   const setInput = (v: string) => setRichNodes([{ kind: "text", text: v }]);
+  const setChatInput = (value: string | ((prev: string) => string)) => {
+    const next = typeof value === "function" ? value(input()) : value;
+    setInput(next);
+    return next;
+  };
 
   const fakeInputEl = (): HTMLInputElement => {
     const plain = input();
@@ -159,12 +189,6 @@ export default function App() {
   } = sessionManager;
 
   const { gitChangeCount, gitStatus, refetch: refetchGitStatus } = useGitPoller(activeSession);
-
-  // Minimal projection for SessionTabs — only re-computes when id/title/status change,
-  // not on every streaming delta. Prevents full For reconciliation on each stream update.
-  const sessionTabs = createMemo<SessionTab[]>(() =>
-    sessions.map((s) => ({ id: s.id, title: s.title, status: s.status }))
-  );
 
   const streamEngine = useStreamEngine(sessionManager);
   const {
@@ -393,24 +417,28 @@ export default function App() {
     void appSessionApi.remove(id).catch(() => {});
   };
 
-  const toggleSidebar = (panel: ActivityPanel) =>
-    setSidebarPanel(sidebarPanel() === panel ? null : panel);
+  const toggleToolPanel = (panel: WorkspaceToolPanel) =>
+    setToolPanel(toolPanel() === panel ? null : panel);
+  const runToolbarAction = (command: string) => {
+    setToolPanel("terminal");
+    setTerminalCommandRequest({ id: Date.now(), command });
+  };
 
-  const toggleSidebarRestore = () => {
-    if (sidebarPanel() !== null) { setSidebarPanel(null); return; }
-    let remembered: ActivityPanel | null = null;
+  const toggleToolPanelRestore = () => {
+    if (toolPanel() !== null) { setToolPanel(null); return; }
+    let remembered: WorkspaceToolPanel | null = null;
     try {
-      const raw = window.localStorage.getItem(SIDEBAR_PANEL_KEY);
-      if (raw === "git" || raw === "files") remembered = raw;
+      const raw = window.localStorage.getItem(TOOL_PANEL_KEY);
+      if (raw === "git" || raw === "files" || raw === "terminal" || raw === "commit") remembered = raw;
     } catch { }
-    setSidebarPanel(remembered ?? "files");
+    setToolPanel(remembered ?? "files");
   };
 
   useKeyboardShortcuts({
-    newSession: () => setShowDrawer((v) => !v),
-    toggleManagement: () => setShowManagement((v) => !v),
-    toggleSidebarRestore,
-    setSidebarPanel: (p) => { if (p !== null) toggleSidebar(p); },
+    newSession: () => showSettings() ? setShowSettings(false) : openSettings("general"),
+    toggleManagement: () => openSettings("archived"),
+    toggleSidebarRestore: toggleToolPanelRestore,
+    setSidebarPanel: (p) => { if (p !== null) toggleToolPanel(p); },
     cancelCurrentRun: () => { void cancelCurrentRun(); },
   });
 
@@ -462,259 +490,30 @@ export default function App() {
   });
 
   return (
-    <div
-      class="window-bg h-dvh overflow-hidden text-[var(--ui-text)] relative flex flex-col"
-      onContextMenu={(e) => e.preventDefault()}
-    >
-      <div class="flex flex-1 flex-row min-h-0 min-w-0">
-        <ActivityBar activePanel={sidebarPanel} onSelect={(p) => setSidebarPanel(p)} gitChangeCount={gitChangeCount} />
-        <Show when={sidebarPanel() !== null}>
-          <div
-            class="theme-sidebar-shell shrink-0 flex flex-col min-h-0"
-            style={{ width: `${sidebarWidth()}px` }}
-          >
-            <div data-tauri-drag-region class="h-[34px] shrink-0" />
-            <Suspense fallback={<div class="flex-1 theme-sidebar" />}>
-              <Show when={sidebarPanel() === "git"}>
-                <GitPanel
-                  appSessionId={() => activeSession()?.id}
-                  cwd={() => activeSession()?.cwd ?? null}
-                  gitStatus={gitStatus}
-                  onRefresh={refetchGitStatus}
-                  onAddMention={insertMentionAtCaret}
-                  onCollapse={() => setSidebarPanel(null)}
-                  onOpenDiff={(path, staged, untracked) => {
-                    const sid = activeSessionId();
-                    const cwd = activeSession()?.cwd ?? "";
-                    if (!sid || !cwd) return;
-                    openPreviewTab(mutateSession, sid, {
-                      cwd, path, initialMode: "diff", staged, untracked,
-                    });
-                  }}
-                />
-              </Show>
-              <Show when={sidebarPanel() === "files"}>
-                <FilesPanel
-                  appSessionId={() => activeSession()?.id}
-                  cwd={() => activeSession()?.cwd ?? null}
-                  onOpenFile={(path) => {
-                    const sid = activeSessionId();
-                    const cwd = activeSession()?.cwd ?? "";
-                    if (!sid || !cwd) return;
-                    openPreviewTab(mutateSession, sid, {
-                      cwd, path, initialMode: "file", staged: false, untracked: false,
-                    });
-                  }}
-                />
-              </Show>
-            </Suspense>
-          </div>
-          <div
-            class="resizer-x"
-            onMouseDown={sidebarResize.beginResize}
-            title="Drag to resize"
-          />
-          <Show when={sidebarResize.previewPx() !== null}>
-            <div
-              class="pointer-events-none fixed top-0 bottom-0 w-px bg-[var(--ui-accent)] opacity-70 z-[70]"
-              style={{ left: `${(sidebarResize.previewPx() ?? 0) + 44}px` }}
-            />
-          </Show>
-        </Show>
-
-        <div class="flex flex-1 flex-col min-h-0 min-w-0">
-          <div class="flex flex-1 flex-col min-h-0" style={{ "background-color": "var(--ui-bg)", "background-image": "radial-gradient(ellipse 80% 50% at 50% 0%, var(--ui-selection), rgba(255,255,255,0))" }}>
-            <SessionTabs
-              leadingInsetPx={sidebarPanel() === null ? 36 : 0}
-              sessions={sessionTabs()}
-              activeSessionId={activeSessionId}
-              setActiveSessionId={setActiveSessionId}
-              onNewSession={newSession}
-              onCloseSession={closeSession}
-              updateSession={updateSession}
-              onRefresh={() => { void refreshAssistants(); void refreshRoles(); void refreshSkills(); }}
-              onToggleDrawer={() => setShowDrawer((v) => !v)}
-              onToggleManagement={() => setShowManagement((v) => !v)}
-            />
-
-            <div
-              class="flex flex-1 flex-col min-h-0 relative"
-              ref={(el) => {
-                setSplitContainerEl(el);
-                const ro = new ResizeObserver((entries) => {
-                  for (const e of entries) setSplitContainerHeight(e.contentRect.height);
-                });
-                ro.observe(el);
-                onCleanup(() => ro.disconnect());
-                setSplitContainerHeight(el.clientHeight);
-              }}
-            >
-              <Show when={(activeSession()?.previewTabs.length ?? 0) > 0}>
-                <div
-                  class="shrink-0 overflow-hidden"
-                  style={{ height: `${Math.round(editorRatio() * splitContainerHeight())}px`, "border-bottom": "1px solid var(--ui-separator, var(--ui-border-strong))" }}
-                >
-                  <Suspense fallback={<div class="flex-1 theme-bg" />}>
-                    <PreviewArea
-                      session={activeSession}
-                      appSessionId={() => activeSession()?.id}
-                      onCloseTab={(tabId) => {
-                        const sid = activeSessionId();
-                        if (sid) closePreviewTab(mutateSession, sid, tabId);
-                      }}
-                      onCloseOthers={(tabId) => {
-                        const sid = activeSessionId();
-                        if (sid) closeOtherPreviewTabs(mutateSession, sid, tabId);
-                      }}
-                      onCloseAll={() => {
-                        const sid = activeSessionId();
-                        if (sid) closeAllPreviewTabs(mutateSession, sid);
-                      }}
-                      onActivateTab={(tabId) => {
-                        const sid = activeSessionId();
-                        if (sid) setActivePreviewTab(mutateSession, sid, tabId);
-                      }}
-                      onAddMention={insertMentionAtCaret}
-                    />
-                  </Suspense>
-                </div>
-                <div
-                  class="resizer-y"
-                  onMouseDown={editorResize.beginResize}
-                  title="Drag to resize"
-                />
-                <Show when={editorResize.previewPx() !== null}>
-                  <div
-                    class="pointer-events-none fixed left-0 right-0 h-px bg-[var(--ui-accent)] opacity-70 z-[70]"
-                    style={{
-                      top: `${(splitContainerEl()?.getBoundingClientRect().top ?? 0) + (editorResize.previewPx() ?? 0)}px`,
-                    }}
-                  />
-                </Show>
-              </Show>
-
-              <div class="flex flex-1 flex-col min-h-0">
-                <MessageWindow
-                  activeSessionId={activeSessionId}
-                  activeSession={activeSession}
-                  activeBackendRole={activeBackendRole}
-                  patchActiveSession={patchActiveSession}
-                  onRemoveQueuedMessage={(index) => {
-                    const sid = activeSessionId();
-                    if (!sid) return;
-                    const idx = getSessionIndex(sid);
-                    if (idx === -1) return;
-                    setSessions(idx, "queuedMessages", (prev) => prev.filter((_, i) => i !== index));
-                  }}
-                  onFlushQueue={() => { void cancelCurrentRun(); }}
-                  onResetAgentContext={resetActiveAgentContext}
-                  onReconnectAgent={reconnectActiveAgent}
-                  onListMounted={onListMounted}
-                  onListUnmounted={onListUnmounted}
-                  onFileClick={(path, kind) => {
-                    const sid = activeSessionId();
-                    const cwd = activeSession()?.cwd ?? "";
-                    if (!sid || !cwd) return;
-                    const isEdit = kind === "write" || kind === "edit" || kind === "create" || kind === "patch";
-                    openPreviewTab(mutateSession, sid, {
-                      cwd, path, initialMode: isEdit ? "diff" : "file", staged: false, untracked: false,
-                    });
-                  }}
-                  onRejectHunk={(rejectPrompt) => {
-                    void sendRaw(rejectPrompt, false);
-                  }}
-                />
-              </div>
-            </div>
-          </div>
-
-          <ChatInput
-            input={input}
-            setInput={setInput}
-            richNodes={richNodes}
-            setRichNodes={setRichNodes}
-            activeRole={chatActiveRole}
-            submitting={chatSubmitting}
-            queuedCount={chatQueuedCount}
-            onResetRole={() => patchActiveSession({ activeRole: DEFAULT_ROLE_ALIAS })}
-            isCustomRole={isCustomRole}
-            onSubmit={handleSend}
-            onInputKeyDown={handleInputKeyDownFinal}
-            refreshInputCompletions={refreshInputCompletions}
-            mentionOpen={mentionOpen}
-            mentionItems={mentionItems}
-            mentionActiveIndex={mentionActiveIndex}
-            slashOpen={slashOpen}
-            slashItems={slashItems}
-            slashActiveIndex={slashActiveIndex}
-            applyMentionCandidate={applyMentionCandidate}
-            applySlashCandidate={applySlashCandidate}
-            closeMentionMenu={closeMentionMenu}
-            closeSlashMenu={closeSlashMenu}
-            richInputRef={(el) => { richInputEl = el; }}
-            mentionCloseTimerRef={mentionCloseTimerRef}
-            mentionDebounceTimerRef={mentionDebounceTimerRef}
-            hasImages={() => richNodes().some(isImageNode)}
-            onPasteImage={handlePasteImage}
-            onRemoveImage={(removeIdx) => {
-              setRichNodes((prev) => {
-                const without = prev.filter((n) => !(isImageNode(n) && n.index === removeIdx));
-                let imgCounter = 0;
-                return without.map((n) => isImageNode(n) ? { ...n, index: imgCounter++ } : n);
-              });
-            }}
-          />
-        </div>
-      </div>
-
-      <Suspense fallback={<div style={{ height: "22px" }} class="shrink-0 border-t theme-border theme-bg" />}>
-        <StatusBar
-          appSessionId={() => activeSession()?.id}
-          cwd={() => activeSession()?.cwd ?? null}
-          gitStatus={gitStatus}
-          onOpenGit={() => setSidebarPanel("git")}
-        />
-      </Suspense>
-
-      <Show when={showDrawer()}>
-        <Suspense fallback={null}>
-          <ConfigDrawer
-            showDrawer={showDrawer}
-            setShowDrawer={setShowDrawer}
-            assistants={assistants}
-            roles={roles}
-            skills={skills}
-            activeSession={activeSession}
-            patchActiveSession={patchActiveSession}
-            sendRaw={sendRaw}
-            refreshRoles={refreshRoles}
-            refreshSkills={refreshSkills}
-            refreshAssistants={refreshAssistants}
-            pushMessage={pushMessage}
-            fetchRoleConfig={fetchRoleConfig}
-            onOpenManagement={(tab, roleName) => {
-              setManagementInitialTab(tab ?? "sessions");
-              setManagementInitialRole(roleName);
-              setShowManagement(true);
-            }}
+    <AppShell
+      showSettings={showSettings()}
+      settings={
+        <Suspense fallback={<div class="h-dvh theme-bg" />}>
+          <SettingsPage
+            initialTab={settingsInitialTab()}
+            initialRoleName={settingsInitialRole()}
             uiTheme={uiTheme}
             setUiTheme={(th) => {
               setUiTheme(th);
               window.localStorage.setItem(UI_THEME_KEY, th);
               document.documentElement.setAttribute("data-theme", th);
             }}
-          />
-        </Suspense>
-      </Show>
-
-      <Show when={showManagement()}>
-        <Suspense fallback={null}>
-          <ManagementPanel
-            show={showManagement}
-            onClose={() => setShowManagement(false)}
-            initialTab={managementInitialTab()}
-            initialRoleName={managementInitialRole()}
+            assistants={assistants}
+            roles={roles}
+            skills={skills}
             activeSessions={sessions}
+            activeSession={activeSession}
+            patchActiveSession={patchActiveSession}
+            updateSession={updateSession}
+            refreshSkills={refreshSkills}
+            refreshRoles={refreshRoles}
+            fetchRoleConfig={fetchRoleConfig}
+            pushMessage={pushMessage}
             onRestoreSession={(id, title, activeRole, runtimeKind, cwd) => {
               const existing = getSessionIndex(id) !== -1;
               if (!existing) {
@@ -726,29 +525,274 @@ export default function App() {
                 setSessions(sessions.length, s);
               }
               setActiveSessionId(id);
+              setShowSettings(false);
             }}
-            skills={skills}
-            roles={roles}
-            refreshSkills={refreshSkills}
-            activeSession={activeSession}
-            patchActiveSession={patchActiveSession}
-            updateSession={updateSession}
-            refreshRoles={refreshRoles}
-            fetchRoleConfig={fetchRoleConfig}
-            pushMessage={pushMessage}
+            onBack={() => setShowSettings(false)}
           />
         </Suspense>
-      </Show>
+      }
+      chrome={
+        <WindowChrome
+          leftRailOpen={leftRailOpen()}
+          onToggleLeftRail={() => setLeftRailOpen((v) => !v)}
+        />
+      }
+      sidebar={
+        <Show when={leftRailOpen()}>
+          <SessionSidebar
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            widthPx={leftRailWidth}
+            setActiveSessionId={setActiveSessionId}
+            onNewSession={newSession}
+            onCloseSession={closeSession}
+            updateSession={updateSession}
+            onOpenAutomations={() => openSettings("automations")}
+            onOpenSettings={() => openSettings("general")}
+          />
+          <div
+            class="resizer-x sidebar-resizer"
+            onMouseDown={leftRailResize.beginResize}
+            title="Drag to resize sidebar"
+          />
+          <Show when={leftRailResize.previewPx() !== null}>
+            <div
+              class="pointer-events-none fixed bottom-0 top-0 w-px bg-[var(--ui-accent)] opacity-70 z-[70]"
+              style={{ left: `${leftRailResize.previewPx() ?? 0}px` }}
+            />
+          </Show>
+        </Show>
+      }
+      header={
+        <WorkspaceHeader
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          setActiveSessionId={setActiveSessionId}
+          activeSession={activeSession}
+          leftRailOpen={leftRailOpen}
+          roles={roles}
+          assistants={assistants}
+          gitStatus={gitStatus}
+          gitChangeCount={gitChangeCount}
+          activeToolPanel={toolPanel}
+          onNewSession={newSession}
+          onCloseSession={closeSession}
+          onToggleToolPanel={toggleToolPanel}
+          onCancelRun={() => { void cancelCurrentRun(); }}
+          onRunAction={runToolbarAction}
+          onSelectRole={(roleName) => {
+            if (roleName === DEFAULT_ROLE_ALIAS) {
+              patchActiveSession({ activeRole: DEFAULT_ROLE_ALIAS, discoveredConfigOptions: [] });
+              return;
+            }
+            const role = roles().find((r) => r.roleName === roleName);
+            patchActiveSession({
+              activeRole: roleName,
+              runtimeKind: role?.runtimeKind ?? activeSession()?.runtimeKind ?? null,
+              discoveredConfigOptions: [],
+            });
+            if (role) {
+              void fetchConfigOptions(role.runtimeKind, role.roleName).then((opts) => {
+                patchActiveSession({ discoveredConfigOptions: opts });
+              });
+            }
+          }}
+        />
+      }
+      preview={<></>}
+      messages={
+        <div class="main-work-area flex flex-1 flex-col min-h-0">
+          <div
+            class="flex flex-1 flex-col min-h-0 relative"
+            ref={(el) => {
+              setSplitContainerEl(el);
+              const ro = new ResizeObserver((entries) => {
+                for (const e of entries) setSplitContainerHeight(e.contentRect.height);
+              });
+              ro.observe(el);
+              onCleanup(() => ro.disconnect());
+              setSplitContainerHeight(el.clientHeight);
+            }}
+          >
+            <Show when={(activeSession()?.previewTabs.length ?? 0) > 0}>
+              <div
+                class="preview-shell shrink-0 overflow-hidden"
+                style={{ height: `${Math.round(editorRatio() * splitContainerHeight())}px` }}
+              >
+                <Suspense fallback={<div class="flex-1 theme-bg" />}>
+                  <PreviewArea
+                    session={activeSession}
+                    appSessionId={() => activeSession()?.id}
+                    onCloseTab={(tabId) => {
+                      const sid = activeSessionId();
+                      if (sid) closePreviewTab(mutateSession, sid, tabId);
+                    }}
+                    onCloseOthers={(tabId) => {
+                      const sid = activeSessionId();
+                      if (sid) closeOtherPreviewTabs(mutateSession, sid, tabId);
+                    }}
+                    onCloseAll={() => {
+                      const sid = activeSessionId();
+                      if (sid) closeAllPreviewTabs(mutateSession, sid);
+                    }}
+                    onActivateTab={(tabId) => {
+                      const sid = activeSessionId();
+                      if (sid) setActivePreviewTab(mutateSession, sid, tabId);
+                    }}
+                    onAddMention={insertMentionAtCaret}
+                  />
+                </Suspense>
+              </div>
+              <div
+                class="resizer-y"
+                onMouseDown={editorResize.beginResize}
+                title="Drag to resize"
+              />
+              <Show when={editorResize.previewPx() !== null}>
+                <div
+                  class="pointer-events-none fixed left-0 right-0 h-px bg-[var(--ui-accent)] opacity-70 z-[70]"
+                  style={{
+                    top: `${(splitContainerEl()?.getBoundingClientRect().top ?? 0) + (editorResize.previewPx() ?? 0)}px`,
+                  }}
+                />
+              </Show>
+            </Show>
 
-      <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
-        <For each={toasts()}>
-          {(t) => (
-            <div class={`pointer-events-auto max-w-xs rounded-lg px-4 py-2 text-xs shadow-lg ${t.severity === "info" ? "theme-surface theme-text" : "bg-rose-900/90 text-rose-200"}`}>
-              {t.message}
+            <div class="flex flex-1 flex-col min-h-0">
+              <MessageWindow
+                activeSessionId={activeSessionId}
+                activeSession={activeSession}
+                activeBackendRole={activeBackendRole}
+                patchActiveSession={patchActiveSession}
+                onRemoveQueuedMessage={(index) => {
+                  const sid = activeSessionId();
+                  if (!sid) return;
+                  const idx = getSessionIndex(sid);
+                  if (idx === -1) return;
+                  setSessions(idx, "queuedMessages", (prev) => prev.filter((_, i) => i !== index));
+                }}
+                onFlushQueue={() => { void cancelCurrentRun(); }}
+                onResetAgentContext={resetActiveAgentContext}
+                onReconnectAgent={reconnectActiveAgent}
+                onListMounted={onListMounted}
+                onListUnmounted={onListUnmounted}
+                onFileClick={(path, kind) => {
+                  const sid = activeSessionId();
+                  const cwd = activeSession()?.cwd ?? "";
+                  if (!sid || !cwd) return;
+                  const isEdit = kind === "write" || kind === "edit" || kind === "create" || kind === "patch";
+                  openPreviewTab(mutateSession, sid, {
+                    cwd, path, initialMode: isEdit ? "diff" : "file", staged: false, untracked: false,
+                  });
+                }}
+                onRejectHunk={(rejectPrompt) => {
+                  void sendRaw(rejectPrompt, false);
+                }}
+              />
             </div>
-          )}
-        </For>
-      </div>
-    </div>
+          </div>
+        </div>
+      }
+      composer={
+        <ChatInput
+          input={input}
+          setInput={setChatInput}
+          richNodes={richNodes}
+          setRichNodes={setRichNodes}
+          activeRole={chatActiveRole}
+          submitting={chatSubmitting}
+          queuedCount={chatQueuedCount}
+          onResetRole={() => patchActiveSession({ activeRole: DEFAULT_ROLE_ALIAS })}
+          isCustomRole={isCustomRole}
+          onSubmit={handleSend}
+          onInputKeyDown={handleInputKeyDownFinal}
+          refreshInputCompletions={refreshInputCompletions}
+          mentionOpen={mentionOpen}
+          mentionItems={mentionItems}
+          mentionActiveIndex={mentionActiveIndex}
+          slashOpen={slashOpen}
+          slashItems={slashItems}
+          slashActiveIndex={slashActiveIndex}
+          applyMentionCandidate={applyMentionCandidate}
+          applySlashCandidate={applySlashCandidate}
+          closeMentionMenu={closeMentionMenu}
+          closeSlashMenu={closeSlashMenu}
+          richInputRef={(el) => { richInputEl = el; }}
+          mentionCloseTimerRef={mentionCloseTimerRef}
+          mentionDebounceTimerRef={mentionDebounceTimerRef}
+          hasImages={() => richNodes().some(isImageNode)}
+          onPasteImage={handlePasteImage}
+          onRemoveImage={(removeIdx) => {
+            setRichNodes((prev) => {
+              const without = prev.filter((n) => !(isImageNode(n) && n.index === removeIdx));
+              let imgCounter = 0;
+              return without.map((n) => isImageNode(n) ? { ...n, index: imgCounter++ } : n);
+            });
+          }}
+        />
+      }
+      rightDock={
+        <ToolPanelDock
+          open={toolPanel() !== null}
+          widthPx={rightToolWidth()}
+          previewPx={rightToolResize.previewPx()}
+          onResizeStart={rightToolResize.beginResize}
+        >
+          <Suspense fallback={<div class="flex-1 bg-[var(--ui-sidebar-bg)]" />}>
+            <Show when={toolPanel() === "git" || toolPanel() === "commit"}>
+              <GitPanel
+                appSessionId={() => activeSession()?.id}
+                cwd={() => activeSession()?.cwd ?? null}
+                gitStatus={gitStatus}
+                onRefresh={refetchGitStatus}
+                onAddMention={insertMentionAtCaret}
+                onCollapse={() => setToolPanel(null)}
+                onOpenDiff={(path, staged, untracked) => {
+                  const sid = activeSessionId();
+                  const cwd = activeSession()?.cwd ?? "";
+                  if (!sid || !cwd) return;
+                  openPreviewTab(mutateSession, sid, {
+                    cwd, path, initialMode: "diff", staged, untracked,
+                  });
+                }}
+              />
+            </Show>
+            <Show when={toolPanel() === "files"}>
+              <FilesPanel
+                appSessionId={() => activeSession()?.id}
+                cwd={() => activeSession()?.cwd ?? null}
+                onOpenFile={(path) => {
+                  const sid = activeSessionId();
+                  const cwd = activeSession()?.cwd ?? "";
+                  if (!sid || !cwd) return;
+                  openPreviewTab(mutateSession, sid, {
+                    cwd, path, initialMode: "file", staged: false, untracked: false,
+                  });
+                }}
+                onCollapse={() => setToolPanel(null)}
+              />
+            </Show>
+            <Show when={toolPanel() === "terminal"}>
+              <TerminalPanel
+                session={activeSession()}
+                commandRequest={terminalCommandRequest()}
+                onClose={() => setToolPanel(null)}
+              />
+            </Show>
+          </Suspense>
+        </ToolPanelDock>
+      }
+      toasts={
+        <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+          <For each={toasts()}>
+            {(t) => (
+              <div class="jockey-toast pointer-events-auto" classList={{ "is-info": t.severity === "info", "is-danger": t.severity !== "info" }}>
+                {t.message}
+              </div>
+            )}
+          </For>
+        </div>
+      }
+    />
   );
 }

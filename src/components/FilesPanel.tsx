@@ -1,13 +1,15 @@
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
-import { ChevronRight, Folder, FolderOpen, File as FileIcon, RefreshCw, Eye, EyeOff } from "lucide-solid";
+import { ChevronRight, Folder, FolderOpen, File as FileIcon, RefreshCw, Eye, EyeOff, PanelRightClose } from "lucide-solid";
 import { fsApi, type DirEntry } from "../lib/tauriApi";
 import { useGitChanged } from "../hooks/useGitChanged";
+import { EmptyState, ListRow, Panel, PanelBody, PanelHeader, PanelHeaderAction } from "./ui";
 
 type FilesPanelProps = {
   appSessionId: () => string | undefined;
   cwd: () => string | null;
   onOpenFile: (relPath: string) => void;
+  onCollapse?: () => void;
 };
 
 type NodeState = {
@@ -70,14 +72,14 @@ function TreeNode(props: TreeNodeProps) {
   return (
     <Show when={isExpanded()}>
       <Show when={isLoading() && hasNoChildren()}>
-        <div class="row-item text-[11px] theme-muted" style={rowStyle(props.depth)}>
+        <ListRow class="text-[11px] theme-muted" style={rowStyle(props.depth)}>
           Loading…
-        </div>
+        </ListRow>
       </Show>
       <Show when={!isLoading() && error()}>
-        <div class="row-item text-[11px] text-rose-400" style={rowStyle(props.depth)} title={error()!}>
+        <ListRow class="text-[11px] text-[var(--ui-state-danger-text)]" style={rowStyle(props.depth)} title={error()!}>
           <span class="truncate">{error()}</span>
-        </div>
+        </ListRow>
       </Show>
       <Show when={!isLoading() || !hasNoChildren()}>
         <For each={children()}>
@@ -87,8 +89,8 @@ function TreeNode(props: TreeNodeProps) {
               const isOpen = () => !!props.nodes[childKey]?.expanded;
               return (
                 <>
-                  <div
-                    class="row-item"
+                  <ListRow
+                    class="file-tree-row"
                     style={rowStyle(props.depth)}
                     classList={{ "opacity-60": entry.name.startsWith(".") }}
                     onClick={() => props.toggle(childKey)}
@@ -97,11 +99,11 @@ function TreeNode(props: TreeNodeProps) {
                       size={12}
                       class={`shrink-0 transition-transform ${isOpen() ? "rotate-90" : ""}`}
                     />
-                    <Show when={isOpen()} fallback={<Folder size={14} class="shrink-0 text-sky-400/90" />}>
-                      <FolderOpen size={14} class="shrink-0 text-sky-400" />
+                    <Show when={isOpen()} fallback={<Folder size={14} class="shrink-0 theme-muted" />}>
+                      <FolderOpen size={14} class="shrink-0 theme-muted" />
                     </Show>
                     <span class="truncate">{entry.name}</span>
-                  </div>
+                  </ListRow>
                   <TreeNode
                     nodeKey={childKey}
                     depth={props.depth + 1}
@@ -113,15 +115,15 @@ function TreeNode(props: TreeNodeProps) {
               );
             }
             return (
-              <div
-                class="row-item"
+              <ListRow
+                class="file-tree-row"
                 style={rowStyle(props.depth + 1)}
                 classList={{ "opacity-60": entry.name.startsWith(".") }}
                 onClick={() => props.onOpenFile(childKey)}
               >
                 <FileIcon size={13} class="shrink-0 theme-muted" />
                 <span class="truncate">{entry.name}</span>
-              </div>
+              </ListRow>
             );
           }}
         </For>
@@ -239,32 +241,35 @@ export default function FilesPanel(props: FilesPanelProps) {
   };
 
   return (
-    <div class="flex flex-col h-full overflow-hidden theme-sidebar">
-      <div class="panel-header">
-        <span class="panel-header-title">Explorer</span>
+    <Panel class="tool-panel flex h-full flex-col overflow-hidden">
+      <PanelHeader class="panel-header">
+        <span class="panel-header-title">Files</span>
         <div class="flex items-center gap-0.5">
-          <button
-            type="button"
-            class="icon-btn"
+          <PanelHeaderAction
             title={showHidden() ? "Hide dotfiles" : "Show dotfiles"}
             onClick={() => setShowHidden((v) => !v)}
           >
             <Show when={showHidden()} fallback={<Eye size={13} />}>
               <EyeOff size={13} />
             </Show>
-          </button>
-          <button type="button" class="icon-btn" title="Refresh" onClick={() => reset()}>
+          </PanelHeaderAction>
+          <PanelHeaderAction title="Refresh" onClick={() => reset()}>
             <RefreshCw size={13} />
-          </button>
+          </PanelHeaderAction>
+          <Show when={props.onCollapse}>
+            <PanelHeaderAction title="Hide files" onClick={() => props.onCollapse?.()}>
+              <PanelRightClose size={13} />
+            </PanelHeaderAction>
+          </Show>
         </div>
-      </div>
-      <div class="flex-1 overflow-auto py-1">
+      </PanelHeader>
+      <PanelBody class="tool-panel-body flex-1 overflow-auto">
         <Show when={!props.appSessionId() || !props.cwd()}>
-          <div class="text-xs theme-muted text-center py-10 px-6 leading-relaxed">
+          <EmptyState>
             {!props.appSessionId() ? "No active session" : (
               <><div>No working directory</div><div class="opacity-60 mt-1 font-mono">/app_cd &lt;path&gt;</div></>
             )}
-          </div>
+          </EmptyState>
         </Show>
         <Show when={props.appSessionId() && props.cwd()}>
           <TreeNode
@@ -275,7 +280,7 @@ export default function FilesPanel(props: FilesPanelProps) {
             onOpenFile={props.onOpenFile}
           />
         </Show>
-      </div>
-    </div>
+      </PanelBody>
+    </Panel>
   );
 }

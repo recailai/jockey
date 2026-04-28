@@ -1,6 +1,6 @@
 import { marked } from "marked";
 
-const COPY_BTN = `<button data-copy-code class="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded text-[10px] font-mono opacity-0 group-hover/pre:opacity-100 transition-opacity cursor-pointer theme-muted hover:theme-text" style="background:var(--ui-panel)">Copy</button>`;
+const COPY_BTN = `<button data-copy-code class="jui-code-copy absolute top-1.5 right-1.5 opacity-0 group-hover/pre:opacity-100">Copy</button>`;
 
 function injectCopyButtons(html: string): string {
   return html.replace(/<pre>/g, `<pre class="group/pre relative">${COPY_BTN}`);
