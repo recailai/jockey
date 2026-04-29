@@ -356,14 +356,14 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
           onClick={() => props.onToggleToolPanel("files")}
           title="Files"
         >
-          <FileText size={16} />
+          <FileText size={15} />
         </ToolbarButton>
         <ToolbarButton
           active={props.activeToolPanel() === "git" || props.activeToolPanel() === "commit"}
           onClick={() => props.onToggleToolPanel("git")}
           title="Source Control"
         >
-          <GitBranch size={16} />
+          <GitBranch size={15} />
           <Show when={dirty() > 0}>
             <span class="toolbar-dot" />
           </Show>
@@ -373,7 +373,7 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
           onClick={() => props.onToggleToolPanel("terminal")}
           title="Terminal"
         >
-          <TerminalIcon size={16} />
+          <TerminalIcon size={15} />
         </ToolbarButton>
         <Show when={props.activeSession()?.submitting} fallback={
           <DropdownMenu open={actionMenuOpen()} onOpenChange={setActionMenuOpen}>
@@ -384,14 +384,14 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
                 title={`Run: ${action().command || action().name}`}
                 onClick={runAction}
               >
-                <Play size={16} />
+                <Play size={15} />
               </SplitButtonMain>
               <DropdownTrigger
                 variant="plain"
                 class="run-action-caret jui-split-button-trigger"
                 title="Run actions"
               >
-                <ChevronDown size={14} />
+                <ChevronDown size={13} />
               </DropdownTrigger>
             </SplitButton>
             <DropdownContent class="jui-run-action-menu">
@@ -412,7 +412,7 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
             onClick={props.onCancelRun}
             title="Cancel current run"
           >
-            <X size={15} />
+            <X size={14} />
           </ToolbarButton>
         </Show>
         <DropdownMenu open={ideMenuOpen()} onOpenChange={setIdeMenuOpen}>
@@ -431,7 +431,7 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
               class="ide-open-caret jui-split-button-trigger"
               title="Open workspace in..."
             >
-              <ChevronDown size={14} />
+              <ChevronDown size={13} />
             </DropdownTrigger>
           </SplitButton>
             <DropdownContent class="jui-ide-open-menu">
@@ -461,7 +461,7 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
             active={gitMenuOpen() || props.activeToolPanel() === "commit"}
             title="Git actions"
           >
-            <GitCommitHorizontal size={15} />
+            <GitCommitHorizontal size={14} />
             <span>Commit</span>
             <ChevronDown size={13} />
           </DropdownTrigger>

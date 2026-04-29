@@ -1,47 +1,166 @@
 @import "tailwindcss";
 
 /* ─── Theme tokens ────────────────────────────────────────────────────────────
-   Each theme defines:
-     --ui-*      semantic surface/border/text/accent tokens
-     --tone-*    100-950 grey scale mapped to the theme's hue
-   To add a theme: define a new :root[data-theme="<key>"] block here,
-   add it to src/lib/theme.ts UI_THEMES array, done.
+   Single source of truth for the Jockey UI primitives and shell.
+   Product components should consume --ui-* tokens instead of hardcoded colors.
 ──────────────────────────────────────────────────────────────────────────── */
-
-/* Default (Midnight dark) */
-:root {
-  --ui-bg: #09090b;
-  --ui-surface: #0d0d10;
-  --ui-surface-muted: #111114;
-  --ui-panel: rgba(24, 24, 27, 0.80);
-  --ui-panel-2: rgba(39, 39, 42, 0.30);
-  --ui-border: rgba(255, 255, 255, 0.10);
-  --ui-border-strong: rgba(255, 255, 255, 0.18);
-  --ui-separator: rgba(255, 255, 255, 0.14);
-  --ui-text: #ededed;
+:root,
+:root[data-theme="light"] {
+  --ui-bg: #ffffff;
+  --ui-foreground: #18181b;
+  --ui-surface: #ffffff;
+  --ui-surface-muted: #f6f6f7;
+  --ui-panel: rgba(255, 255, 255, 0.92);
+  --ui-panel-2: rgba(24, 24, 27, 0.035);
+  --ui-card-bg: #ffffff;
+  --ui-card-text: #18181b;
+  --ui-popover-bg: #ffffff;
+  --ui-popover-text: #18181b;
+  --ui-muted-bg: #f4f4f5;
+  --ui-muted-text: #71717a;
+  --ui-secondary-bg: #f4f4f5;
+  --ui-secondary-text: #18181b;
+  --ui-border: #e4e4e7;
+  --ui-border-strong: #d4d4d8;
+  --ui-separator: #ececef;
+  --ui-input-bg: #ffffff;
+  --ui-input-border: #d4d4d8;
+  --ui-ring: rgba(24, 24, 27, 0.14);
+  --ui-focus-ring: var(--ui-ring);
+  --ui-text: #18181b;
   --ui-muted: #71717a;
-  --ui-accent: #ffffff;
-  --ui-accent-soft: rgba(255, 255, 255, 0.07);
+  --ui-accent: #18181b;
+  --ui-accent-soft: rgba(24, 24, 27, 0.065);
+  --ui-accent-text: #ffffff;
+  --ui-control-bg: #ffffff;
+  --ui-control-hover: #f4f4f5;
+  --ui-selection: rgba(24, 24, 27, 0.065);
+  --ui-row-hover: #f4f4f5;
+  --ui-row-active: #eeeeef;
+  --ui-sidebar-bg: #f6f6f7;
+  --ui-sidebar-panel: #f6f6f7;
+  --ui-sidebar-hover: #eeeeef;
+  --ui-sidebar-active: #ffffff;
+  --ui-sidebar-active-border: #d4d4d8;
+  --ui-sidebar-border: #e4e4e7;
+  --ui-topbar-bg: rgba(255, 255, 255, 0.88);
+  --ui-main-bg: #ffffff;
+  --ui-preview-bg: #ffffff;
+  --ui-composer-bg: #ffffff;
+  --ui-terminal-bg: #ffffff;
+  --ui-terminal-text: #18181b;
+  --ui-user-bubble-from: #18181b;
+  --ui-user-bubble-to: #27272a;
+  --ui-user-bubble-border: #18181b;
+  --ui-user-bubble-text: #ffffff;
+  --ui-state-success-bg: #dcfce7;
+  --ui-state-success-text: #15803d;
+  --ui-state-warning-bg: #fef3c7;
+  --ui-state-warning-text: #a16207;
+  --ui-state-danger-bg: #fee2e2;
+  --ui-state-danger-text: #dc2626;
+  --ui-state-info-bg: #dbeafe;
+  --ui-state-info-text: #2563eb;
+  --ui-state-muted-bg: #f4f4f5;
+  --ui-state-muted-text: #71717a;
+  --ui-destructive: var(--ui-state-danger-text);
+  --ui-destructive-bg: var(--ui-state-danger-text);
+  --ui-destructive-text: #ffffff;
+  --tone-950: #ffffff;
+  --tone-900: #f7f7f8;
+  --tone-800: #eeeeef;
+  --tone-700: #d8d8da;
+  --tone-600: #a8a8ad;
+  --tone-500: #8a8a8a;
+  --tone-400: #6f6f73;
+  --tone-300: #4b4b4f;
+  --tone-200: #303033;
+  --tone-100: #1f1f1f;
+  --radius-control: 8px;
+  --radius-row: 10px;
+  --radius-card: 14px;
+  --radius-floating: 18px;
+  --ui-font-size-xs: 11px;
+  --ui-font-size-sm: 12.5px;
+  --ui-font-size-md: 14px;
+  --ui-line-height-tight: 1;
+  --ui-line-height-control: 18px;
+  --ui-line-height-body: 1.45;
+  --ui-control-height-xs: 26px;
+  --ui-control-height-sm: 30px;
+  --ui-control-height-md: 32px;
+  --ui-control-height-lg: 36px;
+  --ui-bar-height: 48px;
+  --ui-panel-header-height: 46px;
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-shadow-control: 0 1px 1px rgba(24, 24, 27, 0.04);
+  --ui-shadow-popover: 0 16px 38px rgba(24, 24, 27, 0.14), 0 0 0 1px rgba(24, 24, 27, 0.04);
+  --ui-shadow-floating: 0 28px 80px rgba(24, 24, 27, 0.20);
+  --mac-traffic-left: 14px;
+  --mac-traffic-top: 24px;
+  --mac-traffic-size: 14px;
+  --mac-traffic-radius: 7px;
+  --mac-traffic-group-width: 60px;
+  --mac-chrome-control-gap: 10px;
+  --mac-chrome-toggle-size: 28px;
+  --mac-chrome-toggle-offset-x: -2px;
+  --mac-chrome-toggle-offset-y: 0px;
+  /* Same vertical inset as workspace-topbar row (32px controls in --ui-bar-height). */
+  --mac-chrome-toggle-top: calc((var(--ui-bar-height) - var(--ui-control-height-md)) / 2 + var(--mac-chrome-toggle-offset-y));
+  --mac-chrome-toggle-left: calc(var(--mac-traffic-left) + var(--mac-traffic-group-width) + var(--mac-chrome-control-gap) + var(--mac-chrome-toggle-offset-x));
+}
+
+:root[data-theme="dark"] {
+  --ui-bg: #09090b;
+  --ui-foreground: #f4f4f5;
+  --ui-surface: #0f0f12;
+  --ui-surface-muted: #18181b;
+  --ui-panel: rgba(15, 15, 18, 0.92);
+  --ui-panel-2: rgba(255, 255, 255, 0.06);
+  --ui-card-bg: #101013;
+  --ui-card-text: #f4f4f5;
+  --ui-popover-bg: #18181b;
+  --ui-popover-text: #f4f4f5;
+  --ui-muted-bg: #18181b;
+  --ui-muted-text: #a1a1aa;
+  --ui-secondary-bg: #18181b;
+  --ui-secondary-text: #f4f4f5;
+  --ui-border: rgba(255, 255, 255, 0.11);
+  --ui-border-strong: rgba(255, 255, 255, 0.18);
+  --ui-separator: rgba(255, 255, 255, 0.10);
+  --ui-input-bg: #101013;
+  --ui-input-border: rgba(255, 255, 255, 0.16);
+  --ui-ring: rgba(255, 255, 255, 0.18);
+  --ui-focus-ring: var(--ui-ring);
+  --ui-text: #f4f4f5;
+  --ui-muted: #a1a1aa;
+  --ui-accent: #f4f4f5;
+  --ui-accent-soft: rgba(255, 255, 255, 0.075);
   --ui-accent-text: #09090b;
-  --ui-focus-ring: rgba(255, 255, 255, 0.22);
-  --ui-control-bg: rgba(255, 255, 255, 0.05);
-  --ui-control-hover: rgba(255, 255, 255, 0.08);
-  --ui-selection: rgba(255, 255, 255, 0.09);
-  --ui-sidebar-bg: #0d0d10;
-  --ui-sidebar-panel: rgba(18, 18, 22, 0.92);
-  --ui-sidebar-hover: rgba(255, 255, 255, 0.06);
-  --ui-sidebar-active: rgba(255, 255, 255, 0.09);
-  --ui-sidebar-active-border: rgba(255, 255, 255, 0.64);
-  --ui-sidebar-shadow: 1px 0 0 rgba(255, 255, 255, 0.08), 6px 0 18px rgba(0, 0, 0, 0.18);
-  --ui-drawer-bg: rgba(18, 18, 22, 0.96);
-  --ui-drawer-shadow: -14px 0 32px rgba(0, 0, 0, 0.24);
-  --ui-glow-top: #1a1a22;
-  --ui-glow-mid: #0e0e12;
-  --ui-glow-bottom: #09090b;
-  --ui-user-bubble-from: #27272a;
-  --ui-user-bubble-to: #18181b;
-  --ui-user-bubble-border: rgba(255, 255, 255, 0.08);
-  --ui-user-bubble-text: #f4f4f5;
+  --ui-control-bg: #101013;
+  --ui-control-hover: rgba(255, 255, 255, 0.075);
+  --ui-selection: rgba(255, 255, 255, 0.075);
+  --ui-row-hover: rgba(255, 255, 255, 0.075);
+  --ui-row-active: rgba(255, 255, 255, 0.10);
+  --ui-sidebar-bg: #0f0f12;
+  --ui-sidebar-panel: #0f0f12;
+  --ui-sidebar-hover: rgba(255, 255, 255, 0.075);
+  --ui-sidebar-active: #18181b;
+  --ui-sidebar-active-border: rgba(255, 255, 255, 0.16);
+  --ui-sidebar-border: rgba(255, 255, 255, 0.11);
+  --ui-topbar-bg: rgba(9, 9, 11, 0.84);
+  --ui-main-bg: #09090b;
+  --ui-preview-bg: #09090b;
+  --ui-composer-bg: #101013;
+  --ui-terminal-bg: #09090b;
+  --ui-terminal-text: #f4f4f5;
+  --ui-user-bubble-from: #f4f4f5;
+  --ui-user-bubble-to: #d4d4d8;
+  --ui-user-bubble-border: rgba(255, 255, 255, 0.2);
+  --ui-user-bubble-text: #09090b;
   --tone-950: #09090b;
   --tone-900: #18181b;
   --tone-800: #27272a;
@@ -52,143 +171,6 @@
   --tone-300: #d4d4d8;
   --tone-200: #e4e4e7;
   --tone-100: #f4f4f5;
-}
-
-:root[data-theme="dark"] {
-  --ui-bg: #0b1020;
-  --ui-surface: #111827;
-  --ui-surface-muted: #182033;
-  --ui-panel: rgba(17, 24, 39, 0.78);
-  --ui-panel-2: rgba(148, 163, 184, 0.10);
-  --ui-border: rgba(255, 255, 255, 0.12);
-  --ui-border-strong: rgba(255, 255, 255, 0.22);
-  --ui-separator: rgba(148, 163, 184, 0.20);
-  --ui-text: #f4f7fb;
-  --ui-muted: #8fa0b7;
-  --ui-accent: #8b5cf6;
-  --ui-accent-soft: rgba(139, 92, 246, 0.15);
-  --ui-accent-text: #ffffff;
-  --ui-focus-ring: rgba(139, 92, 246, 0.28);
-  --ui-control-bg: rgba(255, 255, 255, 0.05);
-  --ui-control-hover: rgba(255, 255, 255, 0.08);
-  --ui-selection: rgba(139, 92, 246, 0.14);
-  --ui-sidebar-bg: #0f172a;
-  --ui-sidebar-panel: rgba(15, 23, 42, 0.94);
-  --ui-sidebar-hover: rgba(148, 163, 184, 0.10);
-  --ui-sidebar-active: rgba(139, 92, 246, 0.16);
-  --ui-sidebar-active-border: #8b5cf6;
-  --ui-sidebar-shadow: 1px 0 0 rgba(255, 255, 255, 0.08), 8px 0 22px rgba(0, 0, 0, 0.22);
-  --ui-drawer-bg: rgba(17, 24, 39, 0.96);
-  --ui-drawer-shadow: -14px 0 34px rgba(0, 0, 0, 0.28);
-  --ui-glow-top: #172033;
-  --ui-glow-mid: #0f172a;
-  --ui-glow-bottom: #0b1020;
-  --ui-user-bubble-from: #1d2740;
-  --ui-user-bubble-to: #172033;
-  --ui-user-bubble-border: rgba(139, 92, 246, 0.22);
-  --ui-user-bubble-text: #f8fafc;
-  --tone-950: #0b1020;
-  --tone-900: #111827;
-  --tone-800: #182033;
-  --tone-700: #263149;
-  --tone-600: #3c4964;
-  --tone-500: #65748d;
-  --tone-400: #8fa0b7;
-  --tone-300: #bdc9d8;
-  --tone-200: #dce5ef;
-  --tone-100: #f4f7fb;
-}
-
-:root[data-theme="light"] {
-  --ui-bg: #f7f9fc;
-  --ui-surface: #ffffff;
-  --ui-surface-muted: #eef3f8;
-  --ui-panel: rgba(255, 255, 255, 0.85);
-  --ui-panel-2: rgba(15, 23, 42, 0.04);
-  --ui-border: rgba(15, 23, 42, 0.11);
-  --ui-border-strong: rgba(15, 23, 42, 0.20);
-  --ui-separator: rgba(15, 23, 42, 0.14);
-  --ui-text: #0f172a;
-  --ui-muted: #66758d;
-  --ui-accent: #2563eb;
-  --ui-accent-soft: rgba(37, 99, 235, 0.11);
-  --ui-accent-text: #ffffff;
-  --ui-focus-ring: rgba(37, 99, 235, 0.24);
-  --ui-control-bg: rgba(255, 255, 255, 0.78);
-  --ui-control-hover: rgba(226, 232, 240, 0.70);
-  --ui-selection: rgba(37, 99, 235, 0.10);
-  --ui-sidebar-bg: #f1f5fa;
-  --ui-sidebar-panel: rgba(246, 248, 252, 0.96);
-  --ui-sidebar-hover: rgba(37, 99, 235, 0.07);
-  --ui-sidebar-active: rgba(37, 99, 235, 0.12);
-  --ui-sidebar-active-border: #2563eb;
-  --ui-sidebar-shadow: 1px 0 0 rgba(15, 23, 42, 0.11), 8px 0 20px rgba(30, 41, 59, 0.08);
-  --ui-drawer-bg: rgba(251, 252, 254, 0.98);
-  --ui-drawer-shadow: -14px 0 32px rgba(30, 41, 59, 0.12);
-  --ui-glow-top: #ffffff;
-  --ui-glow-mid: #f5f8fc;
-  --ui-glow-bottom: #eef3f8;
-  --ui-user-bubble-from: #e2e8f0;
-  --ui-user-bubble-to: #f1f5f9;
-  --ui-user-bubble-border: rgba(15, 23, 42, 0.1);
-  --ui-user-bubble-text: #0f172a;
-  --tone-950: #f8fafc;
-  --tone-900: #f1f5f9;
-  --tone-800: #e2e8f0;
-  --tone-700: #cbd5e1;
-  --tone-600: #94a3b8;
-  --tone-500: #64748b;
-  --tone-400: #475569;
-  --tone-300: #334155;
-  --tone-200: #1e293b;
-  --tone-100: #0f172a;
-}
-
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme]) {
-    --ui-bg: #09090b;
-    --ui-surface: #0d0d10;
-    --ui-surface-muted: #111114;
-    --ui-panel: rgba(24, 24, 27, 0.80);
-    --ui-panel-2: rgba(39, 39, 42, 0.30);
-    --ui-border: rgba(255, 255, 255, 0.10);
-    --ui-border-strong: rgba(255, 255, 255, 0.18);
-    --ui-separator: rgba(255, 255, 255, 0.14);
-    --ui-text: #ededed;
-    --ui-muted: #71717a;
-    --ui-accent: #ffffff;
-    --ui-accent-soft: rgba(255, 255, 255, 0.07);
-    --ui-accent-text: #09090b;
-    --ui-focus-ring: rgba(255, 255, 255, 0.22);
-    --ui-control-bg: rgba(255, 255, 255, 0.05);
-    --ui-control-hover: rgba(255, 255, 255, 0.08);
-    --ui-selection: rgba(255, 255, 255, 0.09);
-    --ui-sidebar-bg: #0d0d10;
-    --ui-sidebar-panel: rgba(18, 18, 22, 0.92);
-    --ui-sidebar-hover: rgba(255, 255, 255, 0.06);
-    --ui-sidebar-active: rgba(255, 255, 255, 0.09);
-    --ui-sidebar-active-border: rgba(255, 255, 255, 0.64);
-    --ui-sidebar-shadow: 1px 0 0 rgba(255, 255, 255, 0.08), 6px 0 18px rgba(0, 0, 0, 0.18);
-    --ui-drawer-bg: rgba(18, 18, 22, 0.96);
-    --ui-drawer-shadow: -14px 0 32px rgba(0, 0, 0, 0.24);
-    --ui-glow-top: #1a1a22;
-    --ui-glow-mid: #0e0e12;
-    --ui-glow-bottom: #09090b;
-    --ui-user-bubble-from: #27272a;
-    --ui-user-bubble-to: #18181b;
-    --ui-user-bubble-border: rgba(255, 255, 255, 0.08);
-    --ui-user-bubble-text: #f4f4f5;
-    --tone-950: #09090b;
-    --tone-900: #18181b;
-    --tone-800: #27272a;
-    --tone-700: #3f3f46;
-    --tone-600: #52525b;
-    --tone-500: #71717a;
-    --tone-400: #a1a1aa;
-    --tone-300: #d4d4d8;
-    --tone-200: #e4e4e7;
-    --tone-100: #f4f4f5;
-  }
 }
 
 * {
@@ -204,7 +186,7 @@ body,
   overflow: hidden;
   overscroll-behavior: none;
   background-color: var(--ui-bg);
-  font-family: "Manrope", "DM Sans", "SF Pro Text", "Segoe UI", sans-serif;
+  font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -212,185 +194,6 @@ body {
   background: var(--ui-bg);
 }
 
-:root {
-  --ui-topbar-bg: #ffffff;
-  --ui-main-bg: #ffffff;
-  --ui-sidebar-border: rgba(255, 255, 255, 0.10);
-  --ui-preview-bg: var(--ui-surface);
-  --ui-composer-bg: var(--ui-surface);
-  --ui-terminal-bg: #0b0b0d;
-  --ui-terminal-text: #d4d4d8;
-  --ui-popover-bg: var(--ui-surface);
-  --ui-card-bg: var(--ui-surface);
-  --ui-card-text: var(--ui-text);
-  --ui-popover-text: var(--ui-text);
-  --ui-muted-bg: var(--ui-surface-muted);
-  --ui-muted-text: var(--ui-muted);
-  --ui-secondary-bg: var(--ui-surface-muted);
-  --ui-secondary-text: var(--ui-text);
-  --ui-input-bg: var(--ui-surface);
-  --ui-input-border: var(--ui-border);
-  --ui-ring: var(--ui-focus-ring);
-  --ui-destructive: var(--ui-state-danger-text);
-  --ui-destructive-bg: var(--ui-state-danger-bg);
-  --ui-destructive-text: #ffffff;
-  --ui-row-hover: var(--ui-control-hover);
-  --ui-row-active: var(--ui-sidebar-active);
-  --ui-state-success-bg: rgba(16, 185, 129, 0.14);
-  --ui-state-success-text: #34d399;
-  --ui-state-warning-bg: rgba(245, 158, 11, 0.16);
-  --ui-state-warning-text: #fbbf24;
-  --ui-state-danger-bg: rgba(244, 63, 94, 0.14);
-  --ui-state-danger-text: #fb7185;
-  --ui-state-info-bg: rgba(59, 130, 246, 0.14);
-  --ui-state-info-text: #60a5fa;
-  --ui-state-muted-bg: rgba(255, 255, 255, 0.07);
-  --ui-state-muted-text: var(--ui-muted);
-  --radius-control: 8px;
-  --radius-row: 10px;
-  --radius-card: 14px;
-  --radius-floating: 20px;
-  --ui-font-size-xs: 11px;
-  --ui-font-size-sm: 12.5px;
-  --ui-font-size-md: 14px;
-  --ui-line-height-tight: 1;
-  --ui-line-height-control: 18px;
-  --ui-line-height-body: 1.45;
-  --ui-control-height-xs: 26px;
-  --ui-control-height-sm: 30px;
-  --ui-control-height-md: 32px;
-  --ui-control-height-lg: 34px;
-  --ui-bar-height: 44px;
-  --ui-panel-header-height: 54px;
-  --ui-space-1: 4px;
-  --ui-space-2: 8px;
-  --ui-space-3: 12px;
-  --ui-space-4: 16px;
-  --ui-shadow-popover: 0 18px 45px rgba(0, 0, 0, 0.16);
-  --ui-shadow-control: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --ui-shadow-floating: 0 30px 80px rgba(0, 0, 0, 0.28);
-  --mac-traffic-left: 14px;
-  --mac-traffic-top: 24px;
-  --mac-traffic-size: 14px;
-  --mac-traffic-radius: 7px;
-  --mac-traffic-group-width: 60px;
-  --mac-chrome-control-gap: 12px;
-  --mac-chrome-toggle-size: 32px;
-  --mac-chrome-toggle-radius: 16px;
-  --mac-chrome-center-y: calc(var(--mac-traffic-top) + var(--mac-traffic-radius));
-  --mac-chrome-toggle-top: calc(var(--mac-chrome-center-y) - var(--mac-chrome-toggle-radius));
-  --mac-chrome-toggle-left: calc(var(--mac-traffic-left) + var(--mac-traffic-group-width) + var(--mac-chrome-control-gap));
-}
-
-:root[data-theme="light"] {
-  --ui-bg: #ffffff;
-  --ui-surface: #ffffff;
-  --ui-surface-muted: #f4f4f5;
-  --ui-panel: rgba(255, 255, 255, 0.90);
-  --ui-panel-2: rgba(31, 31, 31, 0.035);
-  --ui-border: #e7e7e8;
-  --ui-border-strong: #d8d8da;
-  --ui-separator: #ececef;
-  --ui-text: #1f1f1f;
-  --ui-muted: #8a8a8a;
-  --ui-accent: #1f1f1f;
-  --ui-accent-soft: rgba(31, 31, 31, 0.06);
-  --ui-accent-text: #ffffff;
-  --ui-focus-ring: rgba(31, 31, 31, 0.12);
-  --ui-control-bg: #f7f7f8;
-  --ui-control-hover: #eeeeef;
-  --ui-selection: rgba(31, 31, 31, 0.06);
-  --ui-sidebar-bg: #f4f4f5;
-  --ui-sidebar-panel: #f4f4f5;
-  --ui-sidebar-hover: #eeeeef;
-  --ui-sidebar-active: #e7e7e8;
-  --ui-sidebar-active-border: #1f1f1f;
-  --ui-sidebar-shadow: 1px 0 0 #e7e7e8;
-  --ui-drawer-bg: rgba(255, 255, 255, 0.98);
-  --ui-drawer-shadow: -14px 0 32px rgba(31, 31, 31, 0.10);
-  --ui-glow-top: #ffffff;
-  --ui-glow-mid: #ffffff;
-  --ui-glow-bottom: #ffffff;
-  --ui-user-bubble-from: #f4f4f5;
-  --ui-user-bubble-to: #f7f7f8;
-  --ui-user-bubble-border: #e7e7e8;
-  --ui-user-bubble-text: #1f1f1f;
-  --ui-topbar-bg: #ffffff;
-  --ui-main-bg: #ffffff;
-  --ui-sidebar-border: #e0e0e2;
-  --ui-preview-bg: #ffffff;
-  --ui-composer-bg: #ffffff;
-  --ui-terminal-bg: #ffffff;
-  --ui-terminal-text: #1f1f1f;
-  --ui-popover-bg: #ffffff;
-  --ui-card-bg: #ffffff;
-  --ui-card-text: #1f1f1f;
-  --ui-popover-text: #1f1f1f;
-  --ui-muted-bg: #f4f4f5;
-  --ui-muted-text: #71717a;
-  --ui-secondary-bg: #f4f4f5;
-  --ui-secondary-text: #18181b;
-  --ui-input-bg: #ffffff;
-  --ui-input-border: #d4d4d8;
-  --ui-ring: rgba(24, 24, 27, 0.16);
-  --ui-destructive: #dc2626;
-  --ui-destructive-bg: #dc2626;
-  --ui-destructive-text: #ffffff;
-  --ui-row-hover: #eeeeef;
-  --ui-row-active: #e7e7e8;
-  --ui-state-success-bg: rgba(16, 185, 129, 0.12);
-  --ui-state-success-text: #058442;
-  --ui-state-warning-bg: rgba(217, 119, 6, 0.12);
-  --ui-state-warning-text: #a15c07;
-  --ui-state-danger-bg: rgba(220, 38, 38, 0.11);
-  --ui-state-danger-text: #c32f2f;
-  --ui-state-info-bg: rgba(37, 99, 235, 0.10);
-  --ui-state-info-text: #2563eb;
-  --ui-state-muted-bg: rgba(31, 31, 31, 0.06);
-  --ui-state-muted-text: #707070;
-  --tone-950: #ffffff;
-  --tone-900: #f7f7f8;
-  --tone-800: #eeeeef;
-  --tone-700: #d8d8da;
-  --tone-600: #a8a8ad;
-  --tone-500: #8a8a8a;
-  --tone-400: #6f6f73;
-  --tone-300: #4b4b4f;
-  --tone-200: #303033;
-  --tone-100: #1f1f1f;
-}
-
-:root[data-theme="dark"] {
-  --ui-topbar-bg: #101114;
-  --ui-main-bg: #0d0d10;
-  --ui-sidebar-border: rgba(255, 255, 255, 0.08);
-  --ui-preview-bg: #0d0d10;
-  --ui-composer-bg: #0d0d10;
-  --ui-terminal-bg: #0b0b0d;
-  --ui-terminal-text: #d4d4d8;
-  --ui-popover-bg: #17171b;
-  --ui-card-bg: #101114;
-  --ui-card-text: #ededed;
-  --ui-popover-text: #ededed;
-  --ui-muted-bg: #18181b;
-  --ui-muted-text: #a1a1aa;
-  --ui-secondary-bg: #18181b;
-  --ui-secondary-text: #f4f4f5;
-  --ui-input-bg: #101114;
-  --ui-input-border: rgba(255, 255, 255, 0.14);
-  --ui-ring: rgba(255, 255, 255, 0.18);
-  --ui-destructive: #ef4444;
-  --ui-destructive-bg: #7f1d1d;
-  --ui-destructive-text: #fef2f2;
-  --ui-row-hover: rgba(255, 255, 255, 0.06);
-  --ui-row-active: rgba(255, 255, 255, 0.09);
-}
-
-html,
-body,
-#root {
-  font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
 
 button,
 input,
@@ -1169,7 +972,7 @@ textarea {
   font-size: 11px;
 }
 
-/* ─── Codex-inspired workspace shell ─────────────────────────────────────── */
+/* ─── Product component base styles ──────────────────────────────────────── */
 .session-rail {
   background: var(--ui-sidebar-bg);
   border-right: 0;
@@ -1387,20 +1190,6 @@ textarea {
   color: var(--ui-state-muted-text);
 }
 
-.workspace-topbar {
-  display: flex;
-  height: var(--ui-bar-height);
-  flex-shrink: 0;
-  align-items: center;
-  gap: 8px;
-  border-bottom: 1px solid var(--ui-border);
-  background: var(--ui-topbar-bg);
-  padding: 0 12px 0 14px;
-}
-.workspace-topbar.is-rail-closed {
-  padding-left: 128px;
-}
-
 .window-chrome-layer {
   position: fixed;
   inset: 0 auto auto 0;
@@ -1420,97 +1209,17 @@ textarea {
   height: var(--mac-chrome-toggle-size);
   align-items: center;
   justify-content: center;
-  border: 1px solid transparent;
-  border-radius: 10px;
+  border: 0;
+  border-radius: 7px;
   background: transparent;
   color: var(--ui-muted);
   box-shadow: none;
   pointer-events: auto;
 }
+.window-chrome-toggle svg {
+  transform: none;
+}
 .window-chrome-toggle:hover {
-  background: var(--ui-control-hover);
-  color: var(--ui-text);
-  border-color: var(--ui-border);
-}
-
-.session-chip-strip {
-  display: flex;
-  min-width: 0;
-  max-width: min(48vw, 740px);
-  flex: 1 1 500px;
-  gap: 7px;
-  overflow-x: auto;
-  padding: 2px;
-  scrollbar-width: none;
-}
-.session-chip-strip::-webkit-scrollbar {
-  display: none;
-}
-
-.session-chip {
-  display: inline-flex;
-  height: var(--ui-control-height-md);
-  width: auto;
-  min-width: 88px;
-  max-width: 220px;
-  flex: 0 1 auto;
-  align-items: center;
-  gap: 6px;
-  border: 1px solid var(--ui-border);
-  border-radius: var(--radius-control);
-  padding: 0 9px;
-  background: transparent;
-  color: color-mix(in srgb, var(--ui-text), var(--ui-muted) 35%);
-  font-size: 12.5px;
-  font-weight: 500;
-  outline: none;
-}
-.session-chip > span.truncate {
-  display: inline-flex;
-  height: 20px;
-  align-items: center;
-  line-height: 20px;
-  min-width: 0;
-  max-width: 170px;
-}
-.session-chip:hover {
-  background: var(--ui-control-hover);
-  border-color: var(--ui-border);
-  color: var(--ui-text);
-}
-.session-chip.is-active {
-  background: var(--ui-control-bg);
-  border-color: var(--ui-border);
-  color: var(--ui-text);
-  box-shadow: var(--ui-shadow-control);
-}
-.session-chip-close {
-  margin-left: auto;
-  display: inline-flex;
-  width: 20px;
-  height: 20px;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  border-radius: 6px;
-  color: var(--ui-muted);
-}
-.session-chip-close:hover {
-  background: var(--ui-control-hover);
-  color: var(--ui-text);
-}
-
-.session-chip-add {
-  display: inline-flex;
-  width: var(--ui-control-height-md);
-  height: var(--ui-control-height-md);
-  flex: 0 0 var(--ui-control-height-md);
-  align-items: center;
-  justify-content: center;
-  border-radius: 9px;
-  color: var(--ui-muted);
-}
-.session-chip-add:hover {
   background: var(--ui-control-hover);
   color: var(--ui-text);
 }
@@ -1819,14 +1528,14 @@ textarea {
 }
 .ide-app-icon {
   display: inline-flex;
-  width: 22px;
-  height: 22px;
-  flex: 0 0 22px;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
   align-items: center;
   justify-content: center;
-  border-radius: 6px;
+  border-radius: 5px;
   color: #ffffff;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 760;
   line-height: 1;
   letter-spacing: 0;
@@ -1853,82 +1562,6 @@ textarea {
 .ide-app-icon.terminal {
   background: linear-gradient(135deg, #666666, #2d2d2d);
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-}
-
-.main-work-area {
-  background: var(--ui-main-bg);
-}
-.workspace-surface {
-  position: relative;
-  z-index: 1;
-  overflow: hidden;
-  border-left: 1px solid var(--ui-border);
-  border-top-left-radius: 18px;
-  border-bottom-left-radius: 18px;
-  background: var(--ui-main-bg);
-  box-shadow: -1px 0 0 color-mix(in srgb, var(--ui-border), transparent 45%);
-}
-
-.preview-shell {
-  border-bottom: 1px solid var(--ui-border);
-  background: var(--ui-preview-bg);
-}
-
-.right-tool-panel {
-  display: flex;
-  flex-shrink: 0;
-  min-width: 0;
-  padding: 8px 8px 8px 0;
-  border-left: 1px solid color-mix(in srgb, var(--ui-border), transparent 20%);
-  background: var(--ui-sidebar-bg);
-}
-.tool-panel {
-  width: 100%;
-  border: 1px solid var(--ui-border);
-  border-radius: var(--radius-card);
-  background: var(--ui-surface);
-  overflow: hidden;
-}
-.tool-panel .panel-header,
-.right-tool-panel .panel-header {
-  height: var(--ui-panel-header-height);
-  background: var(--ui-surface);
-  padding: 0 var(--ui-space-4);
-  border-bottom: 1px solid color-mix(in srgb, var(--ui-border), transparent 15%);
-}
-.tool-panel-section {
-  padding: var(--ui-space-3) var(--ui-space-4);
-  border-bottom: 1px solid color-mix(in srgb, var(--ui-border), transparent 20%);
-}
-.tool-panel-body {
-  padding: 10px var(--ui-space-4) var(--ui-space-4);
-}
-.tool-panel-card {
-  min-height: 42px;
-  border: 1px solid color-mix(in srgb, var(--ui-border), transparent 20%);
-  border-radius: var(--radius-row);
-  background: color-mix(in srgb, var(--ui-control-bg), transparent 8%);
-  padding: 7px 10px;
-  transition: background-color 120ms ease, border-color 120ms ease;
-}
-.tool-panel-card:hover {
-  background: var(--ui-control-hover);
-  border-color: color-mix(in srgb, var(--ui-border-strong), transparent 25%);
-}
-.right-tool-panel .section-header {
-  margin: 6px 0 4px;
-  width: 100%;
-  border-radius: var(--radius-control);
-  padding: 5px 8px;
-}
-.right-tool-panel .section-header:hover {
-  background: var(--ui-sidebar-hover);
-}
-.right-tool-panel .section-count {
-  background: color-mix(in srgb, var(--ui-control-bg), transparent 4%);
-}
-.right-tool-panel .panel-subheader {
-  background: var(--ui-surface);
 }
 
 .terminal-panel {
@@ -2002,66 +1635,6 @@ textarea {
   background: var(--ui-bg);
 }
 
-.composer-shell {
-  flex-shrink: 0;
-  padding: 8px 16px 16px;
-  background: var(--ui-bg);
-}
-.composer-form {
-  position: relative;
-  width: min(100%, 1024px);
-  margin: 0 auto;
-}
-.composer-card {
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--ui-border);
-  border-radius: 16px;
-  background: var(--ui-composer-bg);
-  box-shadow: var(--ui-shadow-control);
-  transition: border-color 150ms ease, box-shadow 150ms ease;
-}
-.composer-card:focus-within {
-  border-color: var(--ui-border-strong);
-  box-shadow: 0 0 0 2px var(--ui-ring), var(--ui-shadow-control);
-}
-.composer-row {
-  display: flex;
-  align-items: center;
-  gap: var(--ui-space-2);
-  padding: 7px 10px;
-}
-.composer-role-button {
-  display: inline-flex;
-  height: var(--ui-control-height-sm);
-  flex-shrink: 0;
-  align-items: center;
-  gap: 6px;
-  border-radius: var(--radius-row);
-  padding: 0 10px;
-  font-size: var(--ui-font-size-sm);
-  font-weight: 620;
-  line-height: 1;
-}
-.composer-rich-input {
-  min-width: 0;
-  flex: 1;
-  border: 0;
-  background: transparent;
-  color: var(--ui-text);
-  font-size: var(--ui-font-size-md);
-  line-height: 22px;
-  outline: none;
-}
-.composer-send-button {
-  display: inline-flex;
-  width: var(--ui-control-height-md);
-  height: var(--ui-control-height-md);
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-control);
-}
 .completion-menu {
   position: absolute;
   left: 0;
@@ -2604,124 +2177,7 @@ textarea {
   opacity: 0.6;
 }
 
-/* ─── MVP shadcn reset: final product shell overrides ───────────────────── */
-:root,
-:root[data-theme="light"] {
-  --ui-bg: #ffffff;
-  --ui-foreground: #18181b;
-  --ui-surface: #ffffff;
-  --ui-surface-muted: #f6f6f7;
-  --ui-card-bg: #ffffff;
-  --ui-card-text: #18181b;
-  --ui-popover-bg: #ffffff;
-  --ui-popover-text: #18181b;
-  --ui-muted-bg: #f4f4f5;
-  --ui-muted-text: #71717a;
-  --ui-secondary-bg: #f4f4f5;
-  --ui-secondary-text: #18181b;
-  --ui-border: #e4e4e7;
-  --ui-border-strong: #d4d4d8;
-  --ui-separator: #ececef;
-  --ui-input-bg: #ffffff;
-  --ui-input-border: #d4d4d8;
-  --ui-ring: rgba(24, 24, 27, 0.14);
-  --ui-text: #18181b;
-  --ui-muted: #71717a;
-  --ui-accent: #18181b;
-  --ui-accent-soft: rgba(24, 24, 27, 0.065);
-  --ui-accent-text: #ffffff;
-  --ui-control-bg: #ffffff;
-  --ui-control-hover: #f4f4f5;
-  --ui-row-hover: #f4f4f5;
-  --ui-row-active: #eeeeef;
-  --ui-sidebar-bg: #f6f6f7;
-  --ui-sidebar-panel: #f6f6f7;
-  --ui-sidebar-hover: #eeeeef;
-  --ui-sidebar-active: #ffffff;
-  --ui-sidebar-active-border: #d4d4d8;
-  --ui-topbar-bg: rgba(255, 255, 255, 0.88);
-  --ui-main-bg: #ffffff;
-  --ui-preview-bg: #ffffff;
-  --ui-composer-bg: #ffffff;
-  --ui-terminal-bg: #ffffff;
-  --ui-terminal-text: #18181b;
-  --ui-user-bubble-from: #18181b;
-  --ui-user-bubble-to: #27272a;
-  --ui-user-bubble-border: #18181b;
-  --ui-user-bubble-text: #ffffff;
-  --ui-state-success-bg: #dcfce7;
-  --ui-state-success-text: #15803d;
-  --ui-state-warning-bg: #fef3c7;
-  --ui-state-warning-text: #a16207;
-  --ui-state-danger-bg: #fee2e2;
-  --ui-state-danger-text: #dc2626;
-  --ui-state-info-bg: #dbeafe;
-  --ui-state-info-text: #2563eb;
-  --ui-state-muted-bg: #f4f4f5;
-  --ui-state-muted-text: #71717a;
-  --radius-control: 8px;
-  --radius-row: 10px;
-  --radius-card: 14px;
-  --radius-floating: 18px;
-  --ui-control-height-xs: 26px;
-  --ui-control-height-sm: 30px;
-  --ui-control-height-md: 32px;
-  --ui-control-height-lg: 36px;
-  --ui-bar-height: 48px;
-  --ui-panel-header-height: 46px;
-  --ui-shadow-control: 0 1px 1px rgba(24, 24, 27, 0.04);
-  --ui-shadow-popover: 0 16px 38px rgba(24, 24, 27, 0.14), 0 0 0 1px rgba(24, 24, 27, 0.04);
-  --ui-shadow-floating: 0 28px 80px rgba(24, 24, 27, 0.20);
-  --mac-traffic-top: 24px;
-  --mac-chrome-toggle-size: 32px;
-  --mac-chrome-toggle-radius: 16px;
-}
-
-:root[data-theme="dark"] {
-  --ui-bg: #09090b;
-  --ui-foreground: #f4f4f5;
-  --ui-surface: #0f0f12;
-  --ui-surface-muted: #18181b;
-  --ui-card-bg: #101013;
-  --ui-card-text: #f4f4f5;
-  --ui-popover-bg: #18181b;
-  --ui-popover-text: #f4f4f5;
-  --ui-muted-bg: #18181b;
-  --ui-muted-text: #a1a1aa;
-  --ui-secondary-bg: #18181b;
-  --ui-secondary-text: #f4f4f5;
-  --ui-border: rgba(255, 255, 255, 0.11);
-  --ui-border-strong: rgba(255, 255, 255, 0.18);
-  --ui-separator: rgba(255, 255, 255, 0.10);
-  --ui-input-bg: #101013;
-  --ui-input-border: rgba(255, 255, 255, 0.16);
-  --ui-ring: rgba(255, 255, 255, 0.18);
-  --ui-text: #f4f4f5;
-  --ui-muted: #a1a1aa;
-  --ui-accent: #f4f4f5;
-  --ui-accent-soft: rgba(255, 255, 255, 0.075);
-  --ui-accent-text: #09090b;
-  --ui-control-bg: #101013;
-  --ui-control-hover: rgba(255, 255, 255, 0.075);
-  --ui-row-hover: rgba(255, 255, 255, 0.075);
-  --ui-row-active: rgba(255, 255, 255, 0.10);
-  --ui-sidebar-bg: #0f0f12;
-  --ui-sidebar-panel: #0f0f12;
-  --ui-sidebar-hover: rgba(255, 255, 255, 0.075);
-  --ui-sidebar-active: #18181b;
-  --ui-sidebar-active-border: rgba(255, 255, 255, 0.16);
-  --ui-topbar-bg: rgba(9, 9, 11, 0.84);
-  --ui-main-bg: #09090b;
-  --ui-preview-bg: #09090b;
-  --ui-composer-bg: #101013;
-  --ui-terminal-bg: #09090b;
-  --ui-terminal-text: #f4f4f5;
-  --ui-user-bubble-from: #f4f4f5;
-  --ui-user-bubble-to: #d4d4d8;
-  --ui-user-bubble-border: rgba(255, 255, 255, 0.2);
-  --ui-user-bubble-text: #09090b;
-}
-
+/* ─── Product shell layout ───────────────────────────────────────────────── */
 .jockey-app-shell {
   position: relative;
   display: flex;
@@ -2788,8 +2244,26 @@ textarea {
 .preview-tab-button,
 .preview-tab-close {
   align-items: center;
-  justify-content: center;
   line-height: 18px;
+}
+
+.jui-button,
+.jui-icon-button,
+.jui-toolbar-button,
+.run-action-main,
+.run-action-caret,
+.ide-open-main,
+.ide-open-caret,
+.preview-tab-close {
+  justify-content: center;
+}
+
+.session-chip,
+.role-switcher,
+.commit-button,
+.section-header,
+.preview-tab-button {
+  justify-content: flex-start;
 }
 
 .jui-button {
@@ -2837,6 +2311,19 @@ textarea {
   width: 28px;
   height: 28px;
   min-width: 28px;
+}
+.jui-icon-button.window-chrome-toggle {
+  position: fixed;
+  top: var(--mac-chrome-toggle-top);
+  left: var(--mac-chrome-toggle-left);
+  z-index: 90;
+  width: var(--mac-chrome-toggle-size);
+  height: var(--mac-chrome-toggle-size);
+  min-width: var(--mac-chrome-toggle-size);
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  box-shadow: none;
 }
 .jui-icon-button:hover:not(:disabled),
 .jui-icon-button.is-active,
@@ -3122,33 +2609,58 @@ textarea {
 }
 
 .workspace-topbar {
+  display: flex;
   height: 48px;
+  flex-shrink: 0;
+  align-items: center;
   gap: 8px;
   border-bottom: 1px solid var(--ui-border);
   background: var(--ui-topbar-bg);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  padding: 0 12px;
+  padding: 0 12px 0 14px;
 }
 .workspace-topbar.is-rail-closed {
-  padding-left: 118px;
+  padding-left: calc(var(--mac-chrome-toggle-left) + var(--mac-chrome-toggle-size) + 14px);
 }
 .session-chip-strip {
-  flex: 0 1 auto;
+  display: flex;
+  min-width: 0;
   max-width: min(45vw, 680px);
+  flex: 1 1 360px;
+  align-items: center;
   gap: 6px;
+  overflow-x: auto;
   padding: 2px;
+  scrollbar-width: none;
+}
+.session-chip-strip::-webkit-scrollbar {
+  display: none;
 }
 .session-chip {
+  display: inline-flex;
   height: 32px;
   min-width: 0;
   max-width: 180px;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--ui-border);
   border-color: var(--ui-border);
   border-radius: 10px;
   background: var(--ui-surface);
   padding: 0 8px;
   color: var(--ui-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  outline: none;
   box-shadow: var(--ui-shadow-control);
+  user-select: none;
+}
+.session-chip > .truncate {
+  min-width: 0;
+  max-width: 140px;
+  line-height: 18px;
 }
 .session-chip.is-active {
   border-color: var(--ui-border-strong);
@@ -3159,6 +2671,14 @@ textarea {
   background: currentColor;
 }
 .session-chip-close {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  border-radius: 6px;
   color: currentColor;
   opacity: 0.58;
 }
@@ -3167,11 +2687,20 @@ textarea {
   opacity: 1;
 }
 .session-chip-add {
+  display: inline-flex;
   width: 32px;
   height: 32px;
+  flex: 0 0 32px;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--ui-border);
   border-radius: 10px;
   background: var(--ui-surface);
+  color: var(--ui-muted);
+}
+.session-chip-add:hover {
+  background: var(--ui-control-hover);
+  color: var(--ui-text);
 }
 .role-switcher,
 .topbar-branch,
@@ -3528,39 +3057,60 @@ textarea {
 }
 
 .composer-shell {
+  flex-shrink: 0;
   padding: 10px 18px 18px;
   background: var(--ui-main-bg);
 }
 .composer-form {
+  position: relative;
   width: min(100%, 980px);
+  margin: 0 auto;
 }
 .composer-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--ui-input-border);
   border-color: var(--ui-input-border);
   border-radius: 18px;
   background: var(--ui-composer-bg);
   box-shadow: 0 2px 8px rgba(24, 24, 27, 0.05);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 .composer-card:focus-within {
   border-color: var(--ui-border-strong);
   box-shadow: 0 0 0 3px var(--ui-ring), 0 4px 18px rgba(24, 24, 27, 0.08);
 }
 .composer-row {
+  display: flex;
   min-height: 48px;
+  align-items: center;
+  gap: 8px;
   padding: 8px 10px;
 }
 .composer-role-button {
+  flex-shrink: 0;
   height: 32px;
   border-radius: 10px;
   font-size: 12.5px;
 }
 .composer-rich-input {
+  min-width: 0;
+  flex: 1;
   min-height: 28px;
+  max-height: 96px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  color: var(--ui-text);
   font-size: 13.5px;
   line-height: 22px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .composer-send-button {
   width: 32px;
   height: 32px;
+  flex-shrink: 0;
+  margin-left: auto;
   border-radius: 10px;
 }
 .composer-send-button.is-queueing {
@@ -3769,9 +3319,6 @@ textarea {
   background: var(--ui-card-bg);
 }
 
-.window-chrome-toggle {
-  border-radius: 10px;
-}
 .resizer-x:hover,
 .resizer-y:hover {
   background: var(--ui-border-strong);

@@ -15,8 +15,8 @@ export default function WindowChrome(props: WindowChromeProps) {
         onClick={props.onToggleLeftRail}
         title={props.leftRailOpen ? "Hide sidebar" : "Show sidebar"}
       >
-        <Show when={props.leftRailOpen} fallback={<PanelLeftOpen size={17} />}>
-          <PanelLeftClose size={17} />
+        <Show when={props.leftRailOpen} fallback={<PanelLeftOpen size={15} />}>
+          <PanelLeftClose size={15} />
         </Show>
       </IconButton>
     </div>
