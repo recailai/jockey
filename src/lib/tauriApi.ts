@@ -295,6 +295,14 @@ export type GitCreatedPullRequest = {
   number: number;
 };
 
+export type GitCommitEntry = {
+  oid: string;
+  shortOid: string;
+  summary: string;
+  authorName: string;
+  committedAt: number;
+};
+
 export const gitApi = {
   status: (appSessionId?: string | null) =>
     call<GitState>("git_status_cmd", { appSessionId: appSessionId ?? null }),
@@ -312,6 +320,10 @@ export const gitApi = {
     call<void>("git_push_cmd", { appSessionId: appSessionId ?? null }),
   createPr: (appSessionId: string | null | undefined, input: { title?: string | null; draft: boolean }) =>
     call<GitCreatedPullRequest>("git_create_pr_cmd", { appSessionId: appSessionId ?? null, input }),
+  log: (appSessionId?: string | null, limit = 30) =>
+    call<GitCommitEntry[]>("git_log_cmd", { appSessionId: appSessionId ?? null, limit }),
+  commitDiff: (appSessionId: string | null | undefined, oid: string) =>
+    call<string>("git_commit_diff_cmd", { appSessionId: appSessionId ?? null, oid }),
   diff: (
     appSessionId: string | null | undefined,
     path: string,

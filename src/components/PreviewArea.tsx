@@ -194,6 +194,7 @@ export default function PreviewArea(props: PreviewAreaProps) {
               initialMode={tab.initialMode}
               staged={tab.staged}
               untracked={tab.untracked}
+              commitOid={tab.commitOid ?? null}
               version={() => versionFor(tab.id)}
               onAddMention={props.onAddMention}
             />

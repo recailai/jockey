@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import {
   ChevronRight,
   RefreshCw,
@@ -15,6 +15,7 @@ import {
 import {
   gitApi,
   type BranchInfo,
+  type GitCommitEntry,
   type GitFileEntry,
   type GitRemoteInfo,
   type GitState,
@@ -31,6 +32,7 @@ type GitPanelProps = {
   onAddMention: (path: string) => void;
   onCollapse: () => void;
   onOpenDiff: (path: string, staged: boolean, untracked: boolean) => void;
+  onOpenCommitDiff: (oid: string, label: string) => void;
 };
 
 type ChangeEntry = GitFileEntry & { untracked: boolean };
@@ -57,15 +59,28 @@ function statusClass(entry: ChangeEntry): string {
   }
 }
 
+function fmtRelative(ts: number): string {
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  if (diff < 604_800_000) return `${Math.floor(diff / 86_400_000)}d ago`;
+  return new Date(ts).toLocaleDateString();
+}
+
 export default function GitPanel(props: GitPanelProps) {
   const [stagedOpen, setStagedOpen] = createSignal(true);
   const [changesOpen, setChangesOpen] = createSignal(true);
+  const [historyOpen, setHistoryOpen] = createSignal(true);
 
   const [branchMenuOpen, setBranchMenuOpen] = createSignal(false);
   const [branches, setBranches] = createSignal<BranchInfo[]>([]);
   const [branchFilter, setBranchFilter] = createSignal("");
   const [checking, setChecking] = createSignal(false);
   const [checkoutError, setCheckoutError] = createSignal<string | null>(null);
+  const [history, setHistory] = createSignal<GitCommitEntry[]>([]);
+  const [historyLoading, setHistoryLoading] = createSignal(false);
+  const [historyError, setHistoryError] = createSignal<string | null>(null);
 
   const [ctxMenu, setCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
   const [remoteInfo, setRemoteInfo] = createSignal<GitRemoteInfo | null>(null);
@@ -86,8 +101,27 @@ export default function GitPanel(props: GitPanelProps) {
     }
   };
 
+  const loadHistory = async () => {
+    if (!props.appSessionId()) {
+      setHistory([]);
+      return;
+    }
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const entries = await gitApi.log(props.appSessionId() ?? null, 30);
+      setHistory(entries);
+    } catch (err) {
+      setHistory([]);
+      setHistoryError(String(err));
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
   onMount(() => {
     void loadRemote();
+    void loadHistory();
     const closeOnGlobal = () => {
       setCtxMenu(null);
       setBranchMenuOpen(false);
@@ -98,6 +132,11 @@ export default function GitPanel(props: GitPanelProps) {
       window.removeEventListener("click", closeOnGlobal);
       window.removeEventListener("blur", closeOnGlobal);
     });
+  });
+
+  createEffect(() => {
+    statusView()?.branch;
+    void loadHistory();
   });
 
   const openBranchMenu = async (e: MouseEvent) => {
@@ -122,6 +161,7 @@ export default function GitPanel(props: GitPanelProps) {
       setBranchMenuOpen(false);
       props.onRefresh();
       void loadRemote();
+      void loadHistory();
     } catch (e) {
       setCheckoutError(String(e));
     } finally {
@@ -242,7 +282,7 @@ export default function GitPanel(props: GitPanelProps) {
       <PanelHeader class="panel-header">
         <span class="panel-header-title">Source Control</span>
         <div class="flex items-center gap-0.5">
-          <PanelHeaderAction title="Refresh" onClick={() => props.onRefresh()}>
+          <PanelHeaderAction title="Refresh" onClick={() => { props.onRefresh(); void loadRemote(); void loadHistory(); }}>
             <RefreshCw size={13} />
           </PanelHeaderAction>
           <PanelHeaderAction title="Collapse (Cmd/Ctrl+G)" onClick={() => props.onCollapse()}>
@@ -381,6 +421,55 @@ export default function GitPanel(props: GitPanelProps) {
                 <Show when={changesEntries().length > 0}>
                   {renderGroup("Changes", changesOpen, setChangesOpen, changesEntries(), false)}
                 </Show>
+
+                <div class="mt-3">
+                  <button
+                    type="button"
+                    onClick={() => setHistoryOpen(!historyOpen())}
+                    class="section-header"
+                  >
+                    <ChevronRight
+                      size={12}
+                      class={`transition-transform shrink-0 ${historyOpen() ? "rotate-90" : ""}`}
+                    />
+                    <span>Recent Commits</span>
+                    <span class="section-count">{history().length}</span>
+                  </button>
+                  <Show when={historyOpen()}>
+                    <div class="mt-1">
+                      <Show when={historyLoading()}>
+                        <div class="px-2 py-2 text-[11px] theme-muted">Loading history…</div>
+                      </Show>
+                      <Show when={historyError()}>
+                        {(error) => <div class="px-2 py-2 text-[11px] text-[var(--ui-state-danger-text)]">{error()}</div>}
+                      </Show>
+                      <For each={history()}>
+                        {(entry) => (
+                          <ListRow
+                            class="git-commit-row"
+                            onClick={() => props.onOpenCommitDiff(entry.oid, `${entry.shortOid} ${entry.summary}`)}
+                            title={entry.oid}
+                          >
+                            <div class="min-w-0 flex-1">
+                              <div class="flex items-center gap-2 min-w-0">
+                                <span class="font-mono text-[10.5px] theme-muted shrink-0">{entry.shortOid}</span>
+                                <span class="truncate theme-text">{entry.summary}</span>
+                              </div>
+                              <div class="mt-0.5 flex items-center gap-2 text-[10.5px] theme-muted">
+                                <span class="truncate">{entry.authorName}</span>
+                                <span>{fmtRelative(entry.committedAt)}</span>
+                              </div>
+                            </div>
+                            <ExternalLink size={12} class="shrink-0 theme-muted" />
+                          </ListRow>
+                        )}
+                      </For>
+                      <Show when={!historyLoading() && !historyError() && history().length === 0}>
+                        <div class="px-2 py-2 text-[11px] theme-muted">No commits on this branch yet.</div>
+                      </Show>
+                    </div>
+                  </Show>
+                </div>
               </PanelBody>
             </>
           );

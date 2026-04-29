@@ -382,6 +382,8 @@ pub fn run() {
             commands::git_cmd::git_commit_cmd,
             commands::git_cmd::git_push_cmd,
             commands::git_cmd::git_create_pr_cmd,
+            commands::git_cmd::git_log_cmd,
+            commands::git_cmd::git_commit_diff_cmd,
             commands::fs_cmd::list_dir_cmd,
             commands::fs_cmd::read_file_base64_cmd,
             db::app_session::list_app_sessions,

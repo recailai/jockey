@@ -4,7 +4,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::db::get_state;
 use crate::fs_context::looks_binary;
-use crate::git::{self, BranchInfo, CreatedPullRequest, GitError, GitStatus};
+use crate::git::{self, BranchInfo, CommitEntry, CreatedPullRequest, GitError, GitStatus};
 use crate::types::AppState;
 
 use super::cwd_util::{resolve_cwd, resolve_within_cwd};
@@ -206,6 +206,36 @@ pub(crate) async fn git_create_pr_cmd(
 ) -> Result<CreatedPullRequest, String> {
     let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
     git::create_pull_request(&cwd, input.title, input.draft)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn git_log_cmd(
+    state: State<'_, AppState>,
+    app_session_id: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<CommitEntry>, String> {
+    let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
+    let limit = limit.unwrap_or(30).clamp(1, 100);
+    tokio::task::spawn_blocking(move || git::list_commits(&cwd, limit))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn git_commit_diff_cmd(
+    state: State<'_, AppState>,
+    app_session_id: Option<String>,
+    oid: String,
+) -> Result<String, String> {
+    let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
+    let oid = oid.trim().to_string();
+    if oid.is_empty() {
+        return Err("commit oid is required".to_string());
+    }
+    git::commit_diff(&cwd, &oid)
         .await
         .map_err(|e| e.to_string())
 }

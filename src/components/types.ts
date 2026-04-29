@@ -76,7 +76,7 @@ export type AppSegment = { kind: "text"; text: string } | { kind: "tool"; tc: Ap
 export type AppMessage = { id: string; roleName: string; text: string; at: number; toolCalls?: AppToolCall[]; segments?: AppSegment[]; images?: { data: string; mimeType: string }[]; thoughtText?: string };
 export type AppMentionItem = { value: string; kind: "role" | "file" | "dir" | "hint" | "command" | "skill"; detail: string };
 
-export type PreviewMode = "diff" | "file" | "preview" | "image";
+export type PreviewMode = "diff" | "file" | "preview" | "image" | "commit";
 export type PreviewTab = {
   id: string;
   cwd: string;
@@ -85,6 +85,7 @@ export type PreviewTab = {
   initialMode: PreviewMode;
   staged: boolean;
   untracked: boolean;
+  commitOid?: string | null;
 };
 export type AppSkill = { id: string; name: string; description: string; content: string; createdAt: number; updatedAt: number };
 

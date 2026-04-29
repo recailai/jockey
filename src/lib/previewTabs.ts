@@ -18,6 +18,8 @@ export type OpenPreviewTabInput = {
   initialMode: PreviewMode;
   staged: boolean;
   untracked: boolean;
+  commitOid?: string | null;
+  label?: string;
 };
 
 export const openPreviewTab = (
@@ -33,10 +35,11 @@ export const openPreviewTab = (
         id,
         cwd: opts.cwd,
         path: opts.path,
-        label: labelFor(opts.path),
+        label: opts.label ?? labelFor(opts.path),
         initialMode: opts.initialMode,
         staged: opts.staged,
         untracked: opts.untracked,
+        commitOid: opts.commitOid ?? null,
       };
       s.previewTabs.push(tab);
     }

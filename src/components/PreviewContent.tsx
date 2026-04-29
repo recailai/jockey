@@ -32,6 +32,7 @@ type PreviewContentProps = {
   initialMode: PreviewMode;
   staged: boolean;
   untracked: boolean;
+  commitOid?: string | null;
   version: () => number;
   onAddMention?: (path: string) => void;
 };
@@ -97,7 +98,7 @@ export default function PreviewContent(props: PreviewContentProps) {
   const pathIsImg = createMemo(() => isImage(props.path));
 
   const computeInitial = (): PreviewMode => {
-    if (props.initialMode === "diff") return "diff";
+    if (props.initialMode === "diff" || props.initialMode === "commit") return props.initialMode;
     if (pathIsImg()) return "image";
     return pathIsMd() ? "preview" : "file";
   };
@@ -122,6 +123,17 @@ export default function PreviewContent(props: PreviewContentProps) {
   const [diffRes] = createResource(
     () => (mode() === "diff" ? diffQuery() : null),
     async (q) => (q ? gitApi.diff(q.sid, q.path, q.vsHead, q.staged, props.untracked) : ""),
+  );
+
+  const commitDiffQuery = createMemo(() => ({
+    sid: props.appSessionId(),
+    oid: props.commitOid,
+    v: props.version(),
+  }));
+
+  const [commitDiffRes] = createResource(
+    () => (mode() === "commit" ? commitDiffQuery() : null),
+    async (q) => (q?.oid ? gitApi.commitDiff(q.sid, q.oid) : ""),
   );
 
   const fileQuery = createMemo(() => ({
@@ -185,6 +197,9 @@ export default function PreviewContent(props: PreviewContentProps) {
           <Show when={props.initialMode === "diff"}>
             <TabButton label="Diff" value="diff" disabled={isFolder()} />
           </Show>
+          <Show when={props.initialMode === "commit"}>
+            <TabButton label="Commit Diff" value="commit" disabled={false} />
+          </Show>
           <Show when={pathIsImg()}>
             <TabButton label="Image" value="image" disabled={isFolder()} />
           </Show>
@@ -231,6 +246,10 @@ export default function PreviewContent(props: PreviewContentProps) {
       <div class="flex-1 overflow-hidden min-h-0">
         <Show when={mode() === "diff"}>
           <DiffView diffText={diffRes() ?? ""} loading={diffRes.loading} />
+        </Show>
+
+        <Show when={mode() === "commit"}>
+          <DiffView diffText={commitDiffRes() ?? ""} loading={commitDiffRes.loading} emptyLabel="No patch available" />
         </Show>
 
         <Show when={mode() === "image"}>

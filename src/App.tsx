@@ -761,6 +761,20 @@ export default function App() {
                     cwd, path, initialMode: "diff", staged, untracked,
                   });
                 }}
+                onOpenCommitDiff={(oid, label) => {
+                  const sid = activeSessionId();
+                  const cwd = activeSession()?.cwd ?? "";
+                  if (!sid || !cwd) return;
+                  openPreviewTab(mutateSession, sid, {
+                    cwd,
+                    path: `.git/commits/${oid}.patch`,
+                    label,
+                    initialMode: "commit",
+                    staged: false,
+                    untracked: false,
+                    commitOid: oid,
+                  });
+                }}
               />
             </Show>
             <Show when={toolPanel() === "files"}>
