@@ -19,7 +19,7 @@ import type { Accessor, JSX, Setter } from "solid-js";
 import type { AppSession, AssistantRuntime, Role } from "./types";
 import { DEFAULT_ROLE_ALIAS, INTERACTIVE_MOTION, RUNTIME_COLOR } from "./types";
 import type { GitStatusStore } from "../hooks/useGitPoller";
-import { gitApi, parseError, workspaceApi, type WorkspaceOpenTarget } from "../lib/tauriApi";
+import { gitApi, parseError, workspaceApi, type GitFileEntry, type GitStatus, type WorkspaceOpenTarget } from "../lib/tauriApi";
 import {
   Badge,
   Button,
@@ -131,6 +131,95 @@ function shellQuote(value: string): string {
 function basename(path: string): string {
   const idx = path.lastIndexOf("/");
   return idx === -1 ? path : path.slice(idx + 1);
+}
+
+type CommitArea = "git" | "ui" | "backend" | "docs" | "deps" | "workspace" | "general";
+
+function classifyCommitArea(path: string): CommitArea {
+  if (
+    path.startsWith("src-tauri/src/git/")
+    || path === "src-tauri/src/commands/git_cmd.rs"
+    || path === "src/components/WorkspaceHeader.tsx"
+    || path === "src/components/GitPanel.tsx"
+    || path === "src/components/WorkspaceFilesPanel.tsx"
+    || path === "src/lib/tauriApi.ts"
+  ) return "git";
+  if (
+    path.startsWith("src/components/")
+    || path === "src/index.css"
+    || path.startsWith("src/lib/")
+  ) return "ui";
+  if (path.startsWith("src-tauri/src/")) return "backend";
+  if (path.startsWith("docs/")) return "docs";
+  if (
+    path === "package.json"
+    || path === "pnpm-lock.yaml"
+    || path === "src-tauri/Cargo.toml"
+    || path === "src-tauri/Cargo.lock"
+  ) return "deps";
+  if (path.startsWith("public/")) return "workspace";
+  return "general";
+}
+
+function chooseCommitArea(entries: GitFileEntry[]): CommitArea {
+  const counts = new Map<CommitArea, number>();
+  for (const entry of entries) {
+    const area = classifyCommitArea(entry.path);
+    counts.set(area, (counts.get(area) ?? 0) + 1);
+  }
+  const ranked: CommitArea[] = ["git", "ui", "backend", "workspace", "docs", "deps", "general"];
+  let best: CommitArea = "general";
+  let bestScore = -1;
+  for (const area of ranked) {
+    const score = counts.get(area) ?? 0;
+    if (score > bestScore) {
+      best = area;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function buildCommitSuggestion(status: GitStatus | null, includeUnstaged: boolean): string {
+  if (!status) return "chore: update workspace";
+  const entries = includeUnstaged
+    ? [...status.staged, ...status.unstaged, ...status.untracked]
+    : [...status.staged];
+  const uniqueEntries = Array.from(
+    new Map(entries.map((entry) => [entry.path, entry])),
+    ([, entry]) => entry,
+  );
+  if (uniqueEntries.length === 0) return "chore: update workspace";
+
+  const area = chooseCommitArea(uniqueEntries);
+  const hasAddedFile = uniqueEntries.some((entry) => entry.statusLetter === "A" || entry.statusLetter === "??");
+  const hasDeletedFile = uniqueEntries.some((entry) => entry.statusLetter === "D");
+
+  if (area === "docs") return "docs: update documentation";
+  if (area === "deps") return "chore: update dependencies";
+
+  if (area === "git") {
+    if (hasAddedFile) return "feat(git): add native git workflow actions";
+    if (hasDeletedFile) return "refactor(git): simplify git workflow";
+    return "fix(git): improve commit, push, and PR flow";
+  }
+  if (area === "ui") {
+    if (hasAddedFile) return "feat(ui): add workspace interaction improvements";
+    return "fix(ui): refine workspace interactions";
+  }
+  if (area === "backend") {
+    if (hasAddedFile) return "feat(backend): add backend workflow support";
+    return "fix(backend): improve backend behavior";
+  }
+  if (area === "workspace") {
+    return hasAddedFile ? "feat(workspace): add workspace assets" : "fix(workspace): refine workspace behavior";
+  }
+
+  if (uniqueEntries.length === 1) {
+    const file = basename(uniqueEntries[0].path).replace(/\.[^.]+$/, "");
+    return `chore: update ${file}`;
+  }
+  return hasAddedFile ? "feat: update workspace behavior" : "fix: update workspace behavior";
 }
 
 function isPrimaryBranch(branch: string | null | undefined): boolean {
@@ -262,15 +351,7 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
   });
   const activeIde = createMemo(() => IDE_OPTIONS.find((option) => option.target === selectedIde()) ?? IDE_OPTIONS[0]);
   const autoCommitMessage = () => {
-    const s = git();
-    if (!s) return "chore: update files";
-    const entries = includeUnstaged()
-      ? [...s.staged, ...s.unstaged, ...s.untracked]
-      : [...s.staged];
-    const files = Array.from(new Set(entries.map((entry) => basename(entry.path))));
-    if (files.length === 1) return `chore: update ${files[0]}`;
-    if (files.length > 1) return `chore: update ${files.length} files`;
-    return "chore: update files";
+    return buildCommitSuggestion(git(), includeUnstaged());
   };
   const runAction = () => {
     const command = action().command.trim();

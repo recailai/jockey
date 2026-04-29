@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::process::{Command, Stdio};
 
 use git2::{
     BranchType, Commit, Cred, CredentialType, PushOptions, RemoteCallbacks, Repository, Signature,
@@ -181,15 +182,20 @@ fn build_remote_callbacks(repo: &Repository, remote_url: Option<&str>) -> Remote
             if let Ok(cred) = Cred::ssh_key_from_agent(username) {
                 return Ok(cred);
             }
-        }
-
-        if let Some(config) = config.as_ref() {
-            if let Ok(cred) = Cred::credential_helper(config, url, username_from_url) {
+            if let Some(cred) = default_ssh_key_credential(username) {
                 return Ok(cred);
             }
         }
 
         if allowed.contains(CredentialType::USER_PASS_PLAINTEXT) {
+            if let Some(config) = config.as_ref() {
+                if let Ok(cred) = Cred::credential_helper(config, url, username_from_url) {
+                    return Ok(cred);
+                }
+            }
+            if let Some((username, password)) = git_credential_fill(url, username_from_url) {
+                return Cred::userpass_plaintext(&username, &password);
+            }
             if let Some(token) = token.as_ref() {
                 let username = username_from_url.unwrap_or("x-access-token");
                 return Cred::userpass_plaintext(username, token);
@@ -202,7 +208,19 @@ fn build_remote_callbacks(repo: &Repository, remote_url: Option<&str>) -> Remote
             }
         }
 
-        Cred::default()
+        if allowed.contains(CredentialType::DEFAULT) {
+            return Cred::default();
+        }
+
+        if allowed.contains(CredentialType::SSH_KEY) {
+            return Err(git2::Error::from_str(
+                "remote authentication required but no usable SSH key was found",
+            ));
+        }
+
+        Err(git2::Error::from_str(
+            "remote authentication required but no supported credentials were available",
+        ))
     });
     callbacks.push_update_reference(|reference, status| {
         if let Some(status) = status {
@@ -218,7 +236,7 @@ fn build_remote_callbacks(repo: &Repository, remote_url: Option<&str>) -> Remote
 
 fn env_http_token(remote_url: &str) -> Option<String> {
     let lower = remote_url.to_ascii_lowercase();
-    if lower.contains("github.com") {
+    if lower.contains("github") {
         return std::env::var("GH_TOKEN")
             .ok()
             .or_else(|| std::env::var("GITHUB_TOKEN").ok());
@@ -230,4 +248,65 @@ fn env_http_token(remote_url: &str) -> Option<String> {
         return std::env::var("BITBUCKET_TOKEN").ok();
     }
     None
+}
+
+fn default_ssh_key_credential(username: &str) -> Option<Cred> {
+    let home = dirs::home_dir()?;
+    for name in ["id_ed25519", "id_ecdsa", "id_rsa"] {
+        let private_key = home.join(".ssh").join(name);
+        if !private_key.exists() {
+            continue;
+        }
+        if let Ok(cred) = Cred::ssh_key(username, None, &private_key, None) {
+            return Some(cred);
+        }
+    }
+    None
+}
+
+fn git_credential_fill(url: &str, username: Option<&str>) -> Option<(String, String)> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    let mut input = format!("protocol={}\nhost={host}\n", parsed.scheme());
+    let path = parsed.path().trim_start_matches('/');
+    if !path.is_empty() {
+        input.push_str(&format!("path={path}\n"));
+    }
+    if let Some(username) = username.filter(|value| !value.is_empty()) {
+        input.push_str(&format!("username={username}\n"));
+    }
+    input.push('\n');
+
+    let output = Command::new("git")
+        .args(["credential", "fill"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()
+        .and_then(|mut child| {
+            use std::io::Write;
+            if let Some(stdin) = child.stdin.as_mut() {
+                let _ = stdin.write_all(input.as_bytes());
+            }
+            child.wait_with_output().ok()
+        })?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let mut found_username: Option<String> = None;
+    let mut found_password: Option<String> = None;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if let Some(value) = line.strip_prefix("username=") {
+            found_username = Some(value.to_string());
+        } else if let Some(value) = line.strip_prefix("password=") {
+            found_password = Some(value.to_string());
+        }
+    }
+    match (found_username, found_password) {
+        (Some(username), Some(password)) => Some((username, password)),
+        _ => None,
+    }
 }
