@@ -10,6 +10,7 @@ type FilesPanelProps = {
   cwd: () => string | null;
   onOpenFile: (relPath: string) => void;
   onCollapse?: () => void;
+  embedded?: boolean;
 };
 
 type NodeState = {
@@ -240,6 +241,29 @@ export default function FilesPanel(props: FilesPanelProps) {
     persistExpansion();
   };
 
+  const body = (
+    <PanelBody class="tool-panel-body flex-1 overflow-auto">
+        <Show when={!props.appSessionId() || !props.cwd()}>
+          <EmptyState>
+            {!props.appSessionId() ? "No active session" : (
+              <><div>No working directory</div><div class="opacity-60 mt-1 font-mono">/app_cd &lt;path&gt;</div></>
+            )}
+          </EmptyState>
+        </Show>
+        <Show when={props.appSessionId() && props.cwd()}>
+          <TreeNode
+            nodeKey={ROOT_KEY}
+            depth={0}
+            nodes={nodes}
+            toggle={toggle}
+            onOpenFile={props.onOpenFile}
+          />
+        </Show>
+      </PanelBody>
+  );
+
+  if (props.embedded) return body;
+
   return (
     <Panel class="tool-panel flex h-full flex-col overflow-hidden">
       <PanelHeader class="panel-header">
@@ -263,24 +287,7 @@ export default function FilesPanel(props: FilesPanelProps) {
           </Show>
         </div>
       </PanelHeader>
-      <PanelBody class="tool-panel-body flex-1 overflow-auto">
-        <Show when={!props.appSessionId() || !props.cwd()}>
-          <EmptyState>
-            {!props.appSessionId() ? "No active session" : (
-              <><div>No working directory</div><div class="opacity-60 mt-1 font-mono">/app_cd &lt;path&gt;</div></>
-            )}
-          </EmptyState>
-        </Show>
-        <Show when={props.appSessionId() && props.cwd()}>
-          <TreeNode
-            nodeKey={ROOT_KEY}
-            depth={0}
-            nodes={nodes}
-            toggle={toggle}
-            onOpenFile={props.onOpenFile}
-          />
-        </Show>
-      </PanelBody>
+      {body}
     </Panel>
   );
 }

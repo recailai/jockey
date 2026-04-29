@@ -185,7 +185,7 @@ export default function TerminalPanel(props: TerminalPanelProps) {
         </div>
       </Show>
       <div class="terminal-surface">
-        <div ref={containerEl} class="h-full w-full overflow-hidden px-2 py-1" />
+        <div ref={containerEl} class="h-full w-full overflow-hidden px-1 py-0.5" />
       </div>
     </Panel>
   );

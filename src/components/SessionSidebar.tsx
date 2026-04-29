@@ -77,7 +77,7 @@ export default function SessionSidebar(props: SessionSidebarProps) {
     >
       <div class="h-[42px] shrink-0" />
 
-      <div class="px-3 pb-3">
+      <div class="px-3 pb-2">
         <RowButton
           onClick={props.onNewSession}
           class={`ui-rail-command ${INTERACTIVE_MOTION}`}
@@ -85,7 +85,7 @@ export default function SessionSidebar(props: SessionSidebarProps) {
           <SquarePen class="ui-rail-icon" />
           <span>New AppSession</span>
         </RowButton>
-        <label class="ui-rail-search mt-2">
+        <label class="ui-rail-search mt-1.5">
           <Search class="ui-rail-icon" />
           <input
             value={query()}
@@ -95,18 +95,18 @@ export default function SessionSidebar(props: SessionSidebarProps) {
         </label>
         <RowButton
           onClick={props.onOpenAutomations}
-          class={`ui-rail-command mt-2 ${INTERACTIVE_MOTION}`}
+          class={`ui-rail-command mt-1.5 ${INTERACTIVE_MOTION}`}
         >
           <Clock3 class="ui-rail-icon" />
           <span>Automations</span>
         </RowButton>
       </div>
 
-      <div class="flex items-center px-3 pb-2">
+      <div class="flex items-center px-3 pb-1 pt-0.5">
         <div class="ui-rail-section-label">AppSessions</div>
       </div>
 
-      <div class="flex-1 overflow-y-auto px-2 pb-3">
+      <div class="flex-1 overflow-y-auto px-2 pb-2">
         <For each={filteredSessions()} fallback={
           <div class="px-3 py-8 text-center text-xs theme-muted">
             No AppSessions
@@ -173,15 +173,13 @@ export default function SessionSidebar(props: SessionSidebarProps) {
         </For>
       </div>
 
-      <div class="ui-rail-footer mt-auto px-3 pb-3 pt-2">
-        <RowButton
-          onClick={props.onOpenSettings}
-          class={`ui-rail-command ${INTERACTIVE_MOTION}`}
-        >
-          <Settings class="ui-rail-icon" />
-          <span>Settings</span>
-        </RowButton>
-      </div>
+      <RowButton
+        onClick={props.onOpenSettings}
+        class={`ui-rail-command ${INTERACTIVE_MOTION} mt-auto w-full px-3 pb-2 pt-1`}
+      >
+        <Settings class="ui-rail-icon" />
+        <span>Settings</span>
+      </RowButton>
     </aside>
   );
 }

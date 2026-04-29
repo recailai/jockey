@@ -32,7 +32,7 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 
 
 const GitPanel = lazy(() => import("./components/GitPanel"));
-const FilesPanel = lazy(() => import("./components/FilesPanel"));
+const WorkspaceFilesPanel = lazy(() => import("./components/WorkspaceFilesPanel"));
 const PreviewArea = lazy(() => import("./components/PreviewArea"));
 const SettingsPage = lazy(() => import("./components/SettingsPage"));
 import { useResize } from "./lib/useResize";
@@ -429,7 +429,8 @@ export default function App() {
     let remembered: WorkspaceToolPanel | null = null;
     try {
       const raw = window.localStorage.getItem(TOOL_PANEL_KEY);
-      if (raw === "git" || raw === "files" || raw === "terminal" || raw === "commit") remembered = raw;
+      if (raw === "git") remembered = "files";
+      else if (raw === "files" || raw === "terminal" || raw === "commit") remembered = raw;
     } catch { }
     setToolPanel(remembered ?? "files");
   };
@@ -557,8 +558,11 @@ export default function App() {
           />
           <Show when={leftRailResize.previewPx() !== null}>
             <div
-              class="pointer-events-none fixed bottom-0 top-0 w-px bg-[var(--ui-accent)] opacity-70 z-[70]"
-              style={{ left: `${leftRailResize.previewPx() ?? 0}px` }}
+              class="pointer-events-none fixed bottom-0 top-0 z-[70] w-0.5 opacity-80"
+              style={{
+                left: `${leftRailResize.previewPx() ?? 0}px`,
+                backgroundColor: "var(--ui-resizer-line-hover)",
+              }}
             />
           </Show>
         </Show>
@@ -650,9 +654,10 @@ export default function App() {
               />
               <Show when={editorResize.previewPx() !== null}>
                 <div
-                  class="pointer-events-none fixed left-0 right-0 h-px bg-[var(--ui-accent)] opacity-70 z-[70]"
+                  class="pointer-events-none fixed left-0 right-0 z-[70] h-0.5 opacity-80"
                   style={{
                     top: `${(splitContainerEl()?.getBoundingClientRect().top ?? 0) + (editorResize.previewPx() ?? 0)}px`,
+                    backgroundColor: "var(--ui-resizer-line-hover)",
                   }}
                 />
               </Show>
@@ -758,15 +763,25 @@ export default function App() {
               />
             </Show>
             <Show when={toolPanel() === "files"}>
-              <FilesPanel
+              <WorkspaceFilesPanel
                 appSessionId={() => activeSession()?.id}
                 cwd={() => activeSession()?.cwd ?? null}
+                gitStatus={gitStatus}
+                onRefreshGit={refetchGitStatus}
                 onOpenFile={(path) => {
                   const sid = activeSessionId();
                   const cwd = activeSession()?.cwd ?? "";
                   if (!sid || !cwd) return;
                   openPreviewTab(mutateSession, sid, {
                     cwd, path, initialMode: "file", staged: false, untracked: false,
+                  });
+                }}
+                onOpenDiff={(path, staged, untracked) => {
+                  const sid = activeSessionId();
+                  const cwd = activeSession()?.cwd ?? "";
+                  if (!sid || !cwd) return;
+                  openPreviewTab(mutateSession, sid, {
+                    cwd, path, initialMode: "diff", staged, untracked,
                   });
                 }}
                 onCollapse={() => setToolPanel(null)}

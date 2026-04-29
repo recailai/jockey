@@ -19,8 +19,11 @@ export default function ToolPanelDock(props: ToolPanelDockProps) {
       />
       <Show when={props.previewPx !== null}>
         <div
-          class="pointer-events-none fixed bottom-0 top-0 w-px bg-[var(--ui-accent)] opacity-70 z-[70]"
-          style={{ right: `${props.previewPx ?? 0}px` }}
+          class="pointer-events-none fixed bottom-0 top-0 z-[70] w-0.5 opacity-80"
+          style={{
+            right: `${props.previewPx ?? 0}px`,
+            backgroundColor: "var(--ui-resizer-line-hover)",
+          }}
         />
       </Show>
       <aside class="right-tool-panel" style={{ width: `${props.widthPx}px` }}>

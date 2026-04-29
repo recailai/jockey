@@ -2,7 +2,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { For, Show, createMemo, createSignal } from "solid-js";
 import {
   ChevronDown,
-  FileText,
+  Folder,
   GitBranch,
   GitBranchPlus,
   GitCommitHorizontal,
@@ -352,21 +352,11 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
         </Show>
 
         <ToolbarButton
-          active={props.activeToolPanel() === "files"}
+          active={props.activeToolPanel() === "files" || props.activeToolPanel() === "git"}
           onClick={() => props.onToggleToolPanel("files")}
           title="Files"
         >
-          <FileText size={15} />
-        </ToolbarButton>
-        <ToolbarButton
-          active={props.activeToolPanel() === "git" || props.activeToolPanel() === "commit"}
-          onClick={() => props.onToggleToolPanel("git")}
-          title="Source Control"
-        >
-          <GitBranch size={15} />
-          <Show when={dirty() > 0}>
-            <span class="toolbar-dot" />
-          </Show>
+          <Folder size={15} />
         </ToolbarButton>
         <ToolbarButton
           active={props.activeToolPanel() === "terminal"}
