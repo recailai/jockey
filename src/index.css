@@ -3415,6 +3415,56 @@ textarea {
 .git-change-row {
   cursor: default;
 }
+.file-glyph {
+  --file-glyph-fg: color-mix(in srgb, var(--ui-muted) 82%, var(--ui-text));
+  --file-glyph-bg: color-mix(in srgb, var(--ui-muted-bg) 82%, var(--ui-surface));
+  display: inline-flex;
+  height: 18px;
+  width: 18px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background:
+    radial-gradient(circle at 28% 24%, color-mix(in srgb, white 38%, transparent), transparent 58%),
+    var(--file-glyph-bg);
+  color: var(--file-glyph-fg);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--file-glyph-fg) 16%, transparent),
+    0 1px 0 color-mix(in srgb, var(--ui-bg) 60%, transparent);
+}
+.file-glyph-icon {
+  stroke-width: 2.1;
+}
+.file-glyph-default,
+.file-glyph-doc {
+  --file-glyph-fg: color-mix(in srgb, var(--ui-muted) 84%, var(--ui-text));
+  --file-glyph-bg: color-mix(in srgb, var(--ui-muted-bg) 86%, var(--ui-surface));
+}
+.file-glyph-code {
+  --file-glyph-fg: color-mix(in srgb, var(--ui-state-info-text) 78%, var(--ui-text));
+  --file-glyph-bg: color-mix(in srgb, var(--ui-state-info-bg) 66%, var(--ui-surface));
+}
+.file-glyph-config {
+  --file-glyph-fg: color-mix(in srgb, var(--ui-state-warning-text) 78%, var(--ui-text));
+  --file-glyph-bg: color-mix(in srgb, var(--ui-state-warning-bg) 60%, var(--ui-surface));
+}
+.file-glyph-package,
+.file-glyph-sheet {
+  --file-glyph-fg: color-mix(in srgb, var(--ui-state-success-text) 78%, var(--ui-text));
+  --file-glyph-bg: color-mix(in srgb, var(--ui-state-success-bg) 62%, var(--ui-surface));
+}
+.file-glyph-media {
+  --file-glyph-fg: color-mix(in srgb, var(--ui-state-danger-text) 72%, var(--ui-text));
+  --file-glyph-bg: color-mix(in srgb, var(--ui-state-danger-bg) 62%, var(--ui-surface));
+}
+.file-glyph-archive,
+.file-glyph-shell {
+  --file-glyph-fg: color-mix(in srgb, var(--ui-accent) 74%, var(--ui-text));
+  --file-glyph-bg: color-mix(in srgb, var(--ui-accent-soft) 92%, var(--ui-surface));
+}
+.file-tree-folder-icon {
+  color: color-mix(in srgb, var(--ui-state-warning-text) 52%, var(--ui-text));
+}
 .right-tool-panel .jui-list-row {
   margin-bottom: 3px;
 }

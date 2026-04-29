@@ -1,9 +1,18 @@
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
-import { ChevronRight, Folder, FolderOpen, File as FileIcon, RefreshCw, Eye, EyeOff, PanelRightClose } from "lucide-solid";
+import {
+  ChevronRight,
+  Folder,
+  FolderOpen,
+  RefreshCw,
+  Eye,
+  EyeOff,
+  PanelRightClose,
+} from "lucide-solid";
 import { fsApi, type DirEntry } from "../lib/tauriApi";
 import { useGitChanged } from "../hooks/useGitChanged";
 import { EmptyState, ListRow, Panel, PanelBody, PanelHeader, PanelHeaderAction } from "./ui";
+import FileGlyph from "./FileGlyph";
 
 type FilesPanelProps = {
   appSessionId: () => string | undefined;
@@ -100,8 +109,8 @@ function TreeNode(props: TreeNodeProps) {
                       size={12}
                       class={`shrink-0 transition-transform ${isOpen() ? "rotate-90" : ""}`}
                     />
-                    <Show when={isOpen()} fallback={<Folder size={14} class="shrink-0 theme-muted" />}>
-                      <FolderOpen size={14} class="shrink-0 theme-muted" />
+                    <Show when={isOpen()} fallback={<Folder size={14} class="file-tree-folder-icon shrink-0" />}>
+                      <FolderOpen size={14} class="file-tree-folder-icon shrink-0" />
                     </Show>
                     <span class="truncate">{entry.name}</span>
                   </ListRow>
@@ -122,7 +131,7 @@ function TreeNode(props: TreeNodeProps) {
                 classList={{ "opacity-60": entry.name.startsWith(".") }}
                 onClick={() => props.onOpenFile(childKey)}
               >
-                <FileIcon size={13} class="shrink-0 theme-muted" />
+                <FileGlyph name={entry.name} />
                 <span class="truncate">{entry.name}</span>
               </ListRow>
             );

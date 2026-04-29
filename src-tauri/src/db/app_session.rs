@@ -1,3 +1,5 @@
+use crate::acp;
+use crate::db::app_session_role::clear_app_session_role_cli_id;
 use crate::db::{get_state, with_db};
 use crate::types::*;
 use crate::{default_chat_cwd, now_ms};
@@ -226,7 +228,56 @@ pub(crate) fn close_app_session_internal(state: &AppState, id: &str) -> Result<(
             return Err(format!("session not found or already closed: {id}"));
         }
         Ok(())
-    })
+    })?;
+    schedule_session_role_cleanup(state.clone_refs(), id.to_string(), false);
+    Ok(())
+}
+
+fn schedule_session_role_cleanup(state: AppState, session_id: String, keep_active_role: bool) {
+    tauri::async_runtime::spawn(async move {
+        let active_role = if keep_active_role {
+            with_db(&state, |conn| {
+                conn.query_row(
+                    "SELECT active_role FROM app_sessions WHERE id = ?1",
+                    params![&session_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())
+            })
+            .ok()
+            .flatten()
+        } else {
+            None
+        };
+
+        let targets: Vec<(String, String)> = with_db(&state, |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT DISTINCT role_name, runtime_kind
+                     FROM app_session_roles
+                     WHERE app_session_id = ?1
+                       AND runtime_kind IS NOT NULL
+                       AND trim(runtime_kind) <> ''",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![&session_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| e.to_string())?;
+            Ok(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+        })
+        .unwrap_or_default();
+
+        for (role_name, runtime_kind) in targets {
+            if active_role.as_deref() == Some(role_name.as_str()) {
+                continue;
+            }
+            let _ = acp::reset_session(&runtime_kind, &role_name, Some(&session_id)).await;
+            let _ = clear_app_session_role_cli_id(&state, &session_id, &role_name);
+        }
+    });
 }
 
 #[tauri::command]
@@ -238,11 +289,12 @@ pub(crate) fn create_app_session(
 }
 
 #[tauri::command]
-pub(crate) fn update_app_session(
+pub(crate) async fn update_app_session(
     state: State<'_, AppState>,
     id: String,
     update: AppSessionUpdate,
 ) -> Result<(), String> {
+    let role_changed = update.active_role.is_some();
     with_db(get_state(&state), |conn| {
         if let Some(ref title) = update.title {
             let title = validate_session_title(title)?;
@@ -270,11 +322,18 @@ pub(crate) fn update_app_session(
             .map_err(|e| e.to_string())?;
         }
         Ok(())
-    })
+    })?;
+    if role_changed {
+        schedule_session_role_cleanup(get_state(&state).clone_refs(), id, true);
+    }
+    Ok(())
 }
 
 #[tauri::command]
-pub(crate) fn delete_app_session(state: State<'_, AppState>, id: String) -> Result<(), String> {
+pub(crate) async fn delete_app_session(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
     let now = now_ms();
     with_db(get_state(&state), |conn| {
         conn.execute(
@@ -283,7 +342,9 @@ pub(crate) fn delete_app_session(state: State<'_, AppState>, id: String) -> Resu
         )
         .map_err(|e| e.to_string())?;
         Ok(())
-    })
+    })?;
+    schedule_session_role_cleanup(get_state(&state).clone_refs(), id, false);
+    Ok(())
 }
 
 #[tauri::command]

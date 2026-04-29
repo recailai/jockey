@@ -12,7 +12,7 @@ mod runtime_kind;
 mod types;
 
 use dashmap::DashMap;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::OptionalExtension;
 use std::collections::HashSet;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -175,93 +175,96 @@ pub fn run() {
                 .filter_map(|(key, available)| if *available { Some(key.clone()) } else { None })
                 .collect();
 
-            // Load recent session's role mappings from app_session_roles
+            // Load the most recent open session's current active role only.
             let app_state: &AppState = app.state::<AppState>().inner();
-            let recent_app_session_id: Option<String> = with_db(app_state, |conn| {
-                conn.query_row(
-                    "SELECT id FROM app_sessions ORDER BY last_active_at DESC LIMIT 1",
-                    [],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(|e| e.to_string())
-            }).unwrap_or(None);
-
-            let recent_role_mappings: Vec<(String, String, Option<String>)> = if let Some(ref sid) = recent_app_session_id {
+            let recent_active_session: Option<(String, String, String, Option<String>)> =
                 with_db(app_state, |conn| {
-                    let mut stmt = conn.prepare(
-                        "SELECT role_name, runtime_kind, acp_session_id FROM app_session_roles WHERE app_session_id = ?1"
-                    ).map_err(|e| e.to_string())?;
-                    let rows = stmt.query_map(params![sid], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
-                    }).map_err(|e| e.to_string())?;
-                    Ok(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
-                }).unwrap_or_default()
-            } else {
-                Vec::new()
-            };
+                    conn.query_row(
+                        "SELECT s.id,
+                                s.active_role,
+                                COALESCE(sr.runtime_kind, roles.runtime_kind, s.runtime_kind),
+                                sr.acp_session_id
+                         FROM app_sessions s
+                         LEFT JOIN app_session_roles sr
+                           ON sr.app_session_id = s.id
+                          AND sr.role_name = s.active_role
+                         LEFT JOIN roles
+                           ON roles.role_name = s.active_role
+                         WHERE s.closed_at IS NULL
+                           AND trim(COALESCE(sr.runtime_kind, roles.runtime_kind, s.runtime_kind, '')) <> ''
+                         ORDER BY s.last_active_at DESC
+                         LIMIT 1",
+                        [],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, Option<String>>(3)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())
+                })
+                .unwrap_or(None);
 
             let app_handle = app.handle().clone();
+            let startup_available_runtimes = available_runtime_keys.clone();
             tauri::async_runtime::spawn(async move {
-                let mut priority_futs: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> = Vec::new();
-                let app_session_id = match recent_app_session_id.clone() {
-                    Some(sid) => sid,
-                    None => return,
+                let Some((app_session_id, role_name, runtime_kind, resume_sid)) =
+                    recent_active_session
+                else {
+                    return;
                 };
-
-                for (role_name, runtime_kind, resume_sid) in &recent_role_mappings {
-                    if runtime_kind != "mock" && !available_runtime_keys.contains(runtime_kind) {
-                        continue;
-                    }
-                    let cwd = {
-                        let state_ref = app_handle.state::<AppState>();
-                        crate::db::app_session::get_app_session_cwd(state_ref.inner(), &app_session_id)
-                            .unwrap_or_else(default_chat_cwd)
-                    };
+                if runtime_kind == "mock" || !startup_available_runtimes.contains(&runtime_kind) {
+                    return;
+                }
+                let cwd = {
                     let state_ref = app_handle.state::<AppState>();
-                    let app_state_inner: &AppState = state_ref.inner();
-                    let tmp = app_state_inner.clone_refs();
-                    let sid_clone = app_session_id.clone();
-                    let role_name_clone = role_name.clone();
-                    let runtime_kind_clone = runtime_kind.clone();
-                    let resume_sid_clone = resume_sid.clone();
-                    priority_futs.push(Box::pin(async move {
-                        acp::prewarm_role_with_session_id(&runtime_kind_clone, &role_name_clone, &cwd, resume_sid_clone, &tmp, &sid_clone).await;
-                    }));
-                }
-
-                let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(2));
-                let mut handles = Vec::new();
-                for fut in priority_futs {
-                    let permit = sem.clone().acquire_owned().await.ok();
-                    handles.push(tokio::spawn(async move {
-                        let _permit = permit;
-                        fut.await;
-                    }));
-                }
-                for h in handles {
-                    let _ = h.await;
-                }
+                    crate::db::app_session::get_app_session_cwd(state_ref.inner(), &app_session_id)
+                        .unwrap_or_else(default_chat_cwd)
+                };
+                let state_ref = app_handle.state::<AppState>();
+                let app_state_inner: &AppState = state_ref.inner();
+                let tmp = app_state_inner.clone_refs();
+                acp::prewarm_role_with_session_id(
+                    &runtime_kind,
+                    &role_name,
+                    &cwd,
+                    resume_sid,
+                    &tmp,
+                    &app_session_id,
+                )
+                .await;
             });
 
-            // Background config-options refresh: every 5 minutes, re-prewarm all active
-            // session roles so the in-memory cache stays current without user interaction.
+            // Background config refresh: only refresh the currently active role for
+            // each open session, and use a cadence longer than idle reclaim so
+            // refreshes do not keep adapter subprocesses permanently resident.
             {
                 let app_handle = app.handle().clone();
+                let refresh_available_runtimes = available_runtime_keys.clone();
                 tauri::async_runtime::spawn(async move {
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(900));
                     interval.tick().await; // skip immediate first tick
                     loop {
                         interval.tick().await;
                         let state_ref = app_handle.state::<AppState>();
                         let app_state: &AppState = state_ref.inner();
-                        // Collect all active (non-closed) sessions and their role mappings
                         let session_roles: Vec<(String, String, String)> = with_db(app_state, |conn| {
                             let mut stmt = conn.prepare(
-                                "SELECT r.app_session_id, r.role_name, r.runtime_kind
-                                 FROM app_session_roles r
-                                 JOIN app_sessions s ON s.id = r.app_session_id
-                                 WHERE s.closed_at IS NULL",
+                                "SELECT s.id,
+                                        s.active_role,
+                                        COALESCE(sr.runtime_kind, roles.runtime_kind, s.runtime_kind)
+                                 FROM app_sessions s
+                                 LEFT JOIN app_session_roles sr
+                                   ON sr.app_session_id = s.id
+                                  AND sr.role_name = s.active_role
+                                 LEFT JOIN roles
+                                   ON roles.role_name = s.active_role
+                                 WHERE s.closed_at IS NULL
+                                   AND trim(COALESCE(sr.runtime_kind, roles.runtime_kind, s.runtime_kind, '')) <> ''",
                             ).map_err(|e| e.to_string())?;
                             let rows = stmt.query_map([], |row| {
                                 Ok((
@@ -276,11 +279,10 @@ pub fn run() {
                         let refresh_sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
                         let mut refresh_tasks = tokio::task::JoinSet::new();
                         let refresh_timeout = std::time::Duration::from_secs(120);
-                        let mut active_role_names: std::collections::HashSet<String> =
-                            std::collections::HashSet::new();
                         for (session_id, role_name, runtime_kind) in session_roles {
-                            if runtime_kind == "mock" { continue; }
-                            active_role_names.insert(role_name.clone());
+                            if runtime_kind == "mock" || !refresh_available_runtimes.contains(&runtime_kind) {
+                                continue;
+                            }
                             let tmp = app_state.clone_refs();
                             let sid_clone = session_id.clone();
                             let rn_clone = role_name.clone();
@@ -290,45 +292,12 @@ pub fn run() {
                                 let _permit = permit;
                                 let cwd = crate::db::app_session::get_app_session_cwd(&tmp, &sid_clone)
                                     .unwrap_or_else(resolve_chat_cwd);
-                                let refresh = acp::prewarm_role_for_config(
+                                let refresh = acp::refresh_role_config_defs(
                                     &rk_clone,
                                     &rn_clone,
                                     &cwd,
-                                    Some((&tmp, &sid_clone)),
-                                    false,
+                                    &tmp,
                                 );
-                                let _ = tokio::time::timeout(refresh_timeout, refresh).await;
-                            });
-                        }
-
-                        let all_roles: Vec<(String, String)> = with_db(app_state, |conn| {
-                            let mut stmt = conn
-                                .prepare("SELECT role_name, runtime_kind FROM roles ORDER BY role_name ASC")
-                                .map_err(|e| e.to_string())?;
-                            let rows = stmt
-                                .query_map([], |row| {
-                                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                                })
-                                .map_err(|e| e.to_string())?;
-                            Ok(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
-                        })
-                        .unwrap_or_else(|e| { eprintln!("[refresh] list roles error: {e}"); vec![] });
-
-                        for (role_name, runtime_kind) in all_roles {
-                            if runtime_kind == "mock" {
-                                continue;
-                            }
-                            if active_role_names.contains(&role_name) {
-                                continue;
-                            }
-                            let tmp = app_state.clone_refs();
-                            let rn_clone = role_name.clone();
-                            let rk_clone = runtime_kind.clone();
-                            let permit = refresh_sem.clone().acquire_owned().await.ok();
-                            refresh_tasks.spawn(async move {
-                                let _permit = permit;
-                                let cwd = resolve_chat_cwd();
-                                let refresh = acp::refresh_role_config_defs(&rk_clone, &rn_clone, &cwd, &tmp);
                                 let _ = tokio::time::timeout(refresh_timeout, refresh).await;
                             });
                         }

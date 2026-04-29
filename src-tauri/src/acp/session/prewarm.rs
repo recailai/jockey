@@ -207,38 +207,6 @@ pub async fn prewarm_role(
     }
 }
 
-/// Prewarm and return discovered config options + modes (used by role config UI).
-pub async fn prewarm_role_for_config(
-    runtime_kind: &str,
-    role_name: &str,
-    cwd: &str,
-    state: Option<(&AppState, &str)>,
-    force_refresh: bool,
-) -> (Vec<Value>, Vec<String>) {
-    let runtime_key = normalize_runtime_key(runtime_kind).unwrap_or(runtime_kind);
-    let resume_session_id = if force_refresh {
-        None
-    } else {
-        state
-            .as_ref()
-            .and_then(|(s, sid)| load_app_session_role_cli_id(s, sid, runtime_key, role_name))
-    };
-    let app_session_id = state.as_ref().map(|(_, sid)| *sid);
-    prewarm_config_impl(ConfigPrewarmRequest {
-        runtime_kind,
-        role_name,
-        cwd,
-        state: state.as_ref().map(|(s, _)| *s),
-        app_session_id,
-        resume_session_id,
-        role_mode: None,
-        role_config_options: vec![],
-        force_refresh,
-        persist_cli_id: true,
-    })
-    .await
-}
-
 /// Prewarm to refresh config option definitions only (no session ID involved).
 pub async fn refresh_role_config_defs(
     runtime_kind: &str,

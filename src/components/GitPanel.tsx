@@ -23,6 +23,7 @@ import {
 import type { GitStatusStore } from "../hooks/useGitPoller";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { Badge, ContextMenuItem, ContextMenuSeparator, ContextMenuSurface, EmptyState, Input, ListRow, Panel, PanelBody, PanelHeader, PanelHeaderAction } from "./ui";
+import FileGlyph from "./FileGlyph";
 
 type GitPanelProps = {
   appSessionId: () => string | undefined;
@@ -248,6 +249,7 @@ export default function GitPanel(props: GitPanelProps) {
                   onClick={() => props.onOpenDiff(entry.path, staged, entry.untracked)}
                   title={entry.path}
                 >
+                  <FileGlyph name={basename()} />
                   <span class="truncate">{basename()}</span>
                   <Show when={dirname()}>
                     <span class="text-[10.5px] theme-muted truncate min-w-0 flex-1">{dirname()}</span>

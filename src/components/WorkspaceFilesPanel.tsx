@@ -3,7 +3,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  File as FileIcon,
   Folder,
   PanelRightClose,
   RefreshCw,
@@ -24,6 +23,7 @@ import {
   PanelHeaderAction,
 } from "./ui";
 import FilesPanel from "./FilesPanel";
+import FileGlyph from "./FileGlyph";
 
 type WorkspaceFilesView = "changed" | "all";
 
@@ -183,7 +183,7 @@ export default function WorkspaceFilesPanel(props: WorkspaceFilesPanelProps) {
                           title={entry.path}
                           onClick={() => props.onOpenDiff(entry.path, entry.staged, entry.untracked)}
                         >
-                          <FileIcon size={13} class="shrink-0 theme-muted" />
+                          <FileGlyph name={fileName(entry.path)} />
                           <span class="min-w-0 flex-1 truncate">{fileName(entry.path)}</span>
                           <span class={`git-status ${statusClass(entry)}`}>{statusLetter(entry)}</span>
                         </ListRow>
