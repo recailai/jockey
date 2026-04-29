@@ -1,7 +1,10 @@
 pub(crate) mod branches;
 pub(crate) mod diff;
 pub(crate) mod error;
+pub(crate) mod forge;
+pub(crate) mod remote;
 pub(crate) mod status;
+pub(crate) mod write;
 
 use std::sync::OnceLock;
 use tauri::{AppHandle, Emitter};
@@ -9,7 +12,10 @@ use tauri::{AppHandle, Emitter};
 pub(crate) use branches::{checkout, list_branches, BranchInfo};
 pub(crate) use diff::diff;
 pub(crate) use error::GitError;
+pub(crate) use forge::{create_pull_request, CreatedPullRequest};
+pub(crate) use remote::{read_origin_info, urlencoding_minimal};
 pub(crate) use status::{status, GitStatus};
+pub(crate) use write::{commit, push};
 
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 

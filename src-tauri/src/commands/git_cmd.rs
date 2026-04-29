@@ -4,7 +4,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::db::get_state;
 use crate::fs_context::looks_binary;
-use crate::git::{self, BranchInfo, GitError, GitStatus};
+use crate::git::{self, BranchInfo, CreatedPullRequest, GitError, GitStatus};
 use crate::types::AppState;
 
 use super::cwd_util::{resolve_cwd, resolve_within_cwd};
@@ -85,78 +85,11 @@ pub struct GitRemoteInfo {
     pub compare_url: Option<String>,
 }
 
-fn parse_remote_url(raw: &str) -> Option<(String, String, String)> {
-    let url = raw.trim();
-    if url.is_empty() {
-        return None;
-    }
-
-    if let Some(rest) = url.strip_prefix("git@") {
-        if let Some((host, path)) = rest.split_once(':') {
-            return split_owner_repo(host, path);
-        }
-    }
-    if let Some(rest) = url.strip_prefix("ssh://") {
-        let rest = rest.strip_prefix("git@").unwrap_or(rest);
-        if let Some((host, path)) = rest.split_once('/') {
-            let host = host.split('@').next_back().unwrap_or(host);
-            let host = host.split(':').next().unwrap_or(host);
-            return split_owner_repo(host, path);
-        }
-    }
-    for prefix in ["https://", "http://", "git://"] {
-        if let Some(rest) = url.strip_prefix(prefix) {
-            let rest = rest.split('@').next_back().unwrap_or(rest);
-            if let Some((host, path)) = rest.split_once('/') {
-                let host = host.split(':').next().unwrap_or(host);
-                return split_owner_repo(host, path);
-            }
-        }
-    }
-    None
-}
-
-fn split_owner_repo(host: &str, path: &str) -> Option<(String, String, String)> {
-    let path = path.trim_start_matches('/').trim_end_matches('/');
-    let path = path.strip_suffix(".git").unwrap_or(path);
-    let mut parts = path.splitn(2, '/');
-    let owner = parts.next()?.to_string();
-    let repo = parts.next()?.to_string();
-    if owner.is_empty() || repo.is_empty() {
-        return None;
-    }
-    Some((host.to_string(), owner, repo))
-}
-
-async fn read_remote_origin(cwd: &std::path::Path) -> Option<String> {
-    use std::process::Stdio;
-    let output = tokio::process::Command::new("git")
-        .arg("remote")
-        .arg("get-url")
-        .arg("origin")
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .await
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
-    }
-}
-
 fn build_remote_info(host: &str, owner: &str, repo: &str, branch: Option<&str>) -> GitRemoteInfo {
     let web_url = format!("https://{host}/{owner}/{repo}");
     let (branch_url, pr_url, compare_url) = match branch {
         Some(b) if !b.is_empty() => {
-            let enc = urlencoding_minimal(b);
+            let enc = git::urlencoding_minimal(b);
             (
                 Some(format!("{web_url}/tree/{enc}")),
                 Some(format!("{web_url}/pull/{enc}")),
@@ -176,29 +109,13 @@ fn build_remote_info(host: &str, owner: &str, repo: &str, branch: Option<&str>) 
     }
 }
 
-fn urlencoding_minimal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
-                out.push(b as char);
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
 #[tauri::command]
 pub(crate) async fn git_remote_info_cmd(
     state: State<'_, AppState>,
     app_session_id: Option<String>,
 ) -> Result<Option<GitRemoteInfo>, String> {
     let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
-    let Some(raw) = read_remote_origin(&cwd).await else {
-        return Ok(None);
-    };
-    let Some((host, owner, repo)) = parse_remote_url(&raw) else {
+    let Some(info) = git::read_origin_info(&cwd).map_err(|e| e.to_string())? else {
         return Ok(None);
     };
     let branch = match git::status(&cwd).await {
@@ -206,9 +123,9 @@ pub(crate) async fn git_remote_info_cmd(
         Err(_) => None,
     };
     Ok(Some(build_remote_info(
-        &host,
-        &owner,
-        &repo,
+        &info.host,
+        &info.owner,
+        &info.repo,
         branch.as_deref(),
     )))
 }
@@ -219,18 +136,78 @@ pub(crate) async fn git_pr_url_cmd(
     app_session_id: Option<String>,
 ) -> Result<Option<String>, String> {
     let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
-    let Some(raw) = read_remote_origin(&cwd).await else {
-        return Ok(None);
-    };
-    let Some((host, owner, repo)) = parse_remote_url(&raw) else {
+    let Some(info) = git::read_origin_info(&cwd).map_err(|e| e.to_string())? else {
         return Ok(None);
     };
     let branch = match git::status(&cwd).await {
         Ok(st) => st.branch,
         Err(_) => None,
     };
-    let info = build_remote_info(&host, &owner, &repo, branch.as_deref());
+    let info = build_remote_info(&info.host, &info.owner, &info.repo, branch.as_deref());
     Ok(info.pr_url.or(Some(info.web_url)))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitInput {
+    pub message: String,
+    pub include_unstaged: bool,
+}
+
+#[tauri::command]
+pub(crate) async fn git_commit_cmd(
+    state: State<'_, AppState>,
+    app_session_id: Option<String>,
+    input: GitCommitInput,
+) -> Result<String, String> {
+    let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
+    let message = input.message.trim().to_string();
+    if message.is_empty() {
+        return Err("commit message is required".to_string());
+    }
+    let cwd_for_task = cwd.clone();
+    let oid = tokio::task::spawn_blocking(move || {
+        git::commit(&cwd_for_task, &message, input.include_unstaged)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    git::notify_changed(&cwd.join(".git").join("HEAD"));
+    Ok(oid)
+}
+
+#[tauri::command]
+pub(crate) async fn git_push_cmd(
+    state: State<'_, AppState>,
+    app_session_id: Option<String>,
+) -> Result<(), String> {
+    let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
+    let cwd_for_task = cwd.clone();
+    tokio::task::spawn_blocking(move || git::push(&cwd_for_task))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    git::notify_changed(&cwd.join(".git").join("refs"));
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCreatePrInput {
+    pub title: Option<String>,
+    pub draft: bool,
+}
+
+#[tauri::command]
+pub(crate) async fn git_create_pr_cmd(
+    state: State<'_, AppState>,
+    app_session_id: Option<String>,
+    input: GitCreatePrInput,
+) -> Result<CreatedPullRequest, String> {
+    let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
+    git::create_pull_request(&cwd, input.title, input.draft)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;

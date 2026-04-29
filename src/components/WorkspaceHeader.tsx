@@ -2,6 +2,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { For, Show, createMemo, createSignal } from "solid-js";
 import {
   ChevronDown,
+  Check,
   Folder,
   GitBranch,
   GitBranchPlus,
@@ -14,11 +15,11 @@ import {
   Upload,
   X,
 } from "lucide-solid";
-import type { Accessor, Setter } from "solid-js";
+import type { Accessor, JSX, Setter } from "solid-js";
 import type { AppSession, AssistantRuntime, Role } from "./types";
 import { DEFAULT_ROLE_ALIAS, INTERACTIVE_MOTION, RUNTIME_COLOR } from "./types";
 import type { GitStatusStore } from "../hooks/useGitPoller";
-import { gitApi, workspaceApi, type WorkspaceOpenTarget } from "../lib/tauriApi";
+import { gitApi, parseError, workspaceApi, type WorkspaceOpenTarget } from "../lib/tauriApi";
 import {
   Badge,
   Button,
@@ -32,8 +33,10 @@ import {
   DropdownSeparator,
   DropdownTrigger,
   Input,
+  RowButton,
   SplitButton,
   SplitButtonMain,
+  Switch as UiSwitch,
   Textarea,
   ToolbarButton,
 } from "./ui";
@@ -57,12 +60,14 @@ type WorkspaceHeaderProps = {
   onSelectRole: (roleName: string) => void;
   onCancelRun: () => void;
   onRunAction: (command: string) => void;
+  onRefreshGit?: () => void;
 };
 
 const ACTION_STORAGE_KEY = "jockey:toolbar.action";
 const IDE_STORAGE_KEY = "jockey:toolbar.ide";
 type ToolbarAction = { name: string; command: string };
-type GitActionBusy = "pr" | null;
+type GitFlowStep = "commit" | "push" | "pr";
+type GitPrimaryActionKind = "commit" | "push" | "pr" | "changes" | "disabled";
 type WorkspaceOpenOption = { target: WorkspaceOpenTarget; label: string; icon: string; tone: string };
 
 const IDE_OPTIONS: WorkspaceOpenOption[] = [
@@ -123,6 +128,29 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+function basename(path: string): string {
+  const idx = path.lastIndexOf("/");
+  return idx === -1 ? path : path.slice(idx + 1);
+}
+
+function isPrimaryBranch(branch: string | null | undefined): boolean {
+  return branch === "main" || branch === "master";
+}
+
+function renderGitPrimaryIcon(kind: GitPrimaryActionKind, busy: boolean): JSX.Element {
+  if (busy) return <LoaderCircle size={14} class="ui-running-spinner" />;
+  switch (kind) {
+    case "push":
+      return <Upload size={14} />;
+    case "pr":
+      return <GitPullRequestCreate size={14} />;
+    case "changes":
+      return <GitBranch size={14} />;
+    default:
+      return <GitCommitHorizontal size={14} />;
+  }
+}
+
 export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
   const [roleOpen, setRoleOpen] = createSignal(false);
   const [action, setAction] = createSignal<ToolbarAction>(loadToolbarAction());
@@ -131,8 +159,13 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
   const [draftActionName, setDraftActionName] = createSignal(action().name);
   const [draftActionCommand, setDraftActionCommand] = createSignal(action().command);
   const [gitMenuOpen, setGitMenuOpen] = createSignal(false);
-  const [gitActionBusy, setGitActionBusy] = createSignal<GitActionBusy>(null);
   const [gitActionError, setGitActionError] = createSignal<string | null>(null);
+  const [gitFlowOpen, setGitFlowOpen] = createSignal(false);
+  const [gitFlowStep, setGitFlowStep] = createSignal<GitFlowStep>("commit");
+  const [includeUnstaged, setIncludeUnstaged] = createSignal(true);
+  const [commitMessage, setCommitMessage] = createSignal("");
+  const [prDraft, setPrDraft] = createSignal(true);
+  const [gitFlowSubmitting, setGitFlowSubmitting] = createSignal(false);
   const [branchEditorOpen, setBranchEditorOpen] = createSignal(false);
   const [draftBranchName, setDraftBranchName] = createSignal("");
   const [selectedIde, setSelectedIde] = createSignal<WorkspaceOpenTarget>(loadIdeTarget());
@@ -156,12 +189,88 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
 
   const git = () => statusView(props.gitStatus());
   const dirty = () => props.gitChangeCount();
-  const activeIde = createMemo(() => IDE_OPTIONS.find((option) => option.target === selectedIde()) ?? IDE_OPTIONS[0]);
-  const pushCommand = () => {
+  const stagedCount = createMemo(() => git()?.staged.length ?? 0);
+  const unstagedCount = createMemo(() => (git()?.unstaged.length ?? 0) + (git()?.untracked.length ?? 0));
+  const canPush = createMemo(() => {
     const s = git();
-    if (!s?.branch || s.detached) return "git push";
-    if (!s.upstream) return `git push -u origin ${shellQuote(s.branch)}`;
-    return "git push";
+    return !!s?.branch && !s.detached;
+  });
+  const canCreatePr = createMemo(() => {
+    const s = git();
+    return !!s?.branch && !s.detached && !isPrimaryBranch(s.branch);
+  });
+  const gitPrimaryAction = createMemo(() => {
+    const s = git();
+    if (!s) {
+      return {
+        kind: "disabled" as const,
+        label: "Commit",
+        title: "Git actions are unavailable for this session",
+        disabled: true,
+      };
+    }
+    if (dirty() > 0) {
+      return {
+        kind: "commit" as const,
+        label: "Commit",
+        title: `Open changes to prepare a commit (${dirty()} files changed)`,
+        disabled: false,
+      };
+    }
+    if (s.branch && !s.detached && (s.ahead > 0 || !s.upstream)) {
+      return {
+        kind: "push" as const,
+        label: "Push",
+        title: `Push ${s.branch}`,
+        disabled: false,
+      };
+    }
+    if (s.branch && !s.detached && !isPrimaryBranch(s.branch)) {
+      return {
+        kind: "pr" as const,
+        label: "PR",
+        title: `Create a pull request for ${s.branch}`,
+        disabled: false,
+      };
+    }
+    return {
+      kind: "changes" as const,
+      label: "Changes",
+      title: "Open source control",
+      disabled: false,
+    };
+  });
+  const hasCommitableChanges = createMemo(() => {
+    const s = git();
+    if (!s) return false;
+    if (includeUnstaged()) return s.staged.length + s.unstaged.length + s.untracked.length > 0;
+    return s.staged.length > 0;
+  });
+  const willCreateCommit = createMemo(() => dirty() > 0 && hasCommitableChanges());
+  const effectiveGitFlowStep = createMemo<GitFlowStep>(() => {
+    if (gitFlowStep() === "pr" && !canCreatePr()) return canPush() ? "push" : "commit";
+    if (gitFlowStep() === "push" && !canPush()) return "commit";
+    return gitFlowStep();
+  });
+  const canSubmitGitFlow = createMemo(() => {
+    const s = git();
+    if (gitFlowSubmitting()) return false;
+    if (!s) return false;
+    if (effectiveGitFlowStep() === "commit") return willCreateCommit();
+    if (effectiveGitFlowStep() === "push") return canPush() && (willCreateCommit() || s.ahead > 0 || !s.upstream);
+    return canCreatePr();
+  });
+  const activeIde = createMemo(() => IDE_OPTIONS.find((option) => option.target === selectedIde()) ?? IDE_OPTIONS[0]);
+  const autoCommitMessage = () => {
+    const s = git();
+    if (!s) return "chore: update files";
+    const entries = includeUnstaged()
+      ? [...s.staged, ...s.unstaged, ...s.untracked]
+      : [...s.staged];
+    const files = Array.from(new Set(entries.map((entry) => basename(entry.path))));
+    if (files.length === 1) return `chore: update ${files[0]}`;
+    if (files.length > 1) return `chore: update ${files.length} files`;
+    return "chore: update files";
   };
   const runAction = () => {
     const command = action().command.trim();
@@ -189,13 +298,70 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
     try { window.localStorage.setItem(ACTION_STORAGE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
     setActionEditorOpen(false);
   };
-  const openCommitTools = () => {
-    props.onToggleToolPanel("commit");
+  const openGitFlow = (preferred?: GitFlowStep) => {
+    const s = git();
+    if (!s) return;
+    const primaryStep = gitPrimaryAction().kind === "push"
+      ? "push"
+      : gitPrimaryAction().kind === "pr"
+        ? "pr"
+        : "commit";
+    const nextStep = preferred ?? primaryStep;
+    setGitFlowStep(nextStep);
+    setIncludeUnstaged(s.unstaged.length + s.untracked.length > 0 || s.staged.length === 0);
+    setCommitMessage("");
+    setPrDraft(nextStep === "pr");
+    setGitFlowSubmitting(false);
+    setGitActionError(null);
     setGitMenuOpen(false);
+    setGitFlowOpen(true);
   };
-  const pushChanges = () => {
-    props.onRunAction(pushCommand());
-    setGitMenuOpen(false);
+  const submitGitFlow = async () => {
+    const s = git();
+    if (!s || gitFlowSubmitting()) return;
+    const step = effectiveGitFlowStep();
+    const shouldCommit = willCreateCommit();
+    const shouldPush = step === "push" || step === "pr";
+    const shouldRunPush = shouldPush && (shouldCommit || s.ahead > 0 || !s.upstream);
+    const message = commitMessage().trim() || autoCommitMessage();
+
+    if (!shouldCommit && !shouldRunPush && step !== "pr") {
+      setGitActionError("No git action is available for the current state.");
+      return;
+    }
+    setGitFlowSubmitting(true);
+    setGitActionError(null);
+    try {
+      const appSessionId = props.activeSession()?.id ?? null;
+      if (shouldCommit) {
+        await gitApi.commit(appSessionId, {
+          message,
+          includeUnstaged: includeUnstaged(),
+        });
+      }
+      if (shouldRunPush) {
+        await gitApi.push(appSessionId);
+      }
+      if (step === "pr") {
+        const created = await gitApi.createPr(appSessionId, {
+          title: message.split(/\r?\n/, 1)[0] || null,
+          draft: prDraft(),
+        });
+        try {
+          await openUrl(created.url);
+        } catch {
+          // PR is already created even if the browser fails to open.
+        }
+      }
+      props.onRefreshGit?.();
+      setGitFlowOpen(false);
+      setGitMenuOpen(false);
+    } catch (err) {
+      const parsed = parseError(err);
+      setGitActionError(parsed.message);
+    } finally {
+      setGitFlowSubmitting(false);
+    }
   };
   const openCreateBranchEditor = () => {
     setDraftBranchName("");
@@ -208,26 +374,6 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
     if (!branchName) return;
     props.onRunAction(`git switch -c ${shellQuote(branchName)}`);
     setBranchEditorOpen(false);
-  };
-  const createPullRequest = async () => {
-    setGitActionBusy("pr");
-    setGitActionError(null);
-    try {
-      const info = await gitApi.remoteInfo(props.activeSession()?.id ?? null);
-      const url = info?.prUrl ?? info?.compareUrl ?? null;
-      if (url) {
-        await openUrl(url);
-      } else {
-        props.onRunAction("gh pr create --web");
-      }
-      setGitMenuOpen(false);
-    } catch (err) {
-      console.error("[workspace-topbar] create pull request failed", err);
-      props.onRunAction("gh pr create --web");
-      setGitMenuOpen(false);
-    } finally {
-      setGitActionBusy(null);
-    }
   };
   const openWorkspace = async (target: WorkspaceOpenTarget, persist = true) => {
     const option = IDE_OPTIONS.find((item) => item.target === target);
@@ -247,6 +393,15 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
     } finally {
       setIdeBusy(false);
     }
+  };
+  const runPrimaryGitAction = () => {
+    const action = gitPrimaryAction();
+    if (action.disabled) return;
+    if (action.kind === "changes") {
+      props.onToggleToolPanel("git");
+      return;
+    }
+    openGitFlow(action.kind === "push" ? "push" : action.kind === "pr" ? "pr" : "commit");
   };
 
   return (
@@ -341,18 +496,32 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
       <div class="ml-auto flex items-center gap-1.5">
         <Show when={git()}>
           {(s) => (
-            <div class="topbar-branch" title="Current branch">
+            <button
+              type="button"
+              class="topbar-branch"
+              classList={{ "is-active": props.activeToolPanel() === "git" || props.activeToolPanel() === "commit" }}
+              title={`Open source control for ${s().branch ?? "(detached)"}`}
+              onClick={() => props.onToggleToolPanel("git")}
+            >
               <GitBranch size={14} />
               <span class="hidden max-w-[140px] truncate md:inline">{s().branch ?? "(detached)"}</span>
+              <div class="topbar-branch-meta">
+                <Show when={s().behind > 0}>
+                  <Badge tone="warning" title={`${s().behind} commits behind upstream`}>↓{s().behind}</Badge>
+                </Show>
+                <Show when={s().ahead > 0}>
+                  <Badge tone="info" title={`${s().ahead} commits ahead of upstream`}>↑{s().ahead}</Badge>
+                </Show>
+              </div>
               <Show when={dirty() > 0}>
-                <Badge tone="success">+{dirty()}</Badge>
+                <Badge tone="warning" title={`${dirty()} changed files`}>M{dirty()}</Badge>
               </Show>
-            </div>
+            </button>
           )}
         </Show>
 
         <ToolbarButton
-          active={props.activeToolPanel() === "files" || props.activeToolPanel() === "git"}
+          active={props.activeToolPanel() === "files"}
           onClick={() => props.onToggleToolPanel("files")}
           title="Files"
         >
@@ -445,34 +614,44 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
         </DropdownMenu>
         <DropdownMenu open={gitMenuOpen()} onOpenChange={setGitMenuOpen}>
         <div class="git-actions-wrap">
-          <DropdownTrigger
-            variant="plain"
-            class="commit-button"
-            active={gitMenuOpen() || props.activeToolPanel() === "commit"}
-            title="Git actions"
-          >
-            <GitCommitHorizontal size={14} />
-            <span>Commit</span>
-            <ChevronDown size={13} />
-          </DropdownTrigger>
+          <SplitButton class={`commit-button ${gitMenuOpen() || props.activeToolPanel() === "commit" ? "is-active" : ""}`}>
+            <SplitButtonMain
+              class="commit-action-main"
+              title={gitPrimaryAction().title}
+              disabled={gitPrimaryAction().disabled}
+              onClick={runPrimaryGitAction}
+            >
+              {renderGitPrimaryIcon(gitPrimaryAction().kind, false)}
+              <span>{gitPrimaryAction().label}</span>
+            </SplitButtonMain>
+            <DropdownTrigger
+              variant="plain"
+              class="commit-action-caret jui-split-button-trigger"
+              active={gitMenuOpen() || props.activeToolPanel() === "commit"}
+              title="More git actions"
+              disabled={!git()}
+            >
+              <ChevronDown size={13} />
+            </DropdownTrigger>
+          </SplitButton>
             <DropdownContent class="jui-git-actions-menu">
               <DropdownLabel>Git actions</DropdownLabel>
-              <DropdownItem icon={<GitCommitHorizontal size={14} />} onSelect={openCommitTools}>
+              <DropdownItem icon={<GitCommitHorizontal size={14} />} disabled={dirty() === 0} onSelect={() => openGitFlow("commit")}>
                 Commit
               </DropdownItem>
               <DropdownItem
                 icon={<Upload size={14} />}
-                disabled={!git()}
-                onSelect={pushChanges}
+                disabled={!canPush()}
+                onSelect={() => openGitFlow("push")}
               >
                 Push
               </DropdownItem>
               <DropdownItem
                 icon={<GitPullRequestCreate size={14} />}
-                disabled={!git()}
-                onSelect={() => { void createPullRequest(); }}
+                disabled={!canCreatePr()}
+                onSelect={() => openGitFlow("pr")}
               >
-                {gitActionBusy() === "pr" ? "Opening PR..." : "Create PR"}
+                Create PR
               </DropdownItem>
               <DropdownItem
                 icon={<GitBranchPlus size={14} />}
@@ -554,6 +733,136 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
               </Button>
             </div>
           </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={gitFlowOpen()} onOpenChange={setGitFlowOpen}>
+        <DialogContent
+          class="git-flow-modal"
+          title={effectiveGitFlowStep() === "pr" ? "Ship your branch" : "Commit your changes"}
+          description="Review the git action before sending it to the terminal"
+          icon={renderGitPrimaryIcon(effectiveGitFlowStep() === "pr" ? "pr" : effectiveGitFlowStep() === "push" ? "push" : "commit", false)}
+        >
+          <div class="git-flow-stack">
+            <div class="git-flow-summary-grid">
+              <div class="git-flow-summary-card">
+                <span class="git-flow-summary-label">Branch</span>
+                <div class="git-flow-summary-value">
+                  <GitBranch size={14} />
+                  <span>{git()?.branch ?? "(detached)"}</span>
+                </div>
+              </div>
+              <div class="git-flow-summary-card">
+                <span class="git-flow-summary-label">Changes</span>
+                <div class="git-flow-summary-value">
+                  <span>{dirty()} files</span>
+                  <Show when={stagedCount() > 0}>
+                    <Badge tone="success">staged {stagedCount()}</Badge>
+                  </Show>
+                  <Show when={unstagedCount() > 0}>
+                    <Badge tone="warning">unstaged {unstagedCount()}</Badge>
+                  </Show>
+                </div>
+              </div>
+            </div>
+
+            <Show when={unstagedCount() > 0}>
+              <div class="git-flow-toggle-row">
+                <UiSwitch
+                  checked={includeUnstaged()}
+                  onChange={setIncludeUnstaged}
+                  label="Include unstaged changes"
+                />
+              </div>
+            </Show>
+
+            <Show when={dirty() > 0}>
+              <div class="git-flow-field">
+                <div class="git-flow-field-row">
+                  <label class="git-flow-field-label">Commit message</label>
+                  <span class="git-flow-helper">Blank uses an auto-generated message</span>
+                </div>
+                <Textarea
+                  value={commitMessage()}
+                  onInput={(e) => setCommitMessage(e.currentTarget.value)}
+                  class="git-flow-message-input"
+                  spellcheck={false}
+                  rows={3}
+                  placeholder={autoCommitMessage()}
+                />
+              </div>
+            </Show>
+
+            <div class="git-flow-field">
+              <label class="git-flow-field-label">Next step</label>
+              <div class="git-flow-step-list">
+                <RowButton
+                  active={effectiveGitFlowStep() === "commit"}
+                  class="git-flow-step-row"
+                  disabled={dirty() === 0}
+                  onClick={() => setGitFlowStep("commit")}
+                >
+                  <div class="git-flow-step-copy">
+                    <span class="git-flow-step-title">Commit</span>
+                    <span class="git-flow-step-subtitle">Create a local commit only</span>
+                  </div>
+                  <Show when={effectiveGitFlowStep() === "commit"}>
+                    <Check size={16} />
+                  </Show>
+                </RowButton>
+                <RowButton
+                  active={effectiveGitFlowStep() === "push"}
+                  class="git-flow-step-row"
+                  disabled={!canPush()}
+                  onClick={() => setGitFlowStep("push")}
+                >
+                  <div class="git-flow-step-copy">
+                    <span class="git-flow-step-title">Commit & push</span>
+                    <span class="git-flow-step-subtitle">Commit first, then push to the upstream branch</span>
+                  </div>
+                  <Show when={effectiveGitFlowStep() === "push"}>
+                    <Check size={16} />
+                  </Show>
+                </RowButton>
+                <RowButton
+                  active={effectiveGitFlowStep() === "pr"}
+                  class="git-flow-step-row"
+                  disabled={!canCreatePr()}
+                  onClick={() => setGitFlowStep("pr")}
+                >
+                  <div class="git-flow-step-copy">
+                    <span class="git-flow-step-title">Commit & create PR</span>
+                    <span class="git-flow-step-subtitle">Push the branch, then open `gh pr create --fill`</span>
+                  </div>
+                  <Show when={effectiveGitFlowStep() === "pr"}>
+                    <Check size={16} />
+                  </Show>
+                </RowButton>
+              </div>
+            </div>
+
+            <Show when={effectiveGitFlowStep() === "pr"}>
+              <div class="git-flow-toggle-row">
+                <UiSwitch
+                  checked={prDraft()}
+                  onChange={setPrDraft}
+                  label="Create draft PR"
+                />
+              </div>
+            </Show>
+
+            <Show when={gitActionError()}>
+              {(error) => <div class="git-flow-error">{error()}</div>}
+            </Show>
+
+            <div class="git-flow-footer">
+              <Button variant="ghost" size="lg" class="run-action-secondary" onClick={() => setGitFlowOpen(false)}>
+                Cancel
+              </Button>
+              <Button variant="primary" size="lg" class="git-flow-submit" disabled={!canSubmitGitFlow()} onClick={() => void submitGitFlow()}>
+                {gitFlowSubmitting() ? "Running..." : "Continue"}
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </header>

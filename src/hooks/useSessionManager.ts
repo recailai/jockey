@@ -64,7 +64,12 @@ export function useSessionManager() {
     persistSessionPatch(id, patch);
   };
 
-  type ScrollContainer = { el: HTMLElement; handler: () => void; scrolledUp: boolean };
+  type ScrollContainer = {
+    el: HTMLElement;
+    handler: () => void;
+    scrolledUp: boolean;
+    resizeObserver: ResizeObserver | null;
+  };
   let scrollRaf: number | null = null;
   const scrollContainers = new Map<string, ScrollContainer>();
 
@@ -84,9 +89,12 @@ export function useSessionManager() {
 
   const onListMounted = (id: string, el: HTMLElement) => {
     const old = scrollContainers.get(id);
-    if (old) old.el.removeEventListener("scroll", old.handler);
+    if (old) {
+      old.el.removeEventListener("scroll", old.handler);
+      old.resizeObserver?.disconnect();
+    }
     let scrollRafId: number | null = null;
-    const sc: ScrollContainer = { el, handler: () => {}, scrolledUp: false };
+    const sc: ScrollContainer = { el, handler: () => {}, scrolledUp: false, resizeObserver: null };
     const handler = () => {
       if (scrollRafId !== null) return;
       scrollRafId = window.requestAnimationFrame(() => {
@@ -97,13 +105,20 @@ export function useSessionManager() {
     };
     sc.handler = handler;
     el.addEventListener("scroll", handler, { passive: true });
+    sc.resizeObserver = new ResizeObserver(() => {
+      if (!sc.scrolledUp) scheduleScrollToBottom(true);
+    });
+    sc.resizeObserver.observe(el);
     scrollContainers.set(id, sc);
     scheduleScrollToBottom(true);
   };
 
   const onListUnmounted = (id: string) => {
     const sc = scrollContainers.get(id);
-    if (sc) sc.el.removeEventListener("scroll", sc.handler);
+    if (sc) {
+      sc.el.removeEventListener("scroll", sc.handler);
+      sc.resizeObserver?.disconnect();
+    }
     scrollContainers.delete(id);
   };
 

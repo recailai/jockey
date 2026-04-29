@@ -290,6 +290,11 @@ export type GitRemoteInfo = {
   compareUrl: string | null;
 };
 
+export type GitCreatedPullRequest = {
+  url: string;
+  number: number;
+};
+
 export const gitApi = {
   status: (appSessionId?: string | null) =>
     call<GitState>("git_status_cmd", { appSessionId: appSessionId ?? null }),
@@ -301,6 +306,12 @@ export const gitApi = {
     call<string | null>("git_pr_url_cmd", { appSessionId: appSessionId ?? null }),
   remoteInfo: (appSessionId?: string | null) =>
     call<GitRemoteInfo | null>("git_remote_info_cmd", { appSessionId: appSessionId ?? null }),
+  commit: (appSessionId: string | null | undefined, input: { message: string; includeUnstaged: boolean }) =>
+    call<string>("git_commit_cmd", { appSessionId: appSessionId ?? null, input }),
+  push: (appSessionId?: string | null) =>
+    call<void>("git_push_cmd", { appSessionId: appSessionId ?? null }),
+  createPr: (appSessionId: string | null | undefined, input: { title?: string | null; draft: boolean }) =>
+    call<GitCreatedPullRequest>("git_create_pr_cmd", { appSessionId: appSessionId ?? null, input }),
   diff: (
     appSessionId: string | null | undefined,
     path: string,

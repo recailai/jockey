@@ -584,6 +584,7 @@ export default function App() {
           onToggleToolPanel={toggleToolPanel}
           onCancelRun={() => { void cancelCurrentRun(); }}
           onRunAction={runToolbarAction}
+          onRefreshGit={refetchGitStatus}
           onSelectRole={(roleName) => {
             if (roleName === DEFAULT_ROLE_ALIAS) {
               patchActiveSession({ activeRole: DEFAULT_ROLE_ALIAS, discoveredConfigOptions: [] });

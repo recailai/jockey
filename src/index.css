@@ -1276,39 +1276,63 @@ textarea {
   height: var(--ui-control-height-md);
   align-items: center;
   gap: 7px;
+  border: 1px solid transparent;
   border-radius: var(--radius-control);
   padding: 0 9px;
+  background: var(--ui-surface);
   color: var(--ui-muted);
   font-size: 12px;
+  box-shadow: var(--ui-shadow-control);
 }
 .topbar-branch span {
   display: inline-flex;
   align-items: center;
   line-height: 18px;
 }
-.topbar-branch:hover {
+.topbar-branch-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.topbar-branch:hover,
+.topbar-branch.is-active {
   background: var(--ui-control-hover);
   color: var(--ui-text);
+  border-color: var(--ui-border);
 }
 
 .commit-button {
   display: inline-flex;
   height: var(--ui-control-height-md);
   align-items: center;
-  gap: 7px;
   border: 1px solid var(--ui-border);
   border-radius: 12px;
   background: var(--ui-surface);
-  padding: 0 11px;
   color: var(--ui-text);
   font-size: 13px;
   font-weight: 500;
   box-shadow: var(--ui-shadow-control);
 }
+.commit-action-main,
+.commit-action-caret,
 .commit-button span {
   display: inline-flex;
   align-items: center;
   line-height: 18px;
+}
+.commit-action-main {
+  gap: 7px;
+  justify-content: flex-start;
+  padding: 0 11px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.commit-action-caret {
+  width: 30px;
+}
+.commit-action-main svg,
+.commit-action-caret svg {
+  flex-shrink: 0;
 }
 .commit-button:hover,
 .commit-button.is-active {
@@ -1349,6 +1373,136 @@ textarea {
 .git-branch-input:focus {
   border-color: var(--ui-border-strong);
   box-shadow: 0 0 0 3px var(--ui-focus-ring);
+}
+.git-flow-modal {
+  width: min(760px, calc(100vw - 40px));
+  border: 1px solid var(--ui-border);
+  border-radius: 28px;
+  background: var(--ui-bg);
+  box-shadow: var(--ui-shadow-floating);
+  padding: 30px 34px 34px;
+}
+.git-flow-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.git-flow-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.git-flow-summary-card {
+  display: flex;
+  min-height: 92px;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: 16px;
+  background: var(--ui-surface);
+  padding: 14px 16px;
+}
+.git-flow-summary-label {
+  color: var(--ui-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.git-flow-summary-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--ui-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.git-flow-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  border: 1px solid var(--ui-border);
+  border-radius: 16px;
+  background: var(--ui-surface);
+  padding: 14px 16px;
+}
+.git-flow-field {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.git-flow-field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.git-flow-field-label {
+  color: var(--ui-text);
+  font-size: 14px;
+  font-weight: 700;
+}
+.git-flow-helper {
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+.git-flow-message-input {
+  min-height: 112px;
+  border: 1px solid var(--ui-border);
+  border-radius: 16px;
+  background: var(--ui-surface);
+  padding: 12px 14px;
+  font-size: 14px;
+}
+.git-flow-step-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.git-flow-step-row {
+  min-height: 68px;
+  justify-content: space-between;
+  gap: 16px;
+  border-radius: 14px;
+  padding: 12px 14px;
+}
+.git-flow-step-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+}
+.git-flow-step-title {
+  color: var(--ui-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.git-flow-step-subtitle {
+  color: var(--ui-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.git-flow-error {
+  border: 1px solid color-mix(in srgb, var(--ui-state-danger-text), transparent 72%);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--ui-state-danger-text), transparent 94%);
+  padding: 10px 12px;
+  color: var(--ui-state-danger-text);
+  font-size: 12px;
+}
+.git-flow-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-top: 4px;
+}
+.git-flow-submit {
+  min-width: 132px;
 }
 
 .run-action-wrap {
@@ -2813,17 +2967,11 @@ textarea {
   max-width: 220px;
   font-size: 12.5px;
 }
-.topbar-branch {
-  border: 1px solid transparent;
-}
-.commit-button {
-  padding: 0 9px;
-  font-size: 12.5px;
-}
 .run-action-main {
   width: 38px;
 }
 .run-action-caret,
+.commit-action-caret,
 .ide-open-caret {
   width: 30px;
 }

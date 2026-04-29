@@ -21,3 +21,17 @@ impl From<GitError> for String {
         err.to_string()
     }
 }
+
+impl From<git2::Error> for GitError {
+    fn from(err: git2::Error) -> Self {
+        let msg = err.message().to_lowercase();
+        if msg.contains("could not find repository")
+            || msg.contains("not a git repository")
+            || msg.contains("repository not found")
+        {
+            GitError::NotARepo
+        } else {
+            GitError::CommandFailed(err.message().to_string())
+        }
+    }
+}

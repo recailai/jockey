@@ -123,8 +123,8 @@ export default function ChatInput(props: ChatInputProps) {
                 }, 90);
               }}
               onKeyDown={(e) => {
-                fakeSubmit(e);
                 props.onInputKeyDown(e);
+                if (!e.defaultPrevented) fakeSubmit(e);
               }}
               onFocus={() => {
                 if (props.mentionCloseTimerRef.current !== null) window.clearTimeout(props.mentionCloseTimerRef.current);
