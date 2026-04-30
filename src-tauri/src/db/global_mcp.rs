@@ -11,15 +11,9 @@ use crate::now_ms;
 use crate::types::AppState;
 
 static GLOBAL_MCP_CACHE: OnceLock<RwLock<HashMap<usize, Vec<GlobalMcpEntry>>>> = OnceLock::new();
-static GLOBAL_MCP_ACP_CACHE: OnceLock<RwLock<HashMap<usize, Vec<acp::McpServer>>>> =
-    OnceLock::new();
 
 fn global_mcp_cache() -> &'static RwLock<HashMap<usize, Vec<GlobalMcpEntry>>> {
     GLOBAL_MCP_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
-}
-
-fn global_mcp_acp_cache() -> &'static RwLock<HashMap<usize, Vec<acp::McpServer>>> {
-    GLOBAL_MCP_ACP_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
 fn cache_key(state: &AppState) -> usize {
@@ -29,9 +23,6 @@ fn cache_key(state: &AppState) -> usize {
 fn invalidate_global_mcp_cache(state: &AppState) {
     let key = cache_key(state);
     if let Ok(mut w) = global_mcp_cache().write() {
-        w.remove(&key);
-    }
-    if let Ok(mut w) = global_mcp_acp_cache().write() {
         w.remove(&key);
     }
 }
@@ -143,27 +134,6 @@ pub(crate) fn delete_global_mcp_server(state: &AppState, name: &str) -> Result<(
     });
     invalidate_global_mcp_cache(state);
     result
-}
-
-pub(crate) fn load_all_global_mcp_as_acp(state: &AppState) -> Vec<acp::McpServer> {
-    let key = cache_key(state);
-    if let Ok(r) = global_mcp_acp_cache().read() {
-        if let Some(cached) = r.get(&key) {
-            return cached.clone();
-        }
-    }
-    let servers: Vec<acp::McpServer> = list_global_mcp_servers(state)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|entry| {
-            let json = inject_name_if_missing(&entry.config_json, &entry.name);
-            parse_mcp_server_json_compat(&json)
-        })
-        .collect();
-    if let Ok(mut w) = global_mcp_acp_cache().write() {
-        w.insert(key, servers.clone());
-    }
-    servers
 }
 
 fn inject_name_if_missing(config_json: &str, name: &str) -> String {

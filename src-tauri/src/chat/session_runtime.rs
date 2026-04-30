@@ -220,14 +220,6 @@ pub(super) fn load_role_runtime_data(
     let mut context_log = None;
 
     if role_name != "Jockey" {
-        let role_prompt = role_data
-            .as_ref()
-            .map(|r| r.system_prompt.clone())
-            .unwrap_or_default();
-
-        if !role_prompt.is_empty() {
-            context_pairs.push(("role_prompt".to_string(), role_prompt));
-        }
         // Only inject cross-role context on the first message to this role in the session.
         // If this role has already replied at least once, it already has its own history
         // in the ACP session — no need to keep prepending the handoff context every turn.
@@ -314,7 +306,7 @@ pub(super) fn load_role_runtime_data(
         .map(|r| r.system_prompt.clone())
         .filter(|s| !s.is_empty());
     let mut mcp_servers: Vec<agent_client_protocol::McpServer> = {
-        let mut servers = crate::db::global_mcp::load_all_global_mcp_as_acp(state);
+        let mut servers = crate::db::global_mcp::get_enabled_mcp_for_role(state, role_name);
         let role_servers = role_data
             .as_ref()
             .map(|r| &r.mcp_servers_json)

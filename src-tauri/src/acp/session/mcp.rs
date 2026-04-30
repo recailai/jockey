@@ -35,7 +35,7 @@ pub(super) fn load_role_mcp_servers(
     state: &crate::types::AppState,
     role_name: &str,
 ) -> Vec<acp::McpServer> {
-    let mut servers = crate::db::global_mcp::load_all_global_mcp_as_acp(state);
+    let mut servers = crate::db::global_mcp::get_enabled_mcp_for_role(state, role_name);
     let role_servers = crate::db::role::load_role(state, role_name)
         .ok()
         .flatten()
