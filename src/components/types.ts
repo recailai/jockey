@@ -74,7 +74,7 @@ export type WorkflowStateEvent = { sessionId: string; status: string; activeRole
 export type AcpDeltaEvent = { role: string; delta: string; appSessionId?: string };
 export type AppSegment = { kind: "text"; text: string } | { kind: "tool"; tc: AppToolCall };
 export type AppMessage = { id: string; roleName: string; text: string; at: number; toolCalls?: AppToolCall[]; segments?: AppSegment[]; images?: { data: string; mimeType: string }[]; thoughtText?: string };
-export type AppMentionItem = { value: string; kind: "role" | "file" | "dir" | "hint" | "command" | "skill"; detail: string };
+export type AppMentionItem = { value: string; kind: "role" | "file" | "dir" | "command" | "skill"; detail: string };
 
 export type PreviewMode = "diff" | "file" | "preview" | "image" | "commit";
 export type PreviewTab = {

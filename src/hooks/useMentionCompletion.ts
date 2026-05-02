@@ -83,20 +83,11 @@ export function useMentionCompletion(
       if (skillItems.length > 0) setMentionOpen(true); else closeMentionMenu();
       return;
     }
-    const staticItems: AppMentionItem[] = [];
-    if (ctx.query.length === 0) {
-      staticItems.push(
-        { value: "file:", kind: "hint", detail: "explicit file path" },
-        { value: "dir:", kind: "hint", detail: "explicit directory path" },
-      );
-    }
     const roleItems = listRoleMentionCandidates(ctx.query);
-    let items: AppMentionItem[] = [...staticItems, ...roleItems];
-    let pathAttempted = false;
+    let items: AppMentionItem[] = [...roleItems];
     let pathRows: AppMentionItem[] = [];
 
     if (shouldPathComplete(ctx.query)) {
-      pathAttempted = true;
       const seq = ++mentionReqSeq;
       const sid = activeSessionId() ?? null;
       if (mentionPathCacheOwner !== sid) {
@@ -133,8 +124,7 @@ export function useMentionCompletion(
       return true;
     }).slice(0, 12);
 
-    const nonHintCount = merged.filter((it) => it.kind !== "hint").length;
-    if (merged.length === 0 || (pathAttempted && ctx.query.length > 0 && pathRows.length === 0 && nonHintCount === 0)) {
+    if (merged.length === 0) {
       closeMentionMenu();
       return;
     }

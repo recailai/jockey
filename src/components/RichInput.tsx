@@ -171,7 +171,7 @@ function domToNodes(el: HTMLDivElement): RichNode[] {
   return nodes;
 }
 
-function getCaretOffset(el: HTMLDivElement): number {
+export function getRichInputCaretOffset(el: HTMLDivElement): number {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0) return -1;
   const range = sel.getRangeAt(0);
@@ -187,32 +187,37 @@ function getCaretOffset(el: HTMLDivElement): number {
   return offset;
 }
 
-function setCaretAtOffset(el: HTMLDivElement, offset: number) {
-  if (offset < 0) return;
-  let remaining = offset;
+function domPositionAtOffset(el: HTMLDivElement, offset: number): { container: Node; offset: number } {
+  let remaining = Math.max(0, offset);
   const children = Array.from(el.childNodes);
   for (let i = 0; i < children.length; i++) {
     const child = children[i];
     const len = child.nodeType === Node.TEXT_NODE ? (child.textContent?.length ?? 0) : 1;
     if (remaining <= len) {
-      const range = document.createRange();
       if (child.nodeType === Node.TEXT_NODE) {
-        range.setStart(child, Math.min(remaining, child.textContent?.length ?? 0));
-      } else {
-        range.setStart(el, remaining === 0 ? i : i + 1);
+        return { container: child, offset: Math.min(remaining, child.textContent?.length ?? 0) };
       }
-      range.collapse(true);
-      window.getSelection()?.removeAllRanges();
-      window.getSelection()?.addRange(range);
-      return;
+      return { container: el, offset: remaining === 0 ? i : i + 1 };
     }
     remaining -= len;
   }
+  return { container: el, offset: children.length };
+}
+
+export function setRichInputSelection(el: HTMLDivElement, start: number, end = start) {
   const range = document.createRange();
-  range.selectNodeContents(el);
-  range.collapse(false);
-  window.getSelection()?.removeAllRanges();
-  window.getSelection()?.addRange(range);
+  const startPos = domPositionAtOffset(el, start);
+  const endPos = domPositionAtOffset(el, Math.max(start, end));
+  range.setStart(startPos.container, startPos.offset);
+  range.setEnd(endPos.container, endPos.offset);
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+}
+
+function setCaretAtOffset(el: HTMLDivElement, offset: number) {
+  if (offset < 0) return;
+  setRichInputSelection(el, offset, offset);
 }
 
 export function placeCaretAfterChip(el: HTMLDivElement, chipIndex: number) {
@@ -242,6 +247,74 @@ export function getPlainText(nodes: RichNode[]): string {
   return nodes.map((n) => (n.kind === "text" ? n.text : `[image:${n.index}]`)).join("");
 }
 
+function normalizeRichNodes(nodes: RichNode[]): RichNode[] {
+  const out: RichNode[] = [];
+  for (const node of nodes) {
+    if (node.kind === "text") {
+      if (!node.text) continue;
+      const last = out[out.length - 1];
+      if (last?.kind === "text") {
+        last.text += node.text;
+      } else {
+        out.push({ kind: "text", text: node.text });
+      }
+    } else {
+      out.push(node);
+    }
+  }
+  return out;
+}
+
+function richNodeCaretLength(node: RichNode): number {
+  return node.kind === "text" ? node.text.length : 1;
+}
+
+export function insertTextIntoRichNodes(nodes: RichNode[], offset: number, text: string): { nodes: RichNode[]; caret: number } {
+  const total = nodes.reduce((sum, node) => sum + richNodeCaretLength(node), 0);
+  const insertAt = Math.min(total, Math.max(0, offset));
+  if (nodes.length === 0) {
+    return { nodes: text ? [{ kind: "text", text }] : [], caret: text.length };
+  }
+
+  let remaining = insertAt;
+  let inserted = false;
+  const out: RichNode[] = [];
+
+  for (const node of nodes) {
+    if (!inserted) {
+      if (node.kind === "text") {
+        if (remaining <= node.text.length) {
+          const before = node.text.slice(0, remaining);
+          const after = node.text.slice(remaining);
+          if (before) out.push({ kind: "text", text: before });
+          if (text) out.push({ kind: "text", text });
+          if (after) out.push({ kind: "text", text: after });
+          inserted = true;
+          continue;
+        }
+        remaining -= node.text.length;
+      } else {
+        if (remaining <= 1) {
+          if (remaining === 0) {
+            if (text) out.push({ kind: "text", text });
+            out.push(node);
+          } else {
+            out.push(node);
+            if (text) out.push({ kind: "text", text });
+          }
+          inserted = true;
+          continue;
+        }
+        remaining -= 1;
+      }
+    }
+    out.push(node);
+  }
+
+  if (!inserted && text) out.push({ kind: "text", text });
+  return { nodes: normalizeRichNodes(out), caret: insertAt + text.length };
+}
+
 export default function RichInput(props: Props) {
   let el: HTMLDivElement | undefined;
   let suppressEffect = false;
@@ -260,10 +333,18 @@ export default function RichInput(props: Props) {
     if (!el) return;
     const nodes = props.nodes();
     if (suppressEffect) { suppressEffect = false; return; }
-    const savedOffset = getCaretOffset(el);
+    const savedOffset = getRichInputCaretOffset(el);
     nodesToDom(el, nodes, props.onRemoveImage);
     setCaretAtOffset(el, savedOffset);
   });
+
+  const emitCaret = () => {
+    if (!el || composing) return;
+    const nodes = domToNodes(el);
+    props.onCaretText(getPlainText(nodes), getRichInputCaretOffset(el));
+  };
+
+  const emitCaretSoon = () => queueMicrotask(emitCaret);
 
   const emitChange = () => {
     if (!el || composing) return;
@@ -271,7 +352,7 @@ export default function RichInput(props: Props) {
     const nodes = domToNodes(el);
     props.onNodesChange(nodes);
     const plain = getPlainText(nodes);
-    const caret = getCaretOffset(el);
+    const caret = getRichInputCaretOffset(el);
     props.onCaretText(plain, caret);
   };
 
@@ -302,9 +383,21 @@ export default function RichInput(props: Props) {
         if (e.isComposing || e.keyCode === 229) return;
         props.onKeyDown(e);
       }}
-      onFocus={props.onFocus}
+      onKeyUp={(e) => {
+        if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(e.key)) {
+          emitCaretSoon();
+        }
+      }}
+      onFocus={(e) => {
+        props.onFocus(e);
+        emitCaretSoon();
+      }}
       onBlur={props.onBlur}
-      onClick={props.onClick}
+      onClick={(e) => {
+        props.onClick(e);
+        emitCaretSoon();
+      }}
+      onMouseUp={emitCaretSoon}
       data-placeholder={props.placeholder}
       class={props.class}
       style={{ "min-height": "1.5em" }}

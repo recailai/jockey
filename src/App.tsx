@@ -24,7 +24,14 @@ import { uniqueName, makeDefaultSession } from "./lib/sessionHelpers";
 import { createSessionEventBuffer } from "./lib/sessionEventBuffer";
 import { appSessionApi } from "./lib/tauriApi";
 import type { RichNode } from "./components/RichInput";
-import { getPlainText, isImageNode, placeCaretAfterChip } from "./components/RichInput";
+import {
+  getPlainText,
+  getRichInputCaretOffset,
+  insertTextIntoRichNodes,
+  isImageNode,
+  placeCaretAfterChip,
+  setRichInputSelection,
+} from "./components/RichInput";
 import { useToast } from "./lib/useToast";
 import { useTheme } from "./lib/useTheme";
 import { useGitPoller } from "./hooks/useGitPoller";
@@ -110,19 +117,6 @@ export default function App() {
     try { window.localStorage.setItem(RIGHT_TOOL_WIDTH_KEY, String(clamped)); } catch { /* ignore */ }
   };
 
-  const insertMentionAtCaret = (p: string) => {
-    const mention = `@${p} `;
-    setRichNodes((prev) => {
-      const nodes = prev.length > 0 ? prev : [{ kind: "text" as const, text: "" }];
-      const last = nodes[nodes.length - 1];
-      if (last.kind === "text") {
-        return [...nodes.slice(0, -1), { kind: "text" as const, text: last.text + mention }];
-      }
-      return [...nodes, { kind: "text" as const, text: mention }];
-    });
-    queueMicrotask(() => richInputEl?.focus());
-  };
-
   const editorResize = useResize({
     axis: "y",
     min: 80,
@@ -156,24 +150,54 @@ export default function App() {
   };
 
   const [richNodes, setRichNodes] = createSignal<RichNode[]>([]);
+  const [richCaretOffset, setRichCaretOffset] = createSignal(0);
   let richInputEl: HTMLDivElement | undefined;
 
   const input = () => getPlainText(richNodes());
-  const setInput = (v: string) => setRichNodes([{ kind: "text", text: v }]);
-  const setChatInput = (value: string | ((prev: string) => string)) => {
-    const next = typeof value === "function" ? value(input()) : value;
-    setInput(next);
-    return next;
+  const liveRichCaretOffset = () => {
+    const live = richInputEl ? getRichInputCaretOffset(richInputEl) : -1;
+    return live >= 0 ? live : richCaretOffset();
   };
-
+  const restoreRichCaret = (start: number, end = start) => {
+    setRichCaretOffset(end);
+    if (!richInputEl) return;
+    setRichInputSelection(richInputEl, start, end);
+  };
+  const restoreRichCaretSoon = (start: number, end = start) => {
+    setRichCaretOffset(end);
+    queueMicrotask(() => restoreRichCaret(start, end));
+  };
+  const setInput = (v: string) => {
+    setRichNodes(v ? [{ kind: "text", text: v }] : []);
+    restoreRichCaretSoon(v.length);
+  };
   const fakeInputEl = (): HTMLInputElement => {
     const plain = input();
+    const selection = () => liveRichCaretOffset();
     return {
       value: plain,
-      selectionStart: plain.length,
+      get selectionStart() { return selection(); },
+      get selectionEnd() { return selection(); },
       focus() { richInputEl?.focus(); },
-      setSelectionRange() {},
+      setSelectionRange(start: number, end?: number | null) {
+        restoreRichCaret(start, typeof end === "number" ? end : start);
+      },
     } as unknown as HTMLInputElement;
+  };
+
+  const insertMentionAtCaret = (p: string) => {
+    const mention = `@${p} `;
+    let nextCaret = 0;
+    setRichNodes((prev) => {
+      const inserted = insertTextIntoRichNodes(prev, liveRichCaretOffset(), mention);
+      nextCaret = inserted.caret;
+      return inserted.nodes;
+    });
+    setRichCaretOffset(nextCaret);
+    queueMicrotask(() => {
+      richInputEl?.focus();
+      restoreRichCaret(nextCaret);
+    });
   };
 
   const sessionManager = useSessionManager();
@@ -288,7 +312,10 @@ export default function App() {
           return [...nodes, newChip, { kind: "text", text: " " }];
         });
         queueMicrotask(() => {
-          if (richInputEl) placeCaretAfterChip(richInputEl, chipIndex);
+          if (!richInputEl) return;
+          placeCaretAfterChip(richInputEl, chipIndex);
+          const caret = getRichInputCaretOffset(richInputEl);
+          if (caret >= 0) setRichCaretOffset(caret);
         });
       };
       reader.readAsDataURL(file);
@@ -306,6 +333,7 @@ export default function App() {
         showToast("Images can't be queued and will be dropped.", "info");
       }
       setRichNodes([]);
+      setRichCaretOffset(0);
       const sid = activeSessionId();
       if (sid) {
         const qidx = getSessionIndex(sid);
@@ -320,6 +348,7 @@ export default function App() {
     }
     inputHistory.push(text);
     setRichNodes([]);
+    setRichCaretOffset(0);
     const attachments = imageNodes.map((n) => n.img);
     await sendRaw(text, false, null, attachments.length > 0 ? attachments : undefined, attachments.length > 0 ? attachments : undefined);
   };
@@ -701,8 +730,6 @@ export default function App() {
       }
       composer={
         <ChatInput
-          input={input}
-          setInput={setChatInput}
           richNodes={richNodes}
           setRichNodes={setRichNodes}
           activeRole={chatActiveRole}
@@ -712,7 +739,10 @@ export default function App() {
           isCustomRole={isCustomRole}
           onSubmit={handleSend}
           onInputKeyDown={handleInputKeyDownFinal}
-          refreshInputCompletions={refreshInputCompletions}
+          refreshInputCompletions={(value, caret) => {
+            setRichCaretOffset(caret);
+            refreshInputCompletions(value, caret);
+          }}
           mentionOpen={mentionOpen}
           mentionItems={mentionItems}
           mentionActiveIndex={mentionActiveIndex}

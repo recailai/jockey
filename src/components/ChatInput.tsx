@@ -1,13 +1,11 @@
 import { For, Show, createEffect } from "solid-js";
-import type { Accessor, Setter } from "solid-js";
+import type { Accessor } from "solid-js";
 import type { AppMentionItem } from "./types";
 import { INTERACTIVE_MOTION } from "./types";
 import RichInput, { type RichNode, getPlainText } from "./RichInput";
 import { Badge, Button, IconButton } from "./ui";
 
 type ChatInputProps = {
-  input: Accessor<string>;
-  setInput: Setter<string>;
   richNodes: Accessor<RichNode[]>;
   setRichNodes: (nodes: RichNode[]) => void;
   activeRole: Accessor<string>;
@@ -111,11 +109,10 @@ export default function ChatInput(props: ChatInputProps) {
               ref={props.richInputRef}
               nodes={props.richNodes}
               onRemoveImage={props.onRemoveImage}
-              placeholder={props.isCustomRole() ? `Chat with ${props.activeRole()}... (type / for agent commands)` : "Natural language / commands / @role @file:path"}
+              placeholder={props.isCustomRole() ? `Chat with ${props.activeRole()}... (type / for agent commands)` : "Message Jockey..."}
               class="composer-rich-input rich-input"
               onNodesChange={(nodes) => props.setRichNodes(nodes)}
               onCaretText={(text, caret) => {
-                props.setInput(text);
                 if (props.mentionDebounceTimerRef.current !== null) window.clearTimeout(props.mentionDebounceTimerRef.current);
                 props.mentionDebounceTimerRef.current = window.setTimeout(() => {
                   props.mentionDebounceTimerRef.current = null;
@@ -132,8 +129,6 @@ export default function ChatInput(props: ChatInputProps) {
                   window.clearTimeout(props.mentionDebounceTimerRef.current);
                   props.mentionDebounceTimerRef.current = null;
                 }
-                const text = getPlainText(props.richNodes());
-                props.refreshInputCompletions(text, text.length);
               }}
               onBlur={() => {
                 if (props.mentionCloseTimerRef.current !== null) window.clearTimeout(props.mentionCloseTimerRef.current);
@@ -142,10 +137,7 @@ export default function ChatInput(props: ChatInputProps) {
                   props.closeSlashMenu();
                 }, 120);
               }}
-              onClick={() => {
-                const text = getPlainText(props.richNodes());
-                props.refreshInputCompletions(text, text.length);
-              }}
+              onClick={() => {}}
             />
 
             <IconButton
