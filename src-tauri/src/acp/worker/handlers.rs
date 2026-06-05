@@ -308,6 +308,9 @@ pub(crate) async fn ensure_connection(
     Ok(true)
 }
 
+// Precedence rule: Session-level `mode_override` in database takes precedence over `role.mode` default.
+// Changing a role's default mode via Roles editor triggers `sync_role_mode` to hot-update all
+// live sessions bound to that role that do not have an explicit `mode_override`.
 pub(crate) async fn apply_cold_start_config(
     key: &str,
     session_id: &acp::SessionId,

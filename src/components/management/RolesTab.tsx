@@ -292,6 +292,9 @@ export function RolesTab(props: {
         autoApprove: true,
       } satisfies RoleUpsertInput);
       await props.refreshRoles();
+      // Precedence rule: Session-specific overrides (`mode_override`) in the database take precedence over
+      // the global role's default `mode`. When the global default mode changes, we sync it only to the
+      // active sessions of this role that do not have any explicit session-level mode override.
       if (modeChanged && newMode) {
         const synced = await assistantApi.syncRoleMode(role.roleName, newMode).catch(() => []);
         for (const sessionId of synced) {

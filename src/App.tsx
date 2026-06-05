@@ -4,7 +4,7 @@ import MessageWindow from "./components/MessageWindow";
 import ChatInput from "./components/ChatInput";
 import { now, DEFAULT_ROLE_ALIAS } from "./components/types";
 import { UI_THEME_KEY } from "./lib/theme";
-import SessionSidebar from "./components/SessionSidebar";
+
 import WorkspaceHeader, { type WorkspaceToolPanel } from "./components/WorkspaceHeader";
 import TerminalPanel from "./components/TerminalPanel";
 import type { SettingsTab } from "./components/SettingsPage";
@@ -46,15 +46,11 @@ import { useResize } from "./lib/useResize";
 import { openPreviewTab, closePreviewTab, setActivePreviewTab, closeAllPreviewTabs, closeOtherPreviewTabs } from "./lib/previewTabs";
 
 const TOOL_PANEL_KEY = "jockey:tool.panel";
-const LEFT_RAIL_WIDTH_KEY = "jockey:leftRailWidth";
 const RIGHT_TOOL_WIDTH_KEY = "jockey:rightToolPanelWidth";
 const EDITOR_RATIO_KEY = "jockey:editorChatRatio";
 const EDITOR_DEFAULT_RATIO = 0.6;
 const EDITOR_MIN_RATIO = 0.15;
 const EDITOR_MAX_RATIO = 0.85;
-const LEFT_RAIL_DEFAULT_WIDTH = 326;
-const LEFT_RAIL_MIN_WIDTH = 260;
-const LEFT_RAIL_MAX_WIDTH = 420;
 const RIGHT_TOOL_DEFAULT_WIDTH = 432;
 const RIGHT_TOOL_MIN_WIDTH = 320;
 const RIGHT_TOOL_MAX_WIDTH = 620;
@@ -66,7 +62,6 @@ export default function App() {
   const [showSettings, setShowSettings] = createSignal(false);
   const [settingsInitialTab, setSettingsInitialTab] = createSignal<SettingsTab>("general");
   const [settingsInitialRole, setSettingsInitialRole] = createSignal<string | undefined>(undefined);
-  const [leftRailOpen, setLeftRailOpen] = createSignal(true);
 
   const initialPanelWidth = (key: string, fallback: number, min: number, max: number): number => {
     try {
@@ -89,7 +84,6 @@ export default function App() {
 
   const [toolPanel, setToolPanelInternal] = createSignal<WorkspaceToolPanel | null>(initialToolPanel());
   const [terminalCommandRequest, setTerminalCommandRequest] = createSignal<{ id: number; command: string } | null>(null);
-  const [leftRailWidth, setLeftRailWidth] = createSignal(initialPanelWidth(LEFT_RAIL_WIDTH_KEY, LEFT_RAIL_DEFAULT_WIDTH, LEFT_RAIL_MIN_WIDTH, LEFT_RAIL_MAX_WIDTH));
   const [rightToolWidth, setRightToolWidth] = createSignal(initialPanelWidth(RIGHT_TOOL_WIDTH_KEY, RIGHT_TOOL_DEFAULT_WIDTH, RIGHT_TOOL_MIN_WIDTH, RIGHT_TOOL_MAX_WIDTH));
   const [editorRatio, setEditorRatio] = createSignal(initialEditorRatio());
   const [splitContainerEl, setSplitContainerEl] = createSignal<HTMLDivElement | null>(null);
@@ -105,11 +99,6 @@ export default function App() {
     const clamped = Math.min(EDITOR_MAX_RATIO, Math.max(EDITOR_MIN_RATIO, r));
     setEditorRatio(clamped);
     try { window.localStorage.setItem(EDITOR_RATIO_KEY, String(clamped)); } catch { /* ignore */ }
-  };
-  const persistLeftRailWidth = (px: number) => {
-    const clamped = Math.min(LEFT_RAIL_MAX_WIDTH, Math.max(LEFT_RAIL_MIN_WIDTH, px));
-    setLeftRailWidth(clamped);
-    try { window.localStorage.setItem(LEFT_RAIL_WIDTH_KEY, String(clamped)); } catch { /* ignore */ }
   };
   const persistRightToolWidth = (px: number) => {
     const clamped = Math.min(RIGHT_TOOL_MAX_WIDTH, Math.max(RIGHT_TOOL_MIN_WIDTH, px));
@@ -127,20 +116,13 @@ export default function App() {
       if (h > 0) persistEditorRatio(px / h);
     },
   });
-  const leftRailResize = useResize({
-    axis: "x",
-    min: LEFT_RAIL_MIN_WIDTH,
-    max: LEFT_RAIL_MAX_WIDTH,
-    getStart: () => leftRailWidth(),
-    onCommit: persistLeftRailWidth,
-  });
   const rightToolResize = useResize({
     axis: "x",
     min: RIGHT_TOOL_MIN_WIDTH,
     max: RIGHT_TOOL_MAX_WIDTH,
     getStart: () => rightToolWidth(),
     onCommit: persistRightToolWidth,
-    invert: true,
+    invert: false,
   });
 
   const openSettings = (tab: SettingsTab = "general", roleName?: string) => {
@@ -563,38 +545,84 @@ export default function App() {
       }
       chrome={
         <WindowChrome
-          leftRailOpen={leftRailOpen()}
-          onToggleLeftRail={() => setLeftRailOpen((v) => !v)}
+          leftRailOpen={toolPanel() !== null}
+          onToggleLeftRail={toggleToolPanelRestore}
         />
       }
       sidebar={
-        <Show when={leftRailOpen()}>
-          <SessionSidebar
-            sessions={sessions}
-            activeSessionId={activeSessionId}
-            widthPx={leftRailWidth}
-            setActiveSessionId={setActiveSessionId}
-            onNewSession={newSession}
-            onCloseSession={closeSession}
-            updateSession={updateSession}
-            onOpenAutomations={() => openSettings("automations")}
-            onOpenSettings={() => openSettings("general")}
-          />
-          <div
-            class="resizer-x sidebar-resizer"
-            onMouseDown={leftRailResize.beginResize}
-            title="Drag to resize sidebar"
-          />
-          <Show when={leftRailResize.previewPx() !== null}>
-            <div
-              class="pointer-events-none fixed bottom-0 top-0 z-[70] w-0.5 opacity-80"
-              style={{
-                left: `${leftRailResize.previewPx() ?? 0}px`,
-                backgroundColor: "var(--ui-resizer-line-hover)",
-              }}
-            />
-          </Show>
-        </Show>
+        <ToolPanelDock
+          open={toolPanel() !== null}
+          widthPx={rightToolWidth()}
+          previewPx={rightToolResize.previewPx()}
+          onResizeStart={rightToolResize.beginResize}
+        >
+          <Suspense fallback={<div class="flex-1 bg-[var(--ui-sidebar-bg)]" />}>
+            <Show when={toolPanel() === "git" || toolPanel() === "commit"}>
+              <GitPanel
+                appSessionId={() => activeSession()?.id}
+                cwd={() => activeSession()?.cwd ?? null}
+                gitStatus={gitStatus}
+                onRefresh={refetchGitStatus}
+                onAddMention={insertMentionAtCaret}
+                onCollapse={() => setToolPanel(null)}
+                onOpenDiff={(path, staged, untracked) => {
+                  const sid = activeSessionId();
+                  const cwd = activeSession()?.cwd ?? "";
+                  if (!sid || !cwd) return;
+                  openPreviewTab(mutateSession, sid, {
+                    cwd, path, initialMode: "diff", staged, untracked,
+                  });
+                }}
+                onOpenCommitDiff={(oid, label) => {
+                  const sid = activeSessionId();
+                  const cwd = activeSession()?.cwd ?? "";
+                  if (!sid || !cwd) return;
+                  openPreviewTab(mutateSession, sid, {
+                    cwd,
+                    path: `.git/commits/${oid}.patch`,
+                    label,
+                    initialMode: "commit",
+                    staged: false,
+                    untracked: false,
+                    commitOid: oid,
+                  });
+                }}
+              />
+            </Show>
+            <Show when={toolPanel() === "files"}>
+              <WorkspaceFilesPanel
+                appSessionId={() => activeSession()?.id}
+                cwd={() => activeSession()?.cwd ?? null}
+                gitStatus={gitStatus}
+                onRefreshGit={refetchGitStatus}
+                onOpenFile={(path) => {
+                  const sid = activeSessionId();
+                  const cwd = activeSession()?.cwd ?? "";
+                  if (!sid || !cwd) return;
+                  openPreviewTab(mutateSession, sid, {
+                    cwd, path, initialMode: "file", staged: false, untracked: false,
+                  });
+                }}
+                onOpenDiff={(path, staged, untracked) => {
+                  const sid = activeSessionId();
+                  const cwd = activeSession()?.cwd ?? "";
+                  if (!sid || !cwd) return;
+                  openPreviewTab(mutateSession, sid, {
+                    cwd, path, initialMode: "diff", staged, untracked,
+                  });
+                }}
+                onCollapse={() => setToolPanel(null)}
+              />
+            </Show>
+            <Show when={toolPanel() === "terminal"}>
+              <TerminalPanel
+                session={activeSession()}
+                commandRequest={terminalCommandRequest()}
+                onClose={() => setToolPanel(null)}
+              />
+            </Show>
+          </Suspense>
+        </ToolPanelDock>
       }
       header={
         <WorkspaceHeader
@@ -602,7 +630,7 @@ export default function App() {
           activeSessionId={activeSessionId}
           setActiveSessionId={setActiveSessionId}
           activeSession={activeSession}
-          leftRailOpen={leftRailOpen}
+          leftRailOpen={() => toolPanel() !== null}
           roles={roles}
           assistants={assistants}
           gitStatus={gitStatus}
@@ -687,7 +715,7 @@ export default function App() {
                   class="pointer-events-none fixed left-0 right-0 z-[70] h-0.5 opacity-80"
                   style={{
                     top: `${(splitContainerEl()?.getBoundingClientRect().top ?? 0) + (editorResize.previewPx() ?? 0)}px`,
-                    backgroundColor: "var(--ui-resizer-line-hover)",
+                    "background-color": "var(--ui-resizer-line-hover)",
                   }}
                 />
               </Show>
@@ -767,81 +795,7 @@ export default function App() {
           }}
         />
       }
-      rightDock={
-        <ToolPanelDock
-          open={toolPanel() !== null}
-          widthPx={rightToolWidth()}
-          previewPx={rightToolResize.previewPx()}
-          onResizeStart={rightToolResize.beginResize}
-        >
-          <Suspense fallback={<div class="flex-1 bg-[var(--ui-sidebar-bg)]" />}>
-            <Show when={toolPanel() === "git" || toolPanel() === "commit"}>
-              <GitPanel
-                appSessionId={() => activeSession()?.id}
-                cwd={() => activeSession()?.cwd ?? null}
-                gitStatus={gitStatus}
-                onRefresh={refetchGitStatus}
-                onAddMention={insertMentionAtCaret}
-                onCollapse={() => setToolPanel(null)}
-                onOpenDiff={(path, staged, untracked) => {
-                  const sid = activeSessionId();
-                  const cwd = activeSession()?.cwd ?? "";
-                  if (!sid || !cwd) return;
-                  openPreviewTab(mutateSession, sid, {
-                    cwd, path, initialMode: "diff", staged, untracked,
-                  });
-                }}
-                onOpenCommitDiff={(oid, label) => {
-                  const sid = activeSessionId();
-                  const cwd = activeSession()?.cwd ?? "";
-                  if (!sid || !cwd) return;
-                  openPreviewTab(mutateSession, sid, {
-                    cwd,
-                    path: `.git/commits/${oid}.patch`,
-                    label,
-                    initialMode: "commit",
-                    staged: false,
-                    untracked: false,
-                    commitOid: oid,
-                  });
-                }}
-              />
-            </Show>
-            <Show when={toolPanel() === "files"}>
-              <WorkspaceFilesPanel
-                appSessionId={() => activeSession()?.id}
-                cwd={() => activeSession()?.cwd ?? null}
-                gitStatus={gitStatus}
-                onRefreshGit={refetchGitStatus}
-                onOpenFile={(path) => {
-                  const sid = activeSessionId();
-                  const cwd = activeSession()?.cwd ?? "";
-                  if (!sid || !cwd) return;
-                  openPreviewTab(mutateSession, sid, {
-                    cwd, path, initialMode: "file", staged: false, untracked: false,
-                  });
-                }}
-                onOpenDiff={(path, staged, untracked) => {
-                  const sid = activeSessionId();
-                  const cwd = activeSession()?.cwd ?? "";
-                  if (!sid || !cwd) return;
-                  openPreviewTab(mutateSession, sid, {
-                    cwd, path, initialMode: "diff", staged, untracked,
-                  });
-                }}
-                onCollapse={() => setToolPanel(null)}
-              />
-            </Show>
-            <Show when={toolPanel() === "terminal"}>
-              <TerminalPanel
-                session={activeSession()}
-                commandRequest={terminalCommandRequest()}
-                onClose={() => setToolPanel(null)}
-              />
-            </Show>
-          </Suspense>
-        </ToolPanelDock>
-      }
+      rightDock={<></>}
       toasts={
         <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
           <For each={toasts()}>

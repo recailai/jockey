@@ -130,15 +130,12 @@ export default function WorkspaceFilesPanel(props: WorkspaceFilesPanelProps) {
           <EmptyState class="flex-1">git binary not found on PATH.</EmptyState>
         </Show>
         <Show when={state()?.kind === "not_repo"}>
-          {() => {
-            const s = state() as Extract<GitState, { kind: "not_repo" }>;
-            return (
-              <EmptyState class="flex-1">
-                <div>Not a git repository</div>
-                <div class="font-mono text-[10px] opacity-70 break-all">{s.cwd}</div>
-              </EmptyState>
-            );
-          }}
+          <EmptyState class="flex-1">
+            <div>Not a git repository</div>
+            <div class="font-mono text-[10px] opacity-70 break-all">
+              {(state() as Extract<GitState, { kind: "not_repo" }>)?.cwd}
+            </div>
+          </EmptyState>
         </Show>
         <Show when={!state() && props.gitStatus().loading}>
           <EmptyState class="flex-1">Loading...</EmptyState>

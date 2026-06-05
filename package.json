@@ -18,22 +18,22 @@
   },
   "dependencies": {
     "@kobalte/core": "^0.13.11",
-    "@tauri-apps/api": "^2.10.1",
-    "@tauri-apps/plugin-dialog": "^2.7.0",
-    "@tauri-apps/plugin-opener": "^2.5.3",
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-opener": "^2.5.4",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
-    "lucide-solid": "^1.9.0",
-    "marked": "^18.0.1",
-    "solid-js": "^1.9.12"
+    "lucide-solid": "^1.16.0",
+    "marked": "^18.0.4",
+    "solid-js": "^1.9.13"
   },
   "devDependencies": {
-    "@tailwindcss/oxide-darwin-arm64": "^4.2.2",
-    "@tailwindcss/vite": "^4.2.2",
-    "@tauri-apps/cli": "^2.10.1",
-    "tailwindcss": "^4.2.2",
-    "typescript": "~5.9.3",
-    "vite": "^8.0.8",
+    "@tailwindcss/oxide-darwin-arm64": "^4.3.0",
+    "@tailwindcss/vite": "^4.3.0",
+    "@tauri-apps/cli": "^2.11.2",
+    "tailwindcss": "^4.3.0",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.14",
     "vite-plugin-solid": "^2.11.12"
   }
 }

@@ -19,7 +19,7 @@ tauri-build = { version = "2", features = [] }
 agent-client-protocol = { version = "0.10.4", features = ["unstable_session_model"] }
 base64 = "0.22"
 async-trait = "0.1.89"
-dashmap = "6.1.0"
+dashmap = "6.2.1"
 dirs = "6"
 futures = "0.3"
 ignore = "0.4"
@@ -34,7 +34,7 @@ tauri = { version = "2", features = ["macos-private-api", "devtools"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-window-state = "2"
-tokio = { version = "1.50.0", features = ["io-util", "macros", "net", "process", "sync", "time", "rt"] }
+tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "process", "sync", "time", "rt"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 uuid = { version = "1.18.1", features = ["v4", "serde"] }
 which = "8"
