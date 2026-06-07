@@ -205,29 +205,48 @@ export type TerminalStartResponse = {
   terminalId: string;
   cwd: string;
   shell: string;
+  reused: boolean;
 };
 
 export const terminalApi = {
-  start: (appSessionId: string) =>
-    call<TerminalStartResponse>("start_terminal_session", { appSessionId }),
+  start: (appSessionId: string, forceNew = false) =>
+    call<TerminalStartResponse>("start_terminal_session", { appSessionId, forceNew }),
+  resize: (terminalId: string, cols: number, rows: number) =>
+    call<void>("resize_terminal_session", { terminalId, cols, rows }),
   write: (terminalId: string, data: string) =>
     call<void>("write_terminal_session", { terminalId, data }),
   stop: (terminalId: string) =>
     call<void>("stop_terminal_session", { terminalId }),
 };
 
-export type WorkspaceOpenTarget =
+export type BuiltinWorkspaceTarget =
   | "vscode"
   | "cursor"
-  | "sublime"
-  | "zed"
   | "antigravity"
   | "finder"
   | "terminal";
 
+export type WorkspaceOpenTarget = BuiltinWorkspaceTarget | `custom:${string}`;
+
+export type WorkspaceAppRef = {
+  appName?: string | null;
+  bundleId?: string | null;
+};
+
 export const workspaceApi = {
-  open: (target: WorkspaceOpenTarget, appSessionId?: string | null) =>
-    call<void>("open_workspace_cmd", { target, appSessionId: appSessionId ?? null }),
+  open: (target: WorkspaceOpenTarget, appSessionId?: string | null, app?: WorkspaceAppRef) =>
+    call<void>("open_workspace_cmd", {
+      target,
+      appSessionId: appSessionId ?? null,
+      appName: app?.appName ?? null,
+      bundleId: app?.bundleId ?? null,
+    }),
+  getAppIcon: (target: WorkspaceOpenTarget, app?: WorkspaceAppRef) =>
+    call<string | null>("get_workspace_app_icon_cmd", {
+      target,
+      appName: app?.appName ?? null,
+      bundleId: app?.bundleId ?? null,
+    }),
 };
 
 export const contextApi = {
@@ -303,6 +322,23 @@ export type GitCommitEntry = {
   committedAt: number;
 };
 
+export type GitCommitFileEntry = {
+  path: string;
+  statusLetter: string;
+  oldPath?: string | null;
+};
+
+export type GitCommitDetail = {
+  oid: string;
+  shortOid: string;
+  summary: string;
+  authorName: string;
+  committedAt: number;
+  files: GitCommitFileEntry[];
+  additions: number;
+  deletions: number;
+};
+
 export const gitApi = {
   status: (appSessionId?: string | null) =>
     call<GitState>("git_status_cmd", { appSessionId: appSessionId ?? null }),
@@ -316,6 +352,14 @@ export const gitApi = {
     call<GitRemoteInfo | null>("git_remote_info_cmd", { appSessionId: appSessionId ?? null }),
   commit: (appSessionId: string | null | undefined, input: { message: string; includeUnstaged: boolean }) =>
     call<string>("git_commit_cmd", { appSessionId: appSessionId ?? null, input }),
+  stage: (appSessionId: string | null | undefined, path: string) =>
+    call<void>("git_stage_cmd", { appSessionId: appSessionId ?? null, path }),
+  unstage: (appSessionId: string | null | undefined, path: string) =>
+    call<void>("git_unstage_cmd", { appSessionId: appSessionId ?? null, path }),
+  fetch: (appSessionId?: string | null) =>
+    call<void>("git_fetch_cmd", { appSessionId: appSessionId ?? null }),
+  pull: (appSessionId?: string | null) =>
+    call<void>("git_pull_cmd", { appSessionId: appSessionId ?? null }),
   push: (appSessionId?: string | null) =>
     call<void>("git_push_cmd", { appSessionId: appSessionId ?? null }),
   createPr: (appSessionId: string | null | undefined, input: { title?: string | null; draft: boolean }) =>
@@ -324,6 +368,14 @@ export const gitApi = {
     call<GitCommitEntry[]>("git_log_cmd", { appSessionId: appSessionId ?? null, limit }),
   commitDiff: (appSessionId: string | null | undefined, oid: string) =>
     call<string>("git_commit_diff_cmd", { appSessionId: appSessionId ?? null, oid }),
+  commitDetail: (appSessionId: string | null | undefined, oid: string) =>
+    call<GitCommitDetail>("git_commit_detail_cmd", { appSessionId: appSessionId ?? null, oid }),
+  commitFileDiff: (appSessionId: string | null | undefined, oid: string, path: string) =>
+    call<string>("git_commit_file_diff_cmd", {
+      appSessionId: appSessionId ?? null,
+      oid,
+      path,
+    }),
   diff: (
     appSessionId: string | null | undefined,
     path: string,

@@ -76,8 +76,6 @@ export function useAppBootstrap(input: UseAppBootstrapInput) {
       }
     }
 
-    pushMessage("system", "Welcome to Jockey.");
-
     assistants()
       .filter((a) => a.available)
       .forEach((a) => {

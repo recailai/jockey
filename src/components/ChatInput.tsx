@@ -1,9 +1,9 @@
 import { For, Show, createEffect } from "solid-js";
-import type { Accessor } from "solid-js";
+import type { Accessor, JSX } from "solid-js";
 import type { AppMentionItem } from "./types";
 import { INTERACTIVE_MOTION } from "./types";
 import RichInput, { type RichNode, getPlainText } from "./RichInput";
-import { Badge, Button, IconButton } from "./ui";
+import { Badge, IconButton } from "./ui";
 
 type ChatInputProps = {
   richNodes: Accessor<RichNode[]>;
@@ -33,6 +33,8 @@ type ChatInputProps = {
   hasImages: Accessor<boolean>;
   onPasteImage: (items: DataTransferItemList, caretNodes: RichNode[]) => void;
   onRemoveImage: (index: number) => void;
+  contextFooter?: JSX.Element;
+  layout?: "empty" | "active";
 };
 
 function mentionKindColor(kind: string): string {
@@ -83,8 +85,10 @@ export default function ChatInput(props: ChatInputProps) {
     }
   };
 
+  const layout = () => props.layout ?? "active";
+
   return (
-    <div class="composer-shell">
+    <div class="composer-shell" classList={{ "is-empty": layout() === "empty", "is-active": layout() === "active" }}>
       <form
         onSubmit={props.onSubmit}
         class="composer-form"
@@ -93,18 +97,7 @@ export default function ChatInput(props: ChatInputProps) {
           class="composer-card"
           onPaste={handlePaste}
         >
-          <div class="composer-row">
-            <Button
-              variant={props.isCustomRole() ? "default" : "outline"}
-              size="sm"
-              onClick={() => props.onResetRole()}
-              class="composer-role-button motion-safe:transition-colors motion-safe:duration-150"
-              title={props.isCustomRole() ? "Click to return to Jockey" : "Jockey mode"}
-            >
-              {props.activeRole()}
-              <svg class="opacity-40" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
-            </Button>
-
+          <div class="composer-input-row">
             <RichInput
               ref={props.richInputRef}
               nodes={props.richNodes}
@@ -140,15 +133,19 @@ export default function ChatInput(props: ChatInputProps) {
               onClick={() => {}}
             />
 
+            <div class="composer-input-actions">
             <IconButton
               type="submit"
+              size="sm"
               variant={hasContent() ? "default" : "ghost"}
+              disabled={!hasContent()}
               class={`composer-send-button motion-safe:transition-colors motion-safe:duration-150 ${INTERACTIVE_MOTION}`}
               classList={{
                 "is-queueing": hasContent() && props.submitting(),
                 "is-disabled": !hasContent(),
               }}
               title={props.submitting() ? `Add to queue (${props.queuedCount() + 1})` : "Send"}
+              aria-label={props.submitting() ? "Queue message" : "Send message"}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" classList={{ "drop-shadow-[0_1px_2px_rgba(0,0,0,0.3)]": hasContent() }}><line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" /></svg>
             </IconButton>
@@ -157,7 +154,11 @@ export default function ChatInput(props: ChatInputProps) {
                 Q{props.queuedCount()}
               </Badge>
             </Show>
+            </div>
           </div>
+          <Show when={props.contextFooter}>
+            {props.contextFooter}
+          </Show>
         </div>
         <Show when={props.slashOpen() && props.slashItems().length > 0}>
           <div ref={(el) => { slashListEl = el; }} class="completion-menu">

@@ -177,6 +177,78 @@ pub(crate) async fn git_commit_cmd(
 }
 
 #[tauri::command]
+pub(crate) async fn git_stage_cmd(
+    state: State<'_, AppState>,
+    app_session_id: Option<String>,
+    path: String,
+) -> Result<(), String> {
+    let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
+    let path = path.trim().trim_start_matches("./").to_string();
+    if path.is_empty() {
+        return Err("path is required".to_string());
+    }
+    resolve_within_cwd(&cwd, &path).await?;
+    let cwd_for_task = cwd.clone();
+    tokio::task::spawn_blocking(move || git::stage_path(&cwd_for_task, &path))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    git::notify_changed(&cwd.join(".git").join("index"));
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn git_unstage_cmd(
+    state: State<'_, AppState>,
+    app_session_id: Option<String>,
+    path: String,
+) -> Result<(), String> {
+    let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
+    let path = path.trim().trim_start_matches("./").to_string();
+    if path.is_empty() {
+        return Err("path is required".to_string());
+    }
+    resolve_within_cwd(&cwd, &path).await?;
+    let cwd_for_task = cwd.clone();
+    tokio::task::spawn_blocking(move || git::unstage_path(&cwd_for_task, &path))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    git::notify_changed(&cwd.join(".git").join("index"));
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn git_fetch_cmd(
+    state: State<'_, AppState>,
+    app_session_id: Option<String>,
+) -> Result<(), String> {
+    let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
+    let cwd_for_task = cwd.clone();
+    tokio::task::spawn_blocking(move || git::fetch(&cwd_for_task))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    git::notify_changed(&cwd.join(".git").join("FETCH_HEAD"));
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn git_pull_cmd(
+    state: State<'_, AppState>,
+    app_session_id: Option<String>,
+) -> Result<(), String> {
+    let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
+    let cwd_for_task = cwd.clone();
+    tokio::task::spawn_blocking(move || git::pull(&cwd_for_task))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    git::notify_changed(&cwd.join(".git").join("HEAD"));
+    Ok(())
+}
+
+#[tauri::command]
 pub(crate) async fn git_push_cmd(
     state: State<'_, AppState>,
     app_session_id: Option<String>,
@@ -236,6 +308,36 @@ pub(crate) async fn git_commit_diff_cmd(
         return Err("commit oid is required".to_string());
     }
     git::commit_diff(&cwd, &oid)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn git_commit_detail_cmd(
+    state: State<'_, AppState>,
+    app_session_id: Option<String>,
+    oid: String,
+) -> Result<git::CommitDetail, String> {
+    let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
+    let oid = oid.trim().to_string();
+    if oid.is_empty() {
+        return Err("commit oid is required".to_string());
+    }
+    tokio::task::spawn_blocking(move || git::commit_detail(&cwd, &oid))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn git_commit_file_diff_cmd(
+    state: State<'_, AppState>,
+    app_session_id: Option<String>,
+    oid: String,
+    path: String,
+) -> Result<String, String> {
+    let cwd = resolve_cwd(get_state(&state), app_session_id.as_deref());
+    git::commit_file_diff(&cwd, &oid, &path)
         .await
         .map_err(|e| e.to_string())
 }

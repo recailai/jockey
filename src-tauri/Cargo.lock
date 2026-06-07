@@ -2061,6 +2061,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-window-state",
+ "tempfile",
  "tokio",
  "tokio-util",
  "uuid",

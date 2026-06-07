@@ -1,25 +1,26 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { For, Show, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import {
   ChevronDown,
   Check,
-  Folder,
   GitBranch,
   GitBranchPlus,
   GitCommitHorizontal,
   GitPullRequestCreate,
   LoaderCircle,
-  Plus,
   Play,
-  Terminal as TerminalIcon,
   Upload,
   X,
 } from "lucide-solid";
-import type { Accessor, JSX, Setter } from "solid-js";
+import type { Accessor, JSX } from "solid-js";
+import type { LeftDockPanel } from "../lib/layoutTokens";
 import type { AppSession, AssistantRuntime, Role } from "./types";
 import { DEFAULT_ROLE_ALIAS, INTERACTIVE_MOTION, RUNTIME_COLOR } from "./types";
 import type { GitStatusStore } from "../hooks/useGitPoller";
+import IdeAppIcon from "./IdeAppIcon";
 import { gitApi, parseError, workspaceApi, type GitFileEntry, type GitStatus, type WorkspaceOpenTarget } from "../lib/tauriApi";
+import { loadUiPrefs } from "../lib/uiPrefs";
+import { isKnownWorkspaceTarget, listWorkspaceApps, workspaceAppFor } from "../lib/workspaceApps";
 import {
   Badge,
   Button,
@@ -41,22 +42,14 @@ import {
   ToolbarButton,
 } from "./ui";
 
-export type WorkspaceToolPanel = "files" | "git" | "terminal" | "commit";
-
-type WorkspaceHeaderProps = {
-  sessions: AppSession[];
-  activeSessionId: Accessor<string | null>;
-  setActiveSessionId: Setter<string | null>;
+type ComposerContextFooterProps = {
   activeSession: Accessor<AppSession | null>;
-  leftRailOpen: Accessor<boolean>;
   roles: Accessor<Role[]>;
   assistants: Accessor<AssistantRuntime[]>;
   gitStatus: () => GitStatusStore;
   gitChangeCount: () => number;
-  activeToolPanel: Accessor<WorkspaceToolPanel | null>;
-  onNewSession: () => void;
-  onCloseSession: (id: string) => void;
-  onToggleToolPanel: (panel: WorkspaceToolPanel) => void;
+  activeToolPanel: Accessor<LeftDockPanel | null>;
+  onOpenToolPanel: (panel: LeftDockPanel) => void;
   onSelectRole: (roleName: string) => void;
   onCancelRun: () => void;
   onRunAction: (command: string) => void;
@@ -68,18 +61,6 @@ const IDE_STORAGE_KEY = "jockey:toolbar.ide";
 type ToolbarAction = { name: string; command: string };
 type GitFlowStep = "commit" | "push" | "pr";
 type GitPrimaryActionKind = "commit" | "push" | "pr" | "changes" | "disabled";
-type WorkspaceOpenOption = { target: WorkspaceOpenTarget; label: string; icon: string; tone: string };
-
-const IDE_OPTIONS: WorkspaceOpenOption[] = [
-  { target: "vscode", label: "VS Code", icon: "VS", tone: "vscode" },
-  { target: "cursor", label: "Cursor", icon: "C", tone: "cursor" },
-  { target: "sublime", label: "Sublime Text", icon: "S", tone: "sublime" },
-  { target: "zed", label: "Zed", icon: "Z", tone: "zed" },
-  { target: "antigravity", label: "Antigravity", icon: "A", tone: "antigravity" },
-  { target: "finder", label: "Finder", icon: "F", tone: "finder" },
-  { target: "terminal", label: "Terminal", icon: ">", tone: "terminal" },
-];
-
 function loadToolbarAction(): ToolbarAction {
   try {
     const raw = window.localStorage.getItem(ACTION_STORAGE_KEY);
@@ -99,29 +80,14 @@ function loadToolbarAction(): ToolbarAction {
 function loadIdeTarget(): WorkspaceOpenTarget {
   try {
     const raw = window.localStorage.getItem(IDE_STORAGE_KEY);
-    if (IDE_OPTIONS.some((option) => option.target === raw)) return raw as WorkspaceOpenTarget;
+    if (raw && isKnownWorkspaceTarget(raw)) return raw as WorkspaceOpenTarget;
   } catch { /* ignore */ }
-  return "vscode";
+  return "cursor";
 }
 
 function statusView(gitStatus: GitStatusStore) {
   const s = gitStatus.state;
   return s && s.kind === "status" ? s : null;
-}
-
-function sessionStatusClass(session: AppSession): string {
-  if (session.status === "error") return "ui-status-danger";
-  return "ui-status-muted";
-}
-
-function sessionIsRunning(session: AppSession): boolean {
-  return session.submitting || session.status === "running";
-}
-
-function sessionStatusTitle(session: AppSession): string {
-  if (sessionIsRunning(session)) return "Running";
-  if (session.status === "error") return "Error";
-  return "Idle";
 }
 
 function shellQuote(value: string): string {
@@ -139,7 +105,7 @@ function classifyCommitArea(path: string): CommitArea {
   if (
     path.startsWith("src-tauri/src/git/")
     || path === "src-tauri/src/commands/git_cmd.rs"
-    || path === "src/components/WorkspaceHeader.tsx"
+    || path === "src/components/ComposerContextFooter.tsx"
     || path === "src/components/GitPanel.tsx"
     || path === "src/components/WorkspaceFilesPanel.tsx"
     || path === "src/lib/tauriApi.ts"
@@ -240,7 +206,7 @@ function renderGitPrimaryIcon(kind: GitPrimaryActionKind, busy: boolean): JSX.El
   }
 }
 
-export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
+export default function ComposerContextFooter(props: ComposerContextFooterProps) {
   const [roleOpen, setRoleOpen] = createSignal(false);
   const [action, setAction] = createSignal<ToolbarAction>(loadToolbarAction());
   const [actionMenuOpen, setActionMenuOpen] = createSignal(false);
@@ -263,6 +229,8 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
   const [ideError, setIdeError] = createSignal<string | null>(null);
 
   const activeRole = () => props.activeSession()?.activeRole ?? DEFAULT_ROLE_ALIAS;
+  const showBranchState = () => loadUiPrefs().showBranchState;
+
   const roleOptions = createMemo(() => {
     const seen = new Set<string>([DEFAULT_ROLE_ALIAS]);
     const options: Array<{ roleName: string; runtimeKind: string | null; model: string | null }> = [
@@ -349,7 +317,16 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
     if (effectiveGitFlowStep() === "push") return canPush() && (willCreateCommit() || s.ahead > 0 || !s.upstream);
     return canCreatePr();
   });
-  const activeIde = createMemo(() => IDE_OPTIONS.find((option) => option.target === selectedIde()) ?? IDE_OPTIONS[0]);
+  const workspaceApps = createMemo(() => listWorkspaceApps(loadUiPrefs().customWorkspaceApps));
+  const activeIde = createMemo(() => workspaceAppFor(selectedIde(), loadUiPrefs().customWorkspaceApps));
+
+  createEffect(() => {
+    const apps = workspaceApps();
+    if (!apps.some((option) => option.target === selectedIde())) {
+      setSelectedIde("cursor");
+      try { window.localStorage.setItem(IDE_STORAGE_KEY, "cursor"); } catch { /* ignore */ }
+    }
+  });
   const autoCommitMessage = () => {
     return buildCommitSuggestion(git(), includeUnstaged());
   };
@@ -457,8 +434,7 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
     setBranchEditorOpen(false);
   };
   const openWorkspace = async (target: WorkspaceOpenTarget, persist = true) => {
-    const option = IDE_OPTIONS.find((item) => item.target === target);
-    if (!option) return;
+    const option = workspaceAppFor(target, loadUiPrefs().customWorkspaceApps);
     if (persist) {
       setSelectedIde(target);
       try { window.localStorage.setItem(IDE_STORAGE_KEY, target); } catch { /* ignore */ }
@@ -466,7 +442,10 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
     setIdeBusy(true);
     setIdeError(null);
     try {
-      await workspaceApi.open(target, props.activeSession()?.id ?? null);
+      await workspaceApi.open(target, props.activeSession()?.id ?? null, {
+        appName: option.appName,
+        bundleId: option.bundleId ?? null,
+      });
       setIdeMenuOpen(false);
     } catch (err) {
       console.error("[workspace-topbar] open workspace failed", err);
@@ -479,78 +458,32 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
     const action = gitPrimaryAction();
     if (action.disabled) return;
     if (action.kind === "changes") {
-      props.onToggleToolPanel("git");
+      openPanel("git");
       return;
     }
     openGitFlow(action.kind === "push" ? "push" : action.kind === "pr" ? "pr" : "commit");
   };
 
-  return (
-    <header
-      data-tauri-drag-region
-      class="workspace-topbar"
-      classList={{ "is-rail-closed": !props.leftRailOpen() }}
-    >
-      <div class="session-chip-strip">
-        <For each={props.sessions}>
-          {(session) => (
-            <div
-              role="button"
-              tabindex="0"
-              class="session-chip"
-              classList={{ "is-active": session.id === props.activeSessionId() }}
-              title={session.cwd ?? session.title}
-              onClick={() => props.setActiveSessionId(session.id)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") props.setActiveSessionId(session.id);
-              }}
-            >
-              <Show when={sessionIsRunning(session)} fallback={
-                <span class={`ui-status-dot ${sessionStatusClass(session)}`} title={sessionStatusTitle(session)} />
-              }>
-                <span title="Running">
-                  <LoaderCircle size={13} class="ui-running-spinner" />
-                </span>
-              </Show>
-              <span class="truncate">{session.title}</span>
-              <Show when={session.id === props.activeSessionId() && props.sessions.length > 1}>
-                <button
-                  type="button"
-                  class="session-chip-close"
-                  title="Close AppSession"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    props.onCloseSession(session.id);
-                  }}
-                >
-                  <X size={12} />
-                </button>
-              </Show>
-            </div>
-          )}
-        </For>
-        <button
-          type="button"
-          class="session-chip-add"
-          onClick={props.onNewSession}
-          title="New AppSession"
-        >
-          <Plus size={15} />
-        </button>
-      </div>
+  const openPanel = (panel: LeftDockPanel) => {
+    props.onOpenToolPanel(panel);
+  };
 
-      <div class="relative ml-2 flex min-w-0 items-center gap-2">
+  return (
+  <>
+    <footer class="composer-context-footer" data-tauri-drag-region="false">
+      <div class="composer-context-footer-inner">
+      <div class="composer-context-footer-actions">
         <DropdownMenu open={roleOpen()} onOpenChange={setRoleOpen}>
           <DropdownTrigger
             variant="plain"
             class={`role-switcher ${INTERACTIVE_MOTION}`}
             title="Switch role inside this AppSession"
           >
-            <span class="h-1.5 w-1.5 rounded-full bg-[var(--ui-accent)]" />
+            <span class="composer-role-dot" />
             <span class="truncate">{activeRole()}</span>
-            <ChevronDown size={13} class="theme-muted" />
+            <ChevronDown size={12} class="theme-muted" />
           </DropdownTrigger>
-          <DropdownContent placement="bottom-start" class="jui-role-menu">
+          <DropdownContent placement="bottom-end" class="jui-role-menu">
             <DropdownLabel>AppSession Roles</DropdownLabel>
             <For each={roleOptions()}>
               {(role) => (
@@ -572,19 +505,17 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
             </For>
           </DropdownContent>
         </DropdownMenu>
-      </div>
-
-      <div class="ml-auto flex items-center gap-1.5">
-        <Show when={git()}>
+        <Show when={showBranchState() && git()}>
           {(s) => (
             <button
               type="button"
               class="topbar-branch"
               classList={{ "is-active": props.activeToolPanel() === "git" || props.activeToolPanel() === "commit" }}
               title={`Open source control for ${s().branch ?? "(detached)"}`}
-              onClick={() => props.onToggleToolPanel("git")}
+              aria-label={`Git branch ${s().branch ?? "detached"}`}
+              onClick={() => openPanel("git")}
             >
-              <GitBranch size={14} />
+              <GitBranch size={13} />
               <span class="hidden max-w-[140px] truncate md:inline">{s().branch ?? "(detached)"}</span>
               <div class="topbar-branch-meta">
                 <Show when={s().behind > 0}>
@@ -601,20 +532,6 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
           )}
         </Show>
 
-        <ToolbarButton
-          active={props.activeToolPanel() === "files"}
-          onClick={() => props.onToggleToolPanel("files")}
-          title="Files"
-        >
-          <Folder size={15} />
-        </ToolbarButton>
-        <ToolbarButton
-          active={props.activeToolPanel() === "terminal"}
-          onClick={() => props.onToggleToolPanel("terminal")}
-          title="Terminal"
-        >
-          <TerminalIcon size={15} />
-        </ToolbarButton>
         <Show when={props.activeSession()?.submitting} fallback={
           <DropdownMenu open={actionMenuOpen()} onOpenChange={setActionMenuOpen}>
           <div class="run-action-wrap">
@@ -624,14 +541,14 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
                 title={`Run: ${action().command || action().name}`}
                 onClick={runAction}
               >
-                <Play size={15} />
+                <Play size={14} />
               </SplitButtonMain>
               <DropdownTrigger
                 variant="plain"
                 class="run-action-caret jui-split-button-trigger"
                 title="Run actions"
               >
-                <ChevronDown size={13} />
+                <ChevronDown size={12} />
               </DropdownTrigger>
             </SplitButton>
             <DropdownContent class="jui-run-action-menu">
@@ -664,25 +581,25 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
               title={`Open in ${activeIde().label}`}
               onClick={() => { void openWorkspace(activeIde().target, false); }}
             >
-              <span class={`ide-app-icon ${activeIde().tone}`}>{activeIde().icon}</span>
+              <IdeAppIcon target={activeIde().target} />
             </SplitButtonMain>
             <DropdownTrigger
               variant="plain"
               class="ide-open-caret jui-split-button-trigger"
               title="Open workspace in..."
             >
-              <ChevronDown size={13} />
+              <ChevronDown size={12} />
             </DropdownTrigger>
           </SplitButton>
             <DropdownContent class="jui-ide-open-menu">
-              <For each={IDE_OPTIONS}>
+              <For each={workspaceApps()}>
                 {(option) => (
                   <DropdownItem
                     class={`ide-open-row ${option.target === selectedIde() ? "is-active" : ""}`}
                     disabled={ideBusy()}
                     onSelect={() => { void openWorkspace(option.target); }}
                   >
-                    <span class={`ide-app-icon ${option.tone}`}>{option.icon}</span>
+                    <IdeAppIcon target={option.target} />
                     <span>{option.label}</span>
                   </DropdownItem>
                 )}
@@ -712,7 +629,7 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
               title="More git actions"
               disabled={!git()}
             >
-              <ChevronDown size={13} />
+              <ChevronDown size={12} />
             </DropdownTrigger>
           </SplitButton>
             <DropdownContent class="jui-git-actions-menu">
@@ -748,6 +665,8 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
         </div>
         </DropdownMenu>
       </div>
+      </div>
+    </footer>
       <Dialog open={actionEditorOpen()} onOpenChange={setActionEditorOpen}>
         <DialogContent
           class="run-action-modal"
@@ -946,6 +865,6 @@ export default function WorkspaceHeader(props: WorkspaceHeaderProps) {
           </div>
         </DialogContent>
       </Dialog>
-    </header>
+  </>
   );
 }

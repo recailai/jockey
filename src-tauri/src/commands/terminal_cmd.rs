@@ -1,10 +1,11 @@
 use dashmap::DashMap;
 use serde::Serialize;
 use std::os::fd::FromRawFd;
-use std::sync::{Arc, OnceLock};
+use std::os::unix::io::AsRawFd;
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, State};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Mutex;
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::db::get_state;
 use crate::types::AppState;
@@ -15,6 +16,7 @@ pub(crate) struct TerminalStartResponse {
     pub terminal_id: String,
     pub cwd: String,
     pub shell: String,
+    pub reused: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -34,14 +36,23 @@ struct TerminalExitEvent {
 }
 
 struct TerminalHandle {
-    writer: Arc<Mutex<tokio::fs::File>>,
+    writer: Arc<AsyncMutex<tokio::fs::File>>,
+    master: Arc<Mutex<std::fs::File>>,
     pid: Option<u32>,
+    app_session_id: String,
+    cwd: String,
+    shell: String,
 }
 
 static TERMINALS: OnceLock<DashMap<String, TerminalHandle>> = OnceLock::new();
+static SESSION_TERMINALS: OnceLock<DashMap<String, String>> = OnceLock::new();
 
 fn terminals() -> &'static DashMap<String, TerminalHandle> {
     TERMINALS.get_or_init(DashMap::new)
+}
+
+fn session_terminals() -> &'static DashMap<String, String> {
+    SESSION_TERMINALS.get_or_init(DashMap::new)
 }
 
 fn default_shell() -> String {
@@ -52,10 +63,31 @@ fn default_shell() -> String {
 }
 
 #[cfg(unix)]
+fn set_winsize(master: &std::fs::File, rows: u16, cols: u16) -> Result<(), String> {
+    let ws = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let rc = unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &ws) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_winsize(_master: &std::fs::File, _rows: u16, _cols: u16) -> Result<(), String> {
+    Err("terminal resize is only supported on unix".to_string())
+}
+
+#[cfg(unix)]
 fn open_pty() -> Result<
     (
         tokio::fs::File,
         tokio::fs::File,
+        Arc<Mutex<std::fs::File>>,
         std::process::Stdio,
         std::process::Stdio,
         std::process::Stdio,
@@ -84,18 +116,44 @@ fn open_pty() -> Result<
     }
 
     let master = unsafe { std::fs::File::from_raw_fd(master_fd) };
-    let master_writer = master.try_clone().map_err(|e| e.to_string())?;
+    let master_ioctl = Arc::new(Mutex::new(
+        master
+            .try_clone()
+            .map_err(|e| format!("clone master pty failed: {e}"))?,
+    ));
+    let master_reader = master
+        .try_clone()
+        .map_err(|e| format!("clone master reader failed: {e}"))?;
+    let master_writer = master
+        .try_clone()
+        .map_err(|e| format!("clone master writer failed: {e}"))?;
     let slave = unsafe { std::fs::File::from_raw_fd(slave_fd) };
     let slave_out = slave.try_clone().map_err(|e| e.to_string())?;
     let slave_err = slave.try_clone().map_err(|e| e.to_string())?;
 
     Ok((
-        tokio::fs::File::from_std(master),
+        tokio::fs::File::from_std(master_reader),
         tokio::fs::File::from_std(master_writer),
+        master_ioctl,
         std::process::Stdio::from(slave),
         std::process::Stdio::from(slave_out),
         std::process::Stdio::from(slave_err),
     ))
+}
+
+#[cfg(not(unix))]
+fn open_pty() -> Result<
+    (
+        tokio::fs::File,
+        tokio::fs::File,
+        Arc<Mutex<std::fs::File>>,
+        std::process::Stdio,
+        std::process::Stdio,
+        std::process::Stdio,
+    ),
+    String,
+> {
+    Err("PTY is only supported on unix".to_string())
 }
 
 async fn forward_output<R>(
@@ -136,36 +194,84 @@ async fn forward_output<R>(
     }
 }
 
+fn kill_handle(handle: &TerminalHandle) {
+    if let Some(pid) = handle.pid {
+        unsafe {
+            let _ = libc::kill(-(pid as i32), libc::SIGTERM);
+            let _ = libc::kill(pid as i32, libc::SIGTERM);
+        }
+    }
+}
+
+fn remove_terminal(terminal_id: &str) {
+    if let Some((_, handle)) = terminals().remove(terminal_id) {
+        session_terminals().remove(&handle.app_session_id);
+        kill_handle(&handle);
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn start_terminal_session(
     app: AppHandle,
     state: State<'_, AppState>,
     app_session_id: String,
+    force_new: Option<bool>,
 ) -> Result<TerminalStartResponse, String> {
     let sid = app_session_id.trim();
     if sid.is_empty() {
         return Err("app session id required".to_string());
     }
 
+    if force_new.unwrap_or(false) {
+        if let Some(entry) = session_terminals().get(sid) {
+            remove_terminal(entry.value());
+        }
+    } else if let Some(entry) = session_terminals().get(sid) {
+        let terminal_id = entry.value().clone();
+        if let Some(handle) = terminals().get(&terminal_id) {
+            return Ok(TerminalStartResponse {
+                terminal_id,
+                cwd: handle.cwd.clone(),
+                shell: handle.shell.clone(),
+                reused: true,
+            });
+        }
+        session_terminals().remove(sid);
+    }
+
     let cwd = crate::db::app_session::get_app_session_cwd(get_state(&state), sid)
         .unwrap_or_else(crate::resolve_chat_cwd);
     let shell = default_shell();
     let terminal_id = uuid::Uuid::new_v4().to_string();
-    let (reader, writer, stdin, stdout, stderr) = open_pty()?;
+    let (reader, writer, master, stdin, stdout, stderr) = open_pty()?;
+
+    {
+        let guard = master
+            .lock()
+            .map_err(|e| format!("lock master pty failed: {e}"))?;
+        set_winsize(&guard, 24, 80)?;
+    }
 
     let mut cmd = tokio::process::Command::new(&shell);
-    cmd.arg("-l")
+    cmd.arg("-i")
         .current_dir(&cwd)
         .env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor")
-        .env("PROMPT", "$ ")
-        .env("PS1", "$ ")
-        .env("PROMPT_EOL_MARK", "")
         .stdin(stdin)
         .stdout(stdout)
         .stderr(stderr)
-        .kill_on_drop(true)
-        .process_group(0);
+        .kill_on_drop(true);
+
+    #[cfg(unix)]
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            if libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 
     let mut child = cmd
         .spawn()
@@ -175,10 +281,15 @@ pub(crate) async fn start_terminal_session(
     terminals().insert(
         terminal_id.clone(),
         TerminalHandle {
-            writer: Arc::new(Mutex::new(writer)),
+            writer: Arc::new(AsyncMutex::new(writer)),
+            master,
             pid,
+            app_session_id: sid.to_string(),
+            cwd: cwd.clone(),
+            shell: shell.clone(),
         },
     );
+    session_terminals().insert(sid.to_string(), terminal_id.clone());
 
     tauri::async_runtime::spawn(forward_output(
         app.clone(),
@@ -191,7 +302,7 @@ pub(crate) async fn start_terminal_session(
     let exit_sid = sid.to_string();
     tauri::async_runtime::spawn(async move {
         let status = child.wait().await.ok();
-        terminals().remove(&exit_terminal_id);
+        remove_terminal(&exit_terminal_id);
         let _ = app.emit(
             "terminal/session_exit",
             TerminalExitEvent {
@@ -206,7 +317,27 @@ pub(crate) async fn start_terminal_session(
         terminal_id,
         cwd,
         shell,
+        reused: false,
     })
+}
+
+#[tauri::command]
+pub(crate) async fn resize_terminal_session(
+    terminal_id: String,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
+    if rows == 0 || cols == 0 {
+        return Ok(());
+    }
+    let master = terminals()
+        .get(&terminal_id)
+        .map(|h| h.master.clone())
+        .ok_or_else(|| "terminal not found".to_string())?;
+    let guard = master
+        .lock()
+        .map_err(|e| format!("lock master pty failed: {e}"))?;
+    set_winsize(&guard, rows, cols)
 }
 
 #[tauri::command]
@@ -232,14 +363,6 @@ pub(crate) async fn write_terminal_session(
 
 #[tauri::command]
 pub(crate) async fn stop_terminal_session(terminal_id: String) -> Result<(), String> {
-    let Some((_id, handle)) = terminals().remove(&terminal_id) else {
-        return Ok(());
-    };
-    if let Some(pid) = handle.pid {
-        unsafe {
-            let _ = libc::kill(-(pid as i32), libc::SIGTERM);
-            let _ = libc::kill(pid as i32, libc::SIGTERM);
-        }
-    }
+    remove_terminal(&terminal_id);
     Ok(())
 }

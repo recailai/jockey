@@ -2,6 +2,7 @@ export * from "./badge";
 export * from "./button";
 export * from "./context-menu";
 export * from "./dialog";
+export * from "./dock-panel";
 export * from "./dropdown-menu";
 export * from "./field";
 export * from "./panel";

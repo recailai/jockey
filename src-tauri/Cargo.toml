@@ -39,6 +39,9 @@ tokio-util = { version = "0.7", features = ["compat"] }
 uuid = { version = "1.18.1", features = ["v4", "serde"] }
 which = "8"
 
+[dev-dependencies]
+tempfile = "3"
+
 [profile.release]
 opt-level = 3
 lto = true

@@ -1,5 +1,7 @@
 import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import {
+  ArrowDown,
+  ArrowUp,
   ChevronRight,
   RefreshCw,
   PanelRightClose,
@@ -11,6 +13,8 @@ import {
   Copy,
   ExternalLink,
   GitPullRequest,
+  Minus,
+  Plus,
 } from "lucide-solid";
 import {
   gitApi,
@@ -22,7 +26,23 @@ import {
 } from "../lib/tauriApi";
 import type { GitStatusStore } from "../hooks/useGitPoller";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { Badge, ContextMenuItem, ContextMenuSeparator, ContextMenuSurface, EmptyState, Input, ListRow, Panel, PanelBody, PanelHeader, PanelHeaderAction } from "./ui";
+import {
+  Badge,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuSurface,
+  DockPanel,
+  DockPanelBody,
+  DockPanelToolbar,
+  DockPanelToolbarActions,
+  DockPanelToolbarTitle,
+  EmptyState,
+  Input,
+  ListRow,
+  Textarea,
+  PanelHeader,
+  PanelHeaderAction,
+} from "./ui";
 import FileGlyph from "./FileGlyph";
 
 type GitPanelProps = {
@@ -34,6 +54,7 @@ type GitPanelProps = {
   onCollapse: () => void;
   onOpenDiff: (path: string, staged: boolean, untracked: boolean) => void;
   onOpenCommitDiff: (oid: string, label: string) => void;
+  dockEmbedded?: boolean;
 };
 
 type ChangeEntry = GitFileEntry & { untracked: boolean };
@@ -85,6 +106,12 @@ export default function GitPanel(props: GitPanelProps) {
 
   const [ctxMenu, setCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
   const [remoteInfo, setRemoteInfo] = createSignal<GitRemoteInfo | null>(null);
+  const [gitView, setGitView] = createSignal<"changes" | "history">("changes");
+  const [commitMessage, setCommitMessage] = createSignal("");
+  const [includeUnstaged, setIncludeUnstaged] = createSignal(true);
+  const [syncBusy, setSyncBusy] = createSignal<string | null>(null);
+  const [commitBusy, setCommitBusy] = createSignal(false);
+  const [gitActionError, setGitActionError] = createSignal<string | null>(null);
 
   const statusObj = () => props.gitStatus();
   const state = () => statusObj().state;
@@ -256,6 +283,16 @@ export default function GitPanel(props: GitPanelProps) {
                   </Show>
                   <button
                     type="button"
+                    onClick={(e) => { e.stopPropagation(); void toggleStage(entry.path, staged); }}
+                    title={staged ? "Unstage" : "Stage"}
+                    class="git-stage-btn shrink-0 opacity-0 group-hover:opacity-100"
+                  >
+                    <Show when={staged} fallback={<Plus size={12} />}>
+                      <Minus size={12} />
+                    </Show>
+                  </button>
+                  <button
+                    type="button"
                     onClick={(e) => { e.stopPropagation(); props.onAddMention(entry.path); }}
                     title="Add to chat as @mention"
                     class="shrink-0 rounded px-1.5 py-0.5 text-[10px] theme-muted hover:theme-text hover:bg-[var(--ui-accent-soft)] opacity-0 group-hover:opacity-100 transition-opacity"
@@ -279,19 +316,103 @@ export default function GitPanel(props: GitPanelProps) {
     return !!r && r.host.toLowerCase().includes("github.com");
   };
 
+  const refreshAll = () => {
+    props.onRefresh();
+    void loadRemote();
+    void loadHistory();
+  };
+
+  const runSync = async (action: "fetch" | "pull" | "push") => {
+    if (syncBusy()) return;
+    setSyncBusy(action);
+    setGitActionError(null);
+    try {
+      const sid = props.appSessionId() ?? null;
+      if (action === "fetch") await gitApi.fetch(sid);
+      else if (action === "pull") await gitApi.pull(sid);
+      else await gitApi.push(sid);
+      props.onRefresh();
+      void loadRemote();
+      void loadHistory();
+    } catch (err) {
+      setGitActionError(String(err));
+    } finally {
+      setSyncBusy(null);
+    }
+  };
+
+  const toggleStage = async (path: string, staged: boolean) => {
+    try {
+      const sid = props.appSessionId() ?? null;
+      if (staged) await gitApi.unstage(sid, path);
+      else await gitApi.stage(sid, path);
+      props.onRefresh();
+    } catch (err) {
+      setGitActionError(String(err));
+    }
+  };
+
+  const submitCommit = async () => {
+    const message = commitMessage().trim();
+    if (!message || commitBusy()) return;
+    setCommitBusy(true);
+    setGitActionError(null);
+    try {
+      await gitApi.commit(props.appSessionId() ?? null, {
+        message,
+        includeUnstaged: includeUnstaged(),
+      });
+      setCommitMessage("");
+      props.onRefresh();
+      void loadHistory();
+    } catch (err) {
+      setGitActionError(String(err));
+    } finally {
+      setCommitBusy(false);
+    }
+  };
+
   return (
-    <Panel class="tool-panel flex h-full flex-col overflow-hidden">
-      <PanelHeader class="panel-header">
-        <span class="panel-header-title">Source Control</span>
-        <div class="flex items-center gap-0.5">
-          <PanelHeaderAction title="Refresh" onClick={() => { props.onRefresh(); void loadRemote(); void loadHistory(); }}>
-            <RefreshCw size={13} />
-          </PanelHeaderAction>
-          <PanelHeaderAction title="Collapse (Cmd/Ctrl+G)" onClick={() => props.onCollapse()}>
-            <PanelRightClose size={13} />
-          </PanelHeaderAction>
-        </div>
-      </PanelHeader>
+    <DockPanel>
+      <Show when={props.dockEmbedded} fallback={
+        <PanelHeader class="panel-header">
+          <span class="panel-header-title">Source Control</span>
+          <div class="flex items-center gap-0.5">
+            <PanelHeaderAction title="Refresh" onClick={refreshAll}>
+              <RefreshCw size={13} />
+            </PanelHeaderAction>
+            <PanelHeaderAction title="Collapse (Cmd/Ctrl+G)" onClick={() => props.onCollapse()}>
+              <PanelRightClose size={13} />
+            </PanelHeaderAction>
+          </div>
+        </PanelHeader>
+      }>
+        <DockPanelToolbar>
+          <div class="git-view-tabs">
+            <button
+              type="button"
+              class="git-view-tab"
+              classList={{ "is-active": gitView() === "changes" }}
+              onClick={() => setGitView("changes")}
+            >
+              Changes
+            </button>
+            <button
+              type="button"
+              class="git-view-tab"
+              classList={{ "is-active": gitView() === "history" }}
+              onClick={() => setGitView("history")}
+            >
+              History
+            </button>
+          </div>
+          <DockPanelToolbarActions>
+            <PanelHeaderAction title="Refresh" onClick={refreshAll}>
+              <RefreshCw size={13} />
+            </PanelHeaderAction>
+          </DockPanelToolbarActions>
+        </DockPanelToolbar>
+      </Show>
 
       <Show when={state()?.kind === "git_missing"}>
         <EmptyState class="flex-1">
@@ -411,68 +532,115 @@ export default function GitPanel(props: GitPanelProps) {
                 </Show>
               </div>
 
-              <PanelBody class="tool-panel-body flex-1 overflow-auto min-h-0">
-                <Show when={!dirty}>
-                  <EmptyState>
-                    Working tree clean
-                  </EmptyState>
-                </Show>
-                <Show when={stagedEntries().length > 0}>
-                  {renderGroup("Staged Changes", stagedOpen, setStagedOpen, stagedEntries(), true)}
-                </Show>
-                <Show when={changesEntries().length > 0}>
-                  {renderGroup("Changes", changesOpen, setChangesOpen, changesEntries(), false)}
-                </Show>
-
-                <div class="mt-3">
-                  <button
-                    type="button"
-                    onClick={() => setHistoryOpen(!historyOpen())}
-                    class="section-header"
-                  >
-                    <ChevronRight
-                      size={12}
-                      class={`transition-transform shrink-0 ${historyOpen() ? "rotate-90" : ""}`}
-                    />
-                    <span>Recent Commits</span>
-                    <span class="section-count">{history().length}</span>
-                  </button>
-                  <Show when={historyOpen()}>
-                    <div class="mt-1">
-                      <Show when={historyLoading()}>
-                        <div class="px-2 py-2 text-[11px] theme-muted">Loading history…</div>
-                      </Show>
-                      <Show when={historyError()}>
-                        {(error) => <div class="px-2 py-2 text-[11px] text-[var(--ui-state-danger-text)]">{error()}</div>}
-                      </Show>
-                      <For each={history()}>
-                        {(entry) => (
-                          <ListRow
-                            class="git-commit-row"
-                            onClick={() => props.onOpenCommitDiff(entry.oid, `${entry.shortOid} ${entry.summary}`)}
-                            title={entry.oid}
-                          >
-                            <div class="min-w-0 flex-1">
-                              <div class="flex items-center gap-2 min-w-0">
-                                <span class="font-mono text-[10.5px] theme-muted shrink-0">{entry.shortOid}</span>
-                                <span class="truncate theme-text">{entry.summary}</span>
-                              </div>
-                              <div class="mt-0.5 flex items-center gap-2 text-[10.5px] theme-muted">
-                                <span class="truncate">{entry.authorName}</span>
-                                <span>{fmtRelative(entry.committedAt)}</span>
-                              </div>
-                            </div>
-                            <ExternalLink size={12} class="shrink-0 theme-muted" />
-                          </ListRow>
-                        )}
-                      </For>
-                      <Show when={!historyLoading() && !historyError() && history().length === 0}>
-                        <div class="px-2 py-2 text-[11px] theme-muted">No commits on this branch yet.</div>
-                      </Show>
+              <Show when={remoteInfo()}>
+                {(r) => (
+                  <div class="git-overview-bar">
+                    <button
+                      type="button"
+                      class="git-repo-link"
+                      title="Open repository"
+                      onClick={() => { void safeOpen(r().webUrl); }}
+                    >
+                      <Globe size={12} />
+                      <span class="truncate">{r().owner}/{r().repo}</span>
+                    </button>
+                    <div class="git-sync-actions">
+                      <button type="button" class="git-sync-btn" disabled={!!syncBusy()} onClick={() => { void runSync("fetch"); }}>
+                        <RefreshCw size={12} classList={{ "animate-spin": syncBusy() === "fetch" }} />
+                        Fetch
+                      </button>
+                      <button type="button" class="git-sync-btn" disabled={!!syncBusy()} onClick={() => { void runSync("pull"); }}>
+                        <ArrowDown size={12} />
+                        Pull
+                      </button>
+                      <button type="button" class="git-sync-btn" disabled={!!syncBusy() || s.detached} onClick={() => { void runSync("push"); }}>
+                        <ArrowUp size={12} />
+                        Push
+                      </button>
                     </div>
+                  </div>
+                )}
+              </Show>
+
+              <Show when={gitActionError()}>
+                {(error) => <div class="git-panel-error">{error()}</div>}
+              </Show>
+
+              <div class="git-panel-main">
+                <DockPanelBody class="git-panel-scroll">
+                  <Show when={gitView() === "changes"}>
+                    <Show when={!dirty}>
+                      <EmptyState>Working tree clean</EmptyState>
+                    </Show>
+                    <Show when={stagedEntries().length > 0}>
+                      {renderGroup("Staged Changes", stagedOpen, setStagedOpen, stagedEntries(), true)}
+                    </Show>
+                    <Show when={changesEntries().length > 0}>
+                      {renderGroup("Changes", changesOpen, setChangesOpen, changesEntries(), false)}
+                    </Show>
                   </Show>
-                </div>
-              </PanelBody>
+                  <Show when={gitView() === "history"}>
+                    <Show when={historyLoading()}>
+                      <div class="px-2 py-2 text-[11px] theme-muted">Loading history…</div>
+                    </Show>
+                    <Show when={historyError()}>
+                      {(error) => <div class="px-2 py-2 text-[11px] text-[var(--ui-state-danger-text)]">{error()}</div>}
+                    </Show>
+                    <For each={history()}>
+                      {(entry) => (
+                        <ListRow
+                          class="git-commit-row"
+                          onClick={() => props.onOpenCommitDiff(entry.oid, `${entry.shortOid} ${entry.summary}`)}
+                          title={entry.oid}
+                        >
+                          <div class="min-w-0 flex-1">
+                            <div class="flex items-center gap-2 min-w-0">
+                              <span class="font-mono text-[10.5px] theme-muted shrink-0">{entry.shortOid}</span>
+                              <span class="truncate theme-text">{entry.summary}</span>
+                            </div>
+                            <div class="mt-0.5 flex items-center gap-2 text-[10.5px] theme-muted">
+                              <span class="truncate">{entry.authorName}</span>
+                              <span>{fmtRelative(entry.committedAt)}</span>
+                            </div>
+                          </div>
+                          <ChevronRight size={12} class="shrink-0 theme-muted" />
+                        </ListRow>
+                      )}
+                    </For>
+                    <Show when={!historyLoading() && !historyError() && history().length === 0}>
+                      <EmptyState>No commits on this branch yet.</EmptyState>
+                    </Show>
+                  </Show>
+                </DockPanelBody>
+
+                <Show when={gitView() === "changes"}>
+                  <div class="git-commit-composer">
+                    <Textarea
+                      class="git-commit-input"
+                      rows={3}
+                      placeholder="Summary (required)"
+                      value={commitMessage()}
+                      onInput={(e) => setCommitMessage(e.currentTarget.value)}
+                    />
+                    <label class="git-commit-option">
+                      <input
+                        type="checkbox"
+                        checked={includeUnstaged()}
+                        onChange={(e) => setIncludeUnstaged(e.currentTarget.checked)}
+                      />
+                      <span>Include unstaged changes</span>
+                    </label>
+                    <button
+                      type="button"
+                      class="git-commit-submit"
+                      disabled={commitBusy() || !commitMessage().trim()}
+                      onClick={() => { void submitCommit(); }}
+                    >
+                      {commitBusy() ? "Committing…" : `Commit to ${s.branch ?? "branch"}`}
+                    </button>
+                  </div>
+                </Show>
+              </div>
             </>
           );
         }}
@@ -538,6 +706,6 @@ export default function GitPanel(props: GitPanelProps) {
           );
         }}
       </Show>
-    </Panel>
+    </DockPanel>
   );
 }

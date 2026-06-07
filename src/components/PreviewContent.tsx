@@ -1,15 +1,22 @@
 import { For, Show, createEffect, createMemo, createResource, createSignal, onCleanup } from "solid-js";
 import { AtSign } from "lucide-solid";
 import { gitApi, fsApi } from "../lib/tauriApi";
+import { highlightCodeLineHtml, languageFromPath } from "../lib/codeHighlight";
 import { renderMd } from "../lib/markdown";
 import type { PreviewMode } from "./types";
 import DiffView from "./DiffView";
 import { Badge, IconButton, SegmentButton, SegmentedControl } from "./ui";
 
-function FileWithLineNumbers(props: { text: string }) {
+function FileWithLineNumbers(props: { text: string; path: string }) {
   const lines = () => props.text.split("\n");
   const lineCount = () => lines().length;
   const gutterWidth = () => String(lineCount()).length;
+  const language = createMemo(() => languageFromPath(props.path));
+  const highlight = createMemo(() => {
+    const lang = language();
+    if (!lang) return false;
+    return !["markdown", "json", "config"].includes(lang);
+  });
   return (
     <div class="file-code-view flex font-mono text-[12px] leading-[1.55] min-w-full">
       <div
@@ -20,7 +27,17 @@ function FileWithLineNumbers(props: { text: string }) {
           {(_, i) => <div>{i() + 1}</div>}
         </For>
       </div>
-      <pre class="file-code-pre flex-1 overflow-x-auto whitespace-pre theme-text pl-4 pr-4">{props.text}</pre>
+      <pre class="file-code-pre flex-1 overflow-x-auto whitespace-pre theme-text pl-4 pr-4">
+        <For each={lines()}>
+          {(line) => (
+            <div
+              innerHTML={highlight()
+                ? highlightCodeLineHtml(line, language())
+                : line.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}
+            />
+          )}
+        </For>
+      </pre>
     </div>
   );
 }
@@ -279,7 +296,7 @@ export default function PreviewContent(props: PreviewContentProps) {
               <div class="preview-error-text px-4 py-3">{String(fileRes.error)}</div>
             </Show>
             <Show when={!fileRes.loading && !fileRes.error && fileRes() !== undefined}>
-              <FileWithLineNumbers text={fileRes()!} />
+              <FileWithLineNumbers text={fileRes()!} path={props.path} />
             </Show>
           </div>
         </Show>

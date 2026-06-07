@@ -135,7 +135,7 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
                 class={`group flex w-full flex-col gap-0.5 rounded-lg mx-1.5 px-2.5 py-2 text-left transition-colors duration-100 ${selectedKey() === entry.key ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-surface-muted)]"}`}
               >
                 <div class="flex items-center gap-1.5 min-w-0">
-                  <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400" />
+                  <span class="settings-runtime-dot is-online" />
                   <span class="truncate font-mono text-[10px] font-semibold theme-text">{entry.server.name}</span>
                   <Show when={entry.isBuiltin}>
                     <Badge label="built-in" color="management-badge-muted" />
@@ -215,7 +215,7 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
               <div class="space-y-5">
                 <div class="flex items-start justify-between gap-4">
                   <div class="flex items-center gap-2">
-                    <span class="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.4)]" />
+                    <span class="settings-runtime-dot is-online" />
                     <h2 class="font-mono text-sm font-bold theme-text">{s().name}</h2>
                     <Badge label={t()} color={transportBadge(t())} />
                     <Show when={entry().isBuiltin}>

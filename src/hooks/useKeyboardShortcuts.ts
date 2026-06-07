@@ -2,37 +2,63 @@ import { onMount, onCleanup } from "solid-js";
 
 export type WorkspaceToolPanel = "git" | "files" | "terminal";
 
+function isEditableTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (el.isContentEditable) return true;
+  return !!el.closest("[contenteditable='true']");
+}
+
 export function useKeyboardShortcuts(handlers: {
   newSession: () => void;
+  openSettings: () => void;
   toggleManagement: () => void;
-  toggleSidebarRestore: () => void;
-  setSidebarPanel: (p: WorkspaceToolPanel | null) => void;
-  cancelCurrentRun: () => void;
+  toggleRightDock: () => void;
+  openWorkspacePanel: (p: WorkspaceToolPanel) => void;
 }): void {
   onMount(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      const inEditableTarget = tag === "INPUT" || tag === "TEXTAREA";
+      const inEditable = isEditableTarget(e.target);
       switch (e.key) {
         case "k":
-          e.preventDefault(); handlers.newSession(); return;
+          if (inEditable) return;
+          e.preventDefault();
+          handlers.newSession();
+          return;
+        case ",":
+          e.preventDefault();
+          handlers.openSettings();
+          return;
         case "m":
-          if (e.shiftKey) { e.preventDefault(); handlers.toggleManagement(); }
+          if (e.shiftKey) {
+            e.preventDefault();
+            handlers.toggleManagement();
+          }
           return;
         case "g":
-          e.preventDefault(); handlers.setSidebarPanel("git"); return;
-        case "1":
-          if (!inEditableTarget) { e.preventDefault(); handlers.setSidebarPanel("git"); }
-          return;
         case "2":
-          if (!inEditableTarget) { e.preventDefault(); handlers.setSidebarPanel("files"); }
+          if (inEditable) return;
+          e.preventDefault();
+          handlers.openWorkspacePanel("git");
+          return;
+        case "1":
+          if (inEditable) return;
+          e.preventDefault();
+          handlers.openWorkspacePanel("files");
           return;
         case "3":
-          if (!inEditableTarget) { e.preventDefault(); handlers.setSidebarPanel("terminal"); }
+          if (inEditable) return;
+          e.preventDefault();
+          handlers.openWorkspacePanel("terminal");
           return;
         case "b":
-          if (!e.shiftKey && !e.altKey) { e.preventDefault(); handlers.toggleSidebarRestore(); }
+          if (!e.shiftKey && !e.altKey && !inEditable) {
+            e.preventDefault();
+            handlers.toggleRightDock();
+          }
           return;
       }
     };

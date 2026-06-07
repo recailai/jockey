@@ -11,14 +11,16 @@ import {
 import type { GitStatusStore } from "../hooks/useGitPoller";
 import type { GitFileEntry, GitState } from "../lib/tauriApi";
 import {
+  DockPanel,
+  DockPanelBody,
+  DockPanelToolbar,
+  DockPanelToolbarActions,
   DropdownContent,
   DropdownItem,
   DropdownMenu,
   DropdownTrigger,
   EmptyState,
   ListRow,
-  Panel,
-  PanelBody,
   PanelHeader,
   PanelHeaderAction,
 } from "./ui";
@@ -35,6 +37,7 @@ type WorkspaceFilesPanelProps = {
   onOpenFile: (relPath: string) => void;
   onOpenDiff: (path: string, staged: boolean, untracked: boolean) => void;
   onCollapse: () => void;
+  dockEmbedded?: boolean;
 };
 
 type ChangeEntry = GitFileEntry & { staged: boolean; untracked: boolean };
@@ -141,7 +144,7 @@ export default function WorkspaceFilesPanel(props: WorkspaceFilesPanelProps) {
           <EmptyState class="flex-1">Loading...</EmptyState>
         </Show>
         <Show when={git()}>
-          <PanelBody class="tool-panel-body flex-1 overflow-auto min-h-0">
+          <DockPanelBody>
             <label class="workspace-files-search">
               <Search size={13} />
               <input
@@ -190,36 +193,75 @@ export default function WorkspaceFilesPanel(props: WorkspaceFilesPanelProps) {
                 </div>
               )}
             </For>
-          </PanelBody>
+          </DockPanelBody>
         </Show>
       </>
     );
   };
 
+  const panelBody = (
+    <Show when={view() === "changed"} fallback={
+      <FilesPanel
+        embedded
+        appSessionId={props.appSessionId}
+        cwd={props.cwd}
+        onOpenFile={props.onOpenFile}
+      />
+    }>
+      {renderChanged()}
+    </Show>
+  );
+
+  const viewSwitcher = (compact: boolean) => (
+    <DropdownMenu open={viewMenuOpen()} onOpenChange={setViewMenuOpen}>
+      <DropdownTrigger
+        variant="plain"
+        class={`workspace-files-view-trigger ${compact ? "workspace-files-view-trigger-compact" : ""}`}
+        title="Choose file view"
+      >
+        <Folder size={compact ? 14 : 15} />
+        <span>{compact
+          ? (view() === "changed" ? `Changed (${changedCount()})` : "All files")
+          : title()}</span>
+        <ChevronDown size={compact ? 12 : 13} />
+      </DropdownTrigger>
+      <DropdownContent placement="bottom-start" class="workspace-files-view-menu">
+        <DropdownItem onSelect={() => selectView("changed")}>
+          <span>Changed files</span>
+          <Show when={view() === "changed"}>
+            <Check size={14} class="ml-auto theme-muted" />
+          </Show>
+        </DropdownItem>
+        <DropdownItem onSelect={() => selectView("all")}>
+          <span>All files</span>
+          <Show when={view() === "all"}>
+            <Check size={14} class="ml-auto theme-muted" />
+          </Show>
+        </DropdownItem>
+      </DropdownContent>
+    </DropdownMenu>
+  );
+
+  if (props.dockEmbedded) {
+    return (
+      <DockPanel class="workspace-files-panel">
+        <DockPanelToolbar>
+          {viewSwitcher(true)}
+          <DockPanelToolbarActions>
+            <PanelHeaderAction title="Refresh" onClick={() => props.onRefreshGit()}>
+              <RefreshCw size={13} />
+            </PanelHeaderAction>
+          </DockPanelToolbarActions>
+        </DockPanelToolbar>
+        {panelBody}
+      </DockPanel>
+    );
+  }
+
   return (
-    <Panel class="tool-panel workspace-files-panel flex h-full flex-col overflow-hidden">
+    <DockPanel class="workspace-files-panel">
       <PanelHeader class="panel-header">
-        <DropdownMenu open={viewMenuOpen()} onOpenChange={setViewMenuOpen}>
-          <DropdownTrigger variant="plain" class="workspace-files-view-trigger" title="Choose file view">
-            <Folder size={15} />
-            <span>{title()}</span>
-            <ChevronDown size={13} />
-          </DropdownTrigger>
-          <DropdownContent placement="bottom-start" class="workspace-files-view-menu">
-            <DropdownItem onSelect={() => selectView("changed")}>
-              <span>Changed files</span>
-              <Show when={view() === "changed"}>
-                <Check size={14} class="ml-auto theme-muted" />
-              </Show>
-            </DropdownItem>
-            <DropdownItem onSelect={() => selectView("all")}>
-              <span>All files</span>
-              <Show when={view() === "all"}>
-                <Check size={14} class="ml-auto theme-muted" />
-              </Show>
-            </DropdownItem>
-          </DropdownContent>
-        </DropdownMenu>
+        {viewSwitcher(false)}
         <div class="ml-auto flex items-center gap-0.5">
           <PanelHeaderAction title="Refresh" onClick={() => props.onRefreshGit()}>
             <RefreshCw size={13} />
@@ -230,16 +272,7 @@ export default function WorkspaceFilesPanel(props: WorkspaceFilesPanelProps) {
         </div>
       </PanelHeader>
 
-      <Show when={view() === "changed"} fallback={
-        <FilesPanel
-          embedded
-          appSessionId={props.appSessionId}
-          cwd={props.cwd}
-          onOpenFile={props.onOpenFile}
-        />
-      }>
-        {renderChanged()}
-      </Show>
-    </Panel>
+      {panelBody}
+    </DockPanel>
   );
 }

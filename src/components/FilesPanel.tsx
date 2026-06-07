@@ -11,7 +11,7 @@ import {
 } from "lucide-solid";
 import { fsApi, type DirEntry } from "../lib/tauriApi";
 import { useGitChanged } from "../hooks/useGitChanged";
-import { EmptyState, ListRow, Panel, PanelBody, PanelHeader, PanelHeaderAction } from "./ui";
+import { DockPanel, DockPanelBody, EmptyState, ListRow, PanelHeader, PanelHeaderAction } from "./ui";
 import FileGlyph from "./FileGlyph";
 
 type FilesPanelProps = {
@@ -251,7 +251,7 @@ export default function FilesPanel(props: FilesPanelProps) {
   };
 
   const body = (
-    <PanelBody class="tool-panel-body flex-1 overflow-auto">
+    <DockPanelBody>
         <Show when={!props.appSessionId() || !props.cwd()}>
           <EmptyState>
             {!props.appSessionId() ? "No active session" : (
@@ -268,13 +268,13 @@ export default function FilesPanel(props: FilesPanelProps) {
             onOpenFile={props.onOpenFile}
           />
         </Show>
-      </PanelBody>
+      </DockPanelBody>
   );
 
   if (props.embedded) return body;
 
   return (
-    <Panel class="tool-panel flex h-full flex-col overflow-hidden">
+    <DockPanel>
       <PanelHeader class="panel-header">
         <span class="panel-header-title">Files</span>
         <div class="flex items-center gap-0.5">
@@ -297,6 +297,6 @@ export default function FilesPanel(props: FilesPanelProps) {
         </div>
       </PanelHeader>
       {body}
-    </Panel>
+    </DockPanel>
   );
 }

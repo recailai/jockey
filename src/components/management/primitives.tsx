@@ -261,7 +261,8 @@ export function InlineSelect(props: {
           <div
             data-isel
             style={{ position: "fixed", top: `${pos().top}px`, left: `${pos().left}px`, width: `${Math.max(pos().width, 260)}px`, "max-width": "min(520px, calc(100vw - 24px))" }}
-            class="z-[9999] max-h-44 overflow-y-auto theme-dropdown"
+            class="max-h-44 overflow-y-auto theme-dropdown"
+            style={{ "z-index": "var(--z-dropdown)" }}
           >
             <For each={props.options}>
               {(opt) => (
@@ -272,7 +273,7 @@ export function InlineSelect(props: {
                   onClick={() => { props.onChange(opt.value); close(); }}
                   class={`completion-row items-start py-1.5 text-xs ${INTERACTIVE_MOTION} ${opt.value === props.value ? "theme-dropdown-item-active" : "theme-dropdown-item"}`}
                 >
-                  <span class={`mt-1.5 h-1 w-1 shrink-0 rounded-full ${opt.value === props.value ? "bg-emerald-400" : "bg-transparent"}`} />
+                  <span class={`mt-1.5 settings-runtime-dot shrink-0 ${opt.value === props.value ? "is-online" : "opacity-0"}`} />
                   <span class="min-w-0 break-words">{opt.label}</span>
                 </button>
               )}

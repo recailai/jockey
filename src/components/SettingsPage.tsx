@@ -26,7 +26,10 @@ import { McpRegistryTab } from "./management/McpRegistryTab";
 import { SkillRegistryTab } from "./management/SkillRegistryTab";
 import { RulesTab } from "./management/RulesTab";
 import { ExternalAgentsTab } from "./management/ExternalAgentsTab";
+import CustomAppsSettings from "./management/CustomAppsSettings";
 import { Panel, PanelBody, RowButton, Switch as UiSwitch } from "./ui";
+import { loadUiPrefs, saveUiPrefs, type UiPrefs, type WorkMode } from "../lib/uiPrefs";
+import type { Toast } from "../lib/useToast";
 
 export type SettingsTab =
   | "general"
@@ -60,6 +63,7 @@ type SettingsPageProps = {
   pushMessage: (role: string, text: string) => void;
   onRestoreSession: (id: string, title: string, activeRole: string, runtimeKind: string | null, cwd: string | null) => void;
   onBack: () => void;
+  showToast?: (message: string, severity?: Toast["severity"]) => void;
 };
 
 const NAV: Array<{ id: SettingsTab; label: string; icon: typeof Settings }> = [
@@ -77,14 +81,19 @@ const NAV: Array<{ id: SettingsTab; label: string; icon: typeof Settings }> = [
   { id: "archived", label: "Archived sessions", icon: FolderArchive },
 ];
 
-function ToggleRow(props: { title: string; description: string; enabled?: boolean }) {
+function ToggleRow(props: {
+  title: string;
+  description: string;
+  enabled: boolean;
+  onChange: (enabled: boolean) => void;
+}) {
   return (
     <div class="settings-toggle-row jui-row-button">
       <div class="min-w-0">
         <div class="text-[14px] font-medium theme-text">{props.title}</div>
         <p class="mt-1 max-w-[720px] text-[13px] leading-relaxed theme-muted">{props.description}</p>
       </div>
-      <UiSwitch checked={props.enabled ?? true} />
+      <UiSwitch checked={props.enabled} onChange={props.onChange} />
     </div>
   );
 }
@@ -92,6 +101,10 @@ function ToggleRow(props: { title: string; description: string; enabled?: boolea
 export default function SettingsPage(props: SettingsPageProps) {
   const [activeTab, setActiveTab] = createSignal<SettingsTab>(props.initialTab ?? "general");
   const [initialRoleName, setInitialRoleName] = createSignal<string | undefined>(props.initialRoleName);
+  const [prefs, setPrefs] = createSignal<UiPrefs>(loadUiPrefs());
+
+  const patchPrefs = (patch: Partial<UiPrefs>) => setPrefs(saveUiPrefs(patch));
+  const setWorkMode = (mode: WorkMode) => patchPrefs({ workMode: mode });
 
   createEffect(() => {
     if (props.initialTab) setActiveTab(props.initialTab);
@@ -133,7 +146,12 @@ export default function SettingsPage(props: SettingsPageProps) {
               <div class="settings-section">
                 <h2 class="settings-section-heading">Work mode</h2>
                 <div class="settings-workmode-grid">
-                  <button class="settings-workmode-card is-active">
+                  <button
+                    type="button"
+                    class="settings-workmode-card"
+                    classList={{ "is-active": prefs().workMode === "coding" }}
+                    onClick={() => setWorkMode("coding")}
+                  >
                     <div class="settings-workmode-preview">
                       <div class="mini-sidebar" />
                       <div class="mini-lines">
@@ -149,9 +167,16 @@ export default function SettingsPage(props: SettingsPageProps) {
                     </div>
                     <strong>For coding</strong>
                     <span>More technical responses and control</span>
-                    <CheckCircle2 size={22} />
+                    <Show when={prefs().workMode === "coding"} fallback={<span class="settings-radio" />}>
+                      <CheckCircle2 size={22} />
+                    </Show>
                   </button>
-                  <button class="settings-workmode-card">
+                  <button
+                    type="button"
+                    class="settings-workmode-card"
+                    classList={{ "is-active": prefs().workMode === "everyday" }}
+                    onClick={() => setWorkMode("everyday")}
+                  >
                     <div class="settings-workmode-preview muted">
                       <div class="mini-sidebar" />
                       <div class="mini-lines">
@@ -162,7 +187,9 @@ export default function SettingsPage(props: SettingsPageProps) {
                     </div>
                     <strong>For everyday work</strong>
                     <span>Same power, less technical detail</span>
-                    <span class="settings-radio" />
+                    <Show when={prefs().workMode === "everyday"} fallback={<span class="settings-radio" />}>
+                      <CheckCircle2 size={22} />
+                    </Show>
                   </button>
                 </div>
               </div>
@@ -170,12 +197,31 @@ export default function SettingsPage(props: SettingsPageProps) {
                 <h2 class="settings-section-heading">Permissions</h2>
                 <Panel class="settings-card-list">
                   <PanelBody class="settings-card-list-body">
-                  <ToggleRow title="Default permissions" description="Jockey can read and edit files in its workspace. It can ask for additional access when needed." />
-                  <ToggleRow title="Auto-review" description="Jockey can automatically review requests for additional access before asking for approval." />
-                  <ToggleRow title="Full access" description="When enabled, agents may run with broader filesystem and network permissions after approval." />
+                  <ToggleRow
+                    title="Default permissions"
+                    description="Jockey can read and edit files in its workspace. It can ask for additional access when needed."
+                    enabled={prefs().defaultPermissions}
+                    onChange={(enabled) => patchPrefs({ defaultPermissions: enabled })}
+                  />
+                  <ToggleRow
+                    title="Auto-review"
+                    description="Jockey can automatically review requests for additional access before asking for approval."
+                    enabled={prefs().autoReview}
+                    onChange={(enabled) => patchPrefs({ autoReview: enabled })}
+                  />
+                  <ToggleRow
+                    title="Full access"
+                    description="When enabled, agents may run with broader filesystem and network permissions after approval."
+                    enabled={prefs().fullAccess}
+                    onChange={(enabled) => patchPrefs({ fullAccess: enabled })}
+                  />
                   </PanelBody>
                 </Panel>
               </div>
+              <CustomAppsSettings
+                apps={prefs().customWorkspaceApps}
+                onChange={(customWorkspaceApps) => patchPrefs({ customWorkspaceApps })}
+              />
             </section>
           </Show>
 
@@ -268,8 +314,18 @@ export default function SettingsPage(props: SettingsPageProps) {
                 <h2 class="settings-section-heading">Repository</h2>
                 <Panel class="settings-card-list">
                   <PanelBody class="settings-card-list-body">
-                  <ToggleRow title="Show branch state" description="Display branch and dirty state in the workspace toolbar." />
-                  <ToggleRow title="Open diffs in the main work area" description="Keep file and diff preview wide above the conversation." />
+                  <ToggleRow
+                    title="Show branch state"
+                    description="Display branch and dirty state in the workspace toolbar."
+                    enabled={prefs().showBranchState}
+                    onChange={(enabled) => patchPrefs({ showBranchState: enabled })}
+                  />
+                  <ToggleRow
+                    title="Open diffs in the main work area"
+                    description="Keep file and diff preview wide above the conversation."
+                    enabled={prefs().openDiffsInMain}
+                    onChange={(enabled) => patchPrefs({ openDiffsInMain: enabled })}
+                  />
                   </PanelBody>
                 </Panel>
               </div>
@@ -304,7 +360,10 @@ export default function SettingsPage(props: SettingsPageProps) {
               <h1 class="settings-title">Automations</h1>
               <div class="settings-section">
                 <div class="settings-management-panel">
-                  <WorkflowsTab roles={props.roles()} />
+                  <WorkflowsTab
+                    roles={props.roles()}
+                    onError={(message) => props.showToast?.(message, "error")}
+                  />
                 </div>
               </div>
             </section>

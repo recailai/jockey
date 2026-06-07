@@ -6,7 +6,7 @@ import type { Workflow, WorkflowStep } from "./primitives";
 import { fmtDate, fmtRelative } from "./primitives";
 import { workflowApi } from "../../lib/tauriApi";
 
-export function WorkflowsTab(props: { roles: Role[] }) {
+export function WorkflowsTab(props: { roles: Role[]; onError?: (message: string) => void }) {
   const [workflows, setWorkflows] = createSignal<Workflow[]>([]);
   const [loading, setLoading] = createSignal(true);
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
@@ -47,7 +47,9 @@ export function WorkflowsTab(props: { roles: Role[] }) {
       setWfName(""); setWfDesc("");
       setWfSteps([{ roleName: "", prompt: "", order: 0 }]);
       await load();
-    } catch { /* TODO: error toast */ }
+    } catch (err) {
+      props.onError?.(`Failed to create workflow: ${String(err)}`);
+    }
   };
 
   const handleDelete = async (id: string) => {

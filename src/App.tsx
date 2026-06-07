@@ -1,16 +1,28 @@
-import { For, Show, Suspense, createMemo, createSignal, lazy, onCleanup, onMount } from "solid-js";
+import { For, Show, Suspense, createEffect, createMemo, createSignal, lazy, onCleanup, onMount } from "solid-js";
 
 import MessageWindow from "./components/MessageWindow";
 import ChatInput from "./components/ChatInput";
 import { now, DEFAULT_ROLE_ALIAS } from "./components/types";
 import { UI_THEME_KEY } from "./lib/theme";
 
-import WorkspaceHeader, { type WorkspaceToolPanel } from "./components/WorkspaceHeader";
-import TerminalPanel from "./components/TerminalPanel";
+import SessionTopbar from "./components/chrome/SessionTopbar";
+import ComposerContextFooter from "./components/ComposerContextFooter";
+import ConversationCanvas from "./components/ConversationCanvas";
 import type { SettingsTab } from "./components/SettingsPage";
-import WindowChrome from "./components/chrome/WindowChrome";
 import AppShell from "./components/shell/AppShell";
-import ToolPanelDock from "./components/shell/ToolPanelDock";
+import RightToolDock from "./components/shell/RightToolDock";
+import ToolDockPanels from "./components/shell/ToolDockPanels";
+import {
+  LAYOUT_STORAGE,
+  PREVIEW,
+  RIGHT_DOCK,
+  initialPreviewRatio,
+  initialRightDockOpen,
+  initialRightDockWidth,
+  initialRightPanel,
+  type RightDockPanel,
+} from "./lib/layoutTokens";
+import { hasConversationContent } from "./lib/conversationHelpers";
 
 import { useSessionManager } from "./hooks/useSessionManager";
 import { useStreamEngine } from "./hooks/useStreamEngine";
@@ -38,72 +50,56 @@ import { useGitPoller } from "./hooks/useGitPoller";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 
 
-const GitPanel = lazy(() => import("./components/GitPanel"));
-const WorkspaceFilesPanel = lazy(() => import("./components/WorkspaceFilesPanel"));
-const PreviewArea = lazy(() => import("./components/PreviewArea"));
 const SettingsPage = lazy(() => import("./components/SettingsPage"));
 import { useResize } from "./lib/useResize";
 import { openPreviewTab, closePreviewTab, setActivePreviewTab, closeAllPreviewTabs, closeOtherPreviewTabs } from "./lib/previewTabs";
-
-const TOOL_PANEL_KEY = "jockey:tool.panel";
-const RIGHT_TOOL_WIDTH_KEY = "jockey:rightToolPanelWidth";
-const EDITOR_RATIO_KEY = "jockey:editorChatRatio";
-const EDITOR_DEFAULT_RATIO = 0.6;
-const EDITOR_MIN_RATIO = 0.15;
-const EDITOR_MAX_RATIO = 0.85;
-const RIGHT_TOOL_DEFAULT_WIDTH = 432;
-const RIGHT_TOOL_MIN_WIDTH = 320;
-const RIGHT_TOOL_MAX_WIDTH = 620;
+import { destroySessionTerminal, updateTerminalThemes } from "./lib/terminalRuntime";
 
 export default function App() {
   const { toasts, showToast } = useToast();
   const { uiTheme, setUiTheme } = useTheme();
 
+  createEffect(() => {
+    uiTheme();
+    setTimeout(() => {
+      updateTerminalThemes();
+    }, 50);
+  });
+
   const [showSettings, setShowSettings] = createSignal(false);
   const [settingsInitialTab, setSettingsInitialTab] = createSignal<SettingsTab>("general");
   const [settingsInitialRole, setSettingsInitialRole] = createSignal<string | undefined>(undefined);
 
-  const initialPanelWidth = (key: string, fallback: number, min: number, max: number): number => {
-    try {
-      const raw = window.localStorage.getItem(key);
-      const n = raw ? parseFloat(raw) : NaN;
-      if (Number.isFinite(n)) return Math.min(max, Math.max(min, n));
-    } catch { /* ignore */ }
-    return fallback;
-  };
-
-  const initialToolPanel = (): WorkspaceToolPanel | null => null;
-  const initialEditorRatio = (): number => {
-    try {
-      const raw = window.localStorage.getItem(EDITOR_RATIO_KEY);
-      const n = raw ? parseFloat(raw) : NaN;
-      if (Number.isFinite(n)) return Math.min(EDITOR_MAX_RATIO, Math.max(EDITOR_MIN_RATIO, n));
-    } catch { /* ignore */ }
-    return EDITOR_DEFAULT_RATIO;
-  };
-
-  const [toolPanel, setToolPanelInternal] = createSignal<WorkspaceToolPanel | null>(initialToolPanel());
+  const [rightDockOpen, setRightDockOpenInternal] = createSignal(initialRightDockOpen());
+  const [rightDockPanel, setRightDockPanelInternal] = createSignal<RightDockPanel | null>(
+    initialRightDockOpen() ? (initialRightPanel() ?? "git") : null,
+  );
   const [terminalCommandRequest, setTerminalCommandRequest] = createSignal<{ id: number; command: string } | null>(null);
-  const [rightToolWidth, setRightToolWidth] = createSignal(initialPanelWidth(RIGHT_TOOL_WIDTH_KEY, RIGHT_TOOL_DEFAULT_WIDTH, RIGHT_TOOL_MIN_WIDTH, RIGHT_TOOL_MAX_WIDTH));
-  const [editorRatio, setEditorRatio] = createSignal(initialEditorRatio());
+  const [rightDockWidth, setRightDockWidth] = createSignal(initialRightDockWidth());
+  const [editorRatio, setEditorRatio] = createSignal(initialPreviewRatio());
   const [splitContainerEl, setSplitContainerEl] = createSignal<HTMLDivElement | null>(null);
   const [splitContainerHeight, setSplitContainerHeight] = createSignal(0);
 
-  const setToolPanel = (p: WorkspaceToolPanel | null) => {
-    setToolPanelInternal(p);
+  const setRightDockOpen = (open: boolean) => {
+    setRightDockOpenInternal(open);
+    try { window.localStorage.setItem(LAYOUT_STORAGE.rightDockOpen, open ? "1" : "0"); } catch { /* ignore */ }
+  };
+  const setRightDockPanel = (panel: RightDockPanel | null) => {
+    setRightDockPanelInternal(panel);
     try {
-      if (p !== null) window.localStorage.setItem(TOOL_PANEL_KEY, p);
+      if (panel !== null) window.localStorage.setItem(LAYOUT_STORAGE.rightPanel, panel);
+      else window.localStorage.removeItem(LAYOUT_STORAGE.rightPanel);
     } catch { /* ignore */ }
   };
   const persistEditorRatio = (r: number) => {
-    const clamped = Math.min(EDITOR_MAX_RATIO, Math.max(EDITOR_MIN_RATIO, r));
+    const clamped = Math.min(PREVIEW.maxRatio, Math.max(PREVIEW.minRatio, r));
     setEditorRatio(clamped);
-    try { window.localStorage.setItem(EDITOR_RATIO_KEY, String(clamped)); } catch { /* ignore */ }
+    try { window.localStorage.setItem(LAYOUT_STORAGE.previewRatio, String(clamped)); } catch { /* ignore */ }
   };
-  const persistRightToolWidth = (px: number) => {
-    const clamped = Math.min(RIGHT_TOOL_MAX_WIDTH, Math.max(RIGHT_TOOL_MIN_WIDTH, px));
-    setRightToolWidth(clamped);
-    try { window.localStorage.setItem(RIGHT_TOOL_WIDTH_KEY, String(clamped)); } catch { /* ignore */ }
+  const persistRightDockWidth = (px: number) => {
+    const clamped = Math.min(RIGHT_DOCK.maxWidth, Math.max(RIGHT_DOCK.minWidth, px));
+    setRightDockWidth(clamped);
+    try { window.localStorage.setItem(LAYOUT_STORAGE.rightDockWidth, String(clamped)); } catch { /* ignore */ }
   };
 
   const editorResize = useResize({
@@ -116,13 +112,13 @@ export default function App() {
       if (h > 0) persistEditorRatio(px / h);
     },
   });
-  const rightToolResize = useResize({
+  const rightDockResize = useResize({
     axis: "x",
-    min: RIGHT_TOOL_MIN_WIDTH,
-    max: RIGHT_TOOL_MAX_WIDTH,
-    getStart: () => rightToolWidth(),
-    onCommit: persistRightToolWidth,
-    invert: false,
+    min: RIGHT_DOCK.minWidth,
+    max: RIGHT_DOCK.maxWidth,
+    getStart: () => rightDockWidth(),
+    onCommit: persistRightDockWidth,
+    invert: true,
   });
 
   const openSettings = (tab: SettingsTab = "general", roleName?: string) => {
@@ -419,6 +415,7 @@ export default function App() {
     streamBatchBuffers.delete(id);
     thoughtBatchBuffers.delete(id);
     acceptingStreams.delete(id);
+    void destroySessionTerminal(id);
     const remaining = sessions.filter((s) => s.id !== id);
     if (remaining.length === 0) { void appSessionApi.remove(id).catch(() => {}); return; }
     if (activeSessionId() === id) {
@@ -428,31 +425,130 @@ export default function App() {
     void appSessionApi.remove(id).catch(() => {});
   };
 
-  const toggleToolPanel = (panel: WorkspaceToolPanel) =>
-    setToolPanel(toolPanel() === panel ? null : panel);
+  const openWorkspacePanel = (panel: RightDockPanel) => {
+    setRightDockOpen(true);
+    setRightDockPanel(panel);
+  };
+  const openTerminalPanel = (command?: string) => {
+    setRightDockOpen(true);
+    setRightDockPanel("terminal");
+    if (command !== undefined) {
+      setTerminalCommandRequest({ id: Date.now(), command });
+    }
+  };
+  const showRightDockLauncher = () => setRightDockPanel(null);
   const runToolbarAction = (command: string) => {
-    setToolPanel("terminal");
-    setTerminalCommandRequest({ id: Date.now(), command });
+    openTerminalPanel(command);
+  };
+  const openSessionPreview = (
+    path: string,
+    mode: "file" | "diff" | "commit",
+    opts?: { staged?: boolean; untracked?: boolean; commitOid?: string; label?: string },
+  ) => {
+    const sid = activeSessionId();
+    const cwd = activeSession()?.cwd ?? "";
+    if (!sid || !cwd) return;
+    openPreviewTab(mutateSession, sid, {
+      cwd,
+      path,
+      initialMode: mode,
+      staged: opts?.staged ?? false,
+      untracked: opts?.untracked ?? false,
+      commitOid: opts?.commitOid,
+      label: opts?.label,
+    });
   };
 
-  const toggleToolPanelRestore = () => {
-    if (toolPanel() !== null) { setToolPanel(null); return; }
-    let remembered: WorkspaceToolPanel | null = null;
-    try {
-      const raw = window.localStorage.getItem(TOOL_PANEL_KEY);
-      if (raw === "git") remembered = "files";
-      else if (raw === "files" || raw === "terminal" || raw === "commit") remembered = raw;
-    } catch { }
-    setToolPanel(remembered ?? "files");
+  const toggleRightDock = () => {
+    if (rightDockOpen()) {
+      setRightDockOpen(false);
+      return;
+    }
+    setRightDockOpen(true);
+    if (!rightDockPanel()) {
+      setRightDockPanel(initialRightPanel() ?? "git");
+    }
   };
 
   useKeyboardShortcuts({
-    newSession: () => showSettings() ? setShowSettings(false) : openSettings("general"),
+    newSession,
+    openSettings: () => (showSettings() ? setShowSettings(false) : openSettings("general")),
     toggleManagement: () => openSettings("archived"),
-    toggleSidebarRestore: toggleToolPanelRestore,
-    setSidebarPanel: (p) => { if (p !== null) toggleToolPanel(p); },
-    cancelCurrentRun: () => { void cancelCurrentRun(); },
+    toggleRightDock,
+    openWorkspacePanel,
   });
+
+  const composerBlock = (layout: "empty" | "active") => (
+    <ChatInput
+      layout={layout}
+      richNodes={richNodes}
+      setRichNodes={setRichNodes}
+      activeRole={chatActiveRole}
+      submitting={chatSubmitting}
+      queuedCount={chatQueuedCount}
+      onResetRole={() => patchActiveSession({ activeRole: DEFAULT_ROLE_ALIAS })}
+      isCustomRole={isCustomRole}
+      onSubmit={handleSend}
+      onInputKeyDown={handleInputKeyDownFinal}
+      refreshInputCompletions={(value, caret) => {
+        setRichCaretOffset(caret);
+        refreshInputCompletions(value, caret);
+      }}
+      mentionOpen={mentionOpen}
+      mentionItems={mentionItems}
+      mentionActiveIndex={mentionActiveIndex}
+      slashOpen={slashOpen}
+      slashItems={slashItems}
+      slashActiveIndex={slashActiveIndex}
+      applyMentionCandidate={applyMentionCandidate}
+      applySlashCandidate={applySlashCandidate}
+      closeMentionMenu={closeMentionMenu}
+      closeSlashMenu={closeSlashMenu}
+      richInputRef={(el) => { richInputEl = el; }}
+      mentionCloseTimerRef={mentionCloseTimerRef}
+      mentionDebounceTimerRef={mentionDebounceTimerRef}
+      hasImages={() => richNodes().some(isImageNode)}
+      onPasteImage={handlePasteImage}
+      onRemoveImage={(removeIdx) => {
+        setRichNodes((prev) => {
+          const without = prev.filter((n) => !(isImageNode(n) && n.index === removeIdx));
+          let imgCounter = 0;
+          return without.map((n) => isImageNode(n) ? { ...n, index: imgCounter++ } : n);
+        });
+      }}
+      contextFooter={
+        <ComposerContextFooter
+          activeSession={activeSession}
+          roles={roles}
+          assistants={assistants}
+          gitStatus={gitStatus}
+          gitChangeCount={gitChangeCount}
+          activeToolPanel={rightDockPanel}
+          onOpenToolPanel={openWorkspacePanel}
+          onCancelRun={() => { void cancelCurrentRun(); }}
+          onRunAction={runToolbarAction}
+          onRefreshGit={refetchGitStatus}
+          onSelectRole={(roleName) => {
+            if (roleName === DEFAULT_ROLE_ALIAS) {
+              patchActiveSession({ activeRole: DEFAULT_ROLE_ALIAS, discoveredConfigOptions: [] });
+              return;
+            }
+            const role = roles().find((r) => r.roleName === roleName);
+            patchActiveSession({
+              activeRole: roleName,
+              runtimeKind: role?.runtimeKind ?? activeSession()?.runtimeKind ?? null,
+              discoveredConfigOptions: [],
+            });
+            if (role) {
+              void fetchConfigOptions(role.runtimeKind, role.roleName).then((opts) => {
+                patchActiveSession({ discoveredConfigOptions: opts });
+              });
+            }
+          }}
+        />
+      }
+    />
+  );
 
   onMount(() => {
     const handlers: Array<() => void> = [];
@@ -540,264 +636,97 @@ export default function App() {
               setShowSettings(false);
             }}
             onBack={() => setShowSettings(false)}
+            showToast={showToast}
           />
         </Suspense>
       }
-      chrome={
-        <WindowChrome
-          leftRailOpen={toolPanel() !== null}
-          onToggleLeftRail={toggleToolPanelRestore}
-        />
-      }
-      sidebar={
-        <ToolPanelDock
-          open={toolPanel() !== null}
-          widthPx={rightToolWidth()}
-          previewPx={rightToolResize.previewPx()}
-          onResizeStart={rightToolResize.beginResize}
+      rightDock={
+        <RightToolDock
+          open={rightDockOpen()}
+          activePanel={rightDockPanel()}
+          widthPx={rightDockWidth()}
+          previewPx={rightDockResize.previewPx()}
+          onResizeStart={rightDockResize.beginResize}
+          onPanelChange={openWorkspacePanel}
+          onShowLauncher={showRightDockLauncher}
         >
-          <Suspense fallback={<div class="flex-1 bg-[var(--ui-sidebar-bg)]" />}>
-            <Show when={toolPanel() === "git" || toolPanel() === "commit"}>
-              <GitPanel
-                appSessionId={() => activeSession()?.id}
-                cwd={() => activeSession()?.cwd ?? null}
-                gitStatus={gitStatus}
-                onRefresh={refetchGitStatus}
-                onAddMention={insertMentionAtCaret}
-                onCollapse={() => setToolPanel(null)}
-                onOpenDiff={(path, staged, untracked) => {
-                  const sid = activeSessionId();
-                  const cwd = activeSession()?.cwd ?? "";
-                  if (!sid || !cwd) return;
-                  openPreviewTab(mutateSession, sid, {
-                    cwd, path, initialMode: "diff", staged, untracked,
-                  });
-                }}
-                onOpenCommitDiff={(oid, label) => {
-                  const sid = activeSessionId();
-                  const cwd = activeSession()?.cwd ?? "";
-                  if (!sid || !cwd) return;
-                  openPreviewTab(mutateSession, sid, {
-                    cwd,
-                    path: `.git/commits/${oid}.patch`,
-                    label,
-                    initialMode: "commit",
-                    staged: false,
-                    untracked: false,
-                    commitOid: oid,
-                  });
-                }}
-              />
-            </Show>
-            <Show when={toolPanel() === "files"}>
-              <WorkspaceFilesPanel
-                appSessionId={() => activeSession()?.id}
-                cwd={() => activeSession()?.cwd ?? null}
-                gitStatus={gitStatus}
-                onRefreshGit={refetchGitStatus}
-                onOpenFile={(path) => {
-                  const sid = activeSessionId();
-                  const cwd = activeSession()?.cwd ?? "";
-                  if (!sid || !cwd) return;
-                  openPreviewTab(mutateSession, sid, {
-                    cwd, path, initialMode: "file", staged: false, untracked: false,
-                  });
-                }}
-                onOpenDiff={(path, staged, untracked) => {
-                  const sid = activeSessionId();
-                  const cwd = activeSession()?.cwd ?? "";
-                  if (!sid || !cwd) return;
-                  openPreviewTab(mutateSession, sid, {
-                    cwd, path, initialMode: "diff", staged, untracked,
-                  });
-                }}
-                onCollapse={() => setToolPanel(null)}
-              />
-            </Show>
-            <Show when={toolPanel() === "terminal"}>
-              <TerminalPanel
-                session={activeSession()}
-                commandRequest={terminalCommandRequest()}
-                onClose={() => setToolPanel(null)}
-              />
-            </Show>
-          </Suspense>
-        </ToolPanelDock>
+          <ToolDockPanels
+            activePanel={rightDockPanel()}
+            dockEmbedded
+            activeSession={activeSession}
+            gitStatus={gitStatus}
+            onRefreshGit={refetchGitStatus}
+            onClose={showRightDockLauncher}
+            onAddMention={insertMentionAtCaret}
+            onOpenFile={(path) => openSessionPreview(path, "file")}
+            onOpenDiff={(path, staged, untracked) => openSessionPreview(path, "diff", { staged, untracked })}
+            onOpenCommitDiff={(oid, label) => openSessionPreview(`__commit__/${oid}`, "commit", { label, commitOid: oid })}
+            terminalCommandRequest={terminalCommandRequest()}
+          />
+        </RightToolDock>
       }
-      header={
-        <WorkspaceHeader
+      sessionTopbar={
+        <SessionTopbar
           sessions={sessions}
           activeSessionId={activeSessionId}
           setActiveSessionId={setActiveSessionId}
-          activeSession={activeSession}
-          leftRailOpen={() => toolPanel() !== null}
-          roles={roles}
-          assistants={assistants}
-          gitStatus={gitStatus}
-          gitChangeCount={gitChangeCount}
-          activeToolPanel={toolPanel}
+          updateSession={updateSession}
           onNewSession={newSession}
           onCloseSession={closeSession}
-          onToggleToolPanel={toggleToolPanel}
-          onCancelRun={() => { void cancelCurrentRun(); }}
-          onRunAction={runToolbarAction}
-          onRefreshGit={refetchGitStatus}
-          onSelectRole={(roleName) => {
-            if (roleName === DEFAULT_ROLE_ALIAS) {
-              patchActiveSession({ activeRole: DEFAULT_ROLE_ALIAS, discoveredConfigOptions: [] });
-              return;
-            }
-            const role = roles().find((r) => r.roleName === roleName);
-            patchActiveSession({
-              activeRole: roleName,
-              runtimeKind: role?.runtimeKind ?? activeSession()?.runtimeKind ?? null,
-              discoveredConfigOptions: [],
-            });
-            if (role) {
-              void fetchConfigOptions(role.runtimeKind, role.roleName).then((opts) => {
-                patchActiveSession({ discoveredConfigOptions: opts });
-              });
-            }
-          }}
+          onOpenSettings={openSettings}
+          onToggleRightDock={toggleRightDock}
+          rightDockOpen={rightDockOpen}
         />
       }
-      preview={<></>}
-      messages={
-        <div class="main-work-area flex flex-1 flex-col min-h-0">
-          <div
-            class="flex flex-1 flex-col min-h-0 relative"
-            ref={(el) => {
-              setSplitContainerEl(el);
-              const ro = new ResizeObserver((entries) => {
-                for (const e of entries) setSplitContainerHeight(e.contentRect.height);
-              });
-              ro.observe(el);
-              onCleanup(() => ro.disconnect());
-              setSplitContainerHeight(el.clientHeight);
-            }}
-          >
-            <Show when={(activeSession()?.previewTabs.length ?? 0) > 0}>
-              <div
-                class="preview-shell shrink-0 overflow-hidden"
-                style={{ height: `${Math.round(editorRatio() * splitContainerHeight())}px` }}
-              >
-                <Suspense fallback={<div class="flex-1 theme-bg" />}>
-                  <PreviewArea
-                    session={activeSession}
-                    appSessionId={() => activeSession()?.id}
-                    onCloseTab={(tabId) => {
-                      const sid = activeSessionId();
-                      if (sid) closePreviewTab(mutateSession, sid, tabId);
-                    }}
-                    onCloseOthers={(tabId) => {
-                      const sid = activeSessionId();
-                      if (sid) closeOtherPreviewTabs(mutateSession, sid, tabId);
-                    }}
-                    onCloseAll={() => {
-                      const sid = activeSessionId();
-                      if (sid) closeAllPreviewTabs(mutateSession, sid);
-                    }}
-                    onActivateTab={(tabId) => {
-                      const sid = activeSessionId();
-                      if (sid) setActivePreviewTab(mutateSession, sid, tabId);
-                    }}
-                    onAddMention={insertMentionAtCaret}
-                  />
-                </Suspense>
-              </div>
-              <div
-                class="resizer-y"
-                onMouseDown={editorResize.beginResize}
-                title="Drag to resize"
-              />
-              <Show when={editorResize.previewPx() !== null}>
-                <div
-                  class="pointer-events-none fixed left-0 right-0 z-[70] h-0.5 opacity-80"
-                  style={{
-                    top: `${(splitContainerEl()?.getBoundingClientRect().top ?? 0) + (editorResize.previewPx() ?? 0)}px`,
-                    "background-color": "var(--ui-resizer-line-hover)",
-                  }}
-                />
-              </Show>
-            </Show>
-
-            <div class="flex flex-1 flex-col min-h-0">
-              <MessageWindow
-                activeSessionId={activeSessionId}
-                activeSession={activeSession}
-                activeBackendRole={activeBackendRole}
-                patchActiveSession={patchActiveSession}
-                onRemoveQueuedMessage={(index) => {
-                  const sid = activeSessionId();
-                  if (!sid) return;
-                  const idx = getSessionIndex(sid);
-                  if (idx === -1) return;
-                  setSessions(idx, "queuedMessages", (prev) => prev.filter((_, i) => i !== index));
-                }}
-                onFlushQueue={() => { void cancelCurrentRun(); }}
-                onResetAgentContext={resetActiveAgentContext}
-                onReconnectAgent={reconnectActiveAgent}
-                onListMounted={onListMounted}
-                onListUnmounted={onListUnmounted}
-                onFileClick={(path, kind) => {
-                  const sid = activeSessionId();
-                  const cwd = activeSession()?.cwd ?? "";
-                  if (!sid || !cwd) return;
-                  const isEdit = kind === "write" || kind === "edit" || kind === "create" || kind === "patch";
-                  openPreviewTab(mutateSession, sid, {
-                    cwd, path, initialMode: isEdit ? "diff" : "file", staged: false, untracked: false,
-                  });
-                }}
-                onRejectHunk={(rejectPrompt) => {
-                  void sendRaw(rejectPrompt, false);
-                }}
-              />
-            </div>
-          </div>
-        </div>
-      }
-      composer={
-        <ChatInput
-          richNodes={richNodes}
-          setRichNodes={setRichNodes}
-          activeRole={chatActiveRole}
-          submitting={chatSubmitting}
-          queuedCount={chatQueuedCount}
-          onResetRole={() => patchActiveSession({ activeRole: DEFAULT_ROLE_ALIAS })}
-          isCustomRole={isCustomRole}
-          onSubmit={handleSend}
-          onInputKeyDown={handleInputKeyDownFinal}
-          refreshInputCompletions={(value, caret) => {
-            setRichCaretOffset(caret);
-            refreshInputCompletions(value, caret);
-          }}
-          mentionOpen={mentionOpen}
-          mentionItems={mentionItems}
-          mentionActiveIndex={mentionActiveIndex}
-          slashOpen={slashOpen}
-          slashItems={slashItems}
-          slashActiveIndex={slashActiveIndex}
-          applyMentionCandidate={applyMentionCandidate}
-          applySlashCandidate={applySlashCandidate}
-          closeMentionMenu={closeMentionMenu}
-          closeSlashMenu={closeSlashMenu}
-          richInputRef={(el) => { richInputEl = el; }}
-          mentionCloseTimerRef={mentionCloseTimerRef}
-          mentionDebounceTimerRef={mentionDebounceTimerRef}
-          hasImages={() => richNodes().some(isImageNode)}
-          onPasteImage={handlePasteImage}
-          onRemoveImage={(removeIdx) => {
-            setRichNodes((prev) => {
-              const without = prev.filter((n) => !(isImageNode(n) && n.index === removeIdx));
-              let imgCounter = 0;
-              return without.map((n) => isImageNode(n) ? { ...n, index: imgCounter++ } : n);
-            });
-          }}
+      conversation={
+        <ConversationCanvas
+          activeSession={activeSession}
+          activeSessionId={activeSessionId}
+          mutateSession={mutateSession}
+          editorRatio={editorRatio}
+          splitContainerHeight={splitContainerHeight}
+          splitContainerEl={splitContainerEl}
+          setSplitContainerEl={setSplitContainerEl}
+          setSplitContainerHeight={setSplitContainerHeight}
+          editorResize={editorResize}
+          insertMentionAtCaret={insertMentionAtCaret}
+          messages={
+            <MessageWindow
+              activeSessionId={activeSessionId}
+              activeSession={activeSession}
+              activeBackendRole={activeBackendRole}
+              patchActiveSession={patchActiveSession}
+              onRemoveQueuedMessage={(index) => {
+                const sid = activeSessionId();
+                if (!sid) return;
+                const idx = getSessionIndex(sid);
+                if (idx === -1) return;
+                setSessions(idx, "queuedMessages", (prev) => prev.filter((_, i) => i !== index));
+              }}
+              onFlushQueue={() => { void cancelCurrentRun(); }}
+              onResetAgentContext={resetActiveAgentContext}
+              onReconnectAgent={reconnectActiveAgent}
+              onListMounted={onListMounted}
+              onListUnmounted={onListUnmounted}
+              onFileClick={(path, kind) => {
+                const sid = activeSessionId();
+                const cwd = activeSession()?.cwd ?? "";
+                if (!sid || !cwd) return;
+                const isEdit = kind === "write" || kind === "edit" || kind === "create" || kind === "patch";
+                openPreviewTab(mutateSession, sid, {
+                  cwd, path, initialMode: isEdit ? "diff" : "file", staged: false, untracked: false,
+                });
+              }}
+              onRejectHunk={(rejectPrompt) => {
+                void sendRaw(rejectPrompt, false);
+              }}
+            />
+          }
+          composer={composerBlock(hasConversationContent(activeSession()) ? "active" : "empty")}
         />
       }
-      rightDock={<></>}
       toasts={
-        <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+        <div class="jockey-toast-stack fixed bottom-4 right-4 flex flex-col gap-2 pointer-events-none">
           <For each={toasts()}>
             {(t) => (
               <div class="jockey-toast pointer-events-auto" classList={{ "is-info": t.severity === "info", "is-danger": t.severity !== "info" }}>

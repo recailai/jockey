@@ -150,7 +150,7 @@ export function RulesTab() {
             <div>
               <label class="mb-1 block text-[10px] uppercase tracking-wider theme-muted font-bold">Name</label>
               <input
-                class="w-full rounded-md border theme-border bg-[var(--ui-panel-2)] px-2.5 py-1.5 text-[12px] theme-text outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30"
+                class="w-full rounded-md border theme-border bg-[var(--ui-panel-2)] px-2.5 py-1.5 text-[12px] theme-text outline-none focus:border-[var(--ui-border-strong)] focus:ring-1 focus:ring-[var(--ui-ring)]"
                 value={editName()}
                 onInput={(e) => setEditName(e.currentTarget.value)}
                 placeholder="rule-name"
@@ -159,7 +159,7 @@ export function RulesTab() {
             <div>
               <label class="mb-1 block text-[10px] uppercase tracking-wider theme-muted font-bold">Description</label>
               <input
-                class="w-full rounded-md border theme-border bg-[var(--ui-panel-2)] px-2.5 py-1.5 text-[12px] theme-text outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30"
+                class="w-full rounded-md border theme-border bg-[var(--ui-panel-2)] px-2.5 py-1.5 text-[12px] theme-text outline-none focus:border-[var(--ui-border-strong)] focus:ring-1 focus:ring-[var(--ui-ring)]"
                 value={editDesc()}
                 onInput={(e) => setEditDesc(e.currentTarget.value)}
                 placeholder="Short description (optional)"
@@ -168,7 +168,7 @@ export function RulesTab() {
             <div class="flex-1">
               <label class="mb-1 block text-[10px] uppercase tracking-wider theme-muted font-bold">Content</label>
               <textarea
-                class="w-full rounded-md border theme-border bg-[var(--ui-panel-2)] px-2.5 py-1.5 text-[12px] theme-text font-mono outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30 resize-none"
+                class="w-full rounded-md border theme-border bg-[var(--ui-panel-2)] px-2.5 py-1.5 text-[12px] theme-text font-mono outline-none focus:border-[var(--ui-border-strong)] focus:ring-1 focus:ring-[var(--ui-ring)] resize-none"
                 rows={16}
                 value={editContent()}
                 onInput={(e) => setEditContent(e.currentTarget.value)}

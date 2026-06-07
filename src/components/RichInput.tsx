@@ -98,7 +98,7 @@ function makeChipEl(node: RichNode & { kind: "image" }, onRemove?: (index: numbe
   const preview = document.createElement("span");
   preview.style.cssText = [
     "position:fixed",
-    "z-index:9999",
+    "z-index:var(--z-floating-preview)",
     "pointer-events:none",
     "opacity:0",
     "transition:opacity 0.15s",

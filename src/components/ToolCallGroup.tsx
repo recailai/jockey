@@ -48,21 +48,40 @@ function TerminalView(props: { entry: TerminalEntry }) {
 
   onMount(() => {
     if (!containerEl) return;
-    const styles = getComputedStyle(containerEl);
-    const terminalBg = styles.getPropertyValue("--ui-terminal-bg").trim() || "#0b0b0d";
-    const terminalText = styles.getPropertyValue("--ui-terminal-text").trim() || "#d4d4d8";
+    const styles = getComputedStyle(document.documentElement);
+    const getVar = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback;
     term = new Terminal({
       disableStdin: true,
       scrollback: 1000,
       rows: 12,
       convertEol: true,
+      drawBoldTextInBrightColors: true,
+      cursorStyle: "bar",
+      cursorWidth: 2,
       theme: {
-        background: terminalBg,
-        foreground: terminalText,
-        cursor: terminalText,
+        background: getVar("--ui-terminal-bg", "#0c0c0e"),
+        foreground: getVar("--ui-terminal-text", "#f4f4f5"),
+        cursor: getVar("--ui-terminal-text", "#f4f4f5"),
+        selectionBackground: getVar("--ui-terminal-selection", "#3f3f46"),
+        black: getVar("--ui-terminal-black", "#18181b"),
+        red: getVar("--ui-terminal-red", "#ef596f"),
+        green: getVar("--ui-terminal-green", "#89ca78"),
+        yellow: getVar("--ui-terminal-yellow", "#e5c07b"),
+        blue: getVar("--ui-terminal-blue", "#61afef"),
+        magenta: getVar("--ui-terminal-magenta", "#c678dd"),
+        cyan: getVar("--ui-terminal-cyan", "#56b6c2"),
+        white: getVar("--ui-terminal-white", "#abb2bf"),
+        brightBlack: getVar("--ui-terminal-brightBlack", "#5c6370"),
+        brightRed: getVar("--ui-terminal-brightRed", "#ef596f"),
+        brightGreen: getVar("--ui-terminal-brightGreen", "#89ca78"),
+        brightYellow: getVar("--ui-terminal-brightYellow", "#e5c07b"),
+        brightBlue: getVar("--ui-terminal-brightBlue", "#61afef"),
+        brightMagenta: getVar("--ui-terminal-brightMagenta", "#c678dd"),
+        brightCyan: getVar("--ui-terminal-brightCyan", "#56b6c2"),
+        brightWhite: getVar("--ui-terminal-brightWhite", "#ffffff"),
       },
       fontSize: 11,
-      fontFamily: "ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace",
+      fontFamily: "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
     });
     fitAddon = new FitAddon();
     term.loadAddon(fitAddon);

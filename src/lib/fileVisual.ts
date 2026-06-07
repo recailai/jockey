@@ -145,6 +145,27 @@ export function getFileVisual(name: string): FileVisual {
   if (CONFIG_EXTENSIONS.has(ext)) {
     return { Icon: FileJson, toneClass: "file-glyph-config" };
   }
+  if (ext === "ts" || ext === "tsx" || ext === "mts" || ext === "cts") {
+    return { Icon: FileCode, toneClass: "file-glyph-typescript" };
+  }
+  if (ext === "js" || ext === "jsx" || ext === "mjs" || ext === "cjs") {
+    return { Icon: FileCode, toneClass: "file-glyph-javascript" };
+  }
+  if (ext === "rs") {
+    return { Icon: FileCode, toneClass: "file-glyph-rust" };
+  }
+  if (ext === "py") {
+    return { Icon: FileCode, toneClass: "file-glyph-python" };
+  }
+  if (ext === "go") {
+    return { Icon: FileCode, toneClass: "file-glyph-go" };
+  }
+  if (ext === "html" || ext === "vue" || ext === "svelte" || ext === "xml") {
+    return { Icon: FileCode, toneClass: "file-glyph-markup" };
+  }
+  if (ext === "css" || ext === "scss" || ext === "less" || ext === "sass") {
+    return { Icon: FileCode, toneClass: "file-glyph-style" };
+  }
   if (CODE_EXTENSIONS.has(ext)) {
     return { Icon: FileCode, toneClass: "file-glyph-code" };
   }

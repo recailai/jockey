@@ -3,6 +3,7 @@ import { createStore, reconcile } from "solid-js/store";
 import { X } from "lucide-solid";
 import type { AppSession } from "./types";
 import PreviewContent from "./PreviewContent";
+import CommitPreviewContent from "./CommitPreviewContent";
 import { useGitChanged } from "../hooks/useGitChanged";
 import { ContextMenuItem, ContextMenuSurface, IconButton } from "./ui";
 
@@ -157,7 +158,7 @@ export default function PreviewArea(props: PreviewAreaProps) {
                   title={tab.path}
                 >
                   <Show when={isDirty(tab.id)}>
-                    <span class="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" title="changed on disk" />
+                    <span class="ui-status-dot ui-status-warning shrink-0" title="changed on disk" />
                   </Show>
                   <span class="truncate">{tab.label}</span>
                 </button>
@@ -165,6 +166,7 @@ export default function PreviewArea(props: PreviewAreaProps) {
                   type="button"
                   onClick={(e) => { e.stopPropagation(); removeTabState(tab.id); props.onCloseTab(tab.id); }}
                   class="preview-tab-close"
+                  aria-label={`Close ${tab.label}`}
                   title="Close (Middle-click)"
                 >
                   <X size={12} />
@@ -187,17 +189,25 @@ export default function PreviewArea(props: PreviewAreaProps) {
       <div class="flex-1 min-h-0">
         <Show when={activeTab()} keyed>
           {(tab) => (
-            <PreviewContent
-              appSessionId={props.appSessionId}
-              cwd={tab.cwd}
-              path={tab.path}
-              initialMode={tab.initialMode}
-              staged={tab.staged}
-              untracked={tab.untracked}
-              commitOid={tab.commitOid ?? null}
-              version={() => versionFor(tab.id)}
-              onAddMention={props.onAddMention}
-            />
+            tab.initialMode === "commit" && tab.commitOid ? (
+              <CommitPreviewContent
+                appSessionId={props.appSessionId}
+                commitOid={tab.commitOid}
+                version={() => versionFor(tab.id)}
+              />
+            ) : (
+              <PreviewContent
+                appSessionId={props.appSessionId}
+                cwd={tab.cwd}
+                path={tab.path}
+                initialMode={tab.initialMode}
+                staged={tab.staged}
+                untracked={tab.untracked}
+                commitOid={tab.commitOid ?? null}
+                version={() => versionFor(tab.id)}
+                onAddMention={props.onAddMention}
+              />
+            )
           )}
         </Show>
       </div>

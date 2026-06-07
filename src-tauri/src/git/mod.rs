@@ -14,10 +14,12 @@ pub(crate) use branches::{checkout, list_branches, BranchInfo};
 pub(crate) use diff::diff;
 pub(crate) use error::GitError;
 pub(crate) use forge::{create_pull_request, CreatedPullRequest};
-pub(crate) use history::{commit_diff, list_commits, CommitEntry};
+pub(crate) use history::{
+    commit_detail, commit_diff, commit_file_diff, list_commits, CommitDetail, CommitEntry,
+};
 pub(crate) use remote::{read_origin_info, urlencoding_minimal};
 pub(crate) use status::{status, GitStatus};
-pub(crate) use write::{commit, push};
+pub(crate) use write::{commit, fetch, pull, push, stage_path, unstage_path};
 
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 

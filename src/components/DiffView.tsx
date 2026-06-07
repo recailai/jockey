@@ -53,11 +53,18 @@ function parseUnifiedDiff(text: string): Row[] {
   return rows;
 }
 
+function rowClass(kind: Row["kind"]): string {
+  if (kind === "add") return "diff-line diff-line-add";
+  if (kind === "del") return "diff-line diff-line-del";
+  if (kind === "hunk") return "diff-line diff-line-hunk";
+  return "diff-line diff-line-ctx";
+}
+
 export default function DiffView(props: DiffViewProps) {
   const rows = createMemo(() => parseUnifiedDiff(props.diffText ?? ""));
 
   return (
-    <div class="h-full overflow-auto font-mono text-[12px] leading-[1.6] theme-bg">
+    <div class="diff-view h-full overflow-auto theme-bg">
       <Show when={props.loading}>
         <div class="px-4 py-3 text-xs theme-muted">Loading diff…</div>
       </Show>
@@ -65,69 +72,24 @@ export default function DiffView(props: DiffViewProps) {
         <div class="px-4 py-3 text-xs theme-muted">{props.emptyLabel ?? "No changes"}</div>
       </Show>
       <Show when={!props.loading && rows().length > 0}>
-        <div
-          class="diff-grid"
-          style={{
-            display: "grid",
-            "grid-template-columns": "auto auto auto minmax(max-content, 1fr)",
-          }}
-        >
+        <div class="diff-table">
           <For each={rows()}>
             {(row) => {
               if (row.kind === "hunk") {
                 return (
-                  <div
-                    class="col-span-4 px-4 py-0.5 text-[11px] select-text"
-                    style={{
-                      "color": "var(--ui-accent)",
-                      "background-color": "var(--ui-accent-soft)",
-                      "border-top": "1px solid var(--ui-border)",
-                      "border-bottom": "1px solid var(--ui-border)",
-                    }}
-                    title={row.text}
-                  >
-                    {row.text}
+                  <div class="diff-line diff-line-hunk" title={row.text}>
+                    <div class="diff-code diff-code-hunk">{row.text}</div>
                   </div>
                 );
               }
-              const rowBg =
-                row.kind === "add"
-                  ? "bg-emerald-500/10"
-                  : row.kind === "del"
-                  ? "bg-rose-500/10"
-                  : "";
               const sign = row.kind === "add" ? "+" : row.kind === "del" ? "−" : " ";
-              const signColor =
-                row.kind === "add"
-                  ? "text-emerald-500"
-                  : row.kind === "del"
-                  ? "text-rose-500"
-                  : "theme-muted";
               return (
-                <>
-                  {/* gutter: old line no */}
-                  <div
-                    class={`sticky left-0 z-[1] pl-3 pr-1.5 text-right tabular-nums select-none min-w-[3rem] theme-muted ${rowBg}`}
-                    style={{ "background-color": rowBg ? undefined : "var(--ui-surface-muted)" }}
-                  >
-                    {row.oldLn ?? ""}
-                  </div>
-                  {/* gutter: new line no */}
-                  <div
-                    class={`pl-1.5 pr-2 text-right tabular-nums select-none min-w-[3rem] theme-muted ${rowBg}`}
-                    style={{ "background-color": rowBg ? undefined : "var(--ui-surface-muted)" }}
-                  >
-                    {row.newLn ?? ""}
-                  </div>
-                  {/* sign */}
-                  <div class={`pl-2 pr-1 select-none ${signColor} ${rowBg}`}>
-                    {sign}
-                  </div>
-                  {/* content */}
-                  <div class={`pr-4 whitespace-pre theme-text ${rowBg}`}>
-                    {row.text || " "}
-                  </div>
-                </>
+                <div class={rowClass(row.kind)}>
+                  <div class="diff-gutter diff-gutter-old">{row.oldLn ?? ""}</div>
+                  <div class="diff-gutter diff-gutter-new">{row.newLn ?? ""}</div>
+                  <div class="diff-sign">{sign}</div>
+                  <div class="diff-code">{row.text || " "}</div>
+                </div>
               );
             }}
           </For>

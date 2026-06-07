@@ -196,7 +196,7 @@ export default function MessageWindow(props: MessageWindowProps) {
   return (
     <div class="flex-1 flex flex-col min-h-0 relative" style={{ "background-color": "transparent" }}>
       <Show when={searchOpen()}>
-        <div class="absolute top-2 right-3 z-30 flex items-center gap-1.5 rounded-xl border theme-border theme-panel shadow-lg backdrop-blur-md px-2 py-1.5">
+        <div class="message-search-bar absolute top-2 right-3 flex items-center gap-1.5 rounded-xl border theme-border theme-panel shadow-lg backdrop-blur-md px-2 py-1.5">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 theme-muted">
             <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
           </svg>
@@ -204,6 +204,7 @@ export default function MessageWindow(props: MessageWindowProps) {
             ref={searchInputEl}
             type="text"
             placeholder="Search messages…"
+            aria-label="Search messages"
             class="bg-transparent outline-none text-[12px] theme-text placeholder:theme-muted w-48"
             value={searchQuery()}
             onInput={(e) => setSearchQuery(e.currentTarget.value)}
@@ -228,10 +229,11 @@ export default function MessageWindow(props: MessageWindowProps) {
       role="log"
       aria-live="polite"
       aria-relevant="additions text"
-      class="flex-1 overflow-auto px-4 py-4 space-y-4"
+      class="message-list flex-1 overflow-auto px-4 py-4"
       style={{ "background-color": "transparent" }}
       onClick={handleContainerClick}
     >
+      <div class="message-list-inner flex min-h-full flex-col justify-end gap-4">
       <Show when={hiddenMessageCount() > 0}>
         <div class="py-1 text-center text-xs theme-muted opacity-40">
           {hiddenMessageCount()} older messages hidden for performance
@@ -257,14 +259,14 @@ export default function MessageWindow(props: MessageWindowProps) {
                           if (!img) return <span class="opacity-40 text-[11px]">[image:{seg.idx}]</span>;
                           return (
                             <span class="relative group/img inline-flex items-center align-baseline mx-0.5">
-                              <span class="inline-flex items-center gap-1 rounded border border-white/20 bg-white/10 px-1.5 py-0.5 text-[11px] leading-tight opacity-80 select-none cursor-default">
+                              <span class="user-image-chip inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] leading-tight select-none cursor-default">
                                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
                                 Image {seg.idx + 1}
                               </span>
                               <span class="absolute bottom-full left-0 mb-2 hidden group-hover/img:block z-50 pointer-events-none">
                                 <img
                                   src={`data:${img.mimeType};base64,${img.data}`}
-                                  class="max-w-56 max-h-48 rounded-lg shadow-2xl border border-white/10 object-contain bg-black/60"
+                                  class="user-image-preview max-w-56 max-h-48 rounded-lg shadow-2xl object-contain"
                                   alt={`image ${seg.idx + 1}`}
                                 />
                               </span>
@@ -343,20 +345,14 @@ export default function MessageWindow(props: MessageWindowProps) {
               class="agent-avatar is-streaming"
               title="Right-click to reset current agent CLI context"
             >
-              <svg class="absolute inset-0 h-full w-full" viewBox="0 0 32 32" fill="none">
-                <circle cx="16" cy="16" r="13" stroke="rgba(99,102,241,0.1)" stroke-width="0.5" />
-                <circle cx="16" cy="16" r="10" stroke="rgba(99,102,241,0.08)" stroke-width="0.5" />
-                <path d="M16 3a13 13 0 0 1 13 13" stroke="url(#arc1)" stroke-width="1.5" stroke-linecap="round" class="origin-center" style={{ animation: "spin 1.5s linear infinite" }} />
-                <path d="M16 5a11 11 0 0 0-11 11" stroke="url(#arc2)" stroke-width="1" stroke-linecap="round" class="origin-center" style={{ animation: "spin 2.5s linear infinite reverse" }} />
-                <path d="M16 7a9 9 0 0 1 9 9" stroke="url(#arc3)" stroke-width="0.8" stroke-linecap="round" class="origin-center" style={{ animation: "spin 3.5s linear infinite" }} />
-                <circle cx="16" cy="16" r="2.5" fill="url(#core)" class="animate-pulse" />
-                <circle cx="16" cy="16" r="4" stroke="rgba(129,140,248,0.3)" stroke-width="0.5" class="animate-pulse" />
-                <defs>
-                  <linearGradient id="arc1"><stop stop-color="#818cf8" /><stop offset="1" stop-color="#818cf8" stop-opacity="0" /></linearGradient>
-                  <linearGradient id="arc2"><stop stop-color="#c084fc" /><stop offset="1" stop-color="#c084fc" stop-opacity="0" /></linearGradient>
-                  <linearGradient id="arc3"><stop stop-color="#22d3ee" /><stop offset="1" stop-color="#22d3ee" stop-opacity="0" /></linearGradient>
-                  <radialGradient id="core"><stop stop-color="#a5b4fc" /><stop offset="1" stop-color="#6366f1" /></radialGradient>
-                </defs>
+              <svg class="agent-streaming-orb absolute inset-0 h-full w-full" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+                <circle cx="16" cy="16" r="13" class="agent-streaming-ring-outer" stroke-width="0.5" />
+                <circle cx="16" cy="16" r="10" class="agent-streaming-ring-inner" stroke-width="0.5" />
+                <path d="M16 3a13 13 0 0 1 13 13" class="agent-streaming-arc origin-center" stroke-width="1.5" stroke-linecap="round" style={{ animation: "uiSpin 1.5s linear infinite" }} />
+                <path d="M16 5a11 11 0 0 0-11 11" class="agent-streaming-arc agent-streaming-arc-2 origin-center" stroke-width="1" stroke-linecap="round" style={{ animation: "uiSpin 2.5s linear infinite reverse" }} />
+                <path d="M16 7a9 9 0 0 1 9 9" class="agent-streaming-arc agent-streaming-arc-3 origin-center" stroke-width="0.8" stroke-linecap="round" style={{ animation: "uiSpin 3.5s linear infinite" }} />
+                <circle cx="16" cy="16" r="2.5" class="agent-streaming-core" />
+                <circle cx="16" cy="16" r="4" class="agent-streaming-halo" stroke-width="0.5" />
               </svg>
             </button>
             <div class="flex-1 min-w-0">
@@ -402,7 +398,7 @@ export default function MessageWindow(props: MessageWindowProps) {
               </Show>
               <div class="flex items-center gap-2 mt-2 pt-1.5">
                 <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-                  <path d="M12 2a10 10 0 0 1 7.07 2.93" stroke="var(--ui-accent, #818cf8)" /><path d="M22 12a10 10 0 0 1-2.93 7.07" stroke="var(--ui-accent, #818cf8)" opacity="0.6" /><path d="M12 22a10 10 0 0 1-7.07-2.93" stroke="var(--ui-accent, #818cf8)" opacity="0.3" /><path d="M2 12a10 10 0 0 1 2.93-7.07" stroke="var(--ui-accent, #818cf8)" opacity="0.1" />
+                  <path d="M12 2a10 10 0 0 1 7.07 2.93" stroke="var(--ui-accent)" /><path d="M22 12a10 10 0 0 1-2.93 7.07" stroke="var(--ui-accent)" opacity="0.6" /><path d="M12 22a10 10 0 0 1-7.07-2.93" stroke="var(--ui-accent)" opacity="0.3" /><path d="M2 12a10 10 0 0 1 2.93-7.07" stroke="var(--ui-accent)" opacity="0.1" />
                 </svg>
                 <span class="text-[10px] theme-muted italic">{props.activeSession()?.agentState || "running"}</span>
               </div>
@@ -564,6 +560,7 @@ export default function MessageWindow(props: MessageWindowProps) {
           </ContextMenuSurface>
         )}
       </Show>
+      </div>
     </div>
     </div>
   );

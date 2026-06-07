@@ -25,7 +25,7 @@ function ContextValue(props: { raw: string }) {
             <For each={v() as unknown[]}>
               {(item) => (
                 <li class="flex items-start gap-1.5">
-                  <span class="mt-[3px] h-1 w-1 shrink-0 rounded-full bg-amber-400/60" />
+                  <span class="mt-[3px] ui-status-dot ui-status-warning shrink-0" />
                   <span class="font-mono text-[10px] theme-text break-all">
                     {typeof item === "string" ? item : JSON.stringify(item)}
                   </span>
@@ -216,7 +216,7 @@ function SessionContextSection(props: { sessionId: string }) {
                                 <li class="rounded border theme-border theme-surface px-2 py-1.5">
                                   <Show when={isItemEditing()} fallback={
                                     <div class="flex items-start gap-2">
-                                      <span class="mt-1 h-1 w-1 shrink-0 rounded-full bg-amber-400/60" />
+                                      <span class="mt-1 ui-status-dot ui-status-warning shrink-0" />
                                       <span class="flex-1 font-mono text-[10px] theme-text whitespace-pre-wrap break-all">{itemRaw}</span>
                                       <div class="flex items-center gap-0.5">
                                         {iconBtn("Edit item", () => { setEditingItemKey(itemKey); setEditingItemValue(itemRaw); }, "edit")}
@@ -395,7 +395,7 @@ export function SessionsTab(props: {
                 >
                   <div class="flex items-center gap-1.5 min-w-0">
                     <Show when={isActive()}>
-                      <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400 shadow-[0_0_4px_rgba(52,211,153,0.5)]" />
+                      <span class="settings-runtime-dot is-online" />
                     </Show>
                     <Show when={isClosed()}>
                       <span class="management-muted-dot" />
