@@ -1,17 +1,21 @@
-use agent_client_protocol::{self as acp};
+use crate::acp::protocol as acp;
 use serde::Serialize;
 use serde_json::json;
 use std::time::Instant;
 use tauri::Emitter;
 use tokio::sync::{mpsc, oneshot};
 
-use super::super::adapter::{acp_log, build_stdio_adapter, clip, friendly_error_message};
+use super::super::adapter::{
+    acp_log, build_stdio_adapter, clip, friendly_error_message, resolve_cwd,
+};
 use super::super::runtime_state::{
     remember_runtime_available_commands, remember_runtime_config_options,
 };
 use super::super::worker::{worker_tx, AcpEvent, AcpPromptResult, WorkerMsg};
 use crate::db::app_session_role::{load_app_session_role_cli_id, save_app_session_role_cli_id};
 use crate::types::AppState;
+
+use super::adapter_runtime::{AnyRuntimeAdapter as RuntimeAdapterKind, RuntimeAdapter};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,8 +81,6 @@ pub async fn execute_runtime(
         }
     };
 
-    let agent_kind = adapter.kind;
-    let started = Instant::now();
     acp_log(
         "execute.start",
         json!({
@@ -98,19 +100,125 @@ pub async fn execute_runtime(
         app_session_id.to_string()
     };
 
+    let resolved_cwd = resolve_cwd(cwd);
+
+    // Unified adapter dispatch: lifecycle branches live behind the
+    // RuntimeAdapter trait so callers never branch on transport kind.
+    let Some(adapter_impl) = RuntimeAdapterKind::resolve(adapter.runtime_key) else {
+        return AcpPromptResult {
+            ok: false,
+            output: format!(
+                "adapter resolution changed while starting runtime: {}",
+                adapter.runtime_key
+            ),
+            error_code: Some("ADAPTER_UNAVAILABLE".to_string()),
+            deltas: vec![],
+            meta: json!({
+                "mode": "adapter-unavailable",
+                "runtime": adapter.runtime_key,
+                "reason": "runtime adapter could not be re-resolved"
+            }),
+        };
+    };
+    let prompt_request = super::adapter_runtime::PromptRequest {
+        runtime_key: adapter.runtime_key,
+        role_name,
+        app_session_id: &app_session_scope,
+        prompt,
+        context,
+        attachments,
+        cwd: &resolved_cwd,
+        app,
+        auto_approve,
+        role_mode: role_mode.as_deref(),
+        role_config_options: &role_config_options,
+        transport: adapter.transport.clone(),
+        agent_kind: adapter.kind,
+        binary: &adapter.binary,
+        adapter_args: &adapter.args,
+        env: &adapter.env,
+        resume_session_id: resume_session_id.as_deref(),
+        mcp_servers: &mcp_servers,
+    };
+    let result = RuntimeAdapter::prompt(&adapter_impl, prompt_request).await;
+
+    if result.ok {
+        if let Some(session_id) = result
+            .meta
+            .get("sessionId")
+            .or_else(|| result.meta.get("conversationId"))
+            .and_then(|id| id.as_str())
+            .filter(|id| !id.is_empty())
+        {
+            if let Some((s, app_sid)) = state {
+                let _ = save_app_session_role_cli_id(
+                    s,
+                    app_sid,
+                    adapter.runtime_key,
+                    role_name,
+                    session_id,
+                );
+            }
+        }
+    }
+    result
+}
+
+/// ACP worker prompt context. The worker owns the shared delta-batching and
+/// heartbeat runner; this is the adapter seam that hands one turn to it.
+pub(super) struct AcpWorkerPromptContext {
+    pub(super) runtime_key: &'static str,
+    pub(super) role_name: String,
+    pub(super) app_session_id: String,
+    pub(super) agent_kind: crate::runtime_kind::RuntimeKind,
+    pub(super) binary: String,
+    pub(super) args: Vec<String>,
+    pub(super) env: Vec<(String, String)>,
+    pub(super) prompt: String,
+    pub(super) context: Vec<(String, String)>,
+    pub(super) attachments: Vec<crate::types::ImageAttachment>,
+    pub(super) cwd: String,
+    pub(super) auto_approve: bool,
+    pub(super) mcp_servers: Vec<acp::McpServer>,
+    pub(super) role_mode: Option<String>,
+    pub(super) role_config_options: Vec<(String, String)>,
+    pub(super) resume_session_id: Option<String>,
+}
+
+pub(super) async fn execute_acp_worker_prompt(
+    ctx_data: AcpWorkerPromptContext,
+    app: tauri::AppHandle,
+) -> AcpPromptResult {
+    let AcpWorkerPromptContext {
+        runtime_key,
+        role_name,
+        app_session_id: app_session_id_owned,
+        agent_kind,
+        binary,
+        args,
+        env,
+        prompt,
+        context,
+        attachments,
+        cwd,
+        auto_approve,
+        mcp_servers,
+        role_mode,
+        role_config_options,
+        resume_session_id,
+    } = ctx_data;
+    let started = Instant::now();
     let (delta_tx, mut delta_rx) =
         mpsc::channel::<AcpEvent>(super::super::worker::DELTA_CHANNEL_CAPACITY);
     let (result_tx, mut result_rx) = oneshot::channel();
 
-    let app_session_id_owned = app_session_scope.clone();
-
     let _ = worker_tx().send(WorkerMsg::Execute {
-        runtime_key: adapter.runtime_key,
-        binary: adapter.binary.clone(),
-        args: adapter.args.clone(),
-        env: adapter.env.clone(),
+        runtime_key: runtime_key,
+        binary: binary.clone(),
+        args: args.clone(),
+        env: env.clone(),
         role_name: role_name.to_string(),
-        app_session_id: app_session_scope,
+        app_session_id: app_session_id_owned.clone(),
         prompt: prompt.to_string(),
         context: context.to_vec(),
         attachments: attachments.to_vec(),
@@ -138,9 +246,9 @@ pub async fn execute_runtime(
     acp_log(
         "execute.stream.listening",
         json!({
-            "runtime": adapter.runtime_key,
+            "runtime": runtime_key,
             "role": role_owned,
-            "prompt": clip(prompt, 80),
+            "prompt": clip(&prompt, 80),
         }),
     );
 
@@ -152,7 +260,7 @@ pub async fn execute_runtime(
                     "acp/delta",
                     AcpDeltaPayload {
                         role: &role_owned,
-                        runtime_kind: adapter.runtime_key,
+                        runtime_kind: runtime_key,
                         app_session_id: &app_session_id_owned,
                         delta: &delta_batch,
                     },
@@ -173,7 +281,7 @@ pub async fn execute_runtime(
             _ = heartbeat_interval.tick() => {
                 heartbeat_count += 1;
                 acp_log("execute.heartbeat", json!({
-                    "runtime": adapter.runtime_key,
+                    "runtime": runtime_key,
                     "role": role_owned,
                     "elapsedSec": heartbeat.elapsed().as_secs(),
                     "deltaCount": delta_count,
@@ -193,7 +301,7 @@ pub async fn execute_runtime(
                         full_output.push_str(text);
                         delta_count += 1;
                         acp_log("delta.text", json!({
-                            "runtime": adapter.runtime_key,
+                            "runtime": runtime_key,
                             "role": role_owned,
                             "deltaIndex": delta_count,
                             "chunkLen": text.len(),
@@ -205,12 +313,12 @@ pub async fn execute_runtime(
                         delta_count += 1;
                         emit_seq += 1;
                         remember_runtime_config_options(
-                            adapter.runtime_key,
+                            runtime_key,
                             options.clone(),
                         );
                         let _ = app.emit("acp/stream", AcpStreamPayload {
                             role: &role_owned,
-                            runtime_kind: adapter.runtime_key,
+                            runtime_kind: runtime_key,
                             app_session_id: &app_session_id_owned,
                             event: evt,
                             seq: emit_seq,
@@ -220,20 +328,20 @@ pub async fn execute_runtime(
                         delta_count += 1;
                         emit_seq += 1;
                         acp_log("commands.discovered", json!({
-                            "runtime": adapter.runtime_key,
+                            "runtime": runtime_key,
                             "role": role_owned,
                             "count": commands.len(),
                             "names": commands.iter().filter_map(|c| c.get("name").and_then(|n| n.as_str()).map(|s| s.to_string())).collect::<Vec<_>>()
                         }));
                         remember_runtime_available_commands(
                             &app_session_id_owned,
-                            adapter.runtime_key,
+                            runtime_key,
                             &role_owned,
                             commands.clone(),
                         );
                         let _ = app.emit("acp/stream", AcpStreamPayload {
                             role: &role_owned,
-                            runtime_kind: adapter.runtime_key,
+                            runtime_kind: runtime_key,
                             app_session_id: &app_session_id_owned,
                             event: evt,
                             seq: emit_seq,
@@ -246,7 +354,7 @@ pub async fn execute_runtime(
                             last_error_code = Some(code.clone());
                         }
                         acp_log("delta.event", json!({
-                            "runtime": adapter.runtime_key,
+                            "runtime": runtime_key,
                             "role": role_owned,
                             "deltaIndex": delta_count,
                             "emitSeq": emit_seq,
@@ -254,7 +362,7 @@ pub async fn execute_runtime(
                         }));
                         let _ = app.emit("acp/stream", AcpStreamPayload {
                             role: &role_owned,
-                            runtime_kind: adapter.runtime_key,
+                            runtime_kind: runtime_key,
                             app_session_id: &app_session_id_owned,
                             event: other,
                             seq: emit_seq,
@@ -281,7 +389,7 @@ pub async fn execute_runtime(
                             }
                             let _ = app.emit("acp/stream", AcpStreamPayload {
                                 role: &role_owned,
-                                runtime_kind: adapter.runtime_key,
+                                runtime_kind: runtime_key,
                                 app_session_id: &app_session_id_owned,
                                 event: other,
                                 seq: emit_seq,
@@ -293,7 +401,7 @@ pub async fn execute_runtime(
                 flush_delta_batch!();
                 let r = res.unwrap_or_else(|_| Err("worker disconnected".to_string()));
                 acp_log("execute.result", json!({
-                    "runtime": adapter.runtime_key,
+                    "runtime": runtime_key,
                     "role": role_owned,
                     "ok": r.is_ok(),
                     "deltaCount": delta_count,
@@ -307,23 +415,11 @@ pub async fn execute_runtime(
 
     match result {
         Ok((_output, session_id)) => {
-            if let Some((s, app_sid)) = state {
-                if !session_id.is_empty() {
-                    let _ = save_app_session_role_cli_id(
-                        s,
-                        app_sid,
-                        adapter.runtime_key,
-                        role_name,
-                        &session_id,
-                    );
-                }
-            }
-
             let output = if full_output.is_empty() {
                 if prompt.starts_with('/') {
                     format!(
                         "Command sent to {} (role: {}). Agent processed it with {} event(s) but returned no text output.",
-                        adapter.runtime_key, role_name, delta_count
+                        runtime_key, role_name, delta_count
                     )
                 } else {
                     // Non-command prompts that produce no text output (e.g. cancelled
@@ -337,7 +433,7 @@ pub async fn execute_runtime(
             acp_log(
                 "execute.ok",
                 json!({
-                    "runtime": adapter.runtime_key,
+                    "runtime": runtime_key,
                     "role": role_name,
                     "latencyMs": started.elapsed().as_millis(),
                     "deltaCount": delta_count,
@@ -353,13 +449,13 @@ pub async fn execute_runtime(
                 meta: json!({
                     "mode": "live",
                     "agentKind": agent_kind,
-                    "runtimeKey": adapter.runtime_key,
+                    "runtimeKey": runtime_key,
                     "sessionId": session_id
                 }),
             }
         }
         Err(e) => {
-            let friendly = friendly_error_message(adapter.runtime_key, &e);
+            let friendly = friendly_error_message(runtime_key, &e);
             // Prefer the structured AcpErrorCode published by the worker's
             // typed SessionError stream event; fall back to a generic label if
             // none arrived (shouldn't happen for ACP error paths, but keeps
@@ -370,7 +466,7 @@ pub async fn execute_runtime(
                 output: friendly.clone(),
                 error_code: Some(code),
                 deltas: vec![],
-                meta: json!({ "mode": "acp-error", "runtime": adapter.runtime_key, "error": e, "friendlyMessage": friendly }),
+                meta: json!({ "mode": "acp-error", "runtime": runtime_key, "error": e, "friendlyMessage": friendly }),
             }
         }
     }

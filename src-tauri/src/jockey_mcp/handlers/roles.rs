@@ -14,6 +14,7 @@ pub(crate) fn list_roles(state: &AppState) -> Result<Value, String> {
             json!({
                 "roleName": r.role_name,
                 "runtimeKind": r.runtime_kind,
+                "runtimeProfileId": r.runtime_profile_id,
                 "runtimeLaunchMethod": r.runtime_launch_method,
                 "model": r.model,
                 "mode": r.mode,
@@ -37,6 +38,7 @@ pub(crate) fn get_role(state: &AppState, params: Value) -> Result<Value, String>
     Ok(json!({
         "roleName": role.role_name,
         "runtimeKind": role.runtime_kind,
+        "runtimeProfileId": role.runtime_profile_id,
         "runtimeLaunchMethod": role.runtime_launch_method,
         "systemPrompt": role.system_prompt,
         "model": role.model,
@@ -57,7 +59,12 @@ pub(crate) fn upsert_role_handler(state: &AppState, params: Value) -> Result<Val
     let runtime_kind = params
         .get("runtimeKind")
         .and_then(|v| v.as_str())
-        .unwrap_or("claude-code")
+        .unwrap_or("claude-native")
+        .to_string();
+    let runtime_profile_id = params
+        .get("runtimeProfileId")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&runtime_kind)
         .to_string();
     let system_prompt = params
         .get("systemPrompt")
@@ -89,7 +96,7 @@ pub(crate) fn upsert_role_handler(state: &AppState, params: Value) -> Result<Val
     upsert_role(
         state,
         role_name.clone(),
-        runtime_kind.clone(),
+        runtime_profile_id,
         system_prompt,
         model,
         mode,

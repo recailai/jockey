@@ -1,3 +1,4 @@
+use crate::acp::protocol as acp;
 use crate::db::app_session_role::load_app_session_role_state;
 use crate::db::context::{list_shared_context_internal, sanitize_dynamic_item_name};
 use crate::db::role::load_role;
@@ -18,7 +19,7 @@ pub(super) struct RoleRuntimeData {
     pub(super) role_system_prompt: Option<String>,
     pub(super) enabled_rules: Vec<(String, String)>,
     pub(super) context_log: Option<(usize, Option<String>)>,
-    pub(super) mcp_servers: Vec<agent_client_protocol::McpServer>,
+    pub(super) mcp_servers: Vec<acp::McpServer>,
 }
 
 fn upsert_context_pair(context_pairs: &mut Vec<(String, String)>, key: &str, value: String) {
@@ -305,7 +306,7 @@ pub(super) fn load_role_runtime_data(
         .as_ref()
         .map(|r| r.system_prompt.clone())
         .filter(|s| !s.is_empty());
-    let mut mcp_servers: Vec<agent_client_protocol::McpServer> = {
+    let mut mcp_servers: Vec<acp::McpServer> = {
         let mut servers = crate::db::global_mcp::get_enabled_mcp_for_role(state, role_name);
         let role_servers = role_data
             .as_ref()
@@ -315,17 +316,17 @@ pub(super) fn load_role_runtime_data(
         let existing_names: std::collections::HashSet<String> = servers
             .iter()
             .map(|s| match s {
-                agent_client_protocol::McpServer::Http(h) => h.name.clone(),
-                agent_client_protocol::McpServer::Sse(e) => e.name.clone(),
-                agent_client_protocol::McpServer::Stdio(d) => d.name.clone(),
+                acp::McpServer::Http(h) => h.name.clone(),
+                acp::McpServer::Sse(e) => e.name.clone(),
+                acp::McpServer::Stdio(d) => d.name.clone(),
                 _ => String::new(),
             })
             .collect();
         for s in role_servers {
             let name = match &s {
-                agent_client_protocol::McpServer::Http(h) => h.name.as_str(),
-                agent_client_protocol::McpServer::Sse(e) => e.name.as_str(),
-                agent_client_protocol::McpServer::Stdio(d) => d.name.as_str(),
+                acp::McpServer::Http(h) => h.name.as_str(),
+                acp::McpServer::Sse(e) => e.name.as_str(),
+                acp::McpServer::Stdio(d) => d.name.as_str(),
                 _ => "",
             };
             if !name.is_empty() && !existing_names.contains(name) {
@@ -347,9 +348,9 @@ pub(super) fn load_role_runtime_data(
     if !mcp_flags.is_empty() {
         mcp_servers.retain(|server| {
             let server_name = match server {
-                agent_client_protocol::McpServer::Http(s) => s.name.as_str(),
-                agent_client_protocol::McpServer::Sse(s) => s.name.as_str(),
-                agent_client_protocol::McpServer::Stdio(s) => s.name.as_str(),
+                acp::McpServer::Http(s) => s.name.as_str(),
+                acp::McpServer::Sse(s) => s.name.as_str(),
+                acp::McpServer::Stdio(s) => s.name.as_str(),
                 _ => "",
             };
             let normalized_name = sanitize_dynamic_item_name(server_name)
@@ -364,9 +365,9 @@ pub(super) fn load_role_runtime_data(
     let mcp_names: Vec<&str> = mcp_servers
         .iter()
         .map(|s| match s {
-            agent_client_protocol::McpServer::Http(h) => h.name.as_str(),
-            agent_client_protocol::McpServer::Sse(e) => e.name.as_str(),
-            agent_client_protocol::McpServer::Stdio(d) => d.name.as_str(),
+            acp::McpServer::Http(h) => h.name.as_str(),
+            acp::McpServer::Sse(e) => e.name.as_str(),
+            acp::McpServer::Stdio(d) => d.name.as_str(),
             _ => "",
         })
         .filter(|n| !n.is_empty())

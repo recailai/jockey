@@ -12,5 +12,11 @@ fn main() {
         #[allow(deprecated)]
         std::env::set_var("PATH", new_path);
     }
+    // Internal stdio MCP permission bridge used by the native Claude adapter.
+    // Must be checked before the Tauri app starts.
+    if std::env::args().any(|arg| arg == "--__jockey-permission-bridge") {
+        jockey_lib::permission_bridge_main();
+        return;
+    }
     jockey_lib::run()
 }

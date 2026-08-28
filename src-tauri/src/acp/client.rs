@@ -1,4 +1,4 @@
-use agent_client_protocol::{self as acp};
+use crate::acp::protocol as acp;
 use serde_json::{json, Map, Value};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -207,8 +207,72 @@ impl JockeyUiClient {
     }
 }
 
-#[async_trait::async_trait(?Send)]
-impl acp::Client for JockeyUiClient {
+impl JockeyUiClient {
+    pub(crate) async fn dispatch_request(&self, method: &str, params: Value) -> acp::Result<Value> {
+        macro_rules! dispatch {
+            ($request:ty, $handler:ident, $response:ty) => {{
+                let request = serde_json::from_value::<$request>(params).map_err(|error| {
+                    acp::Error::new(acp::ErrorCode::InvalidParams.into(), error.to_string())
+                })?;
+                let response: $response = self.$handler(request).await?;
+                serde_json::to_value(response).map_err(|error| {
+                    acp::Error::new(acp::ErrorCode::InternalError.into(), error.to_string())
+                })
+            }};
+        }
+
+        match method {
+            "session/request_permission" => dispatch!(
+                acp::RequestPermissionRequest,
+                request_permission,
+                acp::RequestPermissionResponse
+            ),
+            "fs/read_text_file" => {
+                dispatch!(
+                    acp::ReadTextFileRequest,
+                    read_text_file,
+                    acp::ReadTextFileResponse
+                )
+            }
+            "fs/write_text_file" => dispatch!(
+                acp::WriteTextFileRequest,
+                write_text_file,
+                acp::WriteTextFileResponse
+            ),
+            "terminal/create" => dispatch!(
+                acp::CreateTerminalRequest,
+                create_terminal,
+                acp::CreateTerminalResponse
+            ),
+            "terminal/output" => dispatch!(
+                acp::TerminalOutputRequest,
+                terminal_output,
+                acp::TerminalOutputResponse
+            ),
+            "terminal/wait_for_exit" => dispatch!(
+                acp::WaitForTerminalExitRequest,
+                wait_for_terminal_exit,
+                acp::WaitForTerminalExitResponse
+            ),
+            "terminal/kill" => {
+                dispatch!(
+                    acp::KillTerminalRequest,
+                    kill_terminal,
+                    acp::KillTerminalResponse
+                )
+            }
+            "terminal/release" => dispatch!(
+                acp::ReleaseTerminalRequest,
+                release_terminal,
+                acp::ReleaseTerminalResponse
+            ),
+            _ => Err(acp::Error::new(
+                acp::ErrorCode::MethodNotFound.into(),
+                format!("unsupported ACP client request: {method}"),
+            )),
+        }
+    }
+
     async fn request_permission(
         &self,
         args: acp::RequestPermissionRequest,
@@ -308,7 +372,10 @@ impl acp::Client for JockeyUiClient {
         }
     }
 
-    async fn session_notification(&self, args: acp::SessionNotification) -> acp::Result<()> {
+    pub(crate) async fn session_notification(
+        &self,
+        args: acp::SessionNotification,
+    ) -> acp::Result<()> {
         self.validate_session(&args.session_id)?;
         let event = match args.update {
             acp::SessionUpdate::AgentMessageChunk(chunk) => {

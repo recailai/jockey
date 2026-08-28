@@ -376,18 +376,25 @@ export default function MessageWindow(props: MessageWindowProps) {
                 <StreamSegmentList
                   segments={props.activeSession()?.streamSegments ?? []}
                   terminals={props.activeSession()?.terminals}
-                  pendingPermission={props.activeSession()?.pendingPermission}
+                  pendingPermission={
+                    (props.activeSession()?.pendingPermissions ?? [])[0] ?? null
+                  }
+                  pendingCount={(props.activeSession()?.pendingPermissions ?? []).length}
                   onApprove={(optionId) => {
-                    const perm = props.activeSession()?.pendingPermission;
+                    const perm = (props.activeSession()?.pendingPermissions ?? [])[0];
                     if (!perm) return;
                     void assistantApi.respondPermission(perm.requestId, optionId, false);
-                    props.patchActiveSession({ pendingPermission: null });
+                    props.patchActiveSession({
+                      pendingPermissions: (props.activeSession()?.pendingPermissions ?? []).slice(1),
+                    });
                   }}
                   onDeny={() => {
-                    const perm = props.activeSession()?.pendingPermission;
+                    const perm = (props.activeSession()?.pendingPermissions ?? [])[0];
                     if (!perm) return;
                     void assistantApi.respondPermission(perm.requestId, "", true);
-                    props.patchActiveSession({ pendingPermission: null });
+                    props.patchActiveSession({
+                      pendingPermissions: (props.activeSession()?.pendingPermissions ?? []).slice(1),
+                    });
                   }}
                   onFileClick={props.onFileClick}
                   onRejectHunk={props.onRejectHunk}
@@ -639,6 +646,7 @@ function StreamSegmentList(props: {
   segments: AppSegment[];
   terminals?: AppSession["terminals"];
   pendingPermission?: AppPermission | null;
+  pendingCount?: number;
   onApprove?: (optionId: string) => void;
   onDeny?: () => void;
   onFileClick?: (path: string, kind: string) => void;
@@ -657,6 +665,7 @@ function StreamSegmentList(props: {
             streaming={true}
             terminals={props.terminals}
             pendingPermission={i === groups().length - 1 ? props.pendingPermission : null}
+            pendingCount={props.pendingCount}
             onApprove={props.onApprove}
             onDeny={props.onDeny}
             onFileClick={props.onFileClick}

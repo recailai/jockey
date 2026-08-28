@@ -9,7 +9,7 @@ pub(crate) fn list_sessions(state: &AppState, params: Value) -> Result<Value, St
     let sessions = with_db(state, |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, title, active_role, runtime_kind, cwd, created_at, last_active_at \
+                "SELECT id, title, active_role, runtime_kind, runtime_profile_id, cwd, created_at, last_active_at \
                  FROM app_sessions WHERE closed_at IS NULL ORDER BY last_active_at DESC LIMIT ?1",
             )
             .map_err(|e| e.to_string())?;
@@ -20,9 +20,10 @@ pub(crate) fn list_sessions(state: &AppState, params: Value) -> Result<Value, St
                     "title": row.get::<_, Option<String>>(1)?,
                     "activeRole": row.get::<_, Option<String>>(2)?,
                     "runtimeKind": row.get::<_, Option<String>>(3)?,
-                    "cwd": row.get::<_, Option<String>>(4)?,
-                    "createdAt": row.get::<_, i64>(5)?,
-                    "lastActiveAt": row.get::<_, i64>(6)?,
+                    "runtimeProfileId": row.get::<_, Option<String>>(4)?,
+                    "cwd": row.get::<_, Option<String>>(5)?,
+                    "createdAt": row.get::<_, i64>(6)?,
+                    "lastActiveAt": row.get::<_, i64>(7)?,
                 }))
             })
             .map_err(|e| e.to_string())?
@@ -40,7 +41,7 @@ pub(crate) fn get_session(state: &AppState, params: Value) -> Result<Value, Stri
         .ok_or("id is required")?;
     let session = with_db(state, |conn| {
         conn.query_row(
-            "SELECT id, title, active_role, runtime_kind, cwd, created_at, last_active_at \
+            "SELECT id, title, active_role, runtime_kind, runtime_profile_id, cwd, created_at, last_active_at \
              FROM app_sessions WHERE id = ?1",
             rusqlite::params![id],
             |row| {
@@ -49,9 +50,10 @@ pub(crate) fn get_session(state: &AppState, params: Value) -> Result<Value, Stri
                     "title": row.get::<_, Option<String>>(1)?,
                     "activeRole": row.get::<_, Option<String>>(2)?,
                     "runtimeKind": row.get::<_, Option<String>>(3)?,
-                    "cwd": row.get::<_, Option<String>>(4)?,
-                    "createdAt": row.get::<_, i64>(5)?,
-                    "lastActiveAt": row.get::<_, i64>(6)?,
+                    "runtimeProfileId": row.get::<_, Option<String>>(4)?,
+                    "cwd": row.get::<_, Option<String>>(5)?,
+                    "createdAt": row.get::<_, i64>(6)?,
+                    "lastActiveAt": row.get::<_, i64>(7)?,
                 }))
             },
         )

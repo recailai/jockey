@@ -1,6 +1,8 @@
 use crate::acp;
 use crate::runtime_kind::RuntimeKind;
+use crate::runtime_profile::{all_profiles, builtin_profiles, RuntimeCapabilities, RuntimeFamily};
 use crate::types::*;
+use serde_json::to_value;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -29,18 +31,35 @@ pub(crate) fn detect_binary_version(binary: &str) -> Option<String> {
 
 pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
     let kinds = [
+        RuntimeKind::ClaudeNative,
         RuntimeKind::ClaudeCode,
-        RuntimeKind::GeminiCli,
+        RuntimeKind::AntigravityCli,
         RuntimeKind::CodexCli,
+        RuntimeKind::PiCli,
     ];
-    kinds
+    let mut rows = kinds
         .into_iter()
         .map(|kind| {
+            let profile = builtin_profiles()
+                .into_iter()
+                .find(|profile| profile.runtime_key == kind.runtime_key())
+                .expect("builtin runtime profile must exist");
             let fallback = format!("{} adapter unavailable", kind.runtime_key());
             let (available, binary) =
                 acp::probe_runtime(kind.runtime_key()).unwrap_or((false, fallback));
-            let version = if available && binary != "npx" {
-                detect_binary_version(&binary)
+            let version_binary = binary
+                .split_once(" (")
+                .map(|(path, _)| path)
+                .unwrap_or(&binary);
+            let version = if available && version_binary != "npx" {
+                detect_binary_version(version_binary)
+            } else {
+                None
+            };
+            let transport = acp::adapter_transport(kind.runtime_key())
+                .unwrap_or_else(|| "unavailable".to_string());
+            let launch_method = if available {
+                acp::adapter_launch_method(kind.runtime_key())
             } else {
                 None
             };
@@ -54,16 +73,76 @@ pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
                     Some(h.to_string())
                 }
             };
+            let capabilities = if available {
+                profile.capabilities
+            } else {
+                RuntimeCapabilities::unavailable()
+            };
+            let unavailable_reason = (!available).then_some(binary.clone());
             AssistantRuntime {
                 key: kind.runtime_key().to_string(),
-                label: kind.label().to_string(),
+                profile_id: profile.id,
+                label: profile.label,
+                family: match profile.family {
+                    RuntimeFamily::Native => "native".to_string(),
+                    RuntimeFamily::Acp => "acp".to_string(),
+                },
                 binary,
                 available,
                 version,
                 install_hint,
+                unavailable_reason,
+                launch_method,
+                transport,
+                capabilities: to_value(capabilities).unwrap_or_else(|_| serde_json::json!({})),
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    for profile in all_profiles()
+        .into_iter()
+        .filter(|profile| !profile.builtin)
+    {
+        let fallback = format!("{} adapter unavailable", profile.id);
+        let (available, binary) = acp::probe_runtime(&profile.id).unwrap_or((false, fallback));
+        let version_binary = binary
+            .split_once(" (")
+            .map(|(path, _)| path)
+            .unwrap_or(&binary);
+        let version = if available {
+            detect_binary_version(version_binary)
+        } else {
+            None
+        };
+        let transport =
+            acp::adapter_transport(&profile.id).unwrap_or_else(|| "unavailable".to_string());
+        let launch_method = if available {
+            acp::adapter_launch_method(&profile.id)
+        } else {
+            None
+        };
+        let unavailable_reason = (!available).then_some(binary.clone());
+        rows.push(AssistantRuntime {
+            key: profile.id.clone(),
+            profile_id: profile.id,
+            label: profile.label,
+            family: "acp".to_string(),
+            binary,
+            available,
+            version,
+            install_hint: None,
+            unavailable_reason,
+            launch_method,
+            transport,
+            capabilities: to_value(if available {
+                profile.capabilities
+            } else {
+                RuntimeCapabilities::unavailable()
+            })
+            .unwrap_or_else(|_| serde_json::json!({})),
+        });
+    }
+    rows
 }
 
 pub(crate) fn cached_assistant_catalog() -> Vec<AssistantRuntime> {
@@ -86,13 +165,14 @@ pub(crate) fn refresh_assistant_catalog() -> Vec<AssistantRuntime> {
 }
 
 pub(crate) fn normalize_runtime_key(runtime: &str) -> Option<&'static str> {
-    RuntimeKind::from_str(runtime).map(|k| k.runtime_key())
+    crate::runtime_profile::runtime_key_static(runtime)
 }
 
 #[tauri::command]
 pub(crate) async fn detect_assistants() -> Result<Vec<AssistantRuntime>, String> {
     tokio::task::spawn_blocking(|| {
         acp::clear_adapter_cache();
+        acp::clear_discovered_catalogs();
         refresh_assistant_catalog()
     })
     .await

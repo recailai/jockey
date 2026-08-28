@@ -954,9 +954,10 @@ textarea {
 .theme-accent  { color: var(--ui-accent); }
 .theme-control { background-color: var(--ui-control-bg); }
 .theme-control:hover { background-color: var(--ui-control-hover); }
-.runtime-color-gemini { color: var(--ui-state-info-text); }
+.runtime-color-antigravity { color: var(--ui-state-info-text); }
 .runtime-color-claude { color: var(--ui-state-warning-text); }
 .runtime-color-codex { color: var(--ui-text); }
+.runtime-color-pi { color: var(--ui-state-success-text); }
 .runtime-color-muted { color: var(--ui-muted); }
 .management-badge-success {
   border-color: color-mix(in srgb, var(--ui-state-success-text), transparent 68%);

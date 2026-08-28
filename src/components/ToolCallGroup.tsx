@@ -291,6 +291,7 @@ export function ToolCallGroup(props: {
   streaming: boolean;
   terminals?: Record<string, TerminalEntry>;
   pendingPermission?: AppPermission | null;
+  pendingCount?: number;
   onApprove?: (optionId: string) => void;
   onDeny?: () => void;
   onFileClick?: (path: string, kind: string) => void;

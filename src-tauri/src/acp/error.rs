@@ -1,4 +1,4 @@
-use agent_client_protocol as acp;
+use crate::acp::protocol as acp;
 
 const STDERR_TAIL_LIMIT: usize = 8 * 1024;
 
@@ -98,6 +98,8 @@ impl From<acp::Error> for AcpLayerError {
             -32603 => {
                 if looks_auth_related(&err.message) {
                     AcpErrorCode::AuthRequired
+                } else if looks_process_exit(&err.message) {
+                    AcpErrorCode::ProcessCrashed
                 } else if looks_connection_related(&err.message) {
                     AcpErrorCode::ConnectionFailed
                 } else {
@@ -107,6 +109,8 @@ impl From<acp::Error> for AcpLayerError {
             _ => {
                 if looks_auth_related(&err.message) {
                     AcpErrorCode::AuthRequired
+                } else if looks_process_exit(&err.message) {
+                    AcpErrorCode::ProcessCrashed
                 } else if looks_connection_related(&err.message) {
                     AcpErrorCode::ConnectionFailed
                 } else {
@@ -181,4 +185,12 @@ fn looks_connection_related(message: &str) -> bool {
         || l.contains("eof")
         || l.contains("transport closed")
         || l.contains("connection reset")
+}
+
+fn looks_process_exit(message: &str) -> bool {
+    let l = message.to_ascii_lowercase();
+    l.contains("process has exited")
+        || l.contains("process exited")
+        || l.contains("exit code")
+        || l.contains("exit status")
 }

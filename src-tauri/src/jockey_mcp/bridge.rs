@@ -282,7 +282,7 @@ fn dispatch(state: &AppState, method: &str, params: Value) -> Result<Value, Stri
 fn tool_definitions() -> Vec<Value> {
     vec![
         // Roles
-        json!({ "name": "list_roles", "description": "List all configured roles. A role is a named persona that wraps a runtime (claude-code, codex-cli, gemini-cli) with a system prompt, model override, mode, and MCP servers. You (the agent) are running inside one of these roles right now — call get_context to find out which one.", "inputSchema": { "type": "object", "properties": {} } }),
+        json!({ "name": "list_roles", "description": "List all configured roles. A role is a named persona that wraps a runtime (claude-code, codex-cli, pi-cli, or antigravity-cli/agy) with a system prompt, model override, mode, and MCP servers. You (the agent) are running inside one of these roles right now — call get_context to find out which one.", "inputSchema": { "type": "object", "properties": {} } }),
         json!({
             "name": "get_role", "description": "Get full details of a role including system prompt, MCP servers, config option definitions, and saved option values.",
             "inputSchema": {
@@ -297,7 +297,8 @@ fn tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "roleName": { "type": "string", "description": "Role name (unique identifier)." },
-                    "runtimeKind": { "type": "string", "description": "Runtime to use: claude-code, gemini-cli, or codex-cli.", "default": "claude-code" },
+                    "runtimeKind": { "type": "string", "description": "Runtime to use: claude-native, claude-code (ACP), antigravity-cli (agy), codex-cli, or pi-cli.", "default": "claude-native" },
+                    "runtimeProfileId": { "type": "string", "description": "Optional stable profile id, for example native:claude, native:codex, or acp:custom:<id>. Takes precedence over runtimeKind." },
                     "systemPrompt": { "type": "string", "description": "System prompt injected at the start of each session." },
                     "model": { "type": "string", "description": "Model override (e.g. claude-opus-4-5). Leave empty to use the runtime default." },
                     "mode": { "type": "string", "description": "Execution mode (e.g. acceptEdits). Leave empty for the runtime default." },

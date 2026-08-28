@@ -284,7 +284,7 @@ function SessionContextSection(props: { sessionId: string }) {
 // ─── main component ───────────────────────────────────────────────────────────
 export function SessionsTab(props: {
   activeSessions: AppSession[];
-  onRestoreSession?: (id: string, title: string, activeRole: string, runtimeKind: string | null, cwd: string | null) => void;
+  onRestoreSession?: (id: string, title: string, activeRole: string, runtimeKind: string | null, runtimeProfileId: string | null, cwd: string | null) => void;
 }) {
   const [storedSessions, setStoredSessions] = createSignal<StoredSession[]>([]);
   const [loading, setLoading] = createSignal(true);
@@ -294,7 +294,7 @@ export function SessionsTab(props: {
 
   type RawSession = {
     id: string; title: string; activeRole?: string;
-    runtimeKind?: string | null; cwd?: string | null;
+    runtimeKind?: string | null; runtimeProfileId?: string | null; cwd?: string | null;
     messages?: unknown[]; createdAt?: number; lastActiveAt?: number; closedAt?: number | null;
   };
 
@@ -303,6 +303,7 @@ export function SessionsTab(props: {
     title: r.title,
     activeRole: r.activeRole ?? "—",
     runtimeKind: r.runtimeKind ?? null,
+    runtimeProfileId: r.runtimeProfileId ?? null,
     cwd: r.cwd ?? null,
     messageCount: Array.isArray(r.messages) ? r.messages.length : 0,
     createdAt: r.createdAt ?? 0,
@@ -351,7 +352,7 @@ export function SessionsTab(props: {
     setReopening(s.id);
     try {
       await appSessionApi.reopen(s.id);
-      props.onRestoreSession?.(s.id, s.title, s.activeRole, s.runtimeKind, s.cwd);
+      props.onRestoreSession?.(s.id, s.title, s.activeRole, s.runtimeKind, s.runtimeProfileId ?? null, s.cwd);
       setSelectedId(s.id);
       setStoredSessions((prev) => prev.map((p) => p.id === s.id ? { ...p, closedAt: null, updatedAt: Date.now() } : p));
     } catch { /* ignore */ } finally {

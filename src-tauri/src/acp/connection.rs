@@ -16,13 +16,14 @@
 //!   [`AgentConnection::rpc_handle`] so the caller can release its `CONN_MAP`
 //!   borrow *before* awaiting an RPC future.
 
-use agent_client_protocol::{self as acp};
+use crate::acp::protocol as acp;
 use async_trait::async_trait;
 use std::rc::Rc;
 use std::time::Instant;
 use tokio::sync::watch;
 
-use super::worker::{ConfigStateCell, DeltaSlot, ModeStateCell, ModelStateCell};
+use super::transport::AcpConnection;
+use super::worker::{ConfigStateCell, DeltaSlot, ModeStateCell};
 
 #[async_trait(?Send)]
 pub(crate) trait AgentRpc {
@@ -39,42 +40,30 @@ pub(crate) trait AgentRpc {
         &self,
         req: acp::SetSessionConfigOptionRequest,
     ) -> Result<acp::SetSessionConfigOptionResponse, acp::Error>;
-
-    async fn set_session_model(
-        &self,
-        req: acp::SetSessionModelRequest,
-    ) -> Result<acp::SetSessionModelResponse, acp::Error>;
 }
 
 #[async_trait(?Send)]
-impl AgentRpc for acp::ClientSideConnection {
+impl AgentRpc for AcpConnection {
     async fn prompt(&self, req: acp::PromptRequest) -> Result<acp::PromptResponse, acp::Error> {
-        <acp::ClientSideConnection as acp::Agent>::prompt(self, req).await
+        AcpConnection::prompt(self, req).await
     }
 
     async fn cancel(&self, note: acp::CancelNotification) {
-        let _ = <acp::ClientSideConnection as acp::Agent>::cancel(self, note).await;
+        AcpConnection::cancel(self, note).await;
     }
 
     async fn set_session_mode(
         &self,
         req: acp::SetSessionModeRequest,
     ) -> Result<acp::SetSessionModeResponse, acp::Error> {
-        <acp::ClientSideConnection as acp::Agent>::set_session_mode(self, req).await
+        AcpConnection::set_session_mode(self, req).await
     }
 
     async fn set_session_config_option(
         &self,
         req: acp::SetSessionConfigOptionRequest,
     ) -> Result<acp::SetSessionConfigOptionResponse, acp::Error> {
-        <acp::ClientSideConnection as acp::Agent>::set_session_config_option(self, req).await
-    }
-
-    async fn set_session_model(
-        &self,
-        req: acp::SetSessionModelRequest,
-    ) -> Result<acp::SetSessionModelResponse, acp::Error> {
-        <acp::ClientSideConnection as acp::Agent>::set_session_model(self, req).await
+        AcpConnection::set_session_config_option(self, req).await
     }
 }
 
@@ -86,7 +75,6 @@ pub(crate) trait AgentConnection {
     fn child_pid(&self) -> Option<u32>;
     fn delta_slot(&self) -> DeltaSlot;
     fn mode_state(&self) -> ModeStateCell;
-    fn model_state(&self) -> ModelStateCell;
     fn config_state(&self) -> ConfigStateCell;
     fn health_rx(&self) -> watch::Receiver<bool>;
     fn last_active(&self) -> Instant;

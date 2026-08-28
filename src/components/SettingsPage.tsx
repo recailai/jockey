@@ -61,7 +61,7 @@ type SettingsPageProps = {
   refreshRoles: () => Promise<void>;
   fetchRoleConfig: (runtimeKey: string, roleName?: string) => Promise<{ options: AcpConfigOption[]; modes: string[] }>;
   pushMessage: (role: string, text: string) => void;
-  onRestoreSession: (id: string, title: string, activeRole: string, runtimeKind: string | null, cwd: string | null) => void;
+  onRestoreSession: (id: string, title: string, activeRole: string, runtimeKind: string | null, runtimeProfileId: string | null, cwd: string | null) => void;
   onBack: () => void;
   showToast?: (message: string, severity?: Toast["severity"]) => void;
 };
@@ -265,12 +265,15 @@ export default function SettingsPage(props: SettingsPageProps) {
                         disabled={!assistant.available}
                         class="settings-runtime-row"
                         active={props.activeSession()?.runtimeKind === assistant.key}
-                        onClick={() => assistant.available && props.patchActiveSession({ runtimeKind: assistant.key })}
+                        onClick={() => assistant.available && props.patchActiveSession({
+                          runtimeKind: assistant.key,
+                          runtimeProfileId: assistant.profileId,
+                        })}
                       >
                         <span class={`settings-runtime-dot ${assistant.available ? "is-online" : "is-offline"}`} />
                         <div class="min-w-0 flex-1 text-left">
                           <div class="text-[14px] font-medium theme-text">{assistant.label}</div>
-                          <div class="mt-1 truncate text-[12px] theme-muted">{assistant.available ? assistant.version ?? assistant.key : assistant.installHint ?? "Unavailable"}</div>
+                          <div class="mt-1 truncate text-[12px] theme-muted">{assistant.available ? assistant.version ?? assistant.launchMethod ?? assistant.key : assistant.unavailableReason ?? assistant.installHint ?? "Unavailable"}</div>
                         </div>
                         <Show when={props.activeSession()?.runtimeKind === assistant.key}>
                           <CheckCircle2 size={18} class="theme-accent" />
@@ -375,6 +378,7 @@ export default function SettingsPage(props: SettingsPageProps) {
               <div class="settings-section">
                 <div class="settings-management-panel">
                   <RolesTab
+                    assistants={props.assistants}
                     roles={props.roles}
                     activeSession={props.activeSession}
                     patchActiveSession={props.patchActiveSession}

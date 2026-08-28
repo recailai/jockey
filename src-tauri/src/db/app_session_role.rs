@@ -1,4 +1,5 @@
 use crate::db::with_db;
+use crate::runtime_profile;
 use crate::types::AppState;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{Map, Value};
@@ -18,12 +19,15 @@ fn ensure_app_session_role_row(
     role_name: &str,
     runtime_kind: &str,
 ) -> Result<(), String> {
+    let runtime_profile_id = runtime_profile::profile_id(runtime_kind);
     conn.execute(
         "INSERT INTO app_session_roles (
-            app_session_id, role_name, runtime_kind
-         ) VALUES (?1, ?2, ?3)
-         ON CONFLICT(app_session_id, role_name) DO UPDATE SET runtime_kind = excluded.runtime_kind",
-        params![app_session_id, role_name, runtime_kind],
+            app_session_id, role_name, runtime_kind, runtime_profile_id
+         ) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(app_session_id, role_name) DO UPDATE SET
+           runtime_kind = excluded.runtime_kind,
+           runtime_profile_id = excluded.runtime_profile_id",
+        params![app_session_id, role_name, runtime_kind, runtime_profile_id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -72,9 +76,15 @@ pub(crate) fn save_app_session_role_model_override(
         ensure_app_session_role_row(conn, app_session_id, role_name, runtime_kind)?;
         conn.execute(
             "UPDATE app_session_roles
-             SET model_override = ?1, runtime_kind = ?2
-             WHERE app_session_id = ?3 AND role_name = ?4",
-            params![model_override, runtime_kind, app_session_id, role_name],
+             SET model_override = ?1, runtime_kind = ?2, runtime_profile_id = ?3
+             WHERE app_session_id = ?4 AND role_name = ?5",
+            params![
+                model_override,
+                runtime_kind,
+                runtime_profile::profile_id(runtime_kind),
+                app_session_id,
+                role_name
+            ],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -95,9 +105,15 @@ pub(crate) fn save_app_session_role_mode_override(
         ensure_app_session_role_row(conn, app_session_id, role_name, runtime_kind)?;
         conn.execute(
             "UPDATE app_session_roles
-             SET mode_override = ?1, runtime_kind = ?2
-             WHERE app_session_id = ?3 AND role_name = ?4",
-            params![mode_override, runtime_kind, app_session_id, role_name],
+             SET mode_override = ?1, runtime_kind = ?2, runtime_profile_id = ?3
+             WHERE app_session_id = ?4 AND role_name = ?5",
+            params![
+                mode_override,
+                runtime_kind,
+                runtime_profile::profile_id(runtime_kind),
+                app_session_id,
+                role_name
+            ],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -147,9 +163,15 @@ pub(crate) fn save_app_session_role_config_option_override(
         let next_json = serde_json::to_string(&map).map_err(|e| e.to_string())?;
         conn.execute(
             "UPDATE app_session_roles
-             SET config_options_json = ?1, runtime_kind = ?2
-             WHERE app_session_id = ?3 AND role_name = ?4",
-            params![next_json, runtime_kind, app_session_id, role_name],
+             SET config_options_json = ?1, runtime_kind = ?2, runtime_profile_id = ?3
+             WHERE app_session_id = ?4 AND role_name = ?5",
+            params![
+                next_json,
+                runtime_kind,
+                runtime_profile::profile_id(runtime_kind),
+                app_session_id,
+                role_name
+            ],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -191,9 +213,15 @@ pub(crate) fn save_app_session_role_cli_id(
         ensure_app_session_role_row(conn, app_session_id, role_name, runtime_key)?;
         conn.execute(
             "UPDATE app_session_roles
-             SET runtime_kind = ?1, acp_session_id = ?2
-             WHERE app_session_id = ?3 AND role_name = ?4",
-            params![runtime_key, cli_session_id, app_session_id, role_name],
+             SET runtime_kind = ?1, runtime_profile_id = ?2, acp_session_id = ?3
+             WHERE app_session_id = ?4 AND role_name = ?5",
+            params![
+                runtime_key,
+                runtime_profile::profile_id(runtime_key),
+                cli_session_id,
+                app_session_id,
+                role_name
+            ],
         )
         .map_err(|e| e.to_string())?;
         Ok(())

@@ -12,6 +12,7 @@ export type StoredSession = {
   title: string;
   activeRole: string;
   runtimeKind: string | null;
+  runtimeProfileId?: string | null;
   cwd: string | null;
   messageCount: number;
   createdAt: number;
@@ -210,9 +211,39 @@ export function TextInput(props: {
   );
 }
 
+export type InlineSelectOption = {
+  value: string;
+  label: string;
+  group?: string;
+  disabled?: boolean;
+  hint?: string;
+};
+
+type GroupedEntry =
+  | { header: string }
+  | { opt: InlineSelectOption };
+
+/** Group options by their `group` field; ungrouped options render without
+ *  headers. Returns a flat, pre-ordered list for `<For>`. */
+function groupedOptions(options: Array<InlineSelectOption>): Array<GroupedEntry> {
+  const hasGroups = options.some((opt) => !!opt.group);
+  if (!hasGroups) return options.map((opt) => ({ opt }));
+  const out: Array<GroupedEntry> = [];
+  const seen = new Set<string>();
+  for (const opt of options) {
+    const group = opt.group ?? "";
+    if (group && !seen.has(group)) {
+      seen.add(group);
+      out.push({ header: group });
+    }
+    out.push({ opt });
+  }
+  return out;
+}
+
 export function InlineSelect(props: {
   value: string;
-  options: Array<{ value: string; label: string }>;
+  options: Array<InlineSelectOption>;
   onChange: (v: string) => void;
   class?: string;
 }) {
@@ -260,24 +291,26 @@ export function InlineSelect(props: {
         <Portal mount={document.body}>
           <div
             data-isel
-            style={{ position: "fixed", top: `${pos().top}px`, left: `${pos().left}px`, width: `${Math.max(pos().width, 260)}px`, "max-width": "min(520px, calc(100vw - 24px))" }}
+            style={{ position: "fixed", top: `${pos().top}px`, left: `${pos().left}px`, width: `${Math.max(pos().width, 260)}px`, "max-width": "min(520px, calc(100vw - 24px))", "z-index": "var(--z-dropdown)" }}
             class="max-h-44 overflow-y-auto theme-dropdown"
-            style={{ "z-index": "var(--z-dropdown)" }}
           >
-            <For each={props.options}>
-              {(opt) => (
+            <For each={groupedOptions(props.options)}>{(entry) =>
+              "header" in entry ? (
+                <div class="px-2 pt-1.5 pb-0.5 text-[9px] font-bold uppercase tracking-widest theme-muted">{entry.header}</div>
+              ) : (
                 <button
                   data-isel
                   type="button"
-                  title={opt.label}
-                  onClick={() => { props.onChange(opt.value); close(); }}
-                  class={`completion-row items-start py-1.5 text-xs ${INTERACTIVE_MOTION} ${opt.value === props.value ? "theme-dropdown-item-active" : "theme-dropdown-item"}`}
+                  title={entry.opt.hint ?? entry.opt.label}
+                  disabled={entry.opt.disabled}
+                  onClick={() => { props.onChange(entry.opt.value); close(); }}
+                  class={`completion-row items-start py-1.5 text-xs ${INTERACTIVE_MOTION} ${entry.opt.value === props.value ? "theme-dropdown-item-active" : "theme-dropdown-item"} ${entry.opt.disabled ? "cursor-not-allowed opacity-40" : ""}`}
                 >
-                  <span class={`mt-1.5 settings-runtime-dot shrink-0 ${opt.value === props.value ? "is-online" : "opacity-0"}`} />
-                  <span class="min-w-0 break-words">{opt.label}</span>
+                  <span class={`mt-1.5 settings-runtime-dot shrink-0 ${entry.opt.value === props.value ? "is-online" : "opacity-0"}`} />
+                  <span class="min-w-0 break-words">{entry.opt.label}</span>
                 </button>
-              )}
-            </For>
+              )
+            }</For>
           </div>
         </Portal>
       </Show>

@@ -1,4 +1,4 @@
-use agent_client_protocol as acp;
+use crate::acp::protocol as acp;
 use dashmap::DashMap;
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};

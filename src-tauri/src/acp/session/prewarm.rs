@@ -1,16 +1,17 @@
 use serde_json::Value;
 use tokio::sync::oneshot;
 
-use super::super::adapter::build_stdio_adapter;
-use super::super::worker::RuntimeKind;
+use super::super::adapter::{build_stdio_adapter, AdapterTransport};
 use super::super::worker::{worker_tx, WorkerMsg};
 use super::mcp::load_role_mcp_servers;
+use super::native::refresh_native_catalog;
+use crate::acp::protocol as acp;
 use crate::db::app_session_role::{load_app_session_role_cli_id, save_app_session_role_cli_id};
 use crate::db::role::update_role_config_option_defs_if_changed;
 use crate::types::AppState;
 
 fn normalize_runtime_key(runtime_kind: &str) -> Option<&'static str> {
-    RuntimeKind::from_str(runtime_kind).map(|k| k.runtime_key())
+    crate::runtime_profile::runtime_key_static(runtime_kind)
 }
 
 // ── Internal shared implementation ───────────────────────────────────────────
@@ -21,7 +22,7 @@ struct PrewarmOpts<'a> {
     cwd: &'a str,
     resume_session_id: Option<String>,
     app_session_id: Option<&'a str>,
-    mcp_servers: Vec<agent_client_protocol::McpServer>,
+    mcp_servers: Vec<acp::McpServer>,
     role_mode: Option<String>,
     role_config_options: Vec<(String, String)>,
     force_refresh: bool,
@@ -34,12 +35,31 @@ async fn send_prewarm(
         Ok(Some(a)) => a,
         _ => return None,
     };
+    if matches!(adapter.transport, AdapterTransport::HeadlessJson { .. }) {
+        return None;
+    }
     let resolved_session_id = opts
         .app_session_id
         .filter(|id| !id.trim().is_empty())
         .map(|id| id.to_string())
         .unwrap_or_else(|| format!("role-refresh:{}:{}", adapter.runtime_key, opts.role_name));
     let (tx, rx) = oneshot::channel();
+    if let AdapterTransport::Native(protocol) = adapter.transport {
+        let catalog = refresh_native_catalog(
+            protocol,
+            adapter.runtime_key,
+            &adapter.binary,
+            &adapter.args,
+            &adapter.env,
+            opts.cwd,
+            &opts.role_config_options,
+            opts.resume_session_id.clone(),
+            true,
+        )
+        .await;
+        let _ = tx.send((catalog.options, catalog.modes, catalog.session_id));
+        return Some(rx);
+    }
     let _ = worker_tx().send(WorkerMsg::Prewarm {
         runtime_key: adapter.runtime_key,
         binary: adapter.binary,

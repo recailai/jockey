@@ -5,17 +5,23 @@ use serde::Serialize;
 pub enum RuntimeKind {
     Mock,
     ClaudeCode,
-    GeminiCli,
+    ClaudeNative,
+    AntigravityCli,
     CodexCli,
+    PiCli,
 }
 
 impl RuntimeKind {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "mock" => Some(Self::Mock),
-            "claude" | "claude-code" | "claude-acp" => Some(Self::ClaudeCode),
-            "gemini" | "gemini-cli" => Some(Self::GeminiCli),
-            "codex" | "codex-cli" | "codex-acp" => Some(Self::CodexCli),
+            "claude" | "native:claude" | "claude-native" => Some(Self::ClaudeNative),
+            "claude-code" | "claude-acp" | "acp:claude-code" => Some(Self::ClaudeCode),
+            "agy" | "antigravity" | "antigravity-cli" | "gemini" | "gemini-cli" => {
+                Some(Self::AntigravityCli)
+            }
+            "codex" | "codex-cli" | "native:codex" => Some(Self::CodexCli),
+            "pi" | "pi-cli" | "native:pi" => Some(Self::PiCli),
             _ => None,
         }
     }
@@ -24,17 +30,10 @@ impl RuntimeKind {
         match self {
             Self::Mock => "mock",
             Self::ClaudeCode => "claude-code",
-            Self::GeminiCli => "gemini-cli",
+            Self::ClaudeNative => "claude-native",
+            Self::AntigravityCli => "antigravity-cli",
             Self::CodexCli => "codex-cli",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Mock => "Mock",
-            Self::ClaudeCode => "Claude Code",
-            Self::GeminiCli => "Gemini CLI",
-            Self::CodexCli => "Codex CLI",
+            Self::PiCli => "pi-cli",
         }
     }
 
@@ -45,8 +44,10 @@ impl RuntimeKind {
     pub fn install_hint(self) -> &'static str {
         match self {
             Self::ClaudeCode => "npm install -g @anthropic-ai/claude-code",
-            Self::GeminiCli => "npm install -g @google/gemini-cli",
+            Self::ClaudeNative => "curl -fsSL https://claude.ai/install.sh | bash",
+            Self::AntigravityCli => "curl -fsSL https://antigravity.google/cli/install.sh | bash",
             Self::CodexCli => "npm install -g @openai/codex",
+            Self::PiCli => "npm install -g @mariozechner/pi-coding-agent",
             Self::Mock => "",
         }
     }

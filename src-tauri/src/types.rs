@@ -30,6 +30,7 @@ pub(crate) struct Role {
     pub(crate) id: String,
     pub(crate) role_name: String,
     pub(crate) runtime_kind: String,
+    pub(crate) runtime_profile_id: String,
     pub(crate) runtime_launch_method: Option<String>,
     pub(crate) system_prompt: String,
     pub(crate) model: Option<String>,
@@ -120,11 +121,17 @@ pub(crate) struct ChatCommandResult {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AssistantRuntime {
     pub(crate) key: String,
+    pub(crate) profile_id: String,
     pub(crate) label: String,
+    pub(crate) family: String,
     pub(crate) binary: String,
     pub(crate) available: bool,
     pub(crate) version: Option<String>,
     pub(crate) install_hint: Option<String>,
+    pub(crate) unavailable_reason: Option<String>,
+    pub(crate) launch_method: Option<String>,
+    pub(crate) transport: String,
+    pub(crate) capabilities: Value,
 }
 
 #[derive(Deserialize, Clone)]
@@ -185,6 +192,7 @@ pub(crate) struct AppSession {
     pub(crate) title: String,
     pub(crate) active_role: String,
     pub(crate) runtime_kind: Option<String>,
+    pub(crate) runtime_profile_id: Option<String>,
     pub(crate) cwd: Option<String>,
     pub(crate) messages: Vec<serde_json::Value>,
     pub(crate) created_at: i64,
@@ -198,6 +206,7 @@ pub(crate) struct AppSessionUpdate {
     pub(crate) title: Option<String>,
     pub(crate) active_role: Option<String>,
     pub(crate) runtime_kind: Option<Option<String>>,
+    pub(crate) runtime_profile_id: Option<Option<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -225,7 +234,14 @@ pub(crate) const ATTACH_MAX_FILE_BYTES: usize = 24 * 1024;
 pub(crate) const ATTACH_MAX_DIR_FILES: usize = 30;
 pub(crate) const ATTACH_MAX_DIR_DEPTH: usize = 3;
 pub(crate) const DEFAULT_MODELS: &[&str] = &[];
-pub(crate) const KNOWN_RUNTIME_KEYS: &[&str] = &["gemini-cli", "claude-code", "codex-cli", "mock"];
+pub(crate) const KNOWN_RUNTIME_KEYS: &[&str] = &[
+    "claude-native",
+    "antigravity-cli",
+    "claude-code",
+    "codex-cli",
+    "pi-cli",
+    "mock",
+];
 pub(crate) const DEFAULT_MCP_SERVERS: &[&str] = &[];
 pub(crate) const DEFAULT_SKILLS: &[&str] = &[];
 pub(crate) const BASE_CLI_COMMANDS: &[(&str, &str)] = &[

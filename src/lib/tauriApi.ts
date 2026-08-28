@@ -14,6 +14,7 @@ type SessionUpdate = {
   title?: string;
   activeRole?: string;
   runtimeKind?: string | null;
+  runtimeProfileId?: string | null;
 };
 
 type ApplyChatCommandResult = {
@@ -29,6 +30,7 @@ type RawSession = {
   title: string;
   activeRole?: string;
   runtimeKind?: string | null;
+  runtimeProfileId?: string | null;
   cwd?: string | null;
   messages?: AppMessage[];
   createdAt?: number;
@@ -83,6 +85,75 @@ export const roleApi = {
   list: () => call<Role[]>("list_roles"),
   upsert: (input: RoleUpsertInput) => call<Role>("upsert_role_cmd", { input }),
   remove: (roleName: string) => call<void>("delete_role_cmd", { roleName }),
+};
+
+export type RuntimeProfile = {
+  id: string;
+  label: string;
+  family: "native" | "acp" | string;
+  transport: string;
+  runtimeKey: string;
+  capabilities: Record<string, boolean>;
+  launchSpec?: {
+    command: string;
+    args: string[];
+    envRefs: string[];
+    cwdStrategy: string;
+  } | null;
+  versionRequirement?: string | null;
+  updateStrategy: string;
+  builtin: boolean;
+};
+
+export const runtimeProfileApi = {
+  list: () => call<RuntimeProfile[]>("list_runtime_profiles_cmd"),
+  upsert: (input: {
+    id?: string;
+    label: string;
+    command: string;
+    args?: string[];
+    envRefs?: string[];
+    cwdStrategy?: string;
+  }) => call<RuntimeProfile>("upsert_runtime_profile_cmd", { input }),
+  remove: (id: string) => call<void>("delete_runtime_profile_cmd", { id }),
+};
+
+export type ProviderSessionSummary = {
+  providerSessionId: string;
+  title: string | null;
+  cwd: string | null;
+  preview: string | null;
+  updatedAt: string | null;
+  createdAt: string | null;
+};
+
+/// Provider session administration (list/import/fork/rewind). Native Codex
+/// supports the full surface; native Pi supports import only.
+export const providerSessionApi = {
+  list: (runtimeKind: string, limit?: number, cwd?: string) =>
+    call<ProviderSessionSummary[]>("list_provider_sessions_cmd", {
+      runtimeKind,
+      limit,
+      cwd,
+    }),
+  import: (input: {
+    runtimeKind: string;
+    roleName: string;
+    appSessionId: string;
+    providerSessionId: string;
+  }) => call<void>("import_provider_session_cmd", input),
+  fork: (input: {
+    runtimeKind: string;
+    roleName: string;
+    appSessionId: string;
+    cwd?: string;
+  }) => call<string>("fork_provider_session_cmd", input),
+  rewind: (input: {
+    runtimeKind: string;
+    roleName: string;
+    appSessionId: string;
+    numTurns?: number;
+  }) => call<void>("rewind_provider_session_cmd", input),
 };
 
 export type GlobalMcpEntry = { name: string; configJson: string; isBuiltin: boolean };

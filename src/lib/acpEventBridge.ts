@@ -1,6 +1,7 @@
 import type {
   AcpDeltaEvent,
   AcpStreamEvent,
+  AppPermission,
   AppPlanEntry,
   AppSession,
   AppToolCall,
@@ -282,23 +283,31 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
       break;
     case "permissionRequest":
       if (event.requestId) {
-        patchSession(sid, {
-          pendingPermission: {
-            requestId: event.requestId,
+        mutateSession(sid, (s) => {
+          const next: AppPermission = {
+            requestId: event.requestId!,
             title: event.title ?? "Permission Required",
             description: event.description ?? null,
             options:
               (event.options as Array<{ optionId: string; title?: string; kind?: string }>) ?? [],
-          },
+          };
+          const existing = s.pendingPermissions?.findIndex((p) => p.requestId === next.requestId);
+          if (existing !== undefined && existing >= 0) {
+            s.pendingPermissions = s.pendingPermissions.map((p) =>
+              p.requestId === next.requestId ? next : p,
+            );
+          } else {
+            s.pendingPermissions = [...(s.pendingPermissions ?? []), next];
+          }
         });
       }
       break;
     case "permissionExpired":
       if (event.requestId) {
         mutateSession(sid, (s) => {
-          if (s.pendingPermission?.requestId === event.requestId) {
-            s.pendingPermission = null;
-          }
+          s.pendingPermissions = (s.pendingPermissions ?? []).filter(
+            (p) => p.requestId !== event.requestId,
+          );
         });
       }
       break;

@@ -1,6 +1,7 @@
 use crate::acp;
 use crate::db::app_session_role::clear_app_session_role_cli_id;
 use crate::db::{get_state, with_db};
+use crate::runtime_profile;
 use crate::types::*;
 use crate::{default_chat_cwd, now_ms};
 use rusqlite::{params, OptionalExtension};
@@ -82,11 +83,12 @@ fn query_sessions(conn: &rusqlite::Connection, sql: &str) -> Result<Vec<AppSessi
                 title: row.get(1)?,
                 active_role: row.get(2)?,
                 runtime_kind: row.get(3)?,
-                cwd: row.get(4)?,
+                runtime_profile_id: row.get(4)?,
+                cwd: row.get(5)?,
                 messages: Vec::new(),
-                created_at: row.get(5)?,
-                last_active_at: row.get(6)?,
-                closed_at: row.get(7)?,
+                created_at: row.get(6)?,
+                last_active_at: row.get(7)?,
+                closed_at: row.get(8)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -133,7 +135,7 @@ pub(crate) fn list_app_sessions(state: State<'_, AppState>) -> Result<Vec<AppSes
     with_db(get_state(&state), |conn| {
         query_sessions(
             conn,
-            "SELECT id, title, active_role, runtime_kind, cwd, created_at, last_active_at, closed_at
+            "SELECT id, title, active_role, runtime_kind, runtime_profile_id, cwd, created_at, last_active_at, closed_at
              FROM app_sessions WHERE closed_at IS NULL ORDER BY created_at ASC LIMIT 50",
         )
     })
@@ -146,7 +148,7 @@ pub(crate) fn list_closed_app_sessions(
     with_db(get_state(&state), |conn| {
         query_sessions(
             conn,
-            "SELECT id, title, active_role, runtime_kind, cwd, created_at, last_active_at, closed_at
+            "SELECT id, title, active_role, runtime_kind, runtime_profile_id, cwd, created_at, last_active_at, closed_at
              FROM app_sessions WHERE closed_at IS NOT NULL ORDER BY closed_at DESC LIMIT 200",
         )
     })
@@ -186,6 +188,7 @@ pub(crate) fn create_app_session_internal(
         title,
         active_role: "Jockey".to_string(),
         runtime_kind: None,
+        runtime_profile_id: None,
         cwd: Some(default_chat_cwd()),
         messages: Vec::new(),
         created_at: now,
@@ -197,13 +200,14 @@ pub(crate) fn create_app_session_internal(
             return Err(format!("session name already exists: {}", session.title));
         }
         conn.execute(
-            "INSERT INTO app_sessions (id, title, active_role, runtime_kind, cwd, created_at, last_active_at, closed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
+            "INSERT INTO app_sessions (id, title, active_role, runtime_kind, runtime_profile_id, cwd, created_at, last_active_at, closed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
             params![
                 &session.id,
                 &session.title,
                 &session.active_role,
                 &session.runtime_kind,
+                &session.runtime_profile_id,
                 &session.cwd,
                 session.created_at,
                 session.last_active_at,
@@ -316,8 +320,19 @@ pub(crate) async fn update_app_session(
         }
         if let Some(runtime) = update.runtime_kind {
             conn.execute(
-                "UPDATE app_sessions SET runtime_kind = ?1 WHERE id = ?2",
-                params![runtime, &id],
+                "UPDATE app_sessions SET runtime_kind = ?1, runtime_profile_id = ?2 WHERE id = ?3",
+                params![
+                    runtime,
+                    runtime.as_deref().map(runtime_profile::profile_id),
+                    &id
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if let Some(profile) = update.runtime_profile_id {
+            conn.execute(
+                "UPDATE app_sessions SET runtime_profile_id = ?1 WHERE id = ?2",
+                params![profile, &id],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -371,7 +386,7 @@ pub(crate) fn reopen_app_session(
         .map_err(|e| e.to_string())?;
         let session = conn
             .query_row(
-                "SELECT id, title, active_role, runtime_kind, cwd, created_at, last_active_at, closed_at
+                "SELECT id, title, active_role, runtime_kind, runtime_profile_id, cwd, created_at, last_active_at, closed_at
                  FROM app_sessions WHERE id = ?1",
                 params![&id],
                 |row| {
@@ -380,11 +395,12 @@ pub(crate) fn reopen_app_session(
                         title: row.get(1)?,
                         active_role: row.get(2)?,
                         runtime_kind: row.get(3)?,
-                        cwd: row.get(4)?,
+                        runtime_profile_id: row.get(4)?,
+                        cwd: row.get(5)?,
                         messages: Vec::new(),
-                        created_at: row.get(5)?,
-                        last_active_at: row.get(6)?,
-                        closed_at: row.get(7)?,
+                        created_at: row.get(6)?,
+                        last_active_at: row.get(7)?,
+                        closed_at: row.get(8)?,
                     })
                 },
             )

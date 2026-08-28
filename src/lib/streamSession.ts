@@ -68,7 +68,7 @@ export function createStreamSession(
       toolCalls: {},
       streamSegments: [],
       currentPlan: null,
-      pendingPermission: null,
+      pendingPermissions: [],
       thoughtText: "",
     });
     deps.scheduleScrollToBottom();

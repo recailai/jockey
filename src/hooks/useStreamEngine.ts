@@ -200,7 +200,7 @@ export function useStreamEngine(sessionManager: SessionManager) {
       toolCalls: {},
       streamSegments: [],
       currentPlan: null,
-      pendingPermission: null,
+      pendingPermissions: [],
       agentState: undefined,
       thoughtText: "",
     });

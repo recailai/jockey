@@ -1,6 +1,7 @@
 use crate::db::{get_state, with_db};
 use crate::error::AppError;
 use crate::now_ms;
+use crate::runtime_profile;
 use crate::types::*;
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
@@ -39,6 +40,8 @@ pub(crate) fn upsert_role(
 ) -> Result<Role, String> {
     let role_name = role_name.trim().to_string();
     validate_role_name(&role_name)?;
+    let runtime_profile_id = runtime_profile::profile_id(&runtime_kind);
+    let runtime_kind = runtime_profile::runtime_key(&runtime_profile_id);
     let now = now_ms();
     let existing = with_db(state, |conn| {
         let name_hit: Option<(String, String, Option<String>, Option<String>, Option<String>, Option<bool>)> = conn
@@ -95,10 +98,11 @@ pub(crate) fn upsert_role(
 
     with_db(state, |conn| {
         conn.execute(
-            "INSERT INTO roles (id, role_name, runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, config_option_defs_json, auto_approve, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO roles (id, role_name, runtime_kind, runtime_profile_id, system_prompt, model, mode, mcp_servers_json, config_options_json, config_option_defs_json, auto_approve, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(role_name) DO UPDATE SET
                runtime_kind = excluded.runtime_kind,
+               runtime_profile_id = excluded.runtime_profile_id,
                system_prompt = excluded.system_prompt,
                model = excluded.model,
                mode = excluded.mode,
@@ -111,6 +115,7 @@ pub(crate) fn upsert_role(
                 &id,
                 &role_name,
                 &runtime_kind,
+                &runtime_profile_id,
                 &system_prompt,
                 &model,
                 &mode,
@@ -131,6 +136,7 @@ pub(crate) fn upsert_role(
         id,
         role_name,
         runtime_kind,
+        runtime_profile_id,
         runtime_launch_method,
         system_prompt,
         model,
@@ -152,6 +158,7 @@ pub(crate) fn upsert_role(
 pub(crate) struct RoleInput {
     pub(crate) role_name: String,
     pub(crate) runtime_kind: String,
+    pub(crate) runtime_profile_id: Option<String>,
     pub(crate) system_prompt: String,
     pub(crate) model: Option<String>,
     pub(crate) mode: Option<String>,
@@ -169,7 +176,7 @@ pub(crate) async fn upsert_role_cmd(
     let role = upsert_role(
         get_state(&state),
         input.role_name,
-        input.runtime_kind,
+        input.runtime_profile_id.unwrap_or(input.runtime_kind),
         input.system_prompt,
         input.model,
         input.mode,
@@ -183,27 +190,31 @@ pub(crate) async fn upsert_role_cmd(
 
 fn role_from_row(row: &rusqlite::Row) -> rusqlite::Result<Role> {
     let runtime_kind = row.get::<_, String>(2)?;
+    let runtime_profile_id = row
+        .get::<_, Option<String>>(3)?
+        .unwrap_or_else(|| runtime_profile::profile_id(&runtime_kind));
     let runtime_launch_method = crate::acp::adapter_launch_method(&runtime_kind);
     Ok(Role {
         id: row.get(0)?,
         role_name: row.get(1)?,
         runtime_kind,
+        runtime_profile_id,
         runtime_launch_method,
-        system_prompt: row.get(3)?,
-        model: row.get(4)?,
-        mode: row.get(5)?,
+        system_prompt: row.get(4)?,
+        model: row.get(5)?,
+        mode: row.get(6)?,
         mcp_servers_json: row
-            .get::<_, Option<String>>(6)?
+            .get::<_, Option<String>>(7)?
             .unwrap_or_else(|| "[]".to_string()),
         config_options_json: row
-            .get::<_, Option<String>>(7)?
+            .get::<_, Option<String>>(8)?
             .unwrap_or_else(|| "{}".to_string()),
         config_option_defs_json: row
-            .get::<_, Option<String>>(8)?
+            .get::<_, Option<String>>(9)?
             .unwrap_or_else(|| "[]".to_string()),
-        auto_approve: row.get::<_, Option<bool>>(9)?.unwrap_or(true),
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
+        auto_approve: row.get::<_, Option<bool>>(10)?.unwrap_or(true),
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
     })
 }
 
@@ -211,7 +222,7 @@ pub(crate) fn list_all_roles(state: &AppState) -> Result<Vec<Role>, String> {
     with_db(state, |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, role_name, runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, config_option_defs_json, auto_approve, created_at, updated_at
+                "SELECT id, role_name, runtime_kind, runtime_profile_id, system_prompt, model, mode, mcp_servers_json, config_options_json, config_option_defs_json, auto_approve, created_at, updated_at
                  FROM roles ORDER BY role_name ASC",
             )
             .map_err(|e| AppError::db(e.to_string()).to_string())?;
@@ -293,7 +304,7 @@ pub(crate) fn load_role(state: &AppState, role_name: &str) -> Result<Option<Role
     }
     let result = with_db(state, |conn| {
         conn.query_row(
-            "SELECT id, role_name, runtime_kind, system_prompt, model, mode, mcp_servers_json, config_options_json, config_option_defs_json, auto_approve, created_at, updated_at FROM roles WHERE role_name = ?1",
+                "SELECT id, role_name, runtime_kind, runtime_profile_id, system_prompt, model, mode, mcp_servers_json, config_options_json, config_option_defs_json, auto_approve, created_at, updated_at FROM roles WHERE role_name = ?1",
             params![role_name],
             role_from_row,
         ).optional().map_err(|e| AppError::db(e.to_string()).to_string())

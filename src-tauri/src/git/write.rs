@@ -1,10 +1,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use git2::{
-    BranchType, Commit, ObjectType, Repository,
-    Signature, Status, StatusOptions,
-};
+use git2::{BranchType, Commit, ObjectType, Repository, Signature, Status, StatusOptions};
 
 use super::error::GitError;
 
@@ -329,5 +326,3 @@ fn resolve_push_target(
         false,
     ))
 }
-
-

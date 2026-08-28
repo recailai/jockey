@@ -1,19 +1,54 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import type { Accessor } from "solid-js";
-import type { AppSession, Role, RoleUpsertInput, AcpConfigOption } from "../types";
+import type { AppSession, Role, RoleUpsertInput, AcpConfigOption, AssistantRuntime } from "../types";
 import { RUNTIME_COLOR, RUNTIMES, flattenConfigValues } from "../types";
 import { EmptyState, FieldRow, TextInput, InlineSelect, ActionButton } from "./primitives";
 import { roleApi, assistantApi, globalMcpApi, ruleApi, skillApi, parseError } from "../../lib/tauriApi";
 import type { RoleMcpEntry, RoleRule, RoleSkill } from "../../lib/tauriApi";
 import { codexReasoningEffortOption, isEffortOption, isModeOption, isModelOption, optionCurrentValue, optionId, optionName } from "../../lib/configOptions";
 
+const CAPABILITY_CHIPS: Array<[string, string]> = [
+  ["mcpServers", "MCP"],
+  ["permissionRequests", "permissions"],
+  ["modelCatalog", "models"],
+  ["dynamicModes", "modes"],
+  ["rewind", "rewind"],
+  ["fork", "fork"],
+];
+
+function CapabilityChips(props: { assistant: AssistantRuntime | undefined }) {
+  return (
+    <Show when={props.assistant}>
+      {(assistant) => (
+        <div class="mt-1 flex flex-wrap gap-1">
+          <For each={CAPABILITY_CHIPS}>
+            {([key, label]) => (
+              <span
+                title={assistant().capabilities[key] ? `${label}: supported` : `${label}: not supported by this provider`}
+                class={`rounded border px-1.5 py-0.5 font-mono text-[9px] ${
+                  assistant().capabilities[key]
+                    ? "border-[var(--ui-border)] theme-text"
+                    : "border-transparent theme-muted opacity-40 line-through"
+                }`}
+              >
+                {label}
+              </span>
+            )}
+          </For>
+        </div>
+      )}
+    </Show>
+  );
+}
+
 export function RolesTab(props: {
+  assistants: Accessor<AssistantRuntime[]>;
   roles: Accessor<Role[]>;
   activeSession: Accessor<AppSession | null>;
   patchActiveSession: (patch: Partial<AppSession>) => void;
   updateSession: (id: string, patch: Partial<AppSession>) => void;
   refreshRoles: () => Promise<void>;
-  fetchRoleConfig: (runtimeKey: string, roleName?: string) => Promise<{ options: AcpConfigOption[]; modes: string[] }>;
+  fetchRoleConfig: (runtimeKey: string, roleName?: string, forceRefresh?: boolean) => Promise<{ options: AcpConfigOption[]; modes: string[] }>;
   pushMessage: (role: string, text: string) => void;
   initialRoleName?: string;
 }) {
@@ -30,7 +65,19 @@ export function RolesTab(props: {
 
   // ── Create form state ───────────────────────────────────────────────────────
   const [cName, setCName] = createSignal("Developer");
-  const [cRuntime, setCRuntime] = createSignal("claude-code");
+  const [cRuntime, setCRuntime] = createSignal("claude-native");
+
+  // New roles default to the native Claude provider; fall back to ACP Claude
+  // when the native CLI is not detected on this machine.
+  createEffect(() => {
+    if (cRuntime() !== "claude-native") return;
+    const assistants = props.assistants();
+    const native = assistants.find((a) => a.profileId === "native:claude");
+    const acpClaude = assistants.find((a) => a.profileId === "acp:claude-code");
+    if (native && !native.available && acpClaude?.available) {
+      setCRuntime(acpClaude.key);
+    }
+  });
   const [cPrompt, setCPrompt] = createSignal("You are a senior developer. Implement the solution step by step.");
   const [cModel, setCModel] = createSignal("");
   const [cMode, setCMode] = createSignal("");
@@ -48,6 +95,7 @@ export function RolesTab(props: {
   const [eMode, setEMode] = createSignal("");
   const [eCfgJson, setECfgJson] = createSignal("{}");
   const [eConfigOpts, setEConfigOpts] = createSignal<AcpConfigOption[]>([]);
+  const [eConfigLoading, setEConfigLoading] = createSignal(false);
   const [eModes, setEModes] = createSignal<string[]>([]);
   const [eGlobalMcp, setEGlobalMcp] = createSignal<RoleMcpEntry[]>([]);
   const [mcpResetting, setMcpResetting] = createSignal(false);
@@ -69,7 +117,11 @@ export function RolesTab(props: {
 
   // ── Open create ─────────────────────────────────────────────────────────────
   const openCreate = () => {
-    const defaultRuntime = "claude-code";
+    const nativeClaude = props.assistants().find((assistant) => assistant.profileId === "native:claude");
+    const acpClaude = props.assistants().find((assistant) => assistant.profileId === "acp:claude-code");
+    const defaultRuntime = nativeClaude && !nativeClaude.available && acpClaude?.available
+      ? acpClaude.key
+      : "claude-native";
     const reqSeq = ++createConfigReqSeq;
     setCName("Developer");
     setCRuntime(defaultRuntime);
@@ -87,7 +139,7 @@ export function RolesTab(props: {
     setCreating(true);
     setCModes([]);
     setCConfigLoading(true);
-    void props.fetchRoleConfig(`runtime:${defaultRuntime}`)
+    void props.fetchRoleConfig(`runtime:${defaultRuntime}`, undefined, true)
       .then(({ options, modes }) => {
         if (reqSeq !== createConfigReqSeq || !creating() || cRuntime() !== defaultRuntime) return;
         setCConfigOpts(options);
@@ -116,9 +168,10 @@ export function RolesTab(props: {
     setECfgJson(role.configOptionsJson || "{}");
     setEConfigOpts([]);
     setEModes([]);
+    setEConfigLoading(true);
     setERoleRules([]);
     setERoleSkills([]);
-    void props.fetchRoleConfig(role.runtimeKind, role.roleName)
+    void props.fetchRoleConfig(role.runtimeKind, role.roleName, true)
       .then(({ options, modes }) => {
         if (reqSeq !== editConfigReqSeq || creating() || selectedId() !== role.id) return;
         setEConfigOpts(options);
@@ -129,10 +182,31 @@ export function RolesTab(props: {
         if (reqSeq !== editConfigReqSeq) return;
         setEConfigOpts([]);
         setEModes([]);
+      })
+      .finally(() => {
+        if (reqSeq === editConfigReqSeq) setEConfigLoading(false);
       });
     void globalMcpApi.listRoleMcp(role.roleName).then(setEGlobalMcp).catch(() => {});
     void ruleApi.listAllRulesForRole(role.roleName).then(setERoleRules).catch(() => {});
     void skillApi.listAllSkillsForRole(role.roleName).then(setERoleSkills).catch(() => {});
+  };
+
+  const refreshEditConfig = () => {
+    const role = editingRole();
+    if (!role || eConfigLoading()) return;
+    const reqSeq = ++editConfigReqSeq;
+    setEConfigLoading(true);
+    void props.fetchRoleConfig(role.runtimeKind, role.roleName, true)
+      .then(({ options, modes }) => {
+        if (reqSeq !== editConfigReqSeq || creating() || selectedId() !== role.id) return;
+        setEConfigOpts(options);
+        setEModes(modes);
+        setRoleConfigCache((prev) => ({ ...prev, [role.roleName]: { options, modes } }));
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (reqSeq === editConfigReqSeq) setEConfigLoading(false);
+      });
   };
 
   // Auto-open edit when panel is opened from sidebar with a pre-selected role name.
@@ -225,6 +299,9 @@ export function RolesTab(props: {
     return opt ? optionCurrentValue(opt) || null : null;
   };
 
+  const supportsCapability = (runtimeKey: string, capability: string) =>
+    props.assistants().find((assistant) => assistant.key === runtimeKey)?.capabilities[capability] === true;
+
   const configOptionSelectOptions = (opt: AcpConfigOption, defaultLabel = "default") =>
     [{ value: "", label: `${defaultLabel}: ${optionCurrentValue(opt) || "runtime"}` }, ...flattenConfigValues(opt.options).map((v) => ({ value: v.value, label: v.description ? `${v.name} — ${v.description}` : v.name }))];
 
@@ -239,16 +316,18 @@ export function RolesTab(props: {
     for (const [k, v] of Object.entries(cConfigSel())) { if (v) configMap[k] = v; }
     try {
       const saved = await roleApi.upsert({
-        roleName: name, runtimeKind: cRuntime(),
+        roleName: name, runtimeKind: cRuntime(), runtimeProfileId: selectedAssistant()?.profileId,
         systemPrompt: cPrompt().trim() || "You are a helpful AI assistant.",
         model: cModel().trim() || null, mode: cMode().trim() || null,
         mcpServersJson: "[]", configOptionsJson: JSON.stringify(configMap),
         configOptionDefsJson: JSON.stringify(resolvedCreateConfigOpts()),
         autoApprove: true,
       } satisfies RoleUpsertInput);
-      await Promise.all(cGlobalMcp().map((entry) =>
-        globalMcpApi.setRoleMcpEnabled(name, entry.mcpServerName, entry.enabled).catch(() => {}),
-      ));
+      if (supportsCapability(cRuntime(), "mcpServers")) {
+        await Promise.all(cGlobalMcp().map((entry) =>
+          globalMcpApi.setRoleMcpEnabled(name, entry.mcpServerName, entry.enabled).catch(() => {}),
+        ));
+      }
       await ruleApi.setRoleRules(
         name,
         cRoleRules().map((r) => [r.ruleId, r.enabled, r.ord] as [string, boolean, number]),
@@ -284,7 +363,7 @@ export function RolesTab(props: {
     setSaving(true);
     try {
       await roleApi.upsert({
-        roleName: role.roleName, runtimeKind: role.runtimeKind,
+        roleName: role.roleName, runtimeKind: role.runtimeKind, runtimeProfileId: role.runtimeProfileId,
         systemPrompt: ePrompt().trim(), model: eModel().trim() || null,
         mode: newMode, mcpServersJson: "[]",
         configOptionsJson: JSON.stringify(parsedCfg),
@@ -328,7 +407,7 @@ export function RolesTab(props: {
 
   const handleToggleGlobalMcp = async (entry: RoleMcpEntry, enabled: boolean) => {
     const role = editingRole();
-    if (!role) return;
+    if (!role || !supportsCapability(role.runtimeKind, "mcpServers")) return;
     await globalMcpApi.setRoleMcpEnabled(role.roleName, entry.mcpServerName, enabled).catch(() => {});
     setEGlobalMcp((prev) => prev.map((e) => e.mcpServerName === entry.mcpServerName ? { ...e, enabled } : e));
     setMcpResetting(true);
@@ -354,7 +433,28 @@ export function RolesTab(props: {
     await skillApi.setRoleSkills(role.roleName, payload).catch(() => {});
   };
 
-  const runtimeOptions = RUNTIMES.map((r) => ({ value: r, label: r }));
+  const selectedAssistant = createMemo(() =>
+    props.assistants().find((assistant) => assistant.key === cRuntime()),
+  );
+
+  const runtimeOptions = createMemo(() => {
+    const detected = props.assistants().map((assistant) => ({
+      value: assistant.key,
+      label: assistant.label,
+      group: assistant.family === "native" ? "Native CLI" : "ACP Agents",
+      disabled: !assistant.available,
+      hint: assistant.available
+        ? `${assistant.transport}${assistant.launchMethod ? ` · ${assistant.launchMethod}` : ""}`
+        : (assistant.installHint ?? "not detected on this machine"),
+    }));
+    const known = new Set(detected.map((option) => option.value));
+    return [
+      ...detected,
+      ...RUNTIMES
+        .filter((runtime) => !known.has(runtime))
+        .map((runtime) => ({ value: runtime, label: runtime })),
+    ];
+  });
 
   // Edit form config options (local, not tied to global activeSession)
   const editConfigOpts = createMemo(() => eConfigOpts());
@@ -457,11 +557,12 @@ export function RolesTab(props: {
                 </div>
               </FieldRow>
               <FieldRow label="Runtime">
-                <InlineSelect value={cRuntime()} options={runtimeOptions} onChange={(v) => {
+                <div class="w-full">
+                  <InlineSelect value={cRuntime()} options={runtimeOptions()} onChange={(v) => {
                   const reqSeq = ++createConfigReqSeq;
                   setCRuntime(v); setCModel(""); setCMode(""); setCConfigSel({}); setCConfigOpts([]); setCModes([]);
                   setCConfigLoading(true);
-                  void props.fetchRoleConfig(`runtime:${v}`)
+                  void props.fetchRoleConfig(`runtime:${v}`, undefined, true)
                     .then(({ options, modes }) => {
                       if (reqSeq !== createConfigReqSeq || !creating() || cRuntime() !== v) return;
                       setCConfigOpts(options);
@@ -476,6 +577,8 @@ export function RolesTab(props: {
                       if (reqSeq === createConfigReqSeq) setCConfigLoading(false);
                     });
                 }} />
+                  <CapabilityChips assistant={selectedAssistant()} />
+                </div>
               </FieldRow>
               <FieldRow label="Prompt">
                 <TextInput value={cPrompt()} onInput={setCPrompt} placeholder="System prompt…" multiline rows={4} />
@@ -539,22 +642,24 @@ export function RolesTab(props: {
               </Show>
               <Show when={cGlobalMcp().length > 0}>
                 <FieldRow label="MCP">
-                  <div class="space-y-1">
-                    <For each={cGlobalMcp()}>{(entry) => (
-                      <div class="flex items-center gap-2 rounded-md border theme-border bg-[var(--ui-surface)] px-2 py-1">
-                        <input
-                          type="checkbox"
-                          checked={entry.enabled}
-                          onChange={(e) => setCGlobalMcp((prev) => prev.map((m) => m.mcpServerName === entry.mcpServerName ? { ...m, enabled: e.currentTarget.checked } : m))}
-                          class="accent-indigo-400 h-3 w-3 shrink-0"
-                        />
-                        <span class="flex-1 truncate font-mono text-[10px] theme-text">{entry.mcpServerName}</span>
-                        <Show when={entry.isBuiltin}>
-                          <span class="text-[9px] theme-muted italic">builtin</span>
-                        </Show>
-                      </div>
-                    )}</For>
-                  </div>
+                  <Show when={supportsCapability(cRuntime(), "mcpServers")} fallback={<span class="text-[10px] theme-muted">MCP is not supported by this runtime profile.</span>}>
+                    <div class="space-y-1">
+                      <For each={cGlobalMcp()}>{(entry) => (
+                        <div class="flex items-center gap-2 rounded-md border theme-border bg-[var(--ui-surface)] px-2 py-1">
+                          <input
+                            type="checkbox"
+                            checked={entry.enabled}
+                            onChange={(e) => setCGlobalMcp((prev) => prev.map((m) => m.mcpServerName === entry.mcpServerName ? { ...m, enabled: e.currentTarget.checked } : m))}
+                            class="accent-indigo-400 h-3 w-3 shrink-0"
+                          />
+                          <span class="flex-1 truncate font-mono text-[10px] theme-text">{entry.mcpServerName}</span>
+                          <Show when={entry.isBuiltin}>
+                            <span class="text-[9px] theme-muted italic">builtin</span>
+                          </Show>
+                        </div>
+                      )}</For>
+                    </div>
+                  </Show>
                 </FieldRow>
               </Show>
               <Show when={cRoleRules().length > 0}>
@@ -647,19 +752,32 @@ export function RolesTab(props: {
                     <TextInput value={ePrompt()} onInput={setEPrompt} placeholder="System prompt" multiline rows={4} />
                   </FieldRow>
                   <FieldRow label="Model">
-                    <Show when={modelOpt()} fallback={
-                      <TextInput value={eModel()} onInput={setEModel} placeholder="Optional model" monospace />
-                    }>
-                      {(mo) => {
-                        return (
-                          <InlineSelect
-                            value={eModel()}
-                            options={configOptionSelectOptions(mo())}
-                            onChange={setEModel}
-                          />
-                        );
-                      }}
-                    </Show>
+                    <div class="flex items-center gap-2">
+                      <div class="min-w-0 flex-1">
+                        <Show when={modelOpt()} fallback={
+                          <TextInput value={eModel()} onInput={setEModel} placeholder="Optional model" monospace />
+                        }>
+                          {(mo) => {
+                            return (
+                              <InlineSelect
+                                value={eModel()}
+                                options={configOptionSelectOptions(mo())}
+                                onChange={setEModel}
+                              />
+                            );
+                          }}
+                        </Show>
+                      </div>
+                      <button
+                        type="button"
+                        title="Refresh model list from the runtime"
+                        onClick={refreshEditConfig}
+                        disabled={eConfigLoading()}
+                        class="shrink-0 rounded border theme-border px-2 py-1 text-[9px] theme-muted hover:text-primary disabled:opacity-40"
+                      >
+                        {eConfigLoading() ? "…" : "↻"}
+                      </button>
+                    </div>
                   </FieldRow>
                   <Show when={modeResolved()}>
                     {(mr) => {
@@ -701,25 +819,27 @@ export function RolesTab(props: {
                   </For>
                   <Show when={eGlobalMcp().length > 0}>
                     <FieldRow label="MCP">
-                      <div class="space-y-1">
-                        <For each={eGlobalMcp()}>{(entry) => (
-                          <div class="flex items-center gap-2 rounded-md border theme-border bg-[var(--ui-surface)] px-2 py-1">
-                            <input
-                              type="checkbox"
-                              checked={entry.enabled}
-                              onChange={(e) => void handleToggleGlobalMcp(entry, e.currentTarget.checked)}
-                              class="accent-indigo-400 h-3 w-3 shrink-0"
-                            />
-                            <span class="flex-1 truncate font-mono text-[10px] theme-text">{entry.mcpServerName}</span>
-                            <Show when={entry.isBuiltin}>
-                              <span class="text-[9px] theme-muted italic">builtin</span>
-                            </Show>
-                          </div>
-                        )}</For>
-                        <Show when={mcpResetting()}>
-                          <div class="text-[9.5px] text-amber-300 font-mono pt-0.5">MCP changed — reconnecting live sessions…</div>
-                        </Show>
-                      </div>
+                      <Show when={supportsCapability(role().runtimeKind, "mcpServers")} fallback={<span class="text-[10px] theme-muted">MCP is not supported by this runtime profile.</span>}>
+                        <div class="space-y-1">
+                          <For each={eGlobalMcp()}>{(entry) => (
+                            <div class="flex items-center gap-2 rounded-md border theme-border bg-[var(--ui-surface)] px-2 py-1">
+                              <input
+                                type="checkbox"
+                                checked={entry.enabled}
+                                onChange={(e) => void handleToggleGlobalMcp(entry, e.currentTarget.checked)}
+                                class="accent-indigo-400 h-3 w-3 shrink-0"
+                              />
+                              <span class="flex-1 truncate font-mono text-[10px] theme-text">{entry.mcpServerName}</span>
+                              <Show when={entry.isBuiltin}>
+                                <span class="text-[9px] theme-muted italic">builtin</span>
+                              </Show>
+                            </div>
+                          )}</For>
+                          <Show when={mcpResetting()}>
+                            <div class="text-[9.5px] text-amber-300 font-mono pt-0.5">MCP changed — reconnecting live sessions…</div>
+                          </Show>
+                        </div>
+                      </Show>
                     </FieldRow>
                   </Show>
                   <Show when={eRoleRules().length > 0}>

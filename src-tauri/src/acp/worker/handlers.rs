@@ -1,4 +1,4 @@
-use agent_client_protocol::{self as acp};
+use crate::acp::protocol as acp;
 use serde_json::{json, Value};
 use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
@@ -8,11 +8,9 @@ use super::super::error::{AcpErrorCode, AcpLayerError};
 use super::super::metrics::{record_error, record_idle_reclaim, record_prompt_latency};
 use super::super::runtime_state::{
     list_discovered_config_options, list_discovered_modes, remember_runtime_available_commands,
-    remember_runtime_config_options, remember_runtime_models, remember_runtime_modes,
+    remember_runtime_config_options, remember_runtime_modes,
 };
-use super::super::session::{
-    cold_start, config_options_from_model_state, model_ids_from_model_state, resolve_model_id,
-};
+use super::super::session::cold_start;
 use super::notify::{notify_connection_death, notify_prewarm};
 use super::pool::{
     child_pids, pool_key, CANCEL_HANDLES, CONN_MAP, DELTA_CHANNEL_CAPACITY, PENDING_COLD_STARTS,
@@ -24,6 +22,18 @@ use futures::future::FutureExt;
 
 const PROMPT_LIVENESS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 const IDLE_RECLAIM_AFTER: std::time::Duration = std::time::Duration::from_secs(300);
+
+fn child_exit_detail(key: &str) -> Option<String> {
+    CONN_MAP.with(|m| {
+        let mut map = m.borrow_mut();
+        let child = map.get_mut(key)?;
+        match child._child.try_wait() {
+            Ok(Some(status)) => Some(format!("agent process exited with {status}")),
+            Ok(None) => None,
+            Err(error) => Some(format!("agent process wait failed: {error}")),
+        }
+    })
+}
 
 /// Emit a structured SessionError event on the delta stream so the UI can
 /// render a recovery action before the final result_tx rejection arrives.
@@ -344,11 +354,10 @@ pub(crate) async fn apply_cold_start_config(
             (
                 crate::acp::AgentConnection::rpc_handle(c),
                 c.config_state.clone(),
-                c.model_state.clone(),
             )
         })
     });
-    let Some((conn_rc, config_state, model_state)) = conn_state else {
+    let Some((conn_rc, config_state)) = conn_state else {
         return;
     };
 
@@ -394,70 +403,6 @@ pub(crate) async fn apply_cold_start_config(
         }
     }
 
-    let model_override = role_config_options
-        .iter()
-        .find(|(k, _)| k == "model")
-        .map(|(_, v)| v.as_str());
-    let effort_override = role_config_options
-        .iter()
-        .find(|(k, _)| {
-            matches!(
-                k.as_str(),
-                "reasoning_effort" | "thinking_effort" | "thought_level" | "effort"
-            )
-        })
-        .map(|(_, v)| v.as_str());
-
-    let native_config_keys: std::collections::HashSet<String> = config_state
-        .borrow()
-        .iter()
-        .map(|opt| opt.id.to_string())
-        .collect();
-    let use_model_state_config = model_state.borrow().is_some()
-        && !native_config_keys.contains("model")
-        && (model_override.is_some() || effort_override.is_some());
-
-    let model_snapshot = model_state.borrow().clone();
-    if use_model_state_config {
-        let Some(mut state) = model_snapshot else {
-            return;
-        };
-        if let Some(model_id) = resolve_model_id(&state, model_override, effort_override) {
-            if model_id != state.current_model_id.to_string() {
-                match conn_rc
-                    .set_session_model(acp::SetSessionModelRequest::new(
-                        session_id.clone(),
-                        acp::ModelId::from(model_id.clone()),
-                    ))
-                    .await
-                {
-                    Ok(_) => {
-                        state.current_model_id = acp::ModelId::from(model_id);
-                        *model_state.borrow_mut() = Some(state.clone());
-                        remember_runtime_models(runtime_key, model_ids_from_model_state(&state));
-                        remember_runtime_config_options(
-                            runtime_key,
-                            config_options_from_model_state(&state),
-                        );
-                    }
-                    Err(e) => {
-                        let layer = AcpLayerError::from(e);
-                        acp_log(
-                            "config.set_model.error",
-                            json!({ "model": model_override, "effort": effort_override, "error": layer.message }),
-                        );
-                        emit_session_error(
-                            delta_tx,
-                            layer.code,
-                            "failed to set model",
-                            layer.retryable,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
     let mut ordered_role_config_options: Vec<&(String, String)> = role_config_options
         .iter()
         .filter(|(k, _)| k == "model")
@@ -465,14 +410,6 @@ pub(crate) async fn apply_cold_start_config(
     ordered_role_config_options.extend(role_config_options.iter().filter(|(k, _)| k != "model"));
 
     for (k, value) in ordered_role_config_options {
-        if use_model_state_config
-            && matches!(
-                k.as_str(),
-                "model" | "reasoning_effort" | "thinking_effort" | "thought_level" | "effort"
-            )
-        {
-            continue;
-        }
         let discovered = list_discovered_config_options(runtime_key);
         let supported_keys: std::collections::HashSet<String> = discovered
             .iter()
@@ -576,7 +513,11 @@ pub(crate) fn spawn_connection_health_watch(
                 break "connection health watcher closed".to_string();
             }
             if !*hrx.borrow() {
-                break "agent io stopped".to_string();
+                if let Some(detail) = child_exit_detail(&key) {
+                    break detail;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                break child_exit_detail(&key).unwrap_or_else(|| "agent io stopped".to_string());
             }
         };
         acp_log("health.process_died", json!({ "key": &key }));
@@ -776,19 +717,22 @@ pub(crate) async fn handle_execute(
     let prompt_fut = conn_rc.prompt(acp::PromptRequest::new(session_id.clone(), blocks));
     tokio::pin!(prompt_fut);
 
-    let prompt_result: Result<Result<acp::PromptResponse, acp::Error>, &str> = loop {
+    let prompt_result: Result<Result<acp::PromptResponse, acp::Error>, String> = loop {
         tokio::select! {
             res = &mut prompt_fut => {
                 break Ok(res);
             }
             changed = health_rx.changed() => {
                 if changed.is_err() || !*health_rx.borrow() {
-                    break Err("agent process exited while prompt was in progress");
+                    break Err(child_exit_detail(&key).unwrap_or_else(|| {
+                        "agent process exited while prompt was in progress".to_string()
+                    }));
                 }
             }
             _ = tokio::time::sleep(PROMPT_LIVENESS_INTERVAL) => {
                 if !*health_rx.borrow() {
-                    break Err("agent process is no longer alive");
+                    break Err(child_exit_detail(&key)
+                        .unwrap_or_else(|| "agent process is no longer alive".to_string()));
                 }
             }
         }
@@ -841,7 +785,12 @@ pub(crate) async fn handle_execute(
                 "pool.invalidate",
                 json!({ "runtime": runtime_key, "error": e.to_string() }),
             );
-            let layer = AcpLayerError::from(e.clone());
+            let mut layer = AcpLayerError::from(e.clone());
+            if let Some(detail) = child_exit_detail(&key) {
+                layer.code = AcpErrorCode::ProcessCrashed;
+                layer.message = format!("{detail}: {}", layer.message);
+                layer.retryable = true;
+            }
             emit_session_error(
                 &delta_tx,
                 layer.code,
@@ -865,7 +814,7 @@ pub(crate) async fn handle_execute(
                     reason: Some(e.to_string()),
                 });
             }
-            let _ = result_tx.send(Err(e.to_string()));
+            let _ = result_tx.send(Err(layer.into_message()));
         }
         Err(reason) => {
             record_error(runtime_key);
@@ -878,10 +827,11 @@ pub(crate) async fn handle_execute(
                     "reason": reason
                 }),
             );
+            let reason = child_exit_detail(&key).unwrap_or(reason);
             emit_session_error(
                 &delta_tx,
                 AcpErrorCode::ProcessCrashed,
-                reason.to_string(),
+                reason.clone(),
                 true,
             );
             conn_rc
@@ -900,10 +850,10 @@ pub(crate) async fn handle_execute(
                     runtime_key: runtime_key.to_string(),
                     role_name: role_name.clone(),
                     app_session_id: app_session_id.clone(),
-                    reason: Some(reason.to_string()),
+                    reason: Some(reason.clone()),
                 });
             }
-            let _ = result_tx.send(Err(reason.to_string()));
+            let _ = result_tx.send(Err(reason));
         }
     }
 }

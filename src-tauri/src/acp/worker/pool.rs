@@ -1,4 +1,4 @@
-use agent_client_protocol as acp;
+use crate::acp::protocol as acp;
 use dashmap::DashSet;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -7,11 +7,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
+use super::super::transport::AcpConnection;
 use super::types::AcpEvent;
 
 pub(crate) type ModeStateCell = Rc<RefCell<Option<acp::SessionModeState>>>;
 pub(crate) type ConfigStateCell = Rc<RefCell<Vec<acp::SessionConfigOption>>>;
-pub(crate) type ModelStateCell = Rc<RefCell<Option<acp::SessionModelState>>>;
 
 pub(crate) const DELTA_CHANNEL_CAPACITY: usize = 512;
 pub(crate) type DeltaSlot = Arc<Mutex<Option<mpsc::Sender<AcpEvent>>>>;
@@ -26,7 +26,7 @@ pub(crate) fn pool_key(app_session_id: &str, runtime_key: &str, role_name: &str)
 
 pub(crate) struct LiveConnection {
     pub(crate) instance_id: u64,
-    pub(crate) conn: Rc<acp::ClientSideConnection>,
+    pub(crate) conn: Rc<AcpConnection>,
     pub(crate) session_id: acp::SessionId,
     pub(crate) cwd: String,
     pub(crate) delta_slot: DeltaSlot,
@@ -34,9 +34,6 @@ pub(crate) struct LiveConnection {
     /// `set_session_mode`. Cloned into the owning JockeyUiClient so writes
     /// from `session_notification` land here without a worker round-trip.
     pub(crate) mode_state: ModeStateCell,
-    /// Shared cell for ACP's unstable model-state path. Newer adapters expose
-    /// model/effort through `session/set_model` instead of config options.
-    pub(crate) model_state: ModelStateCell,
     /// Shared cell updated when ConfigOptionUpdate arrives and on
     /// `set_session_config_option` responses.
     pub(crate) config_state: ConfigStateCell,
@@ -64,7 +61,7 @@ impl Drop for LiveConnection {
 
 // SAFETY: LiveConnection is only ever created and accessed on the single-threaded
 // worker LocalSet (see `run_worker`). No actual cross-thread access occurs.
-// The Rc<ClientSideConnection> is the only non-Send field; it is safe because:
+// The Rc-based transport state is safe because:
 // 1. cold_start() runs on the worker LocalSet and produces the Rc.
 // 2. handle_execute/handle_prewarm run on the same LocalSet.
 // 3. The connection map is thread-local to that worker thread.
@@ -89,9 +86,6 @@ impl crate::acp::AgentConnection for LiveConnection {
     }
     fn mode_state(&self) -> ModeStateCell {
         self.mode_state.clone()
-    }
-    fn model_state(&self) -> ModelStateCell {
-        self.model_state.clone()
     }
     fn config_state(&self) -> ConfigStateCell {
         self.config_state.clone()

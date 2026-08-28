@@ -49,10 +49,16 @@ export function useSessionManager() {
   };
 
   const persistSessionPatch = (id: string, patch: Partial<AppSession>) => {
-    const update: { title?: string; activeRole?: string; runtimeKind?: string | null | undefined } = {};
+    const update: {
+      title?: string;
+      activeRole?: string;
+      runtimeKind?: string | null | undefined;
+      runtimeProfileId?: string | null | undefined;
+    } = {};
     if (typeof patch.title === "string") update.title = patch.title;
     if (typeof patch.activeRole === "string") update.activeRole = patch.activeRole;
     if ("runtimeKind" in patch) update.runtimeKind = patch.runtimeKind ?? null;
+    if ("runtimeProfileId" in patch) update.runtimeProfileId = patch.runtimeProfileId ?? null;
     if (Object.keys(update).length === 0) return;
     void appSessionApi.update(id, update).catch(() => { });
   };

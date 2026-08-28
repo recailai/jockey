@@ -16,6 +16,7 @@ export function useAgentContext(
     setSessions,
     activeSessionId,
     activeSession,
+    patchActiveSession,
     updateSession,
     mutateSession,
     pushMessage,
@@ -54,7 +55,11 @@ export function useAgentContext(
     return roles().find((r) => r.roleName === roleName)?.runtimeKind ?? null;
   };
 
-  const fetchRoleConfig = async (runtimeKey: string, roleName?: string): Promise<{ options: AcpConfigOption[]; modes: string[] }> => {
+  const fetchRoleConfig = async (
+    runtimeKey: string,
+    roleName?: string,
+    forceRefresh = false,
+  ): Promise<{ options: AcpConfigOption[]; modes: string[] }> => {
     const empty = { options: [] as AcpConfigOption[], modes: [] as string[] };
     const hasConfig = (entry: { options: AcpConfigOption[]; modes: string[] }) =>
       entry.options.length > 0 || entry.modes.length > 0;
@@ -71,20 +76,39 @@ export function useAgentContext(
       const sid = activeSessionId();
       if (!sid) return { options: roleStoredOptions(), modes: [] };
       const hit = runtimeConfigCache.get(resolvedRole);
-      if (hit && hasConfig(hit)) {
+      const refreshInBackground = () => {
         void assistantApi.prewarmRoleConfig(resolvedRole, sid)
-          .then(() => refreshRoles())
+          .then((result) => {
+            const options = result.configOptions as AcpConfigOption[];
+            const modes = result.modes as string[];
+            const entry = {
+              options: options.length > 0 ? options : roleStoredOptions(),
+              modes,
+            };
+            if (hasConfig(entry)) {
+              runtimeConfigCache.set(resolvedRole, entry);
+              const session = activeSession();
+              const activeRuntime = session?.runtimeKind
+                ? normalizeRuntimeKey(session.runtimeKind)
+                : "";
+              if (session && (session.activeRole === resolvedRole || activeRuntime === resolvedRole)) {
+                patchActiveSession({ discoveredConfigOptions: entry.options });
+              }
+            }
+            return refreshRoles();
+          })
           .catch(() => {});
+      };
+      if (hit && hasConfig(hit) && !forceRefresh) {
+        refreshInBackground();
         return hit;
       }
       const cached = await assistantApi.listDiscoveredConfig(resolvedRole);
-      if ((cached as AcpConfigOption[]).length > 0) {
+      if ((cached as AcpConfigOption[]).length > 0 && !forceRefresh) {
         const modes = await assistantApi.listDiscoveredModes(resolvedRole).catch(() => [] as string[]);
         const entry = { options: cached as AcpConfigOption[], modes };
         runtimeConfigCache.set(resolvedRole, entry);
-        void assistantApi.prewarmRoleConfig(resolvedRole, sid)
-          .then(() => refreshRoles())
-          .catch(() => {});
+        refreshInBackground();
         return entry;
       }
       const result = await assistantApi.prewarmRoleConfig(resolvedRole, sid);
@@ -182,7 +206,7 @@ export function useAgentContext(
         toolCalls: {},
         streamSegments: [],
         currentPlan: null,
-        pendingPermission: null,
+        pendingPermissions: [],
         thoughtText: "",
         agentState: undefined,
         currentMode: null,
@@ -219,7 +243,7 @@ export function useAgentContext(
         toolCalls: {},
         streamSegments: [],
         currentPlan: null,
-        pendingPermission: null,
+        pendingPermissions: [],
         thoughtText: "",
         agentState: undefined,
         currentMode: null,
@@ -248,7 +272,7 @@ export function useAgentContext(
     clearSessionStream?.(sid);
     updateSession(sid, {
       currentPlan: null,
-      pendingPermission: null,
+      pendingPermissions: [],
       submitting: false,
       status: "idle",
     });

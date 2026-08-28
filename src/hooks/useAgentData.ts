@@ -18,9 +18,11 @@ export function useAgentData(
 
   const normalizeRuntimeKey = (runtimeKey: string): string => {
     const k = runtimeKey.trim().toLowerCase();
-    if (k === "claude" || k === "claude-acp") return "claude-code";
-    if (k === "gemini") return "gemini-cli";
+    if (k === "claude") return "claude-native";
+    if (k === "claude-acp") return "claude-code";
+    if (k === "agy" || k === "antigravity" || k === "gemini" || k === "gemini-cli") return "antigravity-cli";
     if (k === "codex" || k === "codex-acp") return "codex-cli";
+    if (k === "pi" || k === "pi-coding-agent") return "pi-cli";
     return k;
   };
 
@@ -51,7 +53,11 @@ export function useAgentData(
   };
 
   const setPreferredAssistant = (assistantKey: string | null) => {
-    patchActiveSession({ runtimeKind: assistantKey });
+    const profile = assistantKey ? assistants().find((assistant) => assistant.key === assistantKey) : null;
+    patchActiveSession({
+      runtimeKind: assistantKey,
+      runtimeProfileId: profile?.profileId ?? null,
+    });
   };
 
   const refreshAssistants = async () => {

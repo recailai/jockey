@@ -537,9 +537,10 @@ pub(crate) fn acp_protocol_cli_templates() -> &'static Vec<(String, String)> {
     static TEMPLATES: OnceLock<Vec<(String, String)>> = OnceLock::new();
     TEMPLATES.get_or_init(|| {
         let mut out = Vec::new();
-        let mut method_names = collect_acp_method_names(&agent_client_protocol::AGENT_METHOD_NAMES);
+        let mut method_names =
+            collect_acp_method_names(&agent_client_protocol::schema::v1::AGENT_METHOD_NAMES);
         method_names.extend(collect_acp_method_names(
-            &agent_client_protocol::CLIENT_METHOD_NAMES,
+            &agent_client_protocol::schema::v1::CLIENT_METHOD_NAMES,
         ));
         method_names.sort_unstable();
         method_names.dedup();

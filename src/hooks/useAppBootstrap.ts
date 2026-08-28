@@ -6,6 +6,7 @@ import { appSessionApi } from "../lib/tauriApi";
 type SetSessions = {
   (value: AppSession[]): void;
   (index: number, key: "runtimeKind", value: string | null): void;
+  (index: number, key: "runtimeProfileId", value: string | null): void;
 };
 
 type UseAppBootstrapInput = {
@@ -42,6 +43,7 @@ export function useAppBootstrap(input: UseAppBootstrapInput) {
         s.id = r.id;
         if (r.activeRole) s.activeRole = r.activeRole;
         if (r.runtimeKind !== undefined) s.runtimeKind = r.runtimeKind;
+        if (r.runtimeProfileId !== undefined) s.runtimeProfileId = r.runtimeProfileId;
         if (r.cwd !== undefined) s.cwd = r.cwd ?? null;
         s.messages = r.messages ?? [];
         return s;
@@ -66,12 +68,16 @@ export function useAppBootstrap(input: UseAppBootstrapInput) {
 
     await Promise.all([refreshAssistants(), refreshRoles(), refreshSkills()]);
 
-    const availableAssistant = assistants().find((a) => a.available)?.key ?? null;
+    const availableAssistant = assistants().find((a) => a.available) ?? null;
     for (let i = 0; i < loaded.length; i++) {
       if (!loaded[i].runtimeKind && availableAssistant) {
-        setSessions(i, "runtimeKind", availableAssistant);
+        setSessions(i, "runtimeKind", availableAssistant.key);
+        setSessions(i, "runtimeProfileId", availableAssistant.profileId);
         void appSessionApi
-          .update(loaded[i].id, { runtimeKind: availableAssistant })
+          .update(loaded[i].id, {
+            runtimeKind: availableAssistant.key,
+            runtimeProfileId: availableAssistant.profileId,
+          })
           .catch(() => {});
       }
     }

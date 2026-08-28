@@ -244,10 +244,8 @@ pub(crate) async fn prewarm_role_config_cmd(
     let runtime = resolve_runtime_for_session_role(get_state(&state), sid, &role_name)?;
     let cwd = crate::db::app_session::get_app_session_cwd(get_state(&state), sid)
         .unwrap_or_else(resolve_chat_cwd);
-    // Role/config UI discovery must not reuse the live app-session connection.
-    // Using the active session id here makes `force_refresh` evict the same
-    // pool slot that may currently be serving a prompt, which surfaces as
-    // "agent process exited while prompt was in progress" in the running chat.
+    // Role/config UI discovery uses a separate refresh connection so it cannot
+    // evict the live app-session connection serving the running chat.
     let (opts, modes) =
         acp::refresh_role_config_defs(&runtime, &role_name, &cwd, get_state(&state)).await;
     if !opts.is_empty() {
@@ -268,7 +266,7 @@ pub(crate) async fn respond_permission(
     option_id: String,
     cancelled: bool,
 ) -> Result<(), String> {
-    use agent_client_protocol as acpsdk;
+    use crate::acp::protocol as acpsdk;
     let outcome = if cancelled {
         acpsdk::RequestPermissionOutcome::Cancelled
     } else {

@@ -271,6 +271,19 @@ export default function App() {
   const chatQueuedCount = createMemo(() => activeSession()?.queuedMessages.length ?? 0);
 
   const handlePasteImage = (items: DataTransferItemList, currentNodes: RichNode[]) => {
+    // Provider capability gate: attachments=false profiles (e.g. native agy)
+    // cannot accept image input; refuse instead of silently dropping content
+    // downstream.
+    const session = activeSession();
+    const profileId = session?.runtimeProfileId ?? null;
+    const runtimeKind = session?.runtimeKind ?? null;
+    const profile = assistants().find(
+      (a) => (profileId && a.profileId === profileId) || (!profileId && a.key === runtimeKind),
+    );
+    if (profile && profile.capabilities.attachments === false) {
+      showToast(`${profile.label} does not support image attachments for this session.`);
+      return;
+    }
     const imageItems = Array.from(items).filter((it) => it.kind === "file" && it.type.startsWith("image/"));
     imageItems.forEach((item) => {
       const file = item.getAsFile();
@@ -391,21 +404,26 @@ export default function App() {
   };
 
   const newSession = () => {
-    const availableAssistant = assistants().find((a) => a.available)?.key ?? null;
+    const availableAssistant = assistants().find((a) => a.available) ?? null;
     const title = uniqueName("Session_1", sessions.map((s) => s.title));
     void appSessionApi.create(title).then((created) => {
       const s = makeDefaultSession(title);
       s.id = created.id;
-      s.runtimeKind = availableAssistant;
+      s.runtimeKind = availableAssistant?.key ?? null;
+      s.runtimeProfileId = availableAssistant?.profileId ?? null;
       setSessions(sessions.length, s);
       setActiveSessionId(s.id);
       if (availableAssistant) {
-        void appSessionApi.update(created.id, { runtimeKind: availableAssistant }).catch(() => { });
+        void appSessionApi.update(created.id, {
+          runtimeKind: availableAssistant.key,
+          runtimeProfileId: availableAssistant.profileId,
+        }).catch(() => { });
       }
     }).catch((e: unknown) => {
       showToast(`Failed to create session: ${String(e)}`);
       const s = makeDefaultSession(title);
-      s.runtimeKind = availableAssistant;
+      s.runtimeKind = availableAssistant?.key ?? null;
+      s.runtimeProfileId = availableAssistant?.profileId ?? null;
       setSessions(sessions.length, s);
       setActiveSessionId(s.id);
     });
@@ -537,6 +555,7 @@ export default function App() {
             patchActiveSession({
               activeRole: roleName,
               runtimeKind: role?.runtimeKind ?? activeSession()?.runtimeKind ?? null,
+              runtimeProfileId: role?.runtimeProfileId ?? activeSession()?.runtimeProfileId ?? null,
               discoveredConfigOptions: [],
             });
             if (role) {
@@ -622,13 +641,14 @@ export default function App() {
             refreshRoles={refreshRoles}
             fetchRoleConfig={fetchRoleConfig}
             pushMessage={pushMessage}
-            onRestoreSession={(id, title, activeRole, runtimeKind, cwd) => {
+            onRestoreSession={(id, title, activeRole, runtimeKind, runtimeProfileId, cwd) => {
               const existing = getSessionIndex(id) !== -1;
               if (!existing) {
                 const s = makeDefaultSession(title);
                 s.id = id;
                 s.activeRole = activeRole;
                 s.runtimeKind = runtimeKind;
+                s.runtimeProfileId = runtimeProfileId;
                 s.cwd = cwd;
                 setSessions(sessions.length, s);
               }

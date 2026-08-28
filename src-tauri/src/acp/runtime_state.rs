@@ -24,10 +24,20 @@ fn runtime_available_commands() -> &'static DashMap<String, Vec<Value>> {
 }
 
 pub(super) fn clear_all() {
+    clear_discovered_catalogs();
+    runtime_available_commands().clear();
+}
+
+pub fn clear_discovered_catalogs() {
     runtime_models().clear();
     runtime_modes().clear();
     runtime_config_options().clear();
-    runtime_available_commands().clear();
+}
+
+pub(super) fn clear_runtime(runtime_key: &str) {
+    runtime_models().remove(runtime_key);
+    runtime_modes().remove(runtime_key);
+    runtime_config_options().remove(runtime_key);
 }
 
 pub(super) fn clear_session(app_session_id: &str, runtime_key: &str, role_name: &str) {
@@ -35,18 +45,16 @@ pub(super) fn clear_session(app_session_id: &str, runtime_key: &str, role_name: 
 }
 
 pub(super) fn remember_runtime_models(runtime_key: &str, mut models: Vec<String>) {
-    if models.is_empty() {
-        return;
-    }
     models.sort_unstable();
     models.dedup();
     runtime_models().insert(runtime_key.to_string(), models);
 }
 
+pub(super) fn has_discovered_models(runtime_key: &str) -> bool {
+    runtime_models().contains_key(runtime_key)
+}
+
 pub(super) fn remember_runtime_modes(runtime_key: &str, mut modes: Vec<String>) {
-    if modes.is_empty() {
-        return;
-    }
     modes.sort_unstable();
     modes.dedup();
     runtime_modes().insert(runtime_key.to_string(), modes);
@@ -71,9 +79,6 @@ pub fn list_discovered_modes(runtime_key: &str) -> Vec<String> {
 // discovered option definitions (last-write-wins). Config option *values* are stored
 // separately per-session-role in app_session_roles.config_options_json.
 pub(super) fn remember_runtime_config_options(runtime_key: &str, options: Vec<Value>) {
-    if options.is_empty() {
-        return;
-    }
     runtime_config_options().insert(runtime_key.to_string(), options);
 }
 

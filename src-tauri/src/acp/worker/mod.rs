@@ -16,11 +16,12 @@ pub(crate) use permission::{
     permission_requests, PendingPermission,
 };
 pub(crate) use pool::{
-    pool_key, register_child_pid, ConfigStateCell, DeltaSlot, LiveConnection, ModeStateCell,
-    ModelStateCell, CANCEL_HANDLES, CONN_MAP, DELTA_CHANNEL_CAPACITY,
+    pool_key, register_child_pid, unregister_child_pid, ConfigStateCell, DeltaSlot, LiveConnection,
+    ModeStateCell, CANCEL_HANDLES, CONN_MAP, DELTA_CHANNEL_CAPACITY,
 };
 pub(crate) use types::WorkerMsg;
 
+use crate::acp::protocol as acp;
 use handlers::{
     handle_execute, handle_prewarm, reclaim_idle_connections, reconnect_worker_session,
     reset_worker_session, shutdown_worker_state,
@@ -31,6 +32,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::adapter::acp_log;
 use super::error::AcpLayerError;
+use super::session::adapter_runtime::{AnyRuntimeAdapter, RuntimeAdapter};
 
 static WORKER_TX: OnceLock<mpsc::UnboundedSender<WorkerMsg>> = OnceLock::new();
 
@@ -51,16 +53,23 @@ pub(crate) fn worker_tx() -> &'static mpsc::UnboundedSender<WorkerMsg> {
 
 pub async fn shutdown() {
     use super::client::shutdown_terminals;
-    let Some(tx) = WORKER_TX.get() else {
+    async fn teardown_all() {
         shutdown_terminals().await;
+        for adapter in AnyRuntimeAdapter::all() {
+            RuntimeAdapter::teardown(&adapter).await;
+        }
+    }
+    let Some(tx) = WORKER_TX.get() else {
+        teardown_all().await;
         return;
     };
     let (done_tx, done_rx) = oneshot::channel();
     if tx.send(WorkerMsg::Shutdown { done_tx }).is_err() {
-        shutdown_terminals().await;
+        teardown_all().await;
         return;
     }
     let _ = tokio::time::timeout(std::time::Duration::from_secs(3), done_rx).await;
+    teardown_all().await;
 }
 
 pub async fn active_connections_snapshot() -> Vec<ActiveConnectionInfo> {
@@ -106,6 +115,9 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
         loop {
             interval.tick().await;
             reclaim_idle_connections();
+            for adapter in AnyRuntimeAdapter::all() {
+                RuntimeAdapter::reclaim_idle(&adapter);
+            }
         }
     });
     while let Some(msg) = rx.recv().await {
@@ -213,8 +225,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                         json!({ "runtime": runtime_key, "role": role_name }),
                     );
                     tokio::task::spawn_local(async move {
-                        conn.cancel(agent_client_protocol::CancelNotification::new(session_id))
-                            .await;
+                        conn.cancel(acp::CancelNotification::new(session_id)).await;
 
                         // Wait for the in-flight prompt to drain: acquire its
                         // per-slot lock. handle_execute holds this lock for the
@@ -280,7 +291,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 mode_id,
                 result_tx,
             } => {
-                use agent_client_protocol as acp;
+                use crate::acp::protocol as acp;
                 let key = pool_key(&app_session_id, runtime_key, &role_name);
                 tokio::task::spawn_local(async move {
                     let lookup = CONN_MAP.with(|m| {
@@ -331,7 +342,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 value,
                 result_tx,
             } => {
-                use agent_client_protocol as acp;
+                use crate::acp::protocol as acp;
                 let key = pool_key(&app_session_id, runtime_key, &role_name);
                 tokio::task::spawn_local(async move {
                     let lookup = CONN_MAP.with(|m| {
@@ -340,77 +351,13 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                                 crate::acp::AgentConnection::rpc_handle(live),
                                 live.session_id.clone(),
                                 live.config_state.clone(),
-                                live.model_state.clone(),
                             )
                         })
                     });
-                    let Some((conn, session_id, config_state, model_state)) = lookup else {
+                    let Some((conn, session_id, config_state)) = lookup else {
                         let _ = result_tx.send(Err("no active session".to_string()));
                         return;
                     };
-                    let has_native_config = config_state
-                        .borrow()
-                        .iter()
-                        .any(|opt| opt.id.to_string() == config_id);
-                    if !has_native_config
-                        && model_state.borrow().is_some()
-                        && matches!(
-                            config_id.as_str(),
-                            "model"
-                                | "reasoning_effort"
-                                | "thinking_effort"
-                                | "thought_level"
-                                | "effort"
-                        )
-                    {
-                        let snapshot = model_state.borrow().clone();
-                        let Some(mut state) = snapshot else {
-                            let _ = result_tx.send(Err("no active model state".to_string()));
-                            return;
-                        };
-                        let (model_override, effort_override) = if config_id == "model" {
-                            (Some(value.as_str()), None)
-                        } else {
-                            (None, Some(value.as_str()))
-                        };
-                        let Some(model_id) = super::session::resolve_model_id(
-                            &state,
-                            model_override,
-                            effort_override,
-                        ) else {
-                            let _ = result_tx.send(Err(format!(
-                                "unsupported model config '{config_id}'='{value}'"
-                            )));
-                            return;
-                        };
-                        let previous_model_id = state.current_model_id.clone();
-                        state.current_model_id =
-                            agent_client_protocol::ModelId::from(model_id.clone());
-                        *model_state.borrow_mut() = Some(state.clone());
-                        super::runtime_state::remember_runtime_models(
-                            runtime_key,
-                            super::session::model_ids_from_model_state(&state),
-                        );
-                        super::runtime_state::remember_runtime_config_options(
-                            runtime_key,
-                            super::session::config_options_from_model_state(&state),
-                        );
-                        let result = conn
-                            .set_session_model(agent_client_protocol::SetSessionModelRequest::new(
-                                session_id,
-                                agent_client_protocol::ModelId::from(model_id),
-                            ))
-                            .await
-                            .map(|_| ())
-                            .map_err(|e| AcpLayerError::from(e).into_message());
-                        if result.is_err() {
-                            if let Some(state) = model_state.borrow_mut().as_mut() {
-                                state.current_model_id = previous_model_id;
-                            }
-                        }
-                        let _ = result_tx.send(result);
-                        return;
-                    }
                     // Optimistic update: mutate the select option's current_value,
                     // remember the old value so we can roll back on failure.
                     let target_config_id = acp::SessionConfigId::from(config_id.clone());
@@ -480,7 +427,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 eligible_session_ids,
                 result_tx,
             } => {
-                use agent_client_protocol as acp;
+                use crate::acp::protocol as acp;
                 let eligible_set: std::collections::HashSet<String> =
                     eligible_session_ids.into_iter().collect();
                 let target_keys: Vec<(String, String)> = CONN_MAP.with(|m| {

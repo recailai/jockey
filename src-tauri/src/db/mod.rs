@@ -3,6 +3,7 @@ pub(crate) mod app_session_role;
 pub(crate) mod context;
 pub(crate) mod global_mcp;
 pub(crate) mod pool;
+pub(crate) mod profiles;
 pub(crate) mod role;
 pub(crate) mod rule;
 pub(crate) mod session;
@@ -63,6 +64,7 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           id TEXT PRIMARY KEY,
           role_name TEXT NOT NULL UNIQUE,
           runtime_kind TEXT NOT NULL,
+          runtime_profile_id TEXT,
           system_prompt TEXT NOT NULL,
           model TEXT,
           mode TEXT,
@@ -115,6 +117,7 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           title TEXT NOT NULL,
           active_role TEXT NOT NULL DEFAULT 'Jockey',
           runtime_kind TEXT,
+          runtime_profile_id TEXT,
           cwd TEXT,
           created_at INTEGER NOT NULL,
           last_active_at INTEGER NOT NULL,
@@ -124,6 +127,7 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           app_session_id TEXT NOT NULL REFERENCES app_sessions(id) ON DELETE CASCADE,
           role_name TEXT NOT NULL,
           runtime_kind TEXT NOT NULL,
+          runtime_profile_id TEXT,
           acp_session_id TEXT,
           model_override TEXT,
           mode_override TEXT,
@@ -176,6 +180,18 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           updated_at INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS runtime_profiles (
+          id TEXT PRIMARY KEY,
+          label TEXT NOT NULL,
+          command TEXT NOT NULL,
+          args_json TEXT NOT NULL DEFAULT '[]',
+          env_refs_json TEXT NOT NULL DEFAULT '[]',
+          cwd_strategy TEXT NOT NULL DEFAULT 'session',
+          capabilities_json TEXT NOT NULL DEFAULT '{}',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS role_mcp_servers (
           role_name TEXT NOT NULL,
           mcp_server_name TEXT NOT NULL REFERENCES global_mcp_servers(name) ON DELETE CASCADE,
@@ -214,7 +230,7 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_role_rules_role ON role_rules(role_name, ord ASC);
         CREATE INDEX IF NOT EXISTS idx_role_skills_role ON role_skills(role_name, ord ASC);
 
-        PRAGMA user_version = 7;
+        PRAGMA user_version = 9;
         ",
     )
     .map_err(|e| e.to_string())?;
@@ -224,10 +240,73 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         "config_option_defs_json",
         "TEXT DEFAULT '[]'",
     )?;
+    ensure_column(conn, "roles", "runtime_profile_id", "TEXT")?;
+    ensure_column(conn, "app_sessions", "runtime_profile_id", "TEXT")?;
+    ensure_column(conn, "app_session_roles", "runtime_profile_id", "TEXT")?;
     ensure_column(conn, "app_session_roles", "model_override", "TEXT")?;
     ensure_column(conn, "app_session_roles", "mode_override", "TEXT")?;
     ensure_column(conn, "app_session_roles", "mcp_servers_json", "TEXT")?;
     ensure_column(conn, "app_session_roles", "config_options_json", "TEXT")?;
+
+    let profile_case = "CASE lower(trim(runtime_kind))
+        WHEN 'claude-code' THEN 'acp:claude-code'
+        WHEN 'claude-acp' THEN 'acp:claude-code'
+        WHEN 'acp:claude-code' THEN 'acp:claude-code'
+        WHEN 'claude' THEN 'native:claude'
+        WHEN 'claude-native' THEN 'native:claude'
+        WHEN 'native:claude' THEN 'native:claude'
+        WHEN 'antigravity-cli' THEN 'native:agy'
+        WHEN 'agy' THEN 'native:agy'
+        WHEN 'gemini' THEN 'native:agy'
+        WHEN 'gemini-cli' THEN 'native:agy'
+        WHEN 'native:agy' THEN 'native:agy'
+        WHEN 'codex-cli' THEN 'native:codex'
+        WHEN 'codex' THEN 'native:codex'
+        WHEN 'native:codex' THEN 'native:codex'
+        WHEN 'pi-cli' THEN 'native:pi'
+        WHEN 'pi' THEN 'native:pi'
+        WHEN 'native:pi' THEN 'native:pi'
+        ELSE lower(trim(runtime_kind)) END";
+    for table in ["roles", "app_sessions", "app_session_roles"] {
+        conn.execute(
+            &format!(
+                "UPDATE {table} SET runtime_profile_id = {profile_case}
+                 WHERE runtime_profile_id IS NULL OR trim(runtime_profile_id) = ''"
+            ),
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    let runtime_case = "CASE lower(trim(runtime_kind))
+        WHEN 'claude-code' THEN 'claude-code'
+        WHEN 'claude-acp' THEN 'claude-code'
+        WHEN 'acp:claude-code' THEN 'claude-code'
+        WHEN 'claude' THEN 'claude-native'
+        WHEN 'claude-native' THEN 'claude-native'
+        WHEN 'native:claude' THEN 'claude-native'
+        WHEN 'antigravity-cli' THEN 'antigravity-cli'
+        WHEN 'agy' THEN 'antigravity-cli'
+        WHEN 'gemini' THEN 'antigravity-cli'
+        WHEN 'gemini-cli' THEN 'antigravity-cli'
+        WHEN 'native:agy' THEN 'antigravity-cli'
+        WHEN 'codex-cli' THEN 'codex-cli'
+        WHEN 'codex' THEN 'codex-cli'
+        WHEN 'native:codex' THEN 'codex-cli'
+        WHEN 'pi-cli' THEN 'pi-cli'
+        WHEN 'pi' THEN 'pi-cli'
+        WHEN 'native:pi' THEN 'pi-cli'
+        ELSE runtime_kind END";
+    for table in ["roles", "app_sessions", "app_session_roles"] {
+        conn.execute(
+            &format!(
+                "UPDATE {table} SET runtime_kind = {runtime_case}
+                 WHERE runtime_kind IS NOT NULL"
+            ),
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
 
     Ok(())
 }

@@ -129,7 +129,7 @@ export function createAcpEventBus(deps: AcpEventBusDeps) {
       const msg = toConnectionLostMessage(payload);
       if (sid) {
         deps.mutateSession(sid, (s) => {
-          s.pendingPermission = null;
+          s.pendingPermissions = [];
           s.agentState = payload.reason ?? "Disconnected";
         });
         deps.pushMessageToSession(sid, "event", msg);

@@ -1,10 +1,10 @@
 export type Role = {
-  id: string; roleName: string; runtimeKind: string; runtimeLaunchMethod?: string | null;
+  id: string; roleName: string; runtimeKind: string; runtimeProfileId?: string; runtimeLaunchMethod?: string | null;
   systemPrompt: string; model: string | null; mode: string | null;
   mcpServersJson: string; configOptionsJson: string; configOptionDefsJson: string; autoApprove: boolean;
 };
 export type RoleUpsertInput = {
-  roleName: string; runtimeKind: string; systemPrompt: string;
+  roleName: string; runtimeKind: string; runtimeProfileId?: string; systemPrompt: string;
   model: string | null; mode: string | null; mcpServersJson: string; configOptionsJson: string;
   configOptionDefsJson?: string | null;
   autoApprove: boolean;
@@ -66,7 +66,7 @@ export type AcpConfigOption = {
   currentValue: string;
   options: ConfigOptionValue[] | ConfigOptionGroup[];
 };
-export type AssistantRuntime = { key: string; label: string; binary: string; available: boolean; version: string | null; installHint: string | null };
+export type AssistantRuntime = { key: string; profileId: string; label: string; family: "native" | "acp" | string; binary: string; available: boolean; version: string | null; installHint: string | null; unavailableReason: string | null; launchMethod: string | null; transport: string; capabilities: Record<string, boolean> };
 export type ChatCommandResult = { ok: boolean; message: string; runtimeKind: string | null; sessionId: string | null; payload: Record<string, unknown> };
 export type AssistantChatResponse = { ok: boolean; reply: string; runtimeKind: string | null; sessionId: string | null; commandResult: ChatCommandResult | null };
 export type SessionUpdateEvent = { sessionId: string; roleName: string; delta: string; done: boolean };
@@ -94,6 +94,7 @@ export type AppSession = {
   title: string;
   activeRole: string;
   runtimeKind: string | null;
+  runtimeProfileId?: string | null;
   cwd: string | null;
   messages: AppMessage[];
   streamingMessage: AppMessage | null;
@@ -106,7 +107,7 @@ export type AppSession = {
   toolCalls: Record<string, AppToolCall>;
   streamSegments: AppSegment[];
   currentPlan: AppPlanEntry[] | null;
-  pendingPermission: AppPermission | null;
+  pendingPermissions: AppPermission[];
   agentModes: Array<{ id: string; title?: string }>;
   currentMode: string | null;
   submitting: boolean;
@@ -130,11 +131,13 @@ export type AppSession = {
   lastError: SessionErrorInfo | null;
 };
 
-export const RUNTIMES = ["gemini-cli", "claude-code", "codex-cli", "mock"];
+export const RUNTIMES = ["claude-native", "codex-cli", "pi-cli", "antigravity-cli", "claude-code", "mock"];
 export const RUNTIME_COLOR: Record<string, string> = {
-  "gemini-cli": "runtime-color-gemini",
+  "claude-native": "runtime-color-claude",
+  "antigravity-cli": "runtime-color-antigravity",
   "claude-code": "runtime-color-claude",
   "codex-cli": "runtime-color-codex",
+  "pi-cli": "runtime-color-pi",
   mock: "runtime-color-muted",
 };
 export const INTERACTIVE_MOTION = "motion-safe:transition-colors motion-safe:transition-transform motion-safe:duration-150 motion-safe:ease-out active:scale-[0.98]";

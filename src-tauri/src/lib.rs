@@ -9,7 +9,13 @@ mod git;
 pub mod jockey_mcp;
 mod parser;
 mod runtime_kind;
+mod runtime_profile;
 mod types;
+
+/// Internal stdio MCP permission bridge used by the native Claude adapter
+/// (`current_exe --__jockey-permission-bridge`). See
+/// `acp::session::perm_bridge` for the protocol contract.
+pub use acp::permission_bridge_main;
 
 use dashmap::DashMap;
 use rusqlite::OptionalExtension;
@@ -81,6 +87,7 @@ pub fn run() {
             let app_dir = app.path().app_local_data_dir()?;
             fs::create_dir_all(&app_dir)?;
             acp::set_app_data_dir(app_dir.clone());
+            acp::start_permission_bridge(app.handle().clone());
             git::set_app_handle(app.handle().clone());
 
             let db_path = app_dir.join("jockey.sqlite3");
@@ -125,6 +132,14 @@ pub fn run() {
             }
 
             seed_default_dynamic_catalog(&state).map_err(std::io::Error::other)?;
+            {
+                let conn = state
+                    .db
+                    .get()
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+                db::profiles::load_custom_runtime_profiles(&conn)
+                    .map_err(std::io::Error::other)?;
+            }
 
             let bridge_state = std::sync::Arc::new(AppState {
                 db: state.db.clone(),
@@ -339,6 +354,10 @@ pub fn run() {
             commands::runtime_cmd::acp_log_snapshot_cmd,
             commands::runtime_cmd::active_acp_connections_cmd,
             commands::runtime_cmd::respond_permission,
+            commands::provider_session_cmd::list_provider_sessions_cmd,
+            commands::provider_session_cmd::import_provider_session_cmd,
+            commands::provider_session_cmd::fork_provider_session_cmd,
+            commands::provider_session_cmd::rewind_provider_session_cmd,
             commands::runtime_cmd::sync_role_mode_cmd,
             commands::runtime_cmd::prewarm_role_config_cmd,
             commands::git_cmd::git_status_cmd,
@@ -378,6 +397,9 @@ pub fn run() {
             db::global_mcp::delete_global_mcp_server_cmd,
             db::global_mcp::list_role_mcp_servers_cmd,
             db::global_mcp::set_role_mcp_enabled_cmd,
+            db::profiles::list_runtime_profiles_cmd,
+            db::profiles::upsert_runtime_profile_cmd,
+            db::profiles::delete_runtime_profile_cmd,
             commands::runtime_cmd::reset_role_mcp_sessions_cmd,
             commands::terminal_cmd::start_terminal_session,
             commands::terminal_cmd::resize_terminal_session,

@@ -1,16 +1,20 @@
 use tokio::sync::oneshot;
 
-use super::super::worker::RuntimeKind;
 use super::super::worker::{worker_tx, WorkerMsg};
+use super::adapter_runtime::{AnyRuntimeAdapter, RuntimeAdapter, SessionKey};
 
 fn normalize_runtime_key(runtime_kind: &str) -> Option<&'static str> {
-    RuntimeKind::from_str(runtime_kind).map(|k| k.runtime_key())
+    crate::runtime_profile::runtime_key_static(runtime_kind)
 }
 
 fn resolve_session_id(app_session_id: Option<&str>) -> Option<String> {
     app_session_id
         .filter(|id| !id.trim().is_empty())
         .map(|id| id.to_string())
+}
+
+fn session_key(runtime_key: &'static str, role_name: &str, app_session_id: &str) -> SessionKey {
+    SessionKey::new(runtime_key, role_name, app_session_id)
 }
 
 pub async fn cancel_session(runtime_kind: &str, role_name: &str, app_session_id: Option<&str>) {
@@ -20,22 +24,32 @@ pub async fn cancel_session(runtime_kind: &str, role_name: &str, app_session_id:
     let Some(resolved_session_id) = resolve_session_id(app_session_id) else {
         return;
     };
-    let (tx, rx) = oneshot::channel();
-    if worker_tx()
-        .send(WorkerMsg::Cancel {
-            runtime_key,
-            role_name: role_name.to_string(),
-            app_session_id: resolved_session_id,
-            result_tx: Some(tx),
-        })
-        .is_err()
-    {
-        return;
+    let key = session_key(runtime_key, role_name, &resolved_session_id);
+    match AnyRuntimeAdapter::resolve(runtime_key) {
+        // Slot-based runtimes cancel in place; no drain handshake exists.
+        Some(adapter) if !matches!(adapter, AnyRuntimeAdapter::AcpWorker) => {
+            RuntimeAdapter::cancel(&adapter, &key);
+        }
+        // ACP (and unknown runtimes): fire the cancel through the worker and
+        // wait for the in-flight prompt to drain (bounded inside the worker).
+        // Frontend awaits this so it knows the old turn is fully done before
+        // sending a queued message.
+        _ => {
+            let (tx, rx) = oneshot::channel();
+            if worker_tx()
+                .send(WorkerMsg::Cancel {
+                    runtime_key,
+                    role_name: role_name.to_string(),
+                    app_session_id: resolved_session_id,
+                    result_tx: Some(tx),
+                })
+                .is_err()
+            {
+                return;
+            }
+            let _ = rx.await;
+        }
     }
-    // Wait for the in-flight prompt to drain (bounded inside the worker).
-    // Frontend awaits this so it knows the old turn is fully done before
-    // sending a queued message.
-    let _ = rx.await;
 }
 
 pub async fn reset_session(
@@ -47,14 +61,10 @@ pub async fn reset_session(
         normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
     let resolved_session_id =
         resolve_session_id(app_session_id).ok_or_else(|| "app session id required".to_string())?;
-    let (tx, rx) = oneshot::channel();
-    let _ = worker_tx().send(WorkerMsg::Reset {
-        runtime_key,
-        role_name: role_name.to_string(),
-        app_session_id: resolved_session_id,
-        result_tx: tx,
-    });
-    rx.await.map_err(|_| "worker disconnected".to_string())?
+    let key = session_key(runtime_key, role_name, &resolved_session_id);
+    let adapter =
+        AnyRuntimeAdapter::resolve(runtime_key).ok_or_else(|| "adapter unavailable".to_string())?;
+    RuntimeAdapter::discard_slot(&adapter, &key).await
 }
 
 pub async fn reconnect_session(
@@ -66,14 +76,10 @@ pub async fn reconnect_session(
         normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
     let resolved_session_id =
         resolve_session_id(app_session_id).ok_or_else(|| "app session id required".to_string())?;
-    let (tx, rx) = oneshot::channel();
-    let _ = worker_tx().send(WorkerMsg::Reconnect {
-        runtime_key,
-        role_name: role_name.to_string(),
-        app_session_id: resolved_session_id,
-        result_tx: tx,
-    });
-    rx.await.map_err(|_| "worker disconnected".to_string())?
+    let key = session_key(runtime_key, role_name, &resolved_session_id);
+    let adapter =
+        AnyRuntimeAdapter::resolve(runtime_key).ok_or_else(|| "adapter unavailable".to_string())?;
+    RuntimeAdapter::reconnect_slot(&adapter, &key).await
 }
 
 pub async fn set_mode(
@@ -86,6 +92,13 @@ pub async fn set_mode(
         normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
     let resolved_session_id =
         resolve_session_id(app_session_id).ok_or_else(|| "app session id required".to_string())?;
+    if !matches!(
+        AnyRuntimeAdapter::resolve(runtime_key),
+        Some(AnyRuntimeAdapter::AcpWorker)
+    ) {
+        // Native/headless runtimes have no live mode switching.
+        return Ok(());
+    }
     let (tx, rx) = oneshot::channel();
     let _ = worker_tx().send(WorkerMsg::SetMode {
         runtime_key,
@@ -131,6 +144,13 @@ pub async fn set_config_option(
         normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
     let resolved_session_id =
         resolve_session_id(app_session_id).ok_or_else(|| "app session id required".to_string())?;
+    if !matches!(
+        AnyRuntimeAdapter::resolve(runtime_key),
+        Some(AnyRuntimeAdapter::AcpWorker)
+    ) {
+        // Native/headless runtimes have no live config switching.
+        return Ok(());
+    }
     let (tx, rx) = oneshot::channel();
     let _ = worker_tx().send(WorkerMsg::SetConfigOption {
         runtime_key,
