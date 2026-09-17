@@ -319,6 +319,7 @@ export default function RichInput(props: Props) {
   let el: HTMLDivElement | undefined;
   let suppressEffect = false;
   let composing = false;
+  let keyNavPrevented = false;
 
   onMount(() => {
     if (!el) return;
@@ -382,9 +383,14 @@ export default function RichInput(props: Props) {
       onKeyDown={(e) => {
         if (e.isComposing || e.keyCode === 229) return;
         props.onKeyDown(e);
+        keyNavPrevented = e.defaultPrevented;
       }}
       onKeyUp={(e) => {
         if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(e.key)) {
+          if (keyNavPrevented) {
+            keyNavPrevented = false;
+            return;
+          }
           emitCaretSoon();
         }
       }}

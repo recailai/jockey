@@ -3,10 +3,6 @@ use crate::types::*;
 use crate::{acp, now_ms};
 use rusqlite::{params, OptionalExtension};
 
-pub(crate) fn shared_key(scope: &str, key: &str) -> String {
-    format!("{scope}:{key}")
-}
-
 pub(crate) fn set_shared_context_internal(
     state: &AppState,
     scope: &str,
@@ -14,9 +10,6 @@ pub(crate) fn set_shared_context_internal(
     value: &str,
 ) -> Result<ContextEntry, String> {
     let now = now_ms();
-    state
-        .shared_context
-        .insert(shared_key(scope, key), value.to_string());
     with_db(state, |conn| {
         conn.execute(
             "INSERT INTO shared_context_snapshots (scope, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
@@ -47,7 +40,6 @@ pub(crate) fn clear_shared_context_internal(
         .map_err(|e| e.to_string())?;
         Ok(())
     })?;
-    state.shared_context.remove(&shared_key(scope, key));
     Ok(())
 }
 
@@ -97,9 +89,13 @@ pub(crate) fn sanitize_dynamic_item_name(raw: &str) -> Option<String> {
     None
 }
 
+/// Catalog entries are scoped by runtime. `runtime_key` is empty for kinds that are
+/// genuinely global (mcp, skill) and for legacy model rows that could not be attributed
+/// to a runtime during migration.
 pub(crate) fn upsert_dynamic_catalog_item(
     state: &AppState,
     kind: &str,
+    runtime_key: &str,
     name: &str,
 ) -> Result<String, String> {
     let normalized = sanitize_dynamic_item_name(name)
@@ -107,10 +103,10 @@ pub(crate) fn upsert_dynamic_catalog_item(
     let now = now_ms();
     with_db(state, |conn| {
         conn.execute(
-            "INSERT INTO dynamic_catalog_entries (kind, name, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(kind, name) DO UPDATE SET updated_at = excluded.updated_at",
-            params![kind, &normalized, now, now],
+            "INSERT INTO dynamic_catalog_entries (kind, runtime_key, name, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(kind, runtime_key, name) DO UPDATE SET updated_at = excluded.updated_at",
+            params![kind, runtime_key, &normalized, now, now],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -121,6 +117,7 @@ pub(crate) fn upsert_dynamic_catalog_item(
 pub(crate) fn remove_dynamic_catalog_item(
     state: &AppState,
     kind: &str,
+    runtime_key: &str,
     name: &str,
 ) -> Result<bool, String> {
     let normalized = sanitize_dynamic_item_name(name)
@@ -128,26 +125,33 @@ pub(crate) fn remove_dynamic_catalog_item(
     with_db(state, |conn| {
         let affected = conn
             .execute(
-                "DELETE FROM dynamic_catalog_entries WHERE kind = ?1 AND name = ?2",
-                params![kind, &normalized],
+                "DELETE FROM dynamic_catalog_entries
+                 WHERE kind = ?1 AND name = ?2 AND (?3 = '' OR runtime_key IN ('', ?3))",
+                params![kind, &normalized, runtime_key],
             )
             .map_err(|e| e.to_string())?;
         Ok(affected > 0)
     })
 }
 
-pub(crate) fn list_dynamic_catalog(state: &AppState, kind: &str) -> Result<Vec<String>, String> {
+/// `runtime_key` empty means "every scope" (used by global kinds and by admin listings);
+/// otherwise the runtime's own rows plus the unattributed legacy rows.
+pub(crate) fn list_dynamic_catalog(
+    state: &AppState,
+    kind: &str,
+    runtime_key: &str,
+) -> Result<Vec<String>, String> {
     with_db(state, |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT name
                  FROM dynamic_catalog_entries
-                 WHERE kind = ?1
+                 WHERE kind = ?1 AND (?2 = '' OR runtime_key IN ('', ?2))
                  ORDER BY updated_at DESC, name ASC",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![kind], |row| row.get::<_, String>(0))
+            .query_map(params![kind, runtime_key], |row| row.get::<_, String>(0))
             .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         for row in rows {
@@ -160,14 +164,16 @@ pub(crate) fn list_dynamic_catalog(state: &AppState, kind: &str) -> Result<Vec<S
 pub(crate) fn dynamic_catalog_contains(
     state: &AppState,
     kind: &str,
+    runtime_key: &str,
     name: &str,
 ) -> Result<bool, String> {
     let normalized = sanitize_dynamic_item_name(name)
         .ok_or_else(|| format!("invalid {} name: {}", kind, name))?;
     with_db(state, |conn| {
         conn.query_row(
-            "SELECT 1 FROM dynamic_catalog_entries WHERE kind = ?1 AND name = ?2 LIMIT 1",
-            params![kind, &normalized],
+            "SELECT 1 FROM dynamic_catalog_entries
+             WHERE kind = ?1 AND name = ?2 AND (?3 = '' OR runtime_key IN ('', ?3)) LIMIT 1",
+            params![kind, &normalized, runtime_key],
             |_row| Ok(()),
         )
         .optional()
@@ -214,16 +220,7 @@ pub(crate) fn list_models_for_runtime(
     state: &AppState,
     runtime: &str,
 ) -> Result<Vec<String>, String> {
-    let configured = list_dynamic_catalog(state, "model")?;
+    let configured = list_dynamic_catalog(state, "model", runtime)?;
     let discovered = acp::list_discovered_models(runtime);
     Ok(merge_model_lists(discovered, configured))
-}
-
-pub(crate) fn list_all_known_models(state: &AppState) -> Vec<String> {
-    let configured = list_dynamic_catalog(state, "model").unwrap_or_default();
-    let mut discovered = Vec::new();
-    for runtime in KNOWN_RUNTIME_KEYS {
-        discovered.extend(acp::list_discovered_models(runtime));
-    }
-    merge_model_lists(discovered, configured)
 }

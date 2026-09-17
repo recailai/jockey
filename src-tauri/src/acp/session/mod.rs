@@ -1,9 +1,11 @@
 pub(crate) mod adapter_runtime;
+mod cli_help;
 mod cold_start;
 mod execute;
 mod headless;
 mod mcp;
 mod native;
+mod option_spec;
 pub(crate) mod perm_bridge;
 mod prewarm;
 mod session_cmds;
@@ -43,7 +45,10 @@ pub(crate) use native::codex_admin::{
 pub(crate) use native::{
     reclaim_idle_native_sessions, rollback_live_codex_thread, shutdown_native_sessions,
 };
-pub use prewarm::{prewarm_role, prewarm_role_with_session_id, refresh_role_config_defs};
+pub use prewarm::{
+    prewarm_role, prewarm_role_with_session_id, refresh_role_config_defs,
+    refresh_role_config_defs_with,
+};
 pub use session_cmds::{
     cancel_session, reconnect_session, reset_session, set_config_option, set_mode, sync_role_mode,
 };

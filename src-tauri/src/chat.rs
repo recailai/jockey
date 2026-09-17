@@ -1,5 +1,5 @@
 mod context_bundle;
-mod prompt_builder;
+pub(crate) mod prompt_builder;
 pub(crate) mod session_runtime;
 
 use crate::chat::session_runtime::load_role_runtime_data;
@@ -9,7 +9,8 @@ use crate::db::get_state;
 use crate::db::session_context::app_session_scope;
 use crate::parser::parse_route_input;
 use crate::types::*;
-use crate::{acp, build_jockey_tool_prompt, clip_text, now_ms};
+use crate::{acp, clip_text, now_ms};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Instant;
@@ -128,26 +129,6 @@ pub(crate) fn detect_reply_signals(reply: &str) -> Vec<String> {
     signals
 }
 
-pub(crate) fn extract_command_output(reply: &str) -> Option<String> {
-    let trimmed = reply.trim();
-    if trimmed.starts_with('/') {
-        return Some(trimmed.to_string());
-    }
-    if trimmed.starts_with('`') && trimmed.ends_with('`') {
-        let inner = trimmed.trim_matches('`').trim();
-        if inner.starts_with('/') {
-            return Some(inner.to_string());
-        }
-    }
-    for line in trimmed.lines() {
-        let cleaned = line.trim().trim_matches('`').trim();
-        if cleaned.starts_with('/') {
-            return Some(cleaned.to_string());
-        }
-    }
-    None
-}
-
 #[tauri::command]
 pub(crate) async fn assistant_chat(
     app: AppHandle,
@@ -220,20 +201,32 @@ pub(crate) async fn assistant_chat(
 
     let routed = parse_route_input(&text);
     let explicit_role_targets = !routed.role_names.is_empty();
-    let mut role_targets = if explicit_role_targets {
+    let role_targets = if explicit_role_targets {
         routed.role_names.clone()
     } else {
-        vec!["Jockey".to_string()]
+        let sid = app_session_id.clone();
+        let tmp_state = get_state(&state).clone_refs();
+        let active_role = tokio::task::spawn_blocking(move || {
+            crate::db::with_db(&tmp_state, |conn| {
+                conn.query_row(
+                    "SELECT active_role FROM app_sessions WHERE id = ?1",
+                    rusqlite::params![&sid],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())
+            })
+        })
+        .await
+        .map_err(|e| e.to_string())??
+        .unwrap_or_else(|| "Developer".to_string());
+        vec![active_role]
     };
-    if role_targets.is_empty() {
-        role_targets.push("Jockey".to_string());
-    }
     let mut message = routed.message.clone();
     if message.is_empty() {
         message = "Please answer based on the attached context.".to_string();
     }
 
-    let tool_prompt = build_jockey_tool_prompt();
     let bundle = context_bundle::build_context_bundle(&state, &app_session_id, &routed).await;
     let cwd = bundle.cwd.clone();
     let attachment_pairs = bundle.attachment_pairs;
@@ -244,7 +237,6 @@ pub(crate) async fn assistant_chat(
     let mut any_acp_error = false;
 
     for role_name in role_targets {
-        let is_union_assistant = role_name == "Jockey";
         let tmp_state = get_state(&state).clone_refs();
         let role_name_clone = role_name.clone();
         let assistant_clone = assistant.clone();
@@ -292,8 +284,6 @@ pub(crate) async fn assistant_chat(
         }
 
         let prepared = prompt_builder::build_prepared_prompt(
-            is_union_assistant,
-            &tool_prompt,
             role_system_prompt.as_deref(),
             &enabled_rules,
             &context_pairs,
@@ -353,32 +343,15 @@ pub(crate) async fn assistant_chat(
             );
         }
 
-        let mut final_output = output;
-        if !explicit_role_targets && is_union_assistant {
-            if let Some(command_text) = extract_command_output(&final_output) {
-                chat_log(
-                    "route.acp.command_output.suggested",
-                    json!({
-                        "command": clip_text(&command_text, 180)
-                    }),
-                );
-            }
-        }
-        final_output = prompt_builder::with_command_suggestion(
-            final_output,
-            explicit_role_targets,
-            is_union_assistant,
+        let final_output = prompt_builder::with_command_suggestion(output);
+        append_recent_role_chat(
+            get_state(&state),
+            &role_name,
+            &message,
+            &final_output,
+            &cwd,
+            &app_session_id,
         );
-        if !is_union_assistant {
-            append_recent_role_chat(
-                get_state(&state),
-                &role_name,
-                &message,
-                &final_output,
-                &cwd,
-                &app_session_id,
-            );
-        }
         if !llm.ok {
             any_acp_error = true;
         }

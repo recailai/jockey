@@ -37,6 +37,7 @@ export function useMessageSend({
     appendMessageToSession, pushMessage,
     scheduleScrollToBottom,
     getSessionIndex,
+    ensureSessionPersisted,
   } = sessionManager;
 
   const {
@@ -51,7 +52,7 @@ export function useMessageSend({
     bumpRunToken, isRunCancelled,
     activeBackendRole,
     refreshRoles,
-    fetchConfigOptions, fetchAndCacheAgentCommands,
+    fetchAndCacheAgentCommands,
     setPreferredAssistant,
     cancelCurrentRun: cancelCurrentRunBase,
   } = agentContext;
@@ -67,21 +68,26 @@ export function useMessageSend({
   };
 
   const applyRouteState = (route: ReturnType<typeof resolveRoute>) => {
-    if (route.activateRole === DEFAULT_ROLE_ALIAS) {
-      patchActiveSession({ activeRole: DEFAULT_ROLE_ALIAS });
-      return;
-    }
-    if (route.activateRole) {
-      patchActiveSession({ activeRole: route.activateRole, discoveredConfigOptions: [] });
-    }
+    if (!route.activateRole) return;
+    const role = roles().find((r) => r.roleName === route.activateRole);
+    // A persona owns its engine, same rule as the composer's persona switch: activating a
+    // role by @mention has to move the runtime too, or the picker keeps showing the old
+    // engine's name and model list under the new persona.
+    patchActiveSession({
+      activeRole: route.activateRole,
+      ...(role?.runtimeKind
+        ? { runtimeKind: role.runtimeKind, runtimeProfileId: role.runtimeProfileId ?? null }
+        : {}),
+      discoveredConfigOptions: [],
+    });
   };
 
+  // The option catalog is owned by App.tsx's (session, persona, engine) effect — activating
+  // the role above moves that triple, which loads it. Only the command list, which is keyed
+  // per (runtime, role) rather than per session, is prefetched here.
   const prefetchRoleResources = (roleName: string) => {
     const targetRole = roles().find((r) => r.roleName === roleName);
     if (!targetRole) return;
-    void fetchConfigOptions(targetRole.runtimeKind, targetRole.roleName).then(
-      (opts) => patchActiveSession({ discoveredConfigOptions: opts })
-    );
     fetchAndCacheAgentCommands(targetRole.runtimeKind, targetRole.roleName);
   };
 
@@ -168,13 +174,23 @@ export function useMessageSend({
     closeMentionMenu();
     closeSlashMenu();
 
+    // A draft session (opened project / new session / persona switch with nothing sent yet)
+    // has no `app_sessions` row. This is the one place every real send funnels through, so
+    // it's the only place that needs to create it — never on switch, only on an actual send.
+    if (originSessionId) {
+      try {
+        await ensureSessionPersisted(originSessionId);
+      } catch (e) {
+        showToast(`Could not start session: ${String(e)}`);
+        return;
+      }
+    }
+
     const patchOriginSession = (patch: Partial<AppSession>) => patchSessionById(originSessionId, patch);
 
     const _oidx = originSessionId ? getSessionIndex(originSessionId) : -1;
     const s = (_oidx !== -1 ? sessions[_oidx] : null) ?? activeSession();
-    const sessionIsCustomRole = s
-      ? s.activeRole !== DEFAULT_ROLE_ALIAS && s.activeRole !== DEFAULT_BACKEND_ROLE
-      : false;
+    const sessionIsCustomRole = true;
 
     const route = resolveRoute({
       text,
@@ -222,7 +238,7 @@ export function useMessageSend({
       });
       if (isRunCancelled(runToken)) { return; }
       if (res.runtimeKind && originSessionId === activeSessionId()) setPreferredAssistant(res.runtimeKind);
-      if (text.startsWith("/app_role")) void refreshRoles();
+      if (text.startsWith("/app_role")) void refreshRoles(s?.projectId ?? undefined);
 
       if (!res.ok) {
         stream.drop();

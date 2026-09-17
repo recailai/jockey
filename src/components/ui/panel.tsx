@@ -20,8 +20,3 @@ export function PanelBody(props: ParentProps<JSX.HTMLAttributes<HTMLDivElement>>
 export function PanelHeaderAction(props: IconButtonProps) {
   return <IconButton size="sm" {...props} class={`jui-panel-header-action ${props.class ?? ""}`} />;
 }
-
-export function EmptyState(props: ParentProps<JSX.HTMLAttributes<HTMLDivElement>>) {
-  const [local, rest] = splitProps(props, ["class", "children"]);
-  return <div {...rest} class={`jui-empty-state ${local.class ?? ""}`}>{local.children}</div>;
-}

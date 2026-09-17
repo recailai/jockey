@@ -22,6 +22,14 @@
 - Rust: rely on `rustfmt` defaults (4-space indentation), `snake_case` for functions/variables, `CamelCase` for structs/enums.
 - Keep Tauri command payloads and frontend types in `camelCase` to match existing serde usage (`#[serde(rename_all = "camelCase")]`).
 - Prefer small, focused modules; place protocol/backend logic in `src-tauri/src/` and UI behavior in `src/`.
+- **UI Design System (Catalog-First)**:
+  - Do NOT craft ad-hoc buttons, badges, inputs, or dialogs. Always consume primitives from `src/components/ui/` (`Badge`, `Pill`, `StateDot`, `Button`, `FormField`, `Checkbox`, `Alert`, `Dialog`, `MasterDetailView`, `AsyncContent`).
+  - Strict semantic tokens: Do NOT use hardcoded colors (e.g. `text-blue-500`, `bg-amber-500/15`). Rely on `--ui-*` tokens or semantic tone properties (`neutral`, `info`, `success`, `warning`, `danger`).
+  - Read [docs/ui_design_and_component_specification.md](file:///Users/sexy/Documents/GitHub/jockey/docs/ui_design_and_component_specification.md) for detailed specifications.
+- **Native Protocol Standards**:
+  - For `PiRpc`, fire-and-forget UI updates (`setStatus`, `notify`, `setWidget`) must NOT be answered with synthetic JSON-RPC results.
+  - Interactive UI requests in Pi must be answered with `{"type": "extension_ui_response", ...}`.
+  - In `extract_pi_session_id`, always prioritize clean `sessionId` over `sessionFile` paths.
 
 ## Testing Guidelines
 - Primary automated tests are currently Rust-side via `cargo test`.

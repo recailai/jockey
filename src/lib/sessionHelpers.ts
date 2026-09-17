@@ -53,6 +53,7 @@ export const computeAutoTitleForSession = (
 
 export const makeDefaultSession = (title: string): AppSession => ({
   id: makeSessionId(),
+  persisted: true,
   title,
   activeRole: DEFAULT_ROLE_ALIAS,
   runtimeKind: null,
@@ -79,4 +80,28 @@ export const makeDefaultSession = (title: string): AppSession => ({
   terminals: {},
   pendingTerminalOutput: {},
   lastError: null,
+});
+
+/** A session that exists only in the frontend store, with no `app_sessions` DB row yet.
+ *  Opening a project or clicking "+ New Session" should only produce one of these — the row
+ *  is created lazily, on the first real send (see `ensureSessionPersisted`), so switching
+ *  persona/agent to just look around never spawns anything server-side. */
+export const makeDraftSession = (
+  title: string,
+  opts: {
+    projectId?: string | null;
+    runtimeKind?: string | null;
+    runtimeProfileId?: string | null;
+    cwd?: string | null;
+    activeRole?: string;
+  } = {},
+): AppSession => ({
+  ...makeDefaultSession(title),
+  id: crypto.randomUUID(),
+  persisted: false,
+  projectId: opts.projectId ?? null,
+  runtimeKind: opts.runtimeKind ?? null,
+  runtimeProfileId: opts.runtimeProfileId ?? null,
+  cwd: opts.cwd ?? null,
+  activeRole: opts.activeRole ?? DEFAULT_ROLE_ALIAS,
 });

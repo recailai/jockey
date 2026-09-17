@@ -1,5 +1,5 @@
-import { For, Show, createSignal, onMount } from "solid-js";
-import { INTERACTIVE_MOTION } from "../types";
+import { For, Show, createMemo, createSignal, onMount } from "solid-js";
+import { Alert, Button, DetailPane, FormField, Input, MasterDetailView, MasterItem, MasterPane, Textarea } from "../ui";
 import { ruleApi, type AppRule } from "../../lib/tauriApi";
 
 function genId() {
@@ -10,11 +10,11 @@ export function RulesTab() {
   const [rules, setRules] = createSignal<AppRule[]>([]);
   const [loading, setLoading] = createSignal(false);
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
+  const [search, setSearch] = createSignal("");
   const [editName, setEditName] = createSignal("");
   const [editDesc, setEditDesc] = createSignal("");
   const [editContent, setEditContent] = createSignal("");
   const [saving, setSaving] = createSignal(false);
-  const [deletingId, setDeletingId] = createSignal<string | null>(null);
   const [error, setError] = createSignal("");
 
   const loadRules = async () => {
@@ -28,7 +28,16 @@ export function RulesTab() {
 
   onMount(() => { void loadRules(); });
 
+  const filteredRules = createMemo(() => {
+    const q = search().toLowerCase().trim();
+    if (!q) return rules();
+    return rules().filter((r) =>
+      r.name.toLowerCase().includes(q) || (r.description ?? "").toLowerCase().includes(q),
+    );
+  });
+
   const selectedRule = () => rules().find((r) => r.id === selectedId()) ?? null;
+  const isNew = () => !!selectedId() && !rules().some((r) => r.id === selectedId());
 
   const selectRule = (r: AppRule) => {
     setSelectedId(r.id);
@@ -50,7 +59,7 @@ export function RulesTab() {
   const handleSave = async () => {
     const id = selectedId();
     if (!id || saving()) return;
-    if (!editName().trim()) { setError("Name required"); return; }
+    if (!editName().trim()) { setError("Rule name is required"); return; }
     setSaving(true);
     setError("");
     try {
@@ -68,116 +77,100 @@ export function RulesTab() {
     try {
       await ruleApi.remove(id);
       if (selectedId() === id) setSelectedId(null);
-      setDeletingId(null);
       await loadRules();
     } catch (e) {
       setError(String(e));
     }
   };
 
-  const isNew = () => !!selectedId() && !rules().some((r) => r.id === selectedId());
-
   return (
-    <div class="flex h-full">
-      <div class="flex w-56 shrink-0 flex-col border-r theme-border">
-        <div class="flex items-center justify-between px-3 py-2 border-b theme-border">
-          <span class="text-[10px] uppercase tracking-widest theme-muted font-bold">Rules</span>
-          <button
-            class={`flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-bold border theme-border theme-muted hover:text-primary hover:border-[var(--ui-border-strong)] ${INTERACTIVE_MOTION}`}
-            onClick={newRule}
-          >
-            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            New
-          </button>
-        </div>
-        <div class="flex-1 overflow-auto">
-          <Show when={loading()}>
-            <div class="px-3 py-2 text-[10px] theme-muted">Loading...</div>
-          </Show>
-          <For each={rules()}>{(r) => (
-            <div
-              onClick={() => selectRule(r)}
-              class={`group flex cursor-pointer items-center justify-between px-3 py-2 border-b border-white/5 hover:bg-[var(--ui-accent-soft)] transition-colors ${selectedId() === r.id ? "bg-[var(--ui-accent-soft)] text-primary" : "theme-muted"}`}
-            >
-              <div class="min-w-0 flex-1">
-                <div class="truncate text-[11px] font-medium theme-text">{r.name}</div>
-                <Show when={r.description}>
-                  <div class="truncate text-[9.5px] theme-muted">{r.description}</div>
-                </Show>
-              </div>
-              <Show when={deletingId() === r.id} fallback={
-                <button
-                  onClick={(e) => { e.stopPropagation(); setDeletingId(r.id); }}
-                  class="opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:text-rose-400 transition-all ml-1"
-                >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
-                </button>
-              }>
-                <div class="flex items-center gap-1">
-                  <button onClick={(e) => { e.stopPropagation(); void handleDelete(r.id); }} class="text-[9px] text-rose-400 hover:text-rose-300 font-bold">Del</button>
-                  <button onClick={(e) => { e.stopPropagation(); setDeletingId(null); }} class="text-[9px] theme-muted hover:text-primary font-bold">✕</button>
-                </div>
-              </Show>
-            </div>
-          )}</For>
-        </div>
-      </div>
-
-      <div class="flex flex-1 flex-col overflow-hidden">
-        <Show when={selectedId()} fallback={
-          <div class="flex flex-1 items-center justify-center theme-muted text-[12px]">
-            Select a rule or create a new one
-          </div>
-        }>
-          <div class="flex items-center justify-between border-b theme-border px-4 py-2">
-            <span class="text-[11px] font-bold theme-text truncate">
-              {isNew() ? "New Rule" : selectedRule()?.name ?? ""}
-            </span>
-            <div class="flex items-center gap-2">
-              <Show when={error()}>
-                <span class="management-error-text">{error()}</span>
-              </Show>
-              <button
-                onClick={() => void handleSave()}
-                disabled={saving()}
-                class={`management-primary-button ${INTERACTIVE_MOTION}`}
-              >
-                {saving() ? "Saving..." : "Save"}
-              </button>
-            </div>
-          </div>
-          <div class="flex-1 overflow-auto px-4 py-3 space-y-3">
-            <div>
-              <label class="mb-1 block text-[10px] uppercase tracking-wider theme-muted font-bold">Name</label>
-              <input
-                class="w-full rounded-md border theme-border bg-[var(--ui-panel-2)] px-2.5 py-1.5 text-[12px] theme-text outline-none focus:border-[var(--ui-border-strong)] focus:ring-1 focus:ring-[var(--ui-ring)]"
-                value={editName()}
-                onInput={(e) => setEditName(e.currentTarget.value)}
-                placeholder="rule-name"
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-[10px] uppercase tracking-wider theme-muted font-bold">Description</label>
-              <input
-                class="w-full rounded-md border theme-border bg-[var(--ui-panel-2)] px-2.5 py-1.5 text-[12px] theme-text outline-none focus:border-[var(--ui-border-strong)] focus:ring-1 focus:ring-[var(--ui-ring)]"
-                value={editDesc()}
-                onInput={(e) => setEditDesc(e.currentTarget.value)}
-                placeholder="Short description (optional)"
-              />
-            </div>
-            <div class="flex-1">
-              <label class="mb-1 block text-[10px] uppercase tracking-wider theme-muted font-bold">Content</label>
-              <textarea
-                class="w-full rounded-md border theme-border bg-[var(--ui-panel-2)] px-2.5 py-1.5 text-[12px] theme-text font-mono outline-none focus:border-[var(--ui-border-strong)] focus:ring-1 focus:ring-[var(--ui-ring)] resize-none"
-                rows={16}
-                value={editContent()}
-                onInput={(e) => setEditContent(e.currentTarget.value)}
-                placeholder="Rule content (markdown supported)"
-              />
-            </div>
+    <MasterDetailView>
+      <MasterPane
+        title="Rules"
+        action={{ label: "New", onClick: newRule }}
+        search={{
+          value: search(),
+          onInput: setSearch,
+          placeholder: "Filter rules…",
+        }}
+      >
+        <Show when={loading()}>
+          <div class="px-3 py-3 text-xs theme-muted">Loading rules…</div>
+        </Show>
+        <Show when={!loading() && filteredRules().length === 0}>
+          <div class="px-3 py-6 text-center text-xs theme-muted">
+            {search() ? "No matching rules" : "No rules defined yet"}
           </div>
         </Show>
-      </div>
-    </div>
+        <For each={filteredRules()}>
+          {(r) => (
+            <MasterItem
+              title={r.name}
+              subtitle={r.description ?? undefined}
+              active={selectedId() === r.id}
+              onClick={() => selectRule(r)}
+              onDelete={() => void handleDelete(r.id)}
+            />
+          )}
+        </For>
+      </MasterPane>
+
+      <DetailPane
+        title={selectedId() ? (isNew() ? "New Rule" : selectedRule()?.name ?? "Rule") : undefined}
+        subtitle={selectedId() ? (isNew() ? "Configure new rule prompt" : (selectedRule()?.description ?? undefined)) : undefined}
+        empty={!selectedId()}
+        emptyFallback={
+          <div class="flex flex-1 items-center justify-center text-xs theme-muted">
+            Select a rule from the left or create a new one
+          </div>
+        }
+        actions={
+          <Show when={selectedId()}>
+            <Button
+              variant="default"
+              size="sm"
+              disabled={saving()}
+              onClick={() => void handleSave()}
+            >
+              {saving() ? "Saving…" : "Save Rule"}
+            </Button>
+          </Show>
+        }
+      >
+        <div class="max-w-2xl space-y-4">
+          <Show when={error()}>
+            <Alert tone="danger" onClose={() => setError("")}>
+              {error()}
+            </Alert>
+          </Show>
+
+          <FormField label="Rule Name" required>
+            <Input
+              value={editName()}
+              onInput={(e) => setEditName(e.currentTarget.value)}
+              placeholder="e.g. strict-typescript, commit-standards"
+            />
+          </FormField>
+
+          <FormField label="Description">
+            <Input
+              value={editDesc()}
+              onInput={(e) => setEditDesc(e.currentTarget.value)}
+              placeholder="Short summary of when this rule applies"
+            />
+          </FormField>
+
+          <FormField label="Rule Content (Markdown)">
+            <Textarea
+              monospace
+              rows={16}
+              value={editContent()}
+              onInput={(e) => setEditContent(e.currentTarget.value)}
+              placeholder="Enter system prompt instructions, style guides, or constraints…"
+            />
+          </FormField>
+        </div>
+      </DetailPane>
+    </MasterDetailView>
   );
 }

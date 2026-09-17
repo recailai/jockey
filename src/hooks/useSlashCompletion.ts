@@ -1,7 +1,5 @@
 import { createSignal } from "solid-js";
 import type { AppMentionItem, AcpConfigOption, AppSession, Role } from "../components/types";
-import { flattenConfigValues } from "../components/types";
-import { completionApi } from "../lib/tauriApi";
 
 export function useSlashCompletion(
   input: () => string,
@@ -17,6 +15,7 @@ export function useSlashCompletion(
   fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>,
   hydrateAgentCommandsForSession: (sessionId: string, runtimeKey: string, roleName: string) => Promise<number>,
   slashCliCacheRef: { cache: null | unknown[]; version: number },
+  onTriggerCommandUi?: (commandName: string) => boolean,
 ) {
   const [slashOpen, setSlashOpen] = createSignal(false);
   const [slashItems, setSlashItems] = createSignal<AppMentionItem[]>([]);
@@ -41,23 +40,70 @@ export function useSlashCompletion(
 
   const buildAgentSlashCandidates = (runtimeKey: string, roleName: string, query: string): AppMentionItem[] => {
     const queryLower = query.toLowerCase().replace(/^\//, "");
-    const out: AppMentionItem[] = [];
     const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
-    const cmds = activeSession()?.agentCommands.get(commandCacheKey(normalizedRuntime, roleName)) ?? [];
-    for (const cmd of cmds) {
-      const value = `/${cmd.name}`;
-      if (queryLower && !cmd.name.toLowerCase().includes(queryLower)) continue;
-      out.push({ value, kind: "command", detail: cmd.description });
-    }
-    for (const opt of activeSession()?.discoveredConfigOptions ?? []) {
-      const vals = flattenConfigValues(opt.options);
-      for (const v of vals) {
-        const value = `/${opt.id} ${v.value}`;
-        if (queryLower && !value.toLowerCase().includes(queryLower)) continue;
-        out.push({ value, kind: "command", detail: `${opt.name}: ${v.name}` });
+    const s = activeSession();
+    let cmds = s?.agentCommands.get(commandCacheKey(normalizedRuntime, roleName)) ?? [];
+    if (cmds.length === 0) {
+      const altRuntime =
+        normalizedRuntime === "claude-code"
+          ? "claude-native"
+          : normalizedRuntime === "claude-native"
+          ? "claude-code"
+          : "";
+      if (altRuntime) {
+        cmds = s?.agentCommands.get(commandCacheKey(altRuntime, roleName)) ?? [];
       }
     }
-    return out.slice(0, 30);
+
+    const seen = new Set<string>();
+    const out: AppMentionItem[] = [];
+    for (const cmd of cmds) {
+      if (seen.has(cmd.name)) continue;
+      seen.add(cmd.name);
+      const nameLower = cmd.name.toLowerCase();
+      if (queryLower && !nameLower.includes(queryLower)) continue;
+      out.push({
+        value: `/${cmd.name}`,
+        kind: (cmd as { kind?: "command" | "skill" }).kind === "skill" ? "skill" : "command",
+        detail: cmd.description,
+        source: "agent",
+      });
+    }
+
+    const clientContributions = [
+      { name: "clear", description: "Reset active conversation context" },
+      { name: "context", description: "Toggle workspace files & git context panel" },
+      { name: "reset", description: "Reset active conversation context" },
+    ];
+    for (const contrib of clientContributions) {
+      if (seen.has(contrib.name)) continue;
+      seen.add(contrib.name);
+      if (queryLower && !contrib.name.includes(queryLower)) continue;
+      out.push({
+        value: `/${contrib.name}`,
+        kind: "command",
+        detail: contrib.description,
+        source: "client",
+      });
+    }
+
+    if (queryLower) {
+      out.sort((a, b) => {
+        const aName = a.value.slice(1).toLowerCase();
+        const bName = b.value.slice(1).toLowerCase();
+        const aExact = aName === queryLower ? 0 : 1;
+        const bExact = bName === queryLower ? 0 : 1;
+        if (aExact !== bExact) return aExact - bExact;
+
+        const aPrefix = aName.startsWith(queryLower) ? 0 : 1;
+        const bPrefix = bName.startsWith(queryLower) ? 0 : 1;
+        if (aPrefix !== bPrefix) return aPrefix - bPrefix;
+
+        return aName.localeCompare(bName);
+      });
+    }
+
+    return out.slice(0, 40);
   };
 
   const refreshSlashSuggestions = async (text: string, caret: number) => {
@@ -66,62 +112,49 @@ export function useSlashCompletion(
       closeSlashMenu();
       return;
     }
+    const prevQuery = slashRange()?.query;
     setSlashRange(ctx);
     const seq = ++slashReqSeq;
 
-    if (isCustomRole() && !ctx.query.startsWith("/app_")) {
-      const s = activeSession();
-      const roleName = s?.activeRole;
-      if (!roleName) { closeSlashMenu(); return; }
-      const runtimeRaw = roles().find((r) => r.roleName === roleName)?.runtimeKind ?? s?.runtimeKind ?? "";
-      const runtimeKey = normalizeRuntimeKey(runtimeRaw);
-      if (!runtimeKey) { closeSlashMenu(); return; }
+    // The session's runtime is authoritative: a persona's own runtime_kind is only a seed,
+    // and the project may have pinned a different engine for this persona.
+    const s = activeSession();
+    const roleName = s?.activeRole || "Developer";
+    const runtimeKey = normalizeRuntimeKey(
+      s?.runtimeKind ?? roles().find((r) => r.roleName === roleName)?.runtimeKind ?? "",
+    );
+
+    let agentItems: AppMentionItem[] = [];
+    if (runtimeKey) {
       const key = commandCacheKey(runtimeKey, roleName);
-      if ((s?.discoveredConfigOptions.length ?? 0) === 0) {
-        const opts = await fetchConfigOptions(runtimeKey, roleName);
-        if (seq !== slashReqSeq) return;
-        patchActiveSession({ discoveredConfigOptions: opts });
-      }
       if ((s?.agentCommands.get(key) ?? []).length === 0) {
         const sid = activeSessionId();
         if (sid) await hydrateAgentCommandsForSession(sid, runtimeKey, roleName);
       }
-      const candidates = buildAgentSlashCandidates(runtimeKey, roleName, ctx.query);
-      if (seq !== slashReqSeq) return;
-      if (candidates.length === 0) { closeSlashMenu(); return; }
-      setSlashItems(candidates);
-      setSlashActiveIndex(0);
-      setSlashOpen(true);
+      agentItems = buildAgentSlashCandidates(runtimeKey, roleName, ctx.query);
+    }
+    if (seq !== slashReqSeq) return;
+
+    if (agentItems.length === 0) {
+      closeSlashMenu();
       return;
     }
-
-    try {
-      const version = slashCliCacheRef.version;
-      const all = (slashCliCacheRef.cache as AppMentionItem[] | null) ?? await (async () => {
-        const rows = await completionApi.cli("", 200);
-        if (slashCliCacheRef.version === version) {
-          slashCliCacheRef.cache = rows;
-        }
-        return rows;
-      })();
-      if (seq !== slashReqSeq) return;
-      const q = ctx.query.toLowerCase();
-      const filtered = q
-        ? all.filter((r) => r.value.toLowerCase().includes(q)).slice(0, 20)
-        : all.slice(0, 20);
-      if (filtered.length === 0) {
-        closeSlashMenu();
-        return;
-      }
-      setSlashItems(filtered);
+    setSlashItems(agentItems);
+    if (prevQuery === ctx.query) {
+      setSlashActiveIndex((idx) => Math.min(Math.max(idx, 0), Math.max(0, agentItems.length - 1)));
+    } else {
       setSlashActiveIndex(0);
-      setSlashOpen(true);
-    } catch {
-      closeSlashMenu();
     }
+    setSlashOpen(true);
   };
 
   const applySlashCandidate = (item: AppMentionItem) => {
+    const commandName = item.value.replace(/^\//, "");
+    if (onTriggerCommandUi && onTriggerCommandUi(commandName)) {
+      closeSlashMenu();
+      setInput("");
+      return;
+    }
     const target = getInputEl();
     if (!target) return;
     const range = slashRange();

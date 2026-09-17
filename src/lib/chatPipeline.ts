@@ -2,9 +2,9 @@ type ResolveRouteInput = {
   text: string;
   activeRole: string;
   roleNames: string[];
-  isCustomRole: boolean;
+  isCustomRole?: boolean;
   defaultRoleAlias: string;
-  defaultBackendRole: string;
+  defaultBackendRole?: string;
 };
 
 export type ResolveRouteResult = {
@@ -23,13 +23,13 @@ export type ResolveRouteResult = {
 export type AgentControlCmd = "plan" | "act" | "auto" | "cancel";
 
 export const resolveRoute = (input: ResolveRouteInput): ResolveRouteResult => {
-  const { text, activeRole, roleNames, isCustomRole, defaultRoleAlias, defaultBackendRole } = input;
+  const { text, activeRole, roleNames, defaultRoleAlias } = input;
   const isCommand = text.startsWith("/");
   const isAppCommand = text.startsWith("/app_");
   let sendRoleLabel = activeRole;
   let effectiveRole = activeRole;
-  let inRoleContext = effectiveRole !== defaultRoleAlias && effectiveRole !== defaultBackendRole;
-  let routedText = text;
+  const inRoleContext = true;
+  const routedText = text;
   let activateRole: string | undefined;
   let prefetchRole: string | undefined;
   let explicitRoleMention = false;
@@ -50,13 +50,13 @@ export const resolveRoute = (input: ResolveRouteInput): ResolveRouteResult => {
       if (
         target === "assistant"
         || target === defaultRoleAlias
-        || target === defaultBackendRole
+        || target.toLowerCase() === defaultRoleAlias.toLowerCase()
       ) {
         activateRole = defaultRoleAlias;
         sendRoleLabel = defaultRoleAlias;
         effectiveRole = defaultRoleAlias;
-        inRoleContext = false;
-        routedText = text.replace(/^@\S+\s*/, "").trim();
+        explicitRoleMention = true;
+        prefetchRole = defaultRoleAlias;
       } else {
         if (!roleExists(target)) {
           return {
@@ -75,32 +75,11 @@ export const resolveRoute = (input: ResolveRouteInput): ResolveRouteResult => {
         prefetchRole = target;
         sendRoleLabel = target;
         effectiveRole = target;
-        inRoleContext = true;
-        routedText = text.replace(/^@\S+\s*/, "").trim();
-      }
-    } else {
-      const startsWithFileMention = !!mentionMatch && !isExplicitRole(mentionMatch[1]) && isFileLikeMention(mentionMatch[1]);
-      const needsRoleWrap = isCustomRole && (!text.startsWith("@") || startsWithFileMention);
-      if (needsRoleWrap) {
-        if (!roleExists(effectiveRole)) {
-          return {
-            sendRoleLabel,
-            effectiveRole,
-            routedText,
-            isCommand,
-            isAppCommand,
-            inRoleContext,
-            explicitRoleMention,
-            error: `active role not found: ${effectiveRole}`,
-          };
-        }
-        routedText = `@${effectiveRole} ${text}`;
       }
     }
   }
 
-  const isRoleSlashCmd = isCommand && inRoleContext && !isAppCommand;
-  if (isRoleSlashCmd) {
+  if (isCommand && !isAppCommand) {
     if (!roleExists(effectiveRole)) {
       return {
         sendRoleLabel,
@@ -113,7 +92,6 @@ export const resolveRoute = (input: ResolveRouteInput): ResolveRouteResult => {
         error: `active role not found: ${effectiveRole}`,
       };
     }
-    routedText = `@${effectiveRole} ${text}`;
   }
 
   return {
@@ -132,9 +110,9 @@ export const resolveRoute = (input: ResolveRouteInput): ResolveRouteResult => {
 export const parseAgentControlCommand = (
   text: string,
   isCommand: boolean,
-  inRoleContext: boolean,
+  _inRoleContext?: boolean,
 ): AgentControlCmd | null => {
-  if (!isCommand || inRoleContext) return null;
+  if (!isCommand) return null;
   const match = text.match(/^\/(plan|act|auto|cancel)\b/);
   if (!match) return null;
   return match[1] as AgentControlCmd;

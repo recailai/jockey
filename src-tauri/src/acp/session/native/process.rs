@@ -1,18 +1,13 @@
 use serde_json::{json, Value};
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use super::super::super::adapter::{acp_log, clip, NativeProtocol};
-use super::super::super::error::{push_stderr_tail, stderr_tail};
+pub(super) use crate::acp::process::terminate_pid;
+use crate::acp::process::AgentProcess;
 
 pub(super) struct NativeProcess {
-    pub(super) child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
-    stderr: Arc<std::sync::Mutex<String>>,
-    stderr_task: Option<tokio::task::JoinHandle<()>>,
+    process: AgentProcess,
     next_id: u64,
 }
 
@@ -24,70 +19,19 @@ impl NativeProcess {
         cwd: &str,
         diagnostic: &str,
     ) -> Result<Self, String> {
-        let mut command = Command::new(binary);
-        command
-            .args(args)
-            .envs(
-                env.iter()
-                    .map(|(key, value)| (key.as_str(), value.as_str())),
-            )
-            .current_dir(cwd)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .process_group(0);
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("failed to start {diagnostic}: {error}"))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| format!("{diagnostic} stdin pipe unavailable"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| format!("{diagnostic} stdout pipe unavailable"))?;
-        let stderr = Arc::new(std::sync::Mutex::new(String::new()));
-        let stderr_task = child.stderr.take().map(|stream| {
-            let stderr = stderr.clone();
-            let diagnostic = diagnostic.to_string();
-            tokio::spawn(async move {
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                loop {
-                    line.clear();
-                    match reader.read_line(&mut line).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {
-                            push_stderr_tail(&stderr, &line);
-                            if !line.trim().is_empty() {
-                                acp_log(
-                                    "native.stderr",
-                                    json!({ "runtime": diagnostic, "line": clip(line.trim(), 360) }),
-                                );
-                            }
-                        }
-                    }
-                }
-            })
-        });
+        let process = AgentProcess::spawn(binary, args, env, cwd, diagnostic, "native.stderr")?;
         Ok(Self {
-            child,
-            stdin,
-            stdout: BufReader::new(stdout),
-            stderr,
-            stderr_task,
+            process,
             next_id: 1,
         })
     }
 
     pub(super) fn pid(&self) -> Option<u32> {
-        self.child.id()
+        self.process.pid()
     }
 
     pub(super) fn is_alive(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
+        self.process.is_alive()
     }
 
     fn next_request_id(&mut self) -> u64 {
@@ -100,11 +44,13 @@ impl NativeProcess {
         let mut frame = serde_json::to_vec(&frame)
             .map_err(|error| format!("native RPC frame serialization failed: {error}"))?;
         frame.push(b'\n');
-        self.stdin
+        self.process
+            .stdin
             .write_all(&frame)
             .await
             .map_err(|error| self.io_error("write", error))?;
-        self.stdin
+        self.process
+            .stdin
             .flush()
             .await
             .map_err(|error| self.io_error("flush", error))
@@ -138,8 +84,8 @@ impl NativeProcess {
         let mut side_messages = Vec::new();
         loop {
             let message = self.next_message(timeout).await?;
-            if is_server_request(&message) {
-                self.answer_server_request(&message, auto_approve).await?;
+            if is_server_request(&message, protocol) {
+                self.answer_server_request(protocol, &message, auto_approve).await?;
                 continue;
             }
             if message.get("id") == Some(&id) && is_response(&message, protocol) {
@@ -168,16 +114,32 @@ impl NativeProcess {
 
     pub(super) async fn next_agent_message(
         &mut self,
+        protocol: NativeProtocol,
         timeout: Duration,
         auto_approve: bool,
     ) -> Result<Value, String> {
         loop {
             let message = self.next_message(timeout).await?;
-            if is_server_request(&message) {
-                self.answer_server_request(&message, auto_approve).await?;
+            if is_server_request(&message, protocol) {
+                self.answer_server_request(protocol, &message, auto_approve).await?;
                 continue;
             }
             return Ok(message);
+        }
+    }
+
+    /// Read the next frame without interpreting server requests. Callers that can surface an
+    /// approval to the user take this and resolve the request themselves; `next_agent_message`
+    /// remains the auto-answering path for transports with no interactive surface.
+    pub(super) async fn next_frame(&mut self, timeout: Duration) -> Result<Value, String> {
+        self.next_message(timeout).await
+    }
+
+    pub(super) fn server_request_id(message: &Value) -> Option<Value> {
+        if message.get("method").and_then(Value::as_str).is_some() && message.get("id").is_some() {
+            message.get("id").cloned()
+        } else {
+            None
         }
     }
 
@@ -185,7 +147,7 @@ impl NativeProcess {
         let mut line = String::new();
         loop {
             line.clear();
-            let read = tokio::time::timeout(timeout, self.stdout.read_line(&mut line))
+            let read = tokio::time::timeout(timeout, self.process.stdout.read_line(&mut line))
                 .await
                 .map_err(|_| self.timeout_error())?
                 .map_err(|error| self.io_error("read", error))?;
@@ -210,23 +172,60 @@ impl NativeProcess {
 
     async fn answer_server_request(
         &mut self,
+        protocol: NativeProtocol,
         message: &Value,
         auto_approve: bool,
     ) -> Result<(), String> {
-        let Some(id) = message.get("id").cloned() else {
-            return Ok(());
-        };
-        let method = message
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let result = if method.contains("approval") || method.contains("permission") {
-            json!({ "decision": if auto_approve { "accept" } else { "decline" } })
-        } else {
-            json!({})
-        };
-        self.send(json!({ "id": id, "result": result })).await
+        match protocol {
+            NativeProtocol::CodexAppServer => {
+                let Some(id) = message.get("id").cloned() else {
+                    return Ok(());
+                };
+                let method = message
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                let result = if method.contains("approval") || method.contains("permission") {
+                    json!({ "decision": if auto_approve { "accept" } else { "decline" } })
+                } else {
+                    json!({})
+                };
+                self.send(json!({ "id": id, "result": result })).await
+            }
+            NativeProtocol::PiRpc => {
+                let method = message.get("method").and_then(Value::as_str).unwrap_or_default();
+                let Some(id) = message.get("id").cloned() else {
+                    return Ok(());
+                };
+                // Fire-and-forget UI updates in Pi extensions: do not send any reply
+                if method == "setStatus" || method == "notify" || method == "setWidget" {
+                    return Ok(());
+                }
+                // Interactive UI dialogs in Pi extensions
+                if method == "confirm" {
+                    return self.send(json!({
+                        "type": "extension_ui_response",
+                        "id": id,
+                        "confirmed": auto_approve
+                    })).await;
+                }
+                if method == "select" {
+                    let first_opt = message
+                        .get("options")
+                        .and_then(Value::as_array)
+                        .and_then(|arr| arr.first())
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    return self.send(json!({
+                        "type": "extension_ui_response",
+                        "id": id,
+                        "value": first_opt
+                    })).await;
+                }
+                Ok(())
+            }
+        }
     }
 
     fn io_error(&self, operation: &str, error: std::io::Error) -> String {
@@ -245,7 +244,7 @@ impl NativeProcess {
     }
 
     fn stderr_suffix(&self) -> String {
-        let tail = stderr_tail(&self.stderr);
+        let tail = self.process.stderr_tail();
         if tail.trim().is_empty() {
             String::new()
         } else {
@@ -254,22 +253,19 @@ impl NativeProcess {
     }
 
     pub(super) async fn close(&mut self) {
-        let _ = self.stdin.shutdown().await;
-        if let Some(pid) = self.child.id() {
-            terminate_pid(pid);
-        }
-        if self.child.try_wait().ok().flatten().is_none() {
-            let _ = self.child.kill().await;
-        }
-        let _ = tokio::time::timeout(Duration::from_secs(2), self.child.wait()).await;
-        if let Some(task) = self.stderr_task.take() {
-            let _ = task.await;
-        }
+        self.process.close(Duration::from_secs(2)).await;
     }
 }
 
-fn is_server_request(message: &Value) -> bool {
-    message.get("method").and_then(Value::as_str).is_some() && message.get("id").is_some()
+fn is_server_request(message: &Value, protocol: NativeProtocol) -> bool {
+    match protocol {
+        NativeProtocol::CodexAppServer => {
+            message.get("method").and_then(Value::as_str).is_some() && message.get("id").is_some()
+        }
+        NativeProtocol::PiRpc => {
+            message.get("type").and_then(Value::as_str) == Some("extension_ui_request")
+        }
+    }
 }
 
 fn is_response(message: &Value, protocol: NativeProtocol) -> bool {
@@ -297,17 +293,3 @@ pub(super) fn transport_name(protocol: NativeProtocol) -> &'static str {
         NativeProtocol::PiRpc => "pi-rpc",
     }
 }
-
-#[cfg(unix)]
-pub(super) fn terminate_pid(pid: u32) {
-    unsafe {
-        let pgid = -(pid as i32);
-        let _ = libc::kill(pgid, libc::SIGTERM);
-        let _ = libc::kill(pgid, libc::SIGKILL);
-        let _ = libc::kill(pid as i32, libc::SIGTERM);
-        let _ = libc::kill(pid as i32, libc::SIGKILL);
-    }
-}
-
-#[cfg(not(unix))]
-pub(super) fn terminate_pid(_pid: u32) {}

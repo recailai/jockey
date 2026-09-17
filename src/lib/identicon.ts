@@ -12,16 +12,18 @@ const PALETTES = [
 ];
 
 function hash(str: string): number {
+  const s = str || "";
   let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
   }
   return Math.abs(h);
 }
 
-export function identicon(seed: string, size = 32): string {
-  const h = hash(seed);
-  const h2 = hash(seed + seed);
+export function identicon(seed?: string | null, size = 32): string {
+  const safeSeed = seed || "assistant";
+  const h = hash(safeSeed);
+  const h2 = hash(safeSeed + safeSeed);
   const palette = PALETTES[h % PALETTES.length];
   const fg = palette[0];
   const hi = palette[1];

@@ -1,13 +1,24 @@
+export type Project = {
+  id: string;
+  name: string;
+  rootPath: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type Role = {
   id: string; roleName: string; runtimeKind: string; runtimeProfileId?: string; runtimeLaunchMethod?: string | null;
   systemPrompt: string; model: string | null; mode: string | null;
   mcpServersJson: string; configOptionsJson: string; configOptionDefsJson: string; autoApprove: boolean;
+  projectId?: string | null;
 };
 export type RoleUpsertInput = {
+  id?: string;
   roleName: string; runtimeKind: string; runtimeProfileId?: string; systemPrompt: string;
   model: string | null; mode: string | null; mcpServersJson: string; configOptionsJson: string;
   configOptionDefsJson?: string | null;
   autoApprove: boolean;
+  projectId?: string | null;
 };
 export type AppToolCall = {
   toolCallId: string;
@@ -22,8 +33,44 @@ export type AppToolCall = {
   rawInputJson?: string;
   rawOutputJson?: string;
   terminalMeta?: unknown;
+  /** Owning tool call when the provider reports nesting (sub-agents, spawned tasks). */
+  parentId?: string | null;
+  /** Structured patch for file-editing tools. */
+  diff?: unknown;
+  /** Accumulated streamed stdout for long-running tools. */
+  outputLog?: string;
 };
 export type AppPlanEntry = { content?: string; title?: string; status?: string; description?: string; priority?: string };
+/** Token accounting for the session. `null` fields mean the provider did not report them,
+ *  which is different from reporting zero. */
+export type AppUsage = {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  reasoningTokens: number | null;
+  totalTokens: number | null;
+  contextWindow: number | null;
+  costUsd: number | null;
+};
+export type AppNotice = { id: string; level: string; code: string | null; text: string; at: number };
+export type AppUserInputOption = { value: string; label: string; description?: string | null };
+export type AppUserInputQuestion = {
+  id: string;
+  header?: string | null;
+  prompt: string;
+  options: AppUserInputOption[];
+  allowOther: boolean;
+  secret: boolean;
+  multi: boolean;
+};
+/** A structured question set from the agent. Unlike a permission this is not allow/deny. */
+export type AppUserInputRequest = {
+  requestId: string;
+  title: string | null;
+  blocking: boolean;
+  questions: AppUserInputQuestion[];
+};
 export type AppPermission = { requestId: string; title: string; description: string | null; options: Array<{ optionId: string; title?: string; kind?: string }> };
 export type AcpStreamEvent = {
   kind: string;
@@ -35,11 +82,24 @@ export type AcpStreamEvent = {
   terminalMeta?: unknown;
   entries?: AppPlanEntry[];
   requestId?: string; description?: string | null; options?: unknown[];
+  // `userInputRequest` event fields.
+  questions?: AppUserInputQuestion[]; blocking?: boolean;
+  // `toolCallUpdate` nesting / diff, and `toolOutputDelta`.
+  parentId?: string | null; diff?: unknown; delta?: string;
   modeId?: string;
   commands?: unknown[];
   modes?: Array<{ id: string; title?: string }>; current?: string | null;
   // `sessionError` event fields — typed session error surface from the worker.
   code?: string; message?: string; retryable?: boolean;
+  // `usage` event fields.
+  inputTokens?: number | null; outputTokens?: number | null;
+  cacheReadTokens?: number | null; cacheWriteTokens?: number | null;
+  reasoningTokens?: number | null; totalTokens?: number | null;
+  contextWindow?: number | null; costUsd?: number | null;
+  // `notice` event fields (`text` and `code` are shared with other variants).
+  level?: string;
+  // `contextCompacted` event fields (`reason` shares the shape of other detail fields).
+  beforeTokens?: number | null; afterTokens?: number | null; reason?: string | null;
 };
 
 /** Display-only terminal view derived from ToolCall.meta.terminal_* payloads.
@@ -66,7 +126,7 @@ export type AcpConfigOption = {
   currentValue: string;
   options: ConfigOptionValue[] | ConfigOptionGroup[];
 };
-export type AssistantRuntime = { key: string; profileId: string; label: string; family: "native" | "acp" | string; binary: string; available: boolean; version: string | null; installHint: string | null; unavailableReason: string | null; launchMethod: string | null; transport: string; capabilities: Record<string, boolean> };
+export type AssistantRuntime = { key: string; profileId: string; label: string; family: "native" | "acp" | string; binary: string; available: boolean; version: string | null; installHint: string | null; unavailableReason: string | null; launchMethod: string | null; transport: string; capabilities: Record<string, boolean | string> };
 export type ChatCommandResult = { ok: boolean; message: string; runtimeKind: string | null; sessionId: string | null; payload: Record<string, unknown> };
 export type AssistantChatResponse = { ok: boolean; reply: string; runtimeKind: string | null; sessionId: string | null; commandResult: ChatCommandResult | null };
 export type SessionUpdateEvent = { sessionId: string; roleName: string; delta: string; done: boolean };
@@ -74,7 +134,13 @@ export type WorkflowStateEvent = { sessionId: string; status: string; activeRole
 export type AcpDeltaEvent = { role: string; delta: string; appSessionId?: string };
 export type AppSegment = { kind: "text"; text: string } | { kind: "tool"; tc: AppToolCall };
 export type AppMessage = { id: string; roleName: string; text: string; at: number; toolCalls?: AppToolCall[]; segments?: AppSegment[]; images?: { data: string; mimeType: string }[]; thoughtText?: string };
-export type AppMentionItem = { value: string; kind: "role" | "file" | "dir" | "command" | "skill"; detail: string };
+export type AppMentionItem = {
+  value: string;
+  kind: "role" | "file" | "dir" | "command" | "skill";
+  detail: string;
+  /** Where a slash candidate came from, so the menu can label agent vs Jockey commands. */
+  source?: "agent" | "jockey" | "client";
+};
 
 export type PreviewMode = "diff" | "file" | "preview" | "image" | "commit";
 export type PreviewTab = {
@@ -91,11 +157,16 @@ export type AppSkill = { id: string; name: string; description: string; content:
 
 export type AppSession = {
   id: string;
+  /** false until this session has an `app_sessions` DB row — see `makeDraftSession`.
+   *  A draft only exists in the frontend store; switching persona/model on it must not
+   *  hit any Tauri command that assumes a real row (FK inserts, session-role bindings). */
+  persisted: boolean;
   title: string;
   activeRole: string;
   runtimeKind: string | null;
   runtimeProfileId?: string | null;
   cwd: string | null;
+  projectId?: string | null;
   messages: AppMessage[];
   streamingMessage: AppMessage | null;
   /** Run token that currently owns `streamingMessage`. Set by `startOriginStream`
@@ -107,7 +178,10 @@ export type AppSession = {
   toolCalls: Record<string, AppToolCall>;
   streamSegments: AppSegment[];
   currentPlan: AppPlanEntry[] | null;
+  usage: AppUsage | null;
+  notices: AppNotice[];
   pendingPermissions: AppPermission[];
+  pendingUserInput: AppUserInputRequest[];
   agentModes: Array<{ id: string; title?: string }>;
   currentMode: string | null;
   submitting: boolean;
@@ -141,8 +215,8 @@ export const RUNTIME_COLOR: Record<string, string> = {
   mock: "runtime-color-muted",
 };
 export const INTERACTIVE_MOTION = "motion-safe:transition-colors motion-safe:transition-transform motion-safe:duration-150 motion-safe:ease-out active:scale-[0.98]";
-export const DEFAULT_BACKEND_ROLE = "Jockey";
-export const DEFAULT_ROLE_ALIAS = "Jockey";
+export const DEFAULT_BACKEND_ROLE = "Developer";
+export const DEFAULT_ROLE_ALIAS = "Developer";
 export const MESSAGE_RENDER_WINDOW = 280;
 
 export const now = (): number => Date.now();
@@ -159,3 +233,74 @@ export function flattenConfigValues(opts: ConfigOptionValue[] | ConfigOptionGrou
   if ("value" in opts[0]) return opts as ConfigOptionValue[];
   return (opts as ConfigOptionGroup[]).flatMap((g) => g.options);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Management Domain types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type StoredSession = {
+  id: string;
+  title: string;
+  activeRole: string;
+  runtimeKind: string | null;
+  runtimeProfileId?: string | null;
+  cwd: string | null;
+  messageCount: number;
+  createdAt: number;
+  updatedAt: number;
+  closedAt: number | null;
+};
+
+export type Workflow = {
+  id: string;
+  name: string;
+  description: string;
+  steps: WorkflowStep[];
+  createdAt: number;
+  updatedAt: number;
+  status?: "idle" | "running" | "done" | "error";
+};
+
+export type WorkflowStep = {
+  roleName: string;
+  prompt: string;
+  order: number;
+};
+
+export type McpServerStdio = {
+  name: string;
+  command: string;
+  args: string[];
+  env: Array<{ name: string; value: string }>;
+};
+
+export type McpServerHttp = {
+  type: "http";
+  name: string;
+  url: string;
+  headers: Array<{ name: string; value: string }>;
+};
+
+export type McpServerSse = {
+  type: "sse";
+  name: string;
+  url: string;
+  headers: Array<{ name: string; value: string }>;
+};
+
+export type AcpMcpServer = McpServerStdio | McpServerHttp | McpServerSse;
+
+export type ContextEntry = { scope: string; key: string; value: string; updatedAt: number };
+
+export type TabId = "sessions" | "workflows" | "roles" | "mcp" | "skills" | "rules" | "agents";
+
+export const TABS: Array<{ id: TabId; label: string; icon: string }> = [
+  { id: "agents", label: "Agents", icon: "bot" },
+  { id: "sessions", label: "Sessions", icon: "history" },
+  { id: "workflows", label: "Automations", icon: "git-branch" },
+  { id: "roles", label: "Roles", icon: "users" },
+  { id: "mcp", label: "MCP", icon: "layers" },
+  { id: "skills", label: "Skills", icon: "zap" },
+  { id: "rules", label: "Rules", icon: "file-text" },
+];
+

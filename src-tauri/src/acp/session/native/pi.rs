@@ -1,10 +1,12 @@
 use super::super::super::adapter::NativeProtocol;
 use super::super::super::runtime_state::{
-    has_discovered_models, remember_runtime_available_commands, remember_runtime_models,
+    has_discovered_models, list_discovered_config_options, remember_runtime_available_commands,
+    remember_runtime_models,
 };
 use super::super::super::worker::AcpEvent;
+use super::super::option_spec::{OptionSpec, OptionValue, Wire};
 use super::{
-    compose_prompt, extract_pi_session_id, find_option, first_text, native_model_options,
+    compose_prompt, extract_pi_session_id, find_option, first_text, resolve_wired_values,
     NativeCatalog, NativeEventSink, NativeProcess, NativeRunRequest, CONTROL_TIMEOUT, TURN_TIMEOUT,
 };
 use serde_json::{json, Value};
@@ -58,10 +60,21 @@ pub(super) async fn run(
             )
             .await?;
         if let Some(models) = extract_models(&models) {
-            remember_runtime_models(runtime_key, models);
+            remember_runtime_models(
+                runtime_key,
+                models.iter().map(|m| m.value.clone()).collect(),
+            );
         }
     }
-    if let Some(model) = find_option(options, &["model", "model_id"]) {
+    // Follow what the runtime declared. The `find_option` fallbacks cover the one case the
+    // declaration cannot: discovery has not run yet in this process, so the catalog is empty
+    // and a turn must still go out carrying the user's settings.
+    let wired = resolve_wired_values(&list_discovered_config_options(runtime_key), options);
+    let model = wired
+        .rpc("set_model")
+        .map(|call| call.value.clone())
+        .or_else(|| find_option(options, &["model", "model_id"]));
+    if let Some(model) = model {
         if let Some((provider, model_id)) = model.split_once('/') {
             process
                 .request(
@@ -74,12 +87,19 @@ pub(super) async fn run(
                 .await?;
         }
     }
-    if let Some(thinking) = find_option(options, &["thinking", "thinking_level", "effort"]) {
+    let thinking = wired
+        .rpc("set_thinking_level")
+        .map(|call| (call.field.clone(), call.value.clone()))
+        .or_else(|| {
+            find_option(options, &["thinking", "thinking_level", "effort"])
+                .map(|value| ("level".to_string(), value))
+        });
+    if let Some((field, level)) = thinking {
         process
             .request(
                 NativeProtocol::PiRpc,
                 "set_thinking_level",
-                json!({ "level": thinking }),
+                json!({ field: level }),
                 CONTROL_TIMEOUT,
                 auto_approve,
             )
@@ -139,7 +159,7 @@ pub(super) async fn run(
     }
     while !completed {
         let message = process
-            .next_agent_message(TURN_TIMEOUT, auto_approve)
+            .next_agent_message(NativeProtocol::PiRpc, TURN_TIMEOUT, auto_approve)
             .await?;
         completed = process_message(&message, sink, &mut output)?;
     }
@@ -239,6 +259,8 @@ pub(super) fn process_message(
                     .or_else(|| message.get("partialResult"))
                     .cloned(),
                 terminal_meta: None,
+                parent_id: None,
+                diff: None,
             });
         }
         "agent_end" | "agent_settled" => return Ok(true),
@@ -255,6 +277,7 @@ pub(super) async fn refresh_catalog(
     process: &mut NativeProcess,
     runtime_key: &'static str,
     auto_approve: bool,
+    thinking_levels: &[String],
 ) -> NativeCatalog {
     let state = process
         .request(
@@ -285,13 +308,16 @@ pub(super) async fn refresh_catalog(
             session_id: String::new(),
         };
     };
-    remember_runtime_models(runtime_key, models.clone());
+    remember_runtime_models(
+        runtime_key,
+        models.iter().map(|m| m.value.clone()).collect(),
+    );
+    let current_thinking = state
+        .as_ref()
+        .and_then(|s| s.get("thinkingLevel").and_then(Value::as_str))
+        .map(ToString::to_string);
     NativeCatalog {
-        options: native_model_options(
-            &models,
-            "thinking_level",
-            &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
-        ),
+        options: pi_options(&models, thinking_levels, current_thinking.as_deref()),
         modes: vec![],
         session_id: state
             .as_ref()
@@ -300,7 +326,17 @@ pub(super) async fn refresh_catalog(
     }
 }
 
-fn extract_models(value: &Value) -> Option<Vec<String>> {
+/// A Pi model as `get_available_models` describes it. Pi reports a display name, the serving
+/// provider and whether the model reasons at all — but no list of thinking levels, so the
+/// runtime offers no effort axis to select from.
+struct PiModel {
+    /// `provider/id`, the form Pi expects back when selecting a model.
+    value: String,
+    label: String,
+    provider: String,
+}
+
+fn extract_models(value: &Value) -> Option<Vec<PiModel>> {
     value
         .get("models")
         .or_else(|| value.as_array().map(|_| value))
@@ -310,12 +346,85 @@ fn extract_models(value: &Value) -> Option<Vec<String>> {
                 .filter_map(|row| {
                     let id = row.get("id").and_then(Value::as_str)?;
                     let provider = row.get("provider").and_then(Value::as_str);
-                    Some(
-                        provider
+                    Some(PiModel {
+                        value: provider
                             .map(|provider| format!("{provider}/{id}"))
                             .unwrap_or_else(|| id.to_string()),
-                    )
+                        label: row
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .filter(|name| !name.trim().is_empty())
+                            .unwrap_or(id)
+                            .to_string(),
+                        provider: provider.unwrap_or_default().to_string(),
+                    })
                 })
                 .collect()
         })
+}
+
+/// Pi's parameters. Neither is a turn parameter: both are control-plane calls made before the
+/// prompt, which is precisely the kind of per-runtime difference the declaration exists to
+/// carry instead of encoding it as a branch in the send path.
+fn pi_options(
+    models: &[PiModel],
+    thinking: &[String],
+    current_thinking: Option<&str>,
+) -> Vec<Value> {
+    let model_values = models
+        .iter()
+        .map(|m| {
+            json!({
+                "value": m.value,
+                "name": m.label,
+                "description": m.provider,
+                "effortLevels": thinking,
+                "defaultEffort": current_thinking,
+                "isDefault": false,
+                "oneMillion": false,
+                "supportsFast": false,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut model_value = OptionSpec::select(
+        "model",
+        "Model",
+        // `set_model` takes the value split into `provider` and `modelId`; that encoding is
+        // Pi's own, so the declaration names the call and the adapter below splits the value.
+        Wire::Rpc {
+            method: "set_model".to_string(),
+            field: "model".to_string(),
+        },
+        Vec::new(),
+    )
+    .describe("Discovered from the native runtime")
+    .to_value();
+    model_value["values"] = json!(model_values);
+    model_value["options"] = json!(model_values);
+
+    let mut options = vec![model_value];
+
+    // Pi's listing never mentions thinking levels, but `pi --help` documents them and
+    // `get_state` reports the one in force — so the axis is real and its values are read,
+    // not invented the way the seven hardcoded entries here used to be.
+    if !thinking.is_empty() {
+        options.push(
+            OptionSpec::select(
+                "thinking_level",
+                "Thinking",
+                Wire::Rpc {
+                    method: "set_thinking_level".to_string(),
+                    field: "level".to_string(),
+                },
+                thinking
+                    .iter()
+                    .map(|level| OptionValue::new(level, level))
+                    .collect(),
+            )
+            .defaulting_to(current_thinking.map(ToString::to_string))
+            .to_value(),
+        );
+    }
+    options
 }

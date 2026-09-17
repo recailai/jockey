@@ -17,7 +17,7 @@ import {
   Workflow,
 } from "lucide-solid";
 import type { Accessor } from "solid-js";
-import type { AppSession, AppSkill, AssistantRuntime, Role, AcpConfigOption } from "./types";
+import type { AppSession, AppSkill, AssistantRuntime, Role, AcpConfigOption, Project } from "./types";
 import { type UiTheme, UI_THEMES } from "../lib/theme";
 import { SessionsTab } from "./management/SessionsTab";
 import { WorkflowsTab } from "./management/WorkflowsTab";
@@ -58,12 +58,13 @@ type SettingsPageProps = {
   patchActiveSession: (patch: Partial<AppSession>) => void;
   updateSession: (id: string, patch: Partial<AppSession>) => void;
   refreshSkills: () => Promise<void>;
-  refreshRoles: () => Promise<void>;
+  refreshRoles: (projectId?: string) => Promise<void>;
   fetchRoleConfig: (runtimeKey: string, roleName?: string) => Promise<{ options: AcpConfigOption[]; modes: string[] }>;
   pushMessage: (role: string, text: string) => void;
   onRestoreSession: (id: string, title: string, activeRole: string, runtimeKind: string | null, runtimeProfileId: string | null, cwd: string | null) => void;
   onBack: () => void;
   showToast?: (message: string, severity?: Toast["severity"]) => void;
+  currentProject?: Accessor<Project | null>;
 };
 
 const NAV: Array<{ id: SettingsTab; label: string; icon: typeof Settings }> = [
@@ -387,6 +388,7 @@ export default function SettingsPage(props: SettingsPageProps) {
                     fetchRoleConfig={props.fetchRoleConfig}
                     pushMessage={props.pushMessage}
                     initialRoleName={initialRoleName()}
+                    currentProject={props.currentProject}
                   />
                 </div>
               </div>

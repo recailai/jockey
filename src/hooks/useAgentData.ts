@@ -26,16 +26,13 @@ export function useAgentData(
     return k;
   };
 
-  const isCustomRole = () => {
-    const s = activeSession();
-    return s ? s.activeRole !== DEFAULT_ROLE_ALIAS && s.activeRole !== DEFAULT_BACKEND_ROLE : false;
-  };
+  const isCustomRole = () => true;
 
-  const activeBackendRole = () => isCustomRole() ? (activeSession()?.activeRole ?? DEFAULT_BACKEND_ROLE) : DEFAULT_BACKEND_ROLE;
+  const activeBackendRole = () => activeSession()?.activeRole ?? DEFAULT_BACKEND_ROLE;
 
-  const refreshRoles = async () => {
+  const refreshRoles = async (projectId?: string) => {
     try {
-      const rows = await roleApi.list();
+      const rows = await roleApi.list(projectId);
       setRoles(rows);
       slashCliCacheRef.cache = null;
     } catch (e) {

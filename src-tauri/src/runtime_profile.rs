@@ -26,6 +26,28 @@ pub(crate) struct RuntimeCapabilities {
     pub(crate) session_listing: bool,
     pub(crate) rewind: bool,
     pub(crate) fork: bool,
+    /// Whether the transport reports tool names, inputs and outputs. Antigravity's print
+    /// mode does not, so the UI must not render empty tool cards for it.
+    pub(crate) tool_detail: bool,
+    /// How much of the agent-asks-the-user surface this transport exposes.
+    pub(crate) interaction: InteractionSupport,
+    /// Long-running tool output arrives incrementally.
+    pub(crate) output_streaming: bool,
+    /// Token accounting is reported.
+    pub(crate) usage: bool,
+    /// Tool calls carry a parent, so sub-agent work can be nested.
+    pub(crate) nested_tools: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum InteractionSupport {
+    /// The CLI resolves prompts itself; nothing reaches the UI.
+    None,
+    /// Allow/deny only.
+    PermissionOnly,
+    /// Allow/deny plus structured questions.
+    Full,
 }
 
 impl RuntimeCapabilities {
@@ -44,6 +66,11 @@ impl RuntimeCapabilities {
             session_listing: false,
             rewind: false,
             fork: false,
+            tool_detail: false,
+            interaction: InteractionSupport::None,
+            output_streaming: false,
+            usage: false,
+            nested_tools: false,
         }
     }
 }
@@ -162,6 +189,17 @@ pub(crate) fn runtime_key(profile: &str) -> String {
         .unwrap_or_else(|| profile.trim().to_string())
 }
 
+/// Capabilities keyed by transport label, so an adapter can answer for itself without
+/// having to know which runtime profile it was resolved from.
+#[allow(dead_code)]
+pub(crate) fn capabilities_for_transport(transport: &str) -> RuntimeCapabilities {
+    builtin_profiles()
+        .into_iter()
+        .find(|profile| profile.transport == transport)
+        .map(|profile| profile.capabilities)
+        .unwrap_or_else(RuntimeCapabilities::unavailable)
+}
+
 pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
     vec![
         RuntimeProfile {
@@ -174,9 +212,9 @@ pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
                 streaming: true,
                 session_persistence: true,
                 session_resume: true,
-                model_catalog: false,
+                model_catalog: true,
                 dynamic_modes: false,
-                dynamic_config: false,
+                dynamic_config: true,
                 permission_requests: true,
                 mcp_servers: true,
                 attachments: false,
@@ -184,6 +222,11 @@ pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
                 session_listing: false,
                 rewind: false,
                 fork: false,
+                tool_detail: true,
+                interaction: InteractionSupport::PermissionOnly,
+                output_streaming: false,
+                usage: true,
+                nested_tools: true,
             },
             launch_spec: None,
             version_requirement: None,
@@ -208,8 +251,13 @@ pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
                 attachments: false,
                 tool_invocations: true,
                 session_listing: false,
-                rewind: false,
-                fork: false,
+                rewind: true,
+                fork: true,
+                tool_detail: true,
+                interaction: InteractionSupport::Full,
+                output_streaming: true,
+                usage: true,
+                nested_tools: true,
             },
             launch_spec: None,
             version_requirement: None,
@@ -236,6 +284,11 @@ pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
                 session_listing: false,
                 rewind: false,
                 fork: false,
+                tool_detail: true,
+                interaction: InteractionSupport::None,
+                output_streaming: false,
+                usage: true,
+                nested_tools: false,
             },
             launch_spec: None,
             version_requirement: None,
@@ -252,9 +305,9 @@ pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
                 streaming: true,
                 session_persistence: true,
                 session_resume: true,
-                model_catalog: false,
+                model_catalog: true,
                 dynamic_modes: false,
-                dynamic_config: false,
+                dynamic_config: true,
                 permission_requests: false,
                 mcp_servers: false,
                 attachments: false,
@@ -262,6 +315,11 @@ pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
                 session_listing: false,
                 rewind: false,
                 fork: false,
+                tool_detail: false,
+                interaction: InteractionSupport::None,
+                output_streaming: false,
+                usage: true,
+                nested_tools: false,
             },
             launch_spec: None,
             version_requirement: None,
@@ -288,6 +346,11 @@ pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
                 session_listing: false,
                 rewind: false,
                 fork: false,
+                tool_detail: true,
+                interaction: InteractionSupport::PermissionOnly,
+                output_streaming: false,
+                usage: false,
+                nested_tools: false,
             },
             launch_spec: None,
             version_requirement: Some("@agentclientprotocol/claude-agent-acp@0.70.0".to_string()),
@@ -295,4 +358,57 @@ pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
             builtin: true,
         },
     ]
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    fn caps(runtime_key: &str) -> RuntimeCapabilities {
+        builtin_profiles()
+            .into_iter()
+            .find(|p| p.runtime_key == runtime_key)
+            .map(|p| p.capabilities)
+            .expect("builtin profile")
+    }
+
+    #[test]
+    fn antigravity_does_not_claim_tool_detail_it_cannot_deliver() {
+        // Measured against agy 1.2.4: print mode reports step_type "unknown" with no tool
+        // name, parameters or output, and resolves its own questions.
+        let agy = caps("antigravity-cli");
+        assert!(!agy.tool_detail);
+        assert_eq!(agy.interaction, InteractionSupport::None);
+        assert!(agy.usage, "agy does report token usage");
+    }
+
+    #[test]
+    fn codex_is_the_only_runtime_with_the_full_interaction_surface() {
+        assert_eq!(caps("codex-cli").interaction, InteractionSupport::Full);
+        for other in ["claude-native", "antigravity-cli", "pi-cli"] {
+            assert_ne!(
+                caps(other).interaction,
+                InteractionSupport::Full,
+                "{other} must not claim structured questions"
+            );
+        }
+    }
+
+    #[test]
+    fn fork_and_rewind_track_the_runtimes_that_actually_implement_them() {
+        // provider_session_cmd only wires thread/fork and thread/rollback for native Codex.
+        let codex = caps("codex-cli");
+        assert!(codex.fork && codex.rewind);
+        assert!(!caps("claude-native").fork);
+    }
+
+    #[test]
+    fn transport_lookup_matches_profile_lookup() {
+        assert_eq!(
+            capabilities_for_transport("codex-app-server").interaction,
+            InteractionSupport::Full
+        );
+        assert!(!capabilities_for_transport("agy-stream-json").tool_detail);
+        assert!(!capabilities_for_transport("nonexistent").tool_detail);
+    }
 }

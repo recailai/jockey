@@ -17,6 +17,15 @@ use crate::types::AppState;
 
 use super::adapter_runtime::{AnyRuntimeAdapter as RuntimeAdapterKind, RuntimeAdapter};
 
+/// Every delta of a short turn is logged, so the common case reads exactly as before; a long
+/// turn samples instead of flooding (and evicting) the fixed-size log ring.
+const DELTA_LOG_VERBATIM: usize = 32;
+const DELTA_LOG_SAMPLE_EVERY: usize = 64;
+
+fn should_log_delta(delta_index: usize) -> bool {
+    delta_index <= DELTA_LOG_VERBATIM || delta_index % DELTA_LOG_SAMPLE_EVERY == 0
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct AcpDeltaPayload<'a> {
@@ -68,6 +77,7 @@ pub async fn execute_runtime(
                 error_code: Some("UNSUPPORTED_RUNTIME".to_string()),
                 deltas: vec![],
                 meta: json!({ "mode": "unsupported-runtime", "runtime": normalized }),
+                session_handle: None,
             }
         }
         Err(e) => {
@@ -77,6 +87,7 @@ pub async fn execute_runtime(
                 error_code: Some("ADAPTER_UNAVAILABLE".to_string()),
                 deltas: vec![],
                 meta: json!({ "mode": "adapter-unavailable", "runtime": normalized, "error": e }),
+                session_handle: None,
             }
         }
     };
@@ -103,23 +114,8 @@ pub async fn execute_runtime(
     let resolved_cwd = resolve_cwd(cwd);
 
     // Unified adapter dispatch: lifecycle branches live behind the
-    // RuntimeAdapter trait so callers never branch on transport kind.
-    let Some(adapter_impl) = RuntimeAdapterKind::resolve(adapter.runtime_key) else {
-        return AcpPromptResult {
-            ok: false,
-            output: format!(
-                "adapter resolution changed while starting runtime: {}",
-                adapter.runtime_key
-            ),
-            error_code: Some("ADAPTER_UNAVAILABLE".to_string()),
-            deltas: vec![],
-            meta: json!({
-                "mode": "adapter-unavailable",
-                "runtime": adapter.runtime_key,
-                "reason": "runtime adapter could not be re-resolved"
-            }),
-        };
-    };
+    // RuntimeAdapter trait derived directly from the resolved transport.
+    let adapter_impl = RuntimeAdapterKind::from_transport(&adapter.transport);
     let prompt_request = super::adapter_runtime::PromptRequest {
         runtime_key: adapter.runtime_key,
         role_name,
@@ -143,13 +139,18 @@ pub async fn execute_runtime(
     let result = RuntimeAdapter::prompt(&adapter_impl, prompt_request).await;
 
     if result.ok {
-        if let Some(session_id) = result
-            .meta
-            .get("sessionId")
-            .or_else(|| result.meta.get("conversationId"))
-            .and_then(|id| id.as_str())
-            .filter(|id| !id.is_empty())
-        {
+        let handle = result
+            .session_handle
+            .as_deref()
+            .or_else(|| {
+                result
+                    .meta
+                    .get("sessionId")
+                    .or_else(|| result.meta.get("conversationId"))
+                    .and_then(|id| id.as_str())
+            })
+            .filter(|id| !id.is_empty());
+        if let Some(session_id) = handle {
             if let Some((s, app_sid)) = state {
                 let _ = save_app_session_role_cli_id(
                     s,
@@ -300,13 +301,18 @@ pub(super) async fn execute_acp_worker_prompt(
                     Some(AcpEvent::TextDelta { ref text }) => {
                         full_output.push_str(text);
                         delta_count += 1;
-                        acp_log("delta.text", json!({
-                            "runtime": runtime_key,
-                            "role": role_owned,
-                            "deltaIndex": delta_count,
-                            "chunkLen": text.len(),
-                            "preview": clip(text, 60),
-                        }));
+                        // One entry per token both allocates a payload per chunk and, in a
+                        // 512-entry ring, evicts everything else a long turn did. Short turns
+                        // stay fully logged; past that a sample keeps the turn legible.
+                        if should_log_delta(delta_count) {
+                            acp_log("delta.text", json!({
+                                "runtime": runtime_key,
+                                "role": role_owned,
+                                "deltaIndex": delta_count,
+                                "chunkLen": text.len(),
+                                "preview": clip(text, 60),
+                            }));
+                        }
                         delta_batch.push_str(text);
                     }
                     Some(ref evt @ AcpEvent::ConfigUpdate { ref options }) => {
@@ -452,6 +458,7 @@ pub(super) async fn execute_acp_worker_prompt(
                     "runtimeKey": runtime_key,
                     "sessionId": session_id
                 }),
+                session_handle: Some(session_id.to_string()),
             }
         }
         Err(e) => {
@@ -467,6 +474,7 @@ pub(super) async fn execute_acp_worker_prompt(
                 error_code: Some(code),
                 deltas: vec![],
                 meta: json!({ "mode": "acp-error", "runtime": runtime_key, "error": e, "friendlyMessage": friendly }),
+                session_handle: None,
             }
         }
     }
@@ -478,6 +486,7 @@ fn event_kind_label(evt: &AcpEvent) -> &'static str {
         AcpEvent::ThoughtDelta { .. } => "thoughtDelta",
         AcpEvent::ToolCall { .. } => "toolCall",
         AcpEvent::ToolCallUpdate { .. } => "toolCallUpdate",
+        AcpEvent::ToolOutputDelta { .. } => "toolOutputDelta",
         AcpEvent::Plan { .. } => "plan",
         AcpEvent::ModeUpdate { .. } => "modeUpdate",
         AcpEvent::AvailableModes { .. } => "availableModes",
@@ -487,6 +496,10 @@ fn event_kind_label(evt: &AcpEvent) -> &'static str {
         AcpEvent::PermissionRequest { .. } => "permissionRequest",
         AcpEvent::PermissionExpired { .. } => "permissionExpired",
         AcpEvent::StatusUpdate { .. } => "statusUpdate",
+        AcpEvent::UserInputRequest { .. } => "userInputRequest",
+        AcpEvent::ContextCompacted { .. } => "contextCompacted",
+        AcpEvent::Usage { .. } => "usage",
+        AcpEvent::Notice { .. } => "notice",
         AcpEvent::SessionError { .. } => "sessionError",
     }
 }
@@ -509,5 +522,22 @@ pub(super) fn mock_execute(role: &str, prompt: &str, ctx: &[(String, String)]) -
             .map(|c| String::from_utf8_lossy(c).to_string())
             .collect(),
         meta: json!({ "mode": "mock", "agentKind": RuntimeKind::Mock, "runtimeKey": "mock" }),
+        session_handle: None,
+    }
+}
+
+#[cfg(test)]
+mod delta_log_tests {
+    #[test]
+    fn a_short_turn_logs_every_delta_exactly_as_before() {
+        for index in 1..=super::DELTA_LOG_VERBATIM {
+            assert!(super::should_log_delta(index), "delta {index}");
+        }
+    }
+
+    #[test]
+    fn a_long_turn_samples_instead_of_evicting_the_whole_log_ring() {
+        assert!(!super::should_log_delta(super::DELTA_LOG_VERBATIM + 1));
+        assert!(super::should_log_delta(super::DELTA_LOG_SAMPLE_EVERY * 3));
     }
 }

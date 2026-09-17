@@ -1,8 +1,8 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
-import type { AppSkill } from "../types";
-import { INTERACTIVE_MOTION } from "../types";
-import { EmptyState, FieldRow, TextInput, PanelSection, ActionButton, fmtDate } from "./primitives";
+import { Alert, Badge, Button, DetailPane, FormField, Input, MasterDetailView, MasterItem, MasterPane, Textarea } from "../ui";
+import { fmtDate } from "../../lib/formatHelpers";
 import { skillApi } from "../../lib/tauriApi";
+import type { AppSkill } from "../types";
 
 export function SkillRegistryTab(props: {
   skills: AppSkill[];
@@ -12,22 +12,24 @@ export function SkillRegistryTab(props: {
   const [creating, setCreating] = createSignal(false);
   const [editing, setEditing] = createSignal(false);
   const [search, setSearch] = createSignal("");
+  const [error, setError] = createSignal("");
 
-  // Form
+  // Form fields
   const [fName, setFName] = createSignal("");
   const [fDesc, setFDesc] = createSignal("");
   const [fContent, setFContent] = createSignal("");
+  const [saving, setSaving] = createSignal(false);
 
   createEffect(() => {
-    if (props.skills.length > 0 && !selectedId()) {
+    if (props.skills.length > 0 && !selectedId() && !creating()) {
       setSelectedId(props.skills[0].id);
     }
   });
 
   const filtered = createMemo(() => {
-    const q = search().toLowerCase();
+    const q = search().toLowerCase().trim();
     return props.skills.filter((s) =>
-      !q || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q),
+      !q || s.name.toLowerCase().includes(q) || (s.description ?? "").toLowerCase().includes(q),
     );
   });
 
@@ -36,30 +38,47 @@ export function SkillRegistryTab(props: {
   );
 
   const openCreate = () => {
-    setFName(""); setFDesc(""); setFContent("");
-    setCreating(true); setEditing(false); setSelectedId(null);
+    setFName("");
+    setFDesc("");
+    setFContent("");
+    setError("");
+    setCreating(true);
+    setEditing(false);
+    setSelectedId(null);
   };
 
   const openEdit = (s: AppSkill) => {
-    setFName(s.name); setFDesc(s.description); setFContent(s.content);
-    setEditing(true); setCreating(false);
+    setFName(s.name);
+    setFDesc(s.description ?? "");
+    setFContent(s.content);
+    setError("");
+    setEditing(true);
+    setCreating(false);
   };
 
   const handleSave = async () => {
     const name = fName().trim();
-    if (!name) return;
-    const payload = { name, description: fDesc().trim(), content: fContent().trim() };
-    if (editing() && selectedId()) {
-      try {
-        await skillApi.upsert({ id: selectedId()!, ...payload });
-      } catch { /* ignore */ }
-    } else {
-      try {
-        await skillApi.upsert(payload);
-      } catch { /* ignore */ }
+    if (!name) {
+      setError("Skill name is required");
+      return;
     }
-    await props.refreshSkills();
-    setCreating(false); setEditing(false);
+    setSaving(true);
+    setError("");
+    const payload = { name, description: fDesc().trim(), content: fContent().trim() };
+    try {
+      if (editing() && selectedId()) {
+        await skillApi.upsert({ id: selectedId()!, ...payload });
+      } else {
+        await skillApi.upsert(payload);
+      }
+      await props.refreshSkills();
+      setCreating(false);
+      setEditing(false);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleDelete = async (id: string) => {
@@ -67,124 +86,187 @@ export function SkillRegistryTab(props: {
       await skillApi.remove(id);
       if (selectedId() === id) setSelectedId(null);
       await props.refreshSkills();
-    } catch { /* ignore */ }
+    } catch (e) {
+      setError(String(e));
+    }
   };
 
   return (
-    <div class="flex h-full">
-      {/* List */}
-      <div class="flex w-64 shrink-0 flex-col border-r theme-border">
-        <div class="flex gap-2 p-3">
-          <input
-            value={search()}
-            onInput={(e) => setSearch(e.currentTarget.value)}
-            placeholder="Filter skills…"
-            class="h-7 flex-1 rounded-md border theme-border bg-[var(--ui-surface-muted)] px-2.5 font-mono text-[10px] theme-text placeholder:text-[var(--ui-muted)] focus:border-[var(--ui-border-strong)] focus:outline-none"
-          />
-          <button
-            onClick={openCreate}
-            class={`flex h-7 w-7 items-center justify-center rounded-md border theme-border theme-muted hover:border-[var(--ui-border-strong)] hover:text-primary ${INTERACTIVE_MOTION}`}
-            title="New skill"
-          >
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-          </button>
-        </div>
-        <div class="flex-1 overflow-y-auto space-y-0.5 py-1">
-          <Show when={filtered().length === 0}>
-            <EmptyState icon="⚡" title="No skills yet" sub="Skills extend what agents can invoke" />
-          </Show>
-          <For each={filtered()}>
-            {(skill) => (
-              <button
-                onClick={() => { setSelectedId(skill.id); setCreating(false); setEditing(false); }}
-                class={`group flex w-full flex-col gap-0.5 rounded-lg mx-1.5 px-2.5 py-2 text-left transition-colors duration-100 ${selectedId() === skill.id ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-surface-muted)]"}`}
-              >
-                <span class={`font-mono text-[10px] font-semibold ${selectedId() === skill.id ? "theme-text" : "theme-text"}`}>{skill.name}</span>
-                <span class="font-mono text-[9px] theme-muted truncate">{skill.description || "No description"}</span>
-              </button>
-            )}
-          </For>
-        </div>
-      </div>
-
-      {/* Detail */}
-      <div class="flex-1 overflow-y-auto p-5">
-        <Show when={creating() || editing()}>
-          <div class="space-y-4">
-            <h3 class="font-mono text-xs font-bold theme-text uppercase tracking-widest">
-              {creating() ? "New Skill" : `Edit: ${selected()?.name ?? ""}`}
-            </h3>
-            <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
-              <FieldRow label="Name">
-                <TextInput value={fName()} onInput={setFName} placeholder="skill-name" monospace />
-              </FieldRow>
-              <FieldRow label="Desc">
-                <TextInput value={fDesc()} onInput={setFDesc} placeholder="What this skill does…" />
-              </FieldRow>
-              <FieldRow label="Content">
-                <TextInput
-                  value={fContent()}
-                  onInput={setFContent}
-                  placeholder="Skill prompt / instructions…"
-                  multiline
-                  rows={8}
-                />
-              </FieldRow>
-            </div>
-            <div class="flex gap-2">
-              <ActionButton label="Save" variant="primary" onClick={() => void handleSave()} />
-              <ActionButton label="Cancel" variant="ghost" onClick={() => { setCreating(false); setEditing(false); }} />
-            </div>
+    <MasterDetailView>
+      <MasterPane
+        title="Skills"
+        action={{ label: "New", onClick: openCreate }}
+        search={{
+          value: search(),
+          onInput: setSearch,
+          placeholder: "Filter skills…",
+        }}
+      >
+        <Show when={filtered().length === 0}>
+          <div class="px-3 py-6 text-center text-xs theme-muted">
+            {search() ? "No matching skills" : "No skills registered yet"}
           </div>
         </Show>
-
-        <Show when={!creating() && !editing() && selected()}>
+        <For each={filtered()}>
           {(skill) => (
-            <div class="space-y-5">
-              <div class="flex items-start justify-between gap-4">
-                <div>
-                  <h2 class="font-mono text-sm font-bold theme-text">{skill().name}</h2>
-                  <Show when={skill().description}>
-                    <p class="mt-1 text-[10px] theme-muted">{skill().description}</p>
-                  </Show>
-                </div>
-                <div class="flex gap-2 shrink-0">
-                  <ActionButton label="Edit" variant="ghost" onClick={() => openEdit(skill())} />
-                  <ActionButton label="Delete" variant="danger" onClick={() => void handleDelete(skill().id)} />
-                </div>
-              </div>
-
-              <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
-                <FieldRow label="ID">
-                  <span class="font-mono text-[10px] theme-muted">{skill().id}</span>
-                </FieldRow>
-                <FieldRow label="Created">
-                  <span class="font-mono text-[10px] theme-muted">{fmtDate(skill().createdAt)}</span>
-                </FieldRow>
-                <FieldRow label="Updated">
-                  <span class="font-mono text-[10px] theme-muted">{fmtDate(skill().updatedAt)}</span>
-                </FieldRow>
-              </div>
-
-              <PanelSection title="Content">
-                <pre class="whitespace-pre-wrap rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-3 font-mono text-[10px] leading-relaxed theme-text">
-                  {skill().content || <span class="theme-muted">empty</span>}
-                </pre>
-              </PanelSection>
-
-              <div class="rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-3">
-                <p class="font-mono text-[10px] theme-muted leading-relaxed">
-                  Invoke with <code class="text-teal-400">/{skill().name}</code> in the chat input or reference as <code class="text-teal-400">@{skill().name}</code> in prompts.
-                </p>
-              </div>
-            </div>
+            <MasterItem
+              title={skill.name}
+              subtitle={skill.description || "No description"}
+              active={selectedId() === skill.id && !creating()}
+              onClick={() => {
+                setSelectedId(skill.id);
+                setCreating(false);
+                setEditing(false);
+                setError("");
+              }}
+              onDelete={() => void handleDelete(skill.id)}
+            />
           )}
+        </For>
+      </MasterPane>
+
+      <DetailPane
+        title={
+          creating()
+            ? "New Skill"
+            : editing()
+            ? `Edit: ${selected()?.name ?? "Skill"}`
+            : selected()?.name ?? undefined
+        }
+        subtitle={
+          creating()
+            ? "Create a reusable prompt/tool extension"
+            : editing()
+            ? "Update skill metadata and instructions"
+            : selected()?.description ?? undefined
+        }
+        empty={!creating() && !editing() && !selected()}
+        emptyFallback={
+          <div class="flex flex-1 items-center justify-center text-xs theme-muted">
+            Select a skill or create a new one
+          </div>
+        }
+        actions={
+          <Show
+            when={creating() || editing()}
+            fallback={
+              <Show when={selected()}>
+                {(skill) => (
+                  <div class="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => openEdit(skill())}>
+                      Edit
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => void handleDelete(skill().id)}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                )}
+              </Show>
+            }
+          >
+            <div class="flex items-center gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setCreating(false);
+                  setEditing(false);
+                  setError("");
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="default"
+                size="sm"
+                disabled={saving()}
+                onClick={() => void handleSave()}
+              >
+                {saving() ? "Saving…" : "Save Skill"}
+              </Button>
+            </div>
+          </Show>
+        }
+      >
+        <Show when={error()}>
+          <Alert tone="danger" onClose={() => setError("")} class="mb-4">
+            {error()}
+          </Alert>
         </Show>
 
-        <Show when={!creating() && !editing() && !selected()}>
-          <EmptyState icon="⚡" title="Select a skill" sub="Or create a new one" />
+        <Show
+          when={creating() || editing()}
+          fallback={
+            <Show when={selected()}>
+              {(skill) => (
+                <div class="max-w-2xl space-y-5">
+                  <div class="rounded-lg border border-[var(--ui-border)] bg-[var(--ui-surface-muted)] p-3 space-y-2 text-xs">
+                    <div class="flex items-center justify-between">
+                      <span class="theme-muted">Skill ID</span>
+                      <span class="font-mono text-[11px] theme-text">{skill().id}</span>
+                    </div>
+                    <div class="flex items-center justify-between">
+                      <span class="theme-muted">Created</span>
+                      <span class="font-mono text-[11px] theme-text">{fmtDate(skill().createdAt)}</span>
+                    </div>
+                    <div class="flex items-center justify-between">
+                      <span class="theme-muted">Updated</span>
+                      <span class="font-mono text-[11px] theme-text">{fmtDate(skill().updatedAt)}</span>
+                    </div>
+                  </div>
+
+                  <div class="space-y-2">
+                    <div class="flex items-center justify-between">
+                      <span class="text-xs font-semibold uppercase tracking-wider theme-muted">Instructions / Prompt</span>
+                      <Badge tone="info" variant="subtle" label="Active" />
+                    </div>
+                    <pre class="whitespace-pre-wrap rounded-lg border border-[var(--ui-border)] bg-[var(--ui-card-bg)] p-3 font-mono text-xs leading-relaxed theme-text max-h-[380px] overflow-y-auto">
+                      {skill().content || <span class="theme-muted italic">No instructions defined</span>}
+                    </pre>
+                  </div>
+
+                  <div class="rounded-lg border border-[var(--ui-border)] bg-[var(--ui-surface-muted)] p-3 text-xs theme-muted">
+                    Invoke with <code class="font-mono font-semibold text-[var(--ui-text)]">/{skill().name}</code> in chat or reference as <code class="font-mono font-semibold text-[var(--ui-text)]">@{skill().name}</code> in instructions.
+                  </div>
+                </div>
+              )}
+            </Show>
+          }
+        >
+          <div class="max-w-2xl space-y-4">
+            <FormField label="Skill Name" required hint="Used for /slash invocation">
+              <Input
+                monospace
+                value={fName()}
+                onInput={(e) => setFName(e.currentTarget.value)}
+                placeholder="e.g. explain-code, unit-test-gen"
+              />
+            </FormField>
+
+            <FormField label="Description">
+              <Input
+                value={fDesc()}
+                onInput={(e) => setFDesc(e.currentTarget.value)}
+                placeholder="Brief summary of what this skill does"
+              />
+            </FormField>
+
+            <FormField label="Instructions & Content" required>
+              <Textarea
+                monospace
+                rows={12}
+                value={fContent()}
+                onInput={(e) => setFContent(e.currentTarget.value)}
+                placeholder="Skill instructions, system prompts, or guidelines to inject…"
+              />
+            </FormField>
+          </div>
         </Show>
-      </div>
-    </div>
+      </DetailPane>
+    </MasterDetailView>
   );
 }

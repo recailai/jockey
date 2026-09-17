@@ -206,7 +206,7 @@ pub(crate) fn load_skills_by_names(state: &AppState, names: &[String]) -> Vec<Ap
 
 pub(crate) fn get_enabled_skills_for_role(
     state: &AppState,
-    role_name: &str,
+    role_id: &str,
 ) -> Result<Vec<(String, String)>, String> {
     with_db(state, |conn| {
         let mut stmt = conn
@@ -214,12 +214,12 @@ pub(crate) fn get_enabled_skills_for_role(
                 "SELECT s.name, s.content
                  FROM role_skills rs
                  JOIN app_skills s ON s.id = rs.skill_id
-                 WHERE rs.role_name = ?1 AND rs.enabled = 1
+                 WHERE rs.role_id = ?1 AND rs.enabled = 1
                  ORDER BY rs.ord ASC, s.name ASC",
             )
             .map_err(|e| AppError::db(e.to_string()).to_string())?;
         let rows = stmt
-            .query_map(params![role_name], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_map(params![role_id], |row| Ok((row.get(0)?, row.get(1)?)))
             .map_err(|e| AppError::db(e.to_string()).to_string())?;
         let mut out = Vec::new();
         for row in rows {
@@ -231,19 +231,19 @@ pub(crate) fn get_enabled_skills_for_role(
 
 pub(crate) fn list_all_skills_for_role_internal(
     state: &AppState,
-    role_name: &str,
+    role_id: &str,
 ) -> Result<Vec<RoleSkill>, String> {
     with_db(state, |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT s.id, s.name, s.content, s.description, COALESCE(rs.enabled, 0), COALESCE(rs.ord, 0)
                  FROM app_skills s
-                 LEFT JOIN role_skills rs ON rs.skill_id = s.id AND rs.role_name = ?1
+                 LEFT JOIN role_skills rs ON rs.skill_id = s.id AND rs.role_id = ?1
                  ORDER BY COALESCE(rs.ord, 999) ASC, s.name ASC",
             )
             .map_err(|e| AppError::db(e.to_string()).to_string())?;
         let rows = stmt
-            .query_map(params![role_name], |row| {
+            .query_map(params![role_id], |row| {
                 Ok(RoleSkill {
                     skill_id: row.get(0)?,
                     name: row.get(1)?,
@@ -264,21 +264,21 @@ pub(crate) fn list_all_skills_for_role_internal(
 
 pub(crate) fn set_role_skills_internal(
     state: &AppState,
-    role_name: &str,
+    role_id: &str,
     skills: Vec<(String, bool, i64)>,
 ) -> Result<(), String> {
     with_db(state, |conn| {
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         tx.execute(
-            "DELETE FROM role_skills WHERE role_name = ?1",
-            params![role_name],
+            "DELETE FROM role_skills WHERE role_id = ?1",
+            params![role_id],
         )
         .map_err(|e| AppError::db(e.to_string()).to_string())?;
         for (skill_id, enabled, ord) in skills {
             tx.execute(
-                "INSERT INTO role_skills (role_name, skill_id, enabled, ord)
+                "INSERT INTO role_skills (role_id, skill_id, enabled, ord)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![role_name, skill_id, if enabled { 1 } else { 0 }, ord],
+                params![role_id, skill_id, if enabled { 1 } else { 0 }, ord],
             )
             .map_err(|e| AppError::db(e.to_string()).to_string())?;
         }
@@ -291,16 +291,16 @@ pub(crate) fn set_role_skills_internal(
 #[tauri::command]
 pub(crate) fn list_all_skills_for_role_cmd(
     state: State<'_, AppState>,
-    role_name: String,
+    role_id: String,
 ) -> Result<Vec<RoleSkill>, String> {
-    list_all_skills_for_role_internal(get_state(&state), &role_name)
+    list_all_skills_for_role_internal(get_state(&state), &role_id)
 }
 
 #[tauri::command]
 pub(crate) fn set_role_skills_cmd(
     state: State<'_, AppState>,
-    role_name: String,
+    role_id: String,
     skills: Vec<(String, bool, i64)>,
 ) -> Result<(), String> {
-    set_role_skills_internal(get_state(&state), &role_name, skills)
+    set_role_skills_internal(get_state(&state), &role_id, skills)
 }

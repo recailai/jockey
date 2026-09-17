@@ -1,5 +1,4 @@
 import type { AcpConfigOption } from "../components/types";
-import { DEFAULT_BACKEND_ROLE } from "../components/types";
 import type { SessionManager } from "./useSessionManager";
 import type { StreamEngine } from "./useStreamEngine";
 import { assistantApi } from "../lib/tauriApi";
@@ -16,7 +15,6 @@ export function useAgentContext(
     setSessions,
     activeSessionId,
     activeSession,
-    patchActiveSession,
     updateSession,
     mutateSession,
     pushMessage,
@@ -46,25 +44,26 @@ export function useAgentContext(
   const runTokens = useRunTokens();
   const { getRunToken, bumpRunToken, getCanceledRunToken, isRunCancelled } = runTokens;
 
-  const runtimeConfigCache = new Map<string, { options: AcpConfigOption[]; modes: string[] }>();
-
   const commandCacheKey = (runtimeKey: string, roleName: string) => `${runtimeKey}:${roleName}`;
 
   const runtimeForRole = (roleName: string): string | null => {
-    if (!isCustomRole() || roleName === DEFAULT_BACKEND_ROLE) return activeSession()?.runtimeKind ?? null;
-    return roles().find((r) => r.roleName === roleName)?.runtimeKind ?? null;
+    return roles().find((r) => r.roleName === roleName)?.runtimeKind ?? activeSession()?.runtimeKind ?? null;
   };
 
+  /** The catalog for one (persona, engine). Deliberately not memoized here: the backend owns
+   *  that cache, keyed by runtime and stamped with the shape and age it was derived from, so a
+   *  second copy on this side could only disagree with it. This also no longer writes session
+   *  state as a side effect — App.tsx's effect is the single owner of what gets rendered. */
   const fetchRoleConfig = async (
     runtimeKey: string,
     roleName?: string,
     forceRefresh = false,
   ): Promise<{ options: AcpConfigOption[]; modes: string[] }> => {
     const empty = { options: [] as AcpConfigOption[], modes: [] as string[] };
-    const hasConfig = (entry: { options: AcpConfigOption[]; modes: string[] }) =>
-      entry.options.length > 0 || entry.modes.length > 0;
     try {
       const resolvedRole = roleName ?? normalizeRuntimeKey(runtimeKey);
+      // Last-resort shape for a runtime that reports nothing: whatever discovery last
+      // persisted onto the persona row.
       const roleStoredOptions = (): AcpConfigOption[] => {
         const role = roles().find((r) => r.roleName === resolvedRole);
         if (!role) return [];
@@ -75,49 +74,13 @@ export function useAgentContext(
       };
       const sid = activeSessionId();
       if (!sid) return { options: roleStoredOptions(), modes: [] };
-      const hit = runtimeConfigCache.get(resolvedRole);
-      const refreshInBackground = () => {
-        void assistantApi.prewarmRoleConfig(resolvedRole, sid)
-          .then((result) => {
-            const options = result.configOptions as AcpConfigOption[];
-            const modes = result.modes as string[];
-            const entry = {
-              options: options.length > 0 ? options : roleStoredOptions(),
-              modes,
-            };
-            if (hasConfig(entry)) {
-              runtimeConfigCache.set(resolvedRole, entry);
-              const session = activeSession();
-              const activeRuntime = session?.runtimeKind
-                ? normalizeRuntimeKey(session.runtimeKind)
-                : "";
-              if (session && (session.activeRole === resolvedRole || activeRuntime === resolvedRole)) {
-                patchActiveSession({ discoveredConfigOptions: entry.options });
-              }
-            }
-            return refreshRoles();
-          })
-          .catch(() => {});
-      };
-      if (hit && hasConfig(hit) && !forceRefresh) {
-        refreshInBackground();
-        return hit;
-      }
-      const cached = await assistantApi.listDiscoveredConfig(resolvedRole);
-      if ((cached as AcpConfigOption[]).length > 0 && !forceRefresh) {
-        const modes = await assistantApi.listDiscoveredModes(resolvedRole).catch(() => [] as string[]);
-        const entry = { options: cached as AcpConfigOption[], modes };
-        runtimeConfigCache.set(resolvedRole, entry);
-        refreshInBackground();
-        return entry;
-      }
-      const result = await assistantApi.prewarmRoleConfig(resolvedRole, sid);
+      const projectId = activeSession()?.projectId ?? undefined;
+
+      const result = await assistantApi.prewarmRoleConfig(resolvedRole, sid, projectId, forceRefresh);
       const opts = result.configOptions as AcpConfigOption[];
       const modes = result.modes as string[];
-      const entry = { options: opts.length > 0 ? opts : roleStoredOptions(), modes };
-      if (hasConfig(entry)) runtimeConfigCache.set(resolvedRole, entry);
-      if (hasConfig(entry)) void refreshRoles();
-      return entry;
+      if (opts.length > 0) void refreshRoles(projectId);
+      return { options: opts.length > 0 ? opts : roleStoredOptions(), modes };
     } catch {
       return empty;
     }
@@ -144,7 +107,7 @@ export function useAgentContext(
     try {
       const sid = activeSessionId();
       if (!sid) return { runtimeKey: normalizedRuntime, commands: [] };
-      const raw = await assistantApi.listAvailableCommands(roleName, sid);
+      const raw = await assistantApi.listAvailableCommands(roleName, sid, activeSession()?.projectId);
       return { runtimeKey: normalizedRuntime, commands: parseAgentCommands(raw) };
     } catch {
       return { runtimeKey: normalizedRuntime, commands: [] };
@@ -206,6 +169,9 @@ export function useAgentContext(
         toolCalls: {},
         streamSegments: [],
         currentPlan: null,
+      usage: null,
+      notices: [],
+      pendingUserInput: [],
         pendingPermissions: [],
         thoughtText: "",
         agentState: undefined,
@@ -243,6 +209,9 @@ export function useAgentContext(
         toolCalls: {},
         streamSegments: [],
         currentPlan: null,
+      usage: null,
+      notices: [],
+      pendingUserInput: [],
         pendingPermissions: [],
         thoughtText: "",
         agentState: undefined,
@@ -272,6 +241,9 @@ export function useAgentContext(
     clearSessionStream?.(sid);
     updateSession(sid, {
       currentPlan: null,
+      usage: null,
+      notices: [],
+      pendingUserInput: [],
       pendingPermissions: [],
       submitting: false,
       status: "idle",
@@ -291,7 +263,6 @@ export function useAgentContext(
     setAssistants,
     skills,
     setSkills,
-    runtimeConfigCache,
     normalizeRuntimeKey,
     commandCacheKey,
     getRunToken,

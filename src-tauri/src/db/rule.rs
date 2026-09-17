@@ -100,19 +100,19 @@ pub(crate) fn delete_rule(state: &AppState, id: &str) -> Result<(), String> {
 
 pub(crate) fn set_role_rules(
     state: &AppState,
-    role_name: &str,
+    role_id: &str,
     rules: &[(String, bool, i64)],
 ) -> Result<(), String> {
     with_db(state, |conn| {
         conn.execute(
-            "DELETE FROM role_rules WHERE role_name = ?1",
-            params![role_name],
+            "DELETE FROM role_rules WHERE role_id = ?1",
+            params![role_id],
         )
         .map_err(|e| e.to_string())?;
         for (rule_id, enabled, ord) in rules {
             conn.execute(
-                "INSERT INTO role_rules (role_name, rule_id, enabled, ord) VALUES (?1, ?2, ?3, ?4)",
-                params![role_name, rule_id, *enabled as i64, ord],
+                "INSERT INTO role_rules (role_id, rule_id, enabled, ord) VALUES (?1, ?2, ?3, ?4)",
+                params![role_id, rule_id, *enabled as i64, ord],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -120,19 +120,19 @@ pub(crate) fn set_role_rules(
     })
 }
 
-pub(crate) fn list_role_rules(state: &AppState, role_name: &str) -> Result<Vec<RoleRule>, String> {
+pub(crate) fn list_role_rules(state: &AppState, role_id: &str) -> Result<Vec<RoleRule>, String> {
     with_db(state, |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT rr.rule_id, r.name, r.content, r.description, rr.enabled, rr.ord
                  FROM role_rules rr
                  JOIN rules r ON r.id = rr.rule_id
-                 WHERE rr.role_name = ?1
+                 WHERE rr.role_id = ?1
                  ORDER BY rr.ord ASC, r.name ASC",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![role_name], |row| {
+            .query_map(params![role_id], |row| {
                 Ok(RoleRule {
                     rule_id: row.get(0)?,
                     name: row.get(1)?,
@@ -153,7 +153,7 @@ pub(crate) fn list_role_rules(state: &AppState, role_name: &str) -> Result<Vec<R
 
 pub(crate) fn get_enabled_rules_for_role(
     state: &AppState,
-    role_name: &str,
+    role_id: &str,
 ) -> Result<Vec<(String, String)>, String> {
     with_db(state, |conn| {
         let mut stmt = conn
@@ -161,12 +161,12 @@ pub(crate) fn get_enabled_rules_for_role(
                 "SELECT r.name, r.content
                  FROM role_rules rr
                  JOIN rules r ON r.id = rr.rule_id
-                 WHERE rr.role_name = ?1 AND rr.enabled = 1
+                 WHERE rr.role_id = ?1 AND rr.enabled = 1
                  ORDER BY rr.ord ASC, r.name ASC",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![role_name], |row| {
+            .query_map(params![role_id], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(|e| e.to_string())?;
@@ -208,36 +208,36 @@ pub(crate) fn delete_rule_cmd(state: State<'_, AppState>, id: String) -> Result<
 #[tauri::command]
 pub(crate) fn set_role_rules_cmd(
     state: State<'_, AppState>,
-    role_name: String,
+    role_id: String,
     rules: Vec<(String, bool, i64)>,
 ) -> Result<(), String> {
-    set_role_rules(get_state(&state), &role_name, &rules)
+    set_role_rules(get_state(&state), &role_id, &rules)
 }
 
 #[tauri::command]
 pub(crate) fn list_role_rules_cmd(
     state: State<'_, AppState>,
-    role_name: String,
+    role_id: String,
 ) -> Result<Vec<RoleRule>, String> {
-    list_role_rules(get_state(&state), &role_name)
+    list_role_rules(get_state(&state), &role_id)
 }
 
 #[tauri::command]
 pub(crate) fn list_all_rules_for_role_cmd(
     state: State<'_, AppState>,
-    role_name: String,
+    role_id: String,
 ) -> Result<Vec<RoleRule>, String> {
     with_db(get_state(&state), |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT r.id, r.name, r.content, r.description, COALESCE(rr.enabled, 0), COALESCE(rr.ord, 0)
                  FROM rules r
-                 LEFT JOIN role_rules rr ON rr.rule_id = r.id AND rr.role_name = ?1
+                 LEFT JOIN role_rules rr ON rr.rule_id = r.id AND rr.role_id = ?1
                  ORDER BY COALESCE(rr.ord, 999) ASC, r.name ASC",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![role_name], |row| {
+            .query_map(params![role_id], |row| {
                 Ok(RoleRule {
                     rule_id: row.get(0)?,
                     name: row.get(1)?,

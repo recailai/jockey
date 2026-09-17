@@ -1,34 +1,34 @@
-pub(super) fn build_prepared_prompt(
-    is_union_assistant: bool,
-    tool_prompt: &str,
+pub(crate) fn build_prepared_prompt(
     role_system_prompt: Option<&str>,
     enabled_rules: &[(String, String)],
     context_pairs: &[(String, String)],
     message: &str,
 ) -> String {
-    let ctx_bytes: usize = context_pairs
-        .iter()
-        .map(|(k, v)| k.len() + v.len() + 4)
-        .sum();
-    let estimated = if is_union_assistant {
-        tool_prompt.len() + 10
-    } else {
-        0
-    } + ctx_bytes
-        + message.len()
-        + 64;
-    let mut prepared = String::with_capacity(estimated);
-    if is_union_assistant {
-        prepared.push_str("Tools:\n");
-        prepared.push_str(tool_prompt);
+    // Slash commands must be passed raw to CLI/ACP so native commands like /cost, /compact execute directly.
+    if message.starts_with('/') {
+        return message.to_string();
     }
+
+    let has_system = role_system_prompt
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let has_rules = !enabled_rules.is_empty();
+    let has_context = !context_pairs.is_empty();
+
+    // Native first: if no system prompt, rules, or extra context, pass raw message directly.
+    if !has_system && !has_rules && !has_context {
+        return message.to_string();
+    }
+
+    let mut prepared = String::new();
     if let Some(sp) = role_system_prompt {
-        if !prepared.is_empty() {
-            prepared.push_str("\n\n");
+        let trimmed = sp.trim();
+        if !trimmed.is_empty() {
+            prepared.push_str("System:\n");
+            prepared.push_str(trimmed);
         }
-        prepared.push_str("System:\n");
-        prepared.push_str(sp);
     }
+
     for (name, content) in enabled_rules {
         if !prepared.is_empty() {
             prepared.push_str("\n\n");
@@ -38,44 +38,64 @@ pub(super) fn build_prepared_prompt(
         prepared.push('\n');
         prepared.push_str(content);
     }
-    let is_slash_cmd = message.starts_with('/');
-    if !is_slash_cmd {
-        if !context_pairs.is_empty() {
-            if !prepared.is_empty() {
-                prepared.push_str("\n\n");
-            }
-            prepared.push_str("Context:\n");
-            for (i, (k, v)) in context_pairs.iter().enumerate() {
-                if i > 0 {
-                    prepared.push('\n');
-                }
-                prepared.push_str(k);
-                prepared.push_str(": ");
-                prepared.push_str(v);
-            }
-        }
+
+    if has_context {
         if !prepared.is_empty() {
             prepared.push_str("\n\n");
         }
-        prepared.push_str("User:\n");
+        prepared.push_str("Context:\n");
+        for (i, (k, v)) in context_pairs.iter().enumerate() {
+            if i > 0 {
+                prepared.push('\n');
+            }
+            prepared.push_str(k);
+            prepared.push_str(": ");
+            prepared.push_str(v);
+        }
+    }
+
+    if !prepared.is_empty() {
+        prepared.push_str("\n\nUser:\n");
     }
     prepared.push_str(message);
     prepared
 }
 
-pub(super) fn with_command_suggestion(
-    output: String,
-    explicit_role_targets: bool,
-    is_union_assistant: bool,
-) -> String {
-    if explicit_role_targets || !is_union_assistant {
-        return output;
-    }
-    if let Some(command_text) = crate::chat::extract_command_output(&output) {
-        return format!(
-            "{}\n\n[Command suggestion]\n{}\nRun this command manually if you want to apply it.",
-            output, command_text
-        );
-    }
+pub(super) fn with_command_suggestion(output: String) -> String {
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_slash_command_passes_through_raw() {
+        let rules = vec![("rule1".to_string(), "content".to_string())];
+        let context = vec![("cwd".to_string(), "/tmp".to_string())];
+        let result = build_prepared_prompt(
+            Some("You are a senior developer."),
+            &rules,
+            &context,
+            "/cost",
+        );
+        assert_eq!(result, "/cost");
+    }
+
+    #[test]
+    fn test_empty_system_prompt_emits_no_system_block() {
+        let rules = vec![("formatting".to_string(), "be concise".to_string())];
+        let context = vec![("cwd".to_string(), "/workspace".to_string())];
+        let result = build_prepared_prompt(None, &rules, &context, "hello");
+        assert!(!result.contains("System:"));
+        assert!(result.contains("Rule: formatting\nbe concise"));
+        assert!(result.contains("Context:\ncwd: /workspace"));
+        assert!(result.ends_with("User:\nhello"));
+    }
+
+    #[test]
+    fn test_raw_message_when_no_extras() {
+        let result = build_prepared_prompt(None, &[], &[], "hello world");
+        assert_eq!(result, "hello world");
+    }
 }

@@ -1,7 +1,6 @@
 use crate::acp::protocol as acp;
-use crate::db::app_session_role::load_app_session_role_state;
 use crate::db::context::{list_shared_context_internal, sanitize_dynamic_item_name};
-use crate::db::role::load_role;
+use crate::db::role::load_role_scoped;
 use crate::db::rule::get_enabled_rules_for_role;
 use crate::db::session_context::app_session_role_scope;
 use crate::db::skill::get_enabled_skills_for_role;
@@ -136,31 +135,19 @@ fn sanitize_model_for_runtime(runtime: &str, selected_model: &str) -> Option<Str
 fn resolve_model(
     role_data: Option<&crate::types::Role>,
     role_state: Option<&crate::db::app_session_role::AppSessionRoleState>,
-    runtime_key: &str,
+    project_agent_config: &[(String, String)],
+    _runtime_key: &str,
     runtime: &str,
     context_pairs: &[(String, String)],
 ) -> Option<String> {
-    let state_runtime_matches = |r: &crate::db::app_session_role::AppSessionRoleState| -> bool {
-        let sr = r.runtime_kind.as_deref().map(normalize_runtime_key);
-        sr.as_deref() == Some(runtime_key) || sr.is_none()
-    };
-
-    let model_override = role_state
-        .filter(|r| {
-            r.runtime_kind
-                .as_deref()
-                .map(normalize_runtime_key)
-                .as_deref()
-                == Some(runtime_key)
-        })
-        .and_then(|r| r.model_override.clone());
+    let model_override = role_state.as_ref().and_then(|r| r.model_override.clone());
 
     if let Some(model) = model_override.and_then(|m| sanitize_model_for_runtime(runtime, &m)) {
         return Some(model);
     }
 
     let session_cfg_model = role_state
-        .filter(|r| state_runtime_matches(r))
+        .as_ref()
         .and_then(|r| r.config_options_json.as_deref())
         .and_then(|raw| {
             parse_config_map(raw)
@@ -169,6 +156,14 @@ fn resolve_model(
                 .map(|(_, v)| v)
         });
     if let Some(model) = session_cfg_model.and_then(|m| sanitize_model_for_runtime(runtime, &m)) {
+        return Some(model);
+    }
+
+    let project_model = project_agent_config
+        .iter()
+        .find(|(k, _)| k == "model")
+        .map(|(_, v)| v.clone());
+    if let Some(model) = project_model.and_then(|m| sanitize_model_for_runtime(runtime, &m)) {
         return Some(model);
     }
 
@@ -197,21 +192,44 @@ pub(super) fn load_role_runtime_data(
     assistant_runtime: &str,
     recent_chats_snapshot: Vec<RecentRoleChat>,
 ) -> Result<RoleRuntimeData, String> {
-    let role_state = load_app_session_role_state(state, app_session_id, role_name)?;
-    let role_data = load_role(state, role_name)?;
+    let project_id = crate::db::app_session::get_app_session_project_id(state, app_session_id);
+    let bound_runtime = crate::db::app_session_role::load_app_session_bound_runtime(
+        state,
+        app_session_id,
+        role_name,
+    )?;
+    let role_data = load_role_scoped(state, role_name, project_id.as_deref())?;
 
-    let runtime = if role_name == "Jockey" {
-        assistant_runtime.to_string()
-    } else {
-        if role_state.is_none() && role_data.is_none() {
-            return Err(format!("role not found: {role_name}"));
-        }
-        role_state
-            .as_ref()
-            .and_then(|row| row.runtime_kind.clone())
-            .or_else(|| role_data.as_ref().map(|r| r.runtime_kind.clone()))
-            .ok_or_else(|| format!("runtime not found for role: {role_name}"))?
-    };
+    // The project's pinned engine for this persona is authoritative. The persona's own
+    // runtime_kind is only the seed used before the project has pinned anything, and the
+    // session row is just the provider-session binding.
+    let project_pin =
+        crate::db::project_agent::load_project_agent_pin(state, project_id.as_deref(), role_name)
+            .unwrap_or_default();
+
+    let runtime = project_pin
+        .clone()
+        .or(bound_runtime)
+        .or_else(|| role_data.as_ref().map(|r| r.runtime_kind.clone()))
+        .or_else(|| {
+            if crate::runtime_kind::RuntimeKind::from_str(role_name).is_some() {
+                Some(role_name.to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| assistant_runtime.to_string());
+
+    // This is the real send path (the only caller of `load_role_runtime_data`), so this is
+    // the right moment — and the only moment — to register the persona under this project.
+    // Best-effort: a registration failure must never block the turn from proceeding, and it
+    // must never overwrite a runtime the project already pinned (see `ensure_..._registered`).
+    let _ = crate::db::project_agent::ensure_project_agent_registered(
+        state,
+        project_id.as_deref(),
+        role_name,
+        &runtime,
+    );
 
     let scope = app_session_role_scope(app_session_id, role_name);
     let entries = list_shared_context_internal(state, &scope).unwrap_or_default();
@@ -220,58 +238,75 @@ pub(super) fn load_role_runtime_data(
 
     let mut context_log = None;
 
-    if role_name != "Jockey" {
-        // Only inject cross-role context on the first message to this role in the session.
-        // If this role has already replied at least once, it already has its own history
-        // in the ACP session — no need to keep prepending the handoff context every turn.
-        let this_role_has_history = recent_chats_snapshot.iter().any(|c| c.role == role_name);
+    // Only inject cross-role context on the first message to this role in the session.
+    // If this role has already replied at least once, it already has its own history
+    // in the ACP session — no need to keep prepending the handoff context every turn.
+    let this_role_has_history = recent_chats_snapshot.iter().any(|c| c.role == role_name);
 
-        let cross_role_chats: Vec<_> = recent_chats_snapshot
-            .into_iter()
-            .filter(|c| c.role != role_name)
-            .collect();
+    let cross_role_chats: Vec<_> = recent_chats_snapshot
+        .into_iter()
+        .filter(|c| c.role != role_name)
+        .collect();
 
-        let inherited_cwd: Option<String> = cross_role_chats
-            .iter()
-            .rev()
-            .find(|c| !c.cwd.is_empty())
-            .map(|c| c.cwd.clone());
+    let inherited_cwd: Option<String> = cross_role_chats
+        .iter()
+        .rev()
+        .find(|c| !c.cwd.is_empty())
+        .map(|c| c.cwd.clone());
 
-        if !cross_role_chats.is_empty() && !this_role_has_history {
-            if let Ok(payload) = serde_json::to_string(&cross_role_chats) {
-                upsert_context_pair(&mut context_pairs, "from_last_role_context", payload);
-            }
-            context_log = Some((cross_role_chats.len(), inherited_cwd.clone()));
+    if !cross_role_chats.is_empty() && !this_role_has_history {
+        if let Ok(payload) = serde_json::to_string(&cross_role_chats) {
+            upsert_context_pair(&mut context_pairs, "from_last_role_context", payload);
         }
-        if let Some(prev_cwd) = inherited_cwd {
-            upsert_context_pair(&mut context_pairs, "cwd", prev_cwd);
-        }
+        context_log = Some((cross_role_chats.len(), inherited_cwd.clone()));
+    }
+    if let Some(prev_cwd) = inherited_cwd {
+        upsert_context_pair(&mut context_pairs, "cwd", prev_cwd);
     }
     let auto_approve = role_data.as_ref().map(|r| r.auto_approve).unwrap_or(true);
     let runtime_key = normalize_runtime_key(&runtime);
+    let role_state = crate::db::app_session_role::load_app_session_role_runtime_state(
+        state,
+        app_session_id,
+        role_name,
+        &runtime_key,
+    )?;
+    // Layering, lowest to highest: persona default -> project agent config -> session override.
+    // The project layer is what makes "this repo runs on opus" survive opening a new session.
+    // Knobs belong to the engine that will run this turn, not to whichever one is pinned —
+    // those differ while a session temporarily overrides the pin.
+    let project_agent_config = crate::db::project_agent::load_project_agent_options(
+        state,
+        project_id.as_deref(),
+        role_name,
+        &runtime,
+    )
+    .unwrap_or_default();
     let role_mode = role_state
         .as_ref()
-        .and_then(|r| {
-            let state_runtime = r.runtime_kind.as_deref().map(normalize_runtime_key);
-            if state_runtime.as_deref() == Some(runtime_key.as_str()) || state_runtime.is_none() {
-                r.mode_override.clone()
-            } else {
-                None
-            }
+        .and_then(|r| r.mode_override.clone())
+        .or_else(|| {
+            project_agent_config
+                .iter()
+                .find(|(k, _)| k == "mode")
+                .map(|(_, v)| v.clone())
         })
         .or_else(|| role_data.as_ref().and_then(|r| r.mode.clone()));
     let mut role_config: Vec<(String, String)> = role_data
         .as_ref()
         .map(|r| parse_config_map(&r.config_options_json))
         .unwrap_or_default();
-    if let Some(session_cfg) = role_state.as_ref().and_then(|r| {
-        let state_runtime = r.runtime_kind.as_deref().map(normalize_runtime_key);
-        if state_runtime.as_deref() == Some(runtime_key.as_str()) || state_runtime.is_none() {
-            r.config_options_json.as_deref()
+    for (key, value) in &project_agent_config {
+        if let Some(existing) = role_config.iter_mut().find(|(k, _)| k == key) {
+            existing.1 = value.clone();
         } else {
-            None
+            role_config.push((key.clone(), value.clone()));
         }
-    }) {
+    }
+    if let Some(session_cfg) = role_state
+        .as_ref()
+        .and_then(|r| r.config_options_json.as_deref())
+    {
         for (key, value) in parse_config_map(session_cfg) {
             if value.trim().is_empty() {
                 role_config.retain(|(k, _)| k != &key);
@@ -289,6 +324,7 @@ pub(super) fn load_role_runtime_data(
     if let Some(model) = resolve_model(
         role_data.as_ref(),
         role_state.as_ref(),
+        &project_agent_config,
         &runtime_key,
         &runtime,
         &context_pairs,
@@ -296,9 +332,11 @@ pub(super) fn load_role_runtime_data(
         role_config.push(("model".to_string(), model));
     }
 
-    for (name, content) in get_enabled_skills_for_role(state, role_name).unwrap_or_default() {
-        if !content.is_empty() {
-            upsert_context_pair(&mut context_pairs, &format!("skill:{name}"), content);
+    if let Some(role) = role_data.as_ref() {
+        for (name, content) in get_enabled_skills_for_role(state, &role.id).unwrap_or_default() {
+            if !content.is_empty() {
+                upsert_context_pair(&mut context_pairs, &format!("skill:{name}"), content);
+            }
         }
     }
 
@@ -307,7 +345,10 @@ pub(super) fn load_role_runtime_data(
         .map(|r| r.system_prompt.clone())
         .filter(|s| !s.is_empty());
     let mut mcp_servers: Vec<acp::McpServer> = {
-        let mut servers = crate::db::global_mcp::get_enabled_mcp_for_role(state, role_name);
+        let mut servers = role_data
+            .as_ref()
+            .map(|role| crate::db::global_mcp::get_enabled_mcp_for_role(state, &role.id))
+            .unwrap_or_default();
         let role_servers = role_data
             .as_ref()
             .map(|r| &r.mcp_servers_json)
@@ -381,7 +422,11 @@ pub(super) fn load_role_runtime_data(
         None => meta_header,
     });
 
-    let enabled_rules = get_enabled_rules_for_role(state, role_name).unwrap_or_default();
+    let enabled_rules = role_data
+        .as_ref()
+        .map(|role| get_enabled_rules_for_role(state, &role.id))
+        .transpose()?
+        .unwrap_or_default();
 
     Ok(RoleRuntimeData {
         runtime,

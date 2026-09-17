@@ -1,6 +1,6 @@
 import type { Accessor } from "solid-js";
 import type { AppSession, AssistantRuntime } from "../components/types";
-import { makeDefaultSession } from "../lib/sessionHelpers";
+import { makeDefaultSession, makeDraftSession } from "../lib/sessionHelpers";
 import { appSessionApi } from "../lib/tauriApi";
 
 type SetSessions = {
@@ -13,8 +13,9 @@ type UseAppBootstrapInput = {
   setSessions: SetSessions;
   setActiveSessionId: (id: string) => void;
   assistants: Accessor<AssistantRuntime[]>;
+  currentProjectId?: Accessor<string | undefined>;
   refreshAssistants: () => Promise<void>;
-  refreshRoles: () => Promise<void>;
+  refreshRoles: (projectId?: string) => Promise<void>;
   refreshSkills: () => Promise<void>;
   fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<unknown[]>;
   pushMessage: (role: string, text: string) => void;
@@ -26,6 +27,7 @@ export function useAppBootstrap(input: UseAppBootstrapInput) {
     setSessions,
     setActiveSessionId,
     assistants,
+    currentProjectId,
     refreshAssistants,
     refreshRoles,
     refreshSkills,
@@ -36,6 +38,7 @@ export function useAppBootstrap(input: UseAppBootstrapInput) {
 
   const bootstrapApp = async () => {
     let loaded: AppSession[] = [];
+    const pid = currentProjectId?.();
     try {
       const raw = await appSessionApi.list();
       loaded = raw.map((r) => {
@@ -45,6 +48,7 @@ export function useAppBootstrap(input: UseAppBootstrapInput) {
         if (r.runtimeKind !== undefined) s.runtimeKind = r.runtimeKind;
         if (r.runtimeProfileId !== undefined) s.runtimeProfileId = r.runtimeProfileId;
         if (r.cwd !== undefined) s.cwd = r.cwd ?? null;
+        if (r.projectId !== undefined) s.projectId = r.projectId ?? null;
         s.messages = r.messages ?? [];
         return s;
       });
@@ -53,20 +57,16 @@ export function useAppBootstrap(input: UseAppBootstrapInput) {
     }
 
     if (loaded.length === 0) {
-      try {
-        const created = await appSessionApi.create("Session_1");
-        const s = makeDefaultSession("Session_1");
-        s.id = created.id;
-        loaded = [s];
-      } catch {
-        loaded = [makeDefaultSession("Session_1")];
-      }
+      // No DB row yet — created lazily on the first real send (see `ensureSessionPersisted`),
+      // so a fresh install / empty project doesn't spawn anything before the user does.
+      loaded = [makeDraftSession("Session_1", { projectId: pid ?? null })];
     }
 
     setSessions(loaded);
-    setActiveSessionId(loaded[0].id);
+    const targetSession = pid ? loaded.find((s) => s.projectId === pid) : null;
+    setActiveSessionId(targetSession?.id ?? loaded[0].id);
 
-    await Promise.all([refreshAssistants(), refreshRoles(), refreshSkills()]);
+    await Promise.all([refreshAssistants(), refreshRoles(pid), refreshSkills()]);
 
     const availableAssistant = assistants().find((a) => a.available) ?? null;
     for (let i = 0; i < loaded.length; i++) {

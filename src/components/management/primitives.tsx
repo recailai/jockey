@@ -1,140 +1,30 @@
 import { For, Show, createSignal, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import { INTERACTIVE_MOTION } from "../types";
-import { Button, EmptyState as UiEmptyState, Input, Textarea } from "../ui";
+import { Badge as UiBadge, Button, EmptyState as UiEmptyState, Input, Textarea } from "../ui";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Domain types (backend shape — add to types.ts when wiring real invokes)
-// ─────────────────────────────────────────────────────────────────────────────
+// Re-export domain types from canonical location (src/components/types.ts)
+export type {
+  StoredSession,
+  Workflow,
+  WorkflowStep,
+  McpServerStdio,
+  McpServerHttp,
+  McpServerSse,
+  AcpMcpServer,
+  ContextEntry,
+  TabId,
+} from "../types";
 
-export type StoredSession = {
-  id: string;
-  title: string;
-  activeRole: string;
-  runtimeKind: string | null;
-  runtimeProfileId?: string | null;
-  cwd: string | null;
-  messageCount: number;
-  createdAt: number;
-  updatedAt: number;
-  closedAt: number | null;
-};
-
-export type Workflow = {
-  id: string;
-  name: string;
-  description: string;
-  steps: WorkflowStep[];
-  createdAt: number;
-  updatedAt: number;
-  status?: "idle" | "running" | "done" | "error";
-};
-
-export type WorkflowStep = {
-  roleName: string;
-  prompt: string;
-  order: number;
-};
-
-export type McpServerStdio = {
-  name: string;
-  command: string;
-  args: string[];
-  env: Array<{ name: string; value: string }>;
-};
-
-export type McpServerHttp = {
-  type: "http";
-  name: string;
-  url: string;
-  headers: Array<{ name: string; value: string }>;
-};
-
-export type McpServerSse = {
-  type: "sse";
-  name: string;
-  url: string;
-  headers: Array<{ name: string; value: string }>;
-};
-
-export type AcpMcpServer = McpServerStdio | McpServerHttp | McpServerSse;
-
-export function mcpTransport(s: AcpMcpServer): "stdio" | "http" | "sse" {
-  if ("type" in s) return s.type;
-  return "stdio";
-}
-
-export function mcpDisplayUri(s: AcpMcpServer): string {
-  if ("command" in s) return `${s.command} ${s.args.join(" ")}`;
-  return s.url;
-}
-
-export function parseCommandArgs(raw: string): string[] | null {
-  const out: string[] = [];
-  let buf = "";
-  let quote: "'" | '"' | null = null;
-  let escape = false;
-
-  for (const ch of raw) {
-    if (escape) {
-      buf += ch;
-      escape = false;
-      continue;
-    }
-    if (ch === "\\") {
-      escape = true;
-      continue;
-    }
-    if (quote) {
-      if (ch === quote) {
-        quote = null;
-      } else {
-        buf += ch;
-      }
-      continue;
-    }
-    if (ch === "'" || ch === "\"") {
-      quote = ch;
-      continue;
-    }
-    if (/\s/.test(ch)) {
-      if (buf) {
-        out.push(buf);
-        buf = "";
-      }
-      continue;
-    }
-    buf += ch;
-  }
-
-  if (escape || quote) return null;
-  if (buf) out.push(buf);
-  return out;
-}
-
-export type ContextEntry = { scope: string; key: string; value: string; updatedAt: number };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Primitive helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const fmtDate = (ts: number) =>
-  new Date(ts).toLocaleDateString("en-US", {
-    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
-  });
-
-export const fmtRelative = (ts: number) => {
-  const diff = Date.now() - ts;
-  if (diff < 60_000) return "just now";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return `${Math.floor(diff / 86_400_000)}d ago`;
-};
+// Re-export helpers from canonical locations
+export { mcpTransport, mcpDisplayUri, parseCommandArgs } from "../../lib/mcpHelpers";
+export { fmtDate, fmtRelative } from "../../lib/formatHelpers";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared micro-components
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** @deprecated Use `Badge` from `src/components/ui` instead. */
 export function Badge(props: { label: string; color?: string; class?: string }) {
   return (
     <span class={`ui-badge ${props.color ?? ""} ${props.class ?? ""}`}>
@@ -143,13 +33,10 @@ export function Badge(props: { label: string; color?: string; class?: string }) 
   );
 }
 
+/** @deprecated Use `EmptyState` from `src/components/ui` instead. */
 export function EmptyState(props: { icon: string; title: string; sub?: string }) {
   return (
-    <UiEmptyState>
-      <span class="text-3xl opacity-20">{props.icon}</span>
-      <p class="text-xs font-medium theme-muted">{props.title}</p>
-      {props.sub && <p class="max-w-[200px] text-[10px] theme-muted opacity-60">{props.sub}</p>}
-    </UiEmptyState>
+    <UiEmptyState icon={props.icon} title={props.title} description={props.sub} />
   );
 }
 
@@ -228,14 +115,28 @@ type GroupedEntry =
 function groupedOptions(options: Array<InlineSelectOption>): Array<GroupedEntry> {
   const hasGroups = options.some((opt) => !!opt.group);
   if (!hasGroups) return options.map((opt) => ({ opt }));
-  const out: Array<GroupedEntry> = [];
-  const seen = new Set<string>();
+
+  const groups = new Map<string, InlineSelectOption[]>();
+  const ungrouped: InlineSelectOption[] = [];
+
   for (const opt of options) {
-    const group = opt.group ?? "";
-    if (group && !seen.has(group)) {
-      seen.add(group);
-      out.push({ header: group });
+    if (opt.group) {
+      const list = groups.get(opt.group) ?? [];
+      list.push(opt);
+      groups.set(opt.group, list);
+    } else {
+      ungrouped.push(opt);
     }
+  }
+
+  const out: Array<GroupedEntry> = [];
+  for (const [header, list] of groups.entries()) {
+    out.push({ header });
+    for (const opt of list) {
+      out.push({ opt });
+    }
+  }
+  for (const opt of ungrouped) {
     out.push({ opt });
   }
   return out;

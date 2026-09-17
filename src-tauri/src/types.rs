@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 pub(crate) struct AppState {
     pub(crate) db: DbPool,
-    pub(crate) shared_context: DashMap<String, String>,
     /// In-memory cache for role rows; invalidated on upsert/delete.
     /// Wrapped in Arc so temporary AppState clones share the same cache.
     pub(crate) role_cache: Arc<DashMap<String, Arc<Role>>>,
@@ -14,11 +13,12 @@ pub(crate) struct AppState {
 
 impl AppState {
     /// Cheap clone of all shared handles — use when constructing short-lived
-    /// temporary AppState instances for spawn_blocking tasks.
+    /// temporary AppState instances for spawn_blocking tasks. Every field here must stay
+    /// cheap to clone: this runs twice per chat turn, and a plain (non-`Arc`) collection
+    /// would be deep-copied on each one.
     pub(crate) fn clone_refs(&self) -> Self {
         Self {
             db: self.db.clone(),
-            shared_context: self.shared_context.clone(),
             role_cache: self.role_cache.clone(),
         }
     }
@@ -39,6 +39,17 @@ pub(crate) struct Role {
     pub(crate) config_options_json: String,
     pub(crate) config_option_defs_json: String,
     pub(crate) auto_approve: bool,
+    pub(crate) project_id: Option<String>,
+    pub(crate) created_at: i64,
+    pub(crate) updated_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Project {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) root_path: String,
     pub(crate) created_at: i64,
     pub(crate) updated_at: i64,
 }
@@ -194,6 +205,8 @@ pub(crate) struct AppSession {
     pub(crate) runtime_kind: Option<String>,
     pub(crate) runtime_profile_id: Option<String>,
     pub(crate) cwd: Option<String>,
+    pub(crate) project_id: Option<String>,
+    pub(crate) external_session_id: Option<String>,
     pub(crate) messages: Vec<serde_json::Value>,
     pub(crate) created_at: i64,
     pub(crate) last_active_at: i64,
@@ -207,6 +220,7 @@ pub(crate) struct AppSessionUpdate {
     pub(crate) active_role: Option<String>,
     pub(crate) runtime_kind: Option<Option<String>>,
     pub(crate) runtime_profile_id: Option<Option<String>>,
+    pub(crate) cwd: Option<Option<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -234,57 +248,5 @@ pub(crate) const ATTACH_MAX_FILE_BYTES: usize = 24 * 1024;
 pub(crate) const ATTACH_MAX_DIR_FILES: usize = 30;
 pub(crate) const ATTACH_MAX_DIR_DEPTH: usize = 3;
 pub(crate) const DEFAULT_MODELS: &[&str] = &[];
-pub(crate) const KNOWN_RUNTIME_KEYS: &[&str] = &[
-    "claude-native",
-    "antigravity-cli",
-    "claude-code",
-    "codex-cli",
-    "pi-cli",
-    "mock",
-];
 pub(crate) const DEFAULT_MCP_SERVERS: &[&str] = &[];
 pub(crate) const DEFAULT_SKILLS: &[&str] = &[];
-pub(crate) const BASE_CLI_COMMANDS: &[(&str, &str)] = &[
-    ("/app_help", "Show command help"),
-    ("/app_cd", "Show current working directory"),
-    ("/app_cd <path>", "Change working directory for all agents"),
-    ("/app_assistant list", "List detected assistant runtimes"),
-    (
-        "/app_assistant select <runtime>",
-        "Select active assistant runtime",
-    ),
-    ("/app_model list", "List configurable model catalog"),
-    ("/app_model add <model>", "Add model to dynamic catalog"),
-    (
-        "/app_model remove <model>",
-        "Remove model from dynamic catalog",
-    ),
-    ("/app_model select <model>", "Select assistant model"),
-    (
-        "/app_model select role <role> <model>",
-        "Select model for a specific role",
-    ),
-    ("/app_model get", "Get selected assistant model"),
-    ("/app_model clear", "Clear selected assistant model"),
-    ("/app_mcp list", "List MCP catalog and enabled entries"),
-    ("/app_mcp add <name>", "Add MCP server to catalog"),
-    ("/app_mcp remove <name>", "Remove MCP server from catalog"),
-    ("/app_mcp enable <name>", "Enable MCP server"),
-    ("/app_mcp disable <name>", "Disable MCP server"),
-    ("/app_role list", "List roles"),
-    (
-        "/app_role bind <role> <runtime> [prompt]",
-        "Create or update role",
-    ),
-    (
-        "/app_role prompt <role> <prompt>",
-        "Update role system prompt",
-    ),
-    ("/app_context list", "List all shared context entries"),
-    (
-        "/app_context list <scope>",
-        "List context entries for a scope",
-    ),
-    ("/app_session list", "List workflow sessions"),
-    ("/app_workflow list", "List workflows"),
-];

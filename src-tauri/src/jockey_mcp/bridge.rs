@@ -25,7 +25,10 @@ pub fn bridge_token() -> Option<&'static str> {
     BRIDGE_TOKEN.get().map(|s| s.as_str())
 }
 
-pub(crate) async fn start_bridge(state: Arc<AppState>) -> Result<(u16, String), String> {
+pub(crate) async fn start_bridge(
+    state: Arc<AppState>,
+    app: tauri::AppHandle,
+) -> Result<(u16, String), String> {
     let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|e| {
         let msg = format!("bridge bind: {e}");
         let _ = BRIDGE_ERROR.set(msg.clone());
@@ -56,11 +59,14 @@ pub(crate) async fn start_bridge(state: Arc<AppState>) -> Result<(u16, String), 
                 Err(_) => continue,
             };
             let state = state.clone();
+            let app = app.clone();
             let tok = token_arc.clone();
             tokio::spawn(async move {
-                let result =
-                    tokio::time::timeout(REQUEST_TIMEOUT, handle_connection(stream, &state, &tok))
-                        .await;
+                let result = tokio::time::timeout(
+                    REQUEST_TIMEOUT,
+                    handle_connection(stream, &state, &app, &tok),
+                )
+                .await;
                 if result.is_err() {
                     eprintln!("[jockey-mcp] request timed out");
                 }
@@ -71,7 +77,12 @@ pub(crate) async fn start_bridge(state: Arc<AppState>) -> Result<(u16, String), 
     Ok((port, token))
 }
 
-async fn handle_connection(stream: tokio::net::TcpStream, state: &AppState, token: &str) {
+async fn handle_connection(
+    stream: tokio::net::TcpStream,
+    state: &AppState,
+    app: &tauri::AppHandle,
+    token: &str,
+) {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
 
@@ -128,12 +139,10 @@ async fn handle_connection(stream: tokio::net::TcpStream, state: &AppState, toke
     }
 
     let mut body = vec![0u8; content_length];
-    if content_length > 0 {
-        if reader.read_exact(&mut body).await.is_err() {
-            let resp = http_response(400, r#"{"error":"incomplete body"}"#);
-            let _ = writer.write_all(resp.as_bytes()).await;
-            return;
-        }
+    if content_length > 0 && reader.read_exact(&mut body).await.is_err() {
+        let resp = http_response(400, r#"{"error":"incomplete body"}"#);
+        let _ = writer.write_all(resp.as_bytes()).await;
+        return;
     }
     let body_str = match String::from_utf8(body) {
         Ok(s) => s,
@@ -144,7 +153,7 @@ async fn handle_connection(stream: tokio::net::TcpStream, state: &AppState, toke
         }
     };
 
-    let response_body = handle_mcp_request(state, &body_str);
+    let response_body = handle_mcp_request(state, app, &body_str).await;
     let resp = http_response(200, &response_body);
     let _ = writer.write_all(resp.as_bytes()).await;
 }
@@ -164,7 +173,7 @@ fn http_response(status: u16, body: &str) -> String {
     )
 }
 
-fn handle_mcp_request(state: &AppState, body: &str) -> String {
+async fn handle_mcp_request(state: &AppState, app: &tauri::AppHandle, body: &str) -> String {
     #[derive(serde::Deserialize)]
     struct Req {
         id: Option<Value>,
@@ -210,7 +219,7 @@ fn handle_mcp_request(state: &AppState, body: &str) -> String {
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             let arguments = req.params.get("arguments").cloned().unwrap_or(json!({}));
-            match dispatch(state, name, arguments) {
+            match dispatch(state, app, name, arguments).await {
                 Ok(result) => {
                     let text = match result {
                         Value::String(s) => s,
@@ -240,13 +249,19 @@ fn handle_mcp_request(state: &AppState, body: &str) -> String {
     serde_json::to_string(&resp).unwrap_or_default()
 }
 
-fn dispatch(state: &AppState, method: &str, params: Value) -> Result<Value, String> {
+async fn dispatch(
+    state: &AppState,
+    app: &tauri::AppHandle,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
     match method {
         // Roles
         "list_roles" => roles::list_roles(state),
         "get_role" => roles::get_role(state, params),
         "upsert_role" => roles::upsert_role_handler(state, params),
         "delete_role" => roles::delete_role_handler(state, params),
+        "invoke_role" => roles::invoke_role(state, app, params).await,
         // MCP (role-level + global registry)
         "list_mcp_servers" => roles::list_mcp_servers(state, params),
         "add_mcp_to_role" => roles::add_mcp_to_role(state, params),
@@ -316,6 +331,19 @@ fn tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": { "roleName": { "type": "string", "description": "Role name to delete." } },
                 "required": ["roleName"]
+            }
+        }),
+        json!({
+            "name": "invoke_role",
+            "description": "Invoke another configured role/agent to perform a sub-task and return the result. Enables inter-agent cooperation and multi-agent delegation. Call list_roles to get available role names.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "roleName": { "type": "string", "description": "Target role name to invoke (e.g. Developer, Reviewer, Architect)." },
+                    "prompt": { "type": "string", "description": "The specific instruction or sub-task to delegate to the target role." },
+                    "appSessionId": { "type": "string", "description": "Optional session ID to inherit workspace directory and context from." }
+                },
+                "required": ["roleName", "prompt"]
             }
         }),
         // MCP role-level

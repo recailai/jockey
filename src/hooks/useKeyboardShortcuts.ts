@@ -12,10 +12,11 @@ function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 export function useKeyboardShortcuts(handlers: {
-  newSession: () => void;
+  newSession: () => void | Promise<void>;
   openSettings: () => void;
   toggleManagement: () => void;
   toggleRightDock: () => void;
+  toggleLeftSidebar?: () => void;
   openWorkspacePanel: (p: WorkspaceToolPanel) => void;
 }): void {
   onMount(() => {
@@ -26,7 +27,7 @@ export function useKeyboardShortcuts(handlers: {
         case "k":
           if (inEditable) return;
           e.preventDefault();
-          handlers.newSession();
+          void handlers.newSession();
           return;
         case ",":
           e.preventDefault();
@@ -55,9 +56,16 @@ export function useKeyboardShortcuts(handlers: {
           handlers.openWorkspacePanel("terminal");
           return;
         case "b":
-          if (!e.shiftKey && !e.altKey && !inEditable) {
+          if (e.shiftKey && !inEditable) {
             e.preventDefault();
             handlers.toggleRightDock();
+            return;
+          }
+          if (!e.shiftKey && !e.altKey && !inEditable) {
+            e.preventDefault();
+            if (handlers.toggleLeftSidebar) handlers.toggleLeftSidebar();
+            else handlers.toggleRightDock();
+            return;
           }
           return;
       }

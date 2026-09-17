@@ -1,4 +1,5 @@
 import type { AcpConfigOption } from "../components/types";
+import { MODEL_OPTION_ID } from "./runtimeOptions";
 
 const readString = (value: unknown, key: string): string => {
   if (!value || typeof value !== "object") return "";
@@ -8,59 +9,20 @@ const readString = (value: unknown, key: string): string => {
 
 export const optionId = (option: AcpConfigOption): string => readString(option, "id");
 export const optionName = (option: AcpConfigOption): string => readString(option, "name");
-export const optionCategory = (option: AcpConfigOption): string => readString(option, "category");
 
 export const optionCurrentValue = (option: AcpConfigOption): string =>
   readString(option, "currentValue") || readString(option, "current_value");
 
-const norm = (value: string | undefined | null): string =>
-  (value ?? "").trim().toLowerCase().replace(/[-\s]+/g, "_");
+/**
+ * Identified by the id the runtime declared, not by matching its name or category.
+ *
+ * The fuzzy versions of these (`name.includes("reasoning")`, `includes("thinking")`,
+ * `includes("thought")`, plus parallel checks on `category`) existed only because parameters
+ * did not declare what they were. They are gone: a parameter now arrives with an explicit
+ * `kind`, so `runtimeOptions.ts` reads it rather than inferring it, and a runtime can add a
+ * parameter without any surface having to recognise its name.
+ */
+export const isModelOption = (option: AcpConfigOption): boolean =>
+  optionId(option) === MODEL_OPTION_ID;
 
-export const isModelOption = (option: AcpConfigOption): boolean => {
-  const id = norm(optionId(option));
-  const cat = norm(optionCategory(option));
-  const name = norm(optionName(option));
-  return id === "model" || cat === "model" || name === "model";
-};
-
-export const isModeOption = (option: AcpConfigOption): boolean => {
-  const id = norm(optionId(option));
-  const cat = norm(optionCategory(option));
-  const name = norm(optionName(option));
-  return id === "mode" || cat === "mode" || name === "mode";
-};
-
-export const isEffortOption = (option: AcpConfigOption): boolean => {
-  const id = norm(optionId(option));
-  const cat = norm(optionCategory(option));
-  const name = norm(optionName(option));
-  return (
-    id === "effort" ||
-    id === "reasoning_effort" ||
-    id === "thinking_effort" ||
-    id === "thought_level" ||
-    cat === "effort" ||
-    cat === "reasoning_effort" ||
-    cat === "thinking_effort" ||
-    cat === "thought_level" ||
-    name.includes("effort") ||
-    name.includes("reasoning") ||
-    name.includes("thinking") ||
-    name.includes("thought")
-  );
-};
-
-export const codexReasoningEffortOption = (currentValue = "medium"): AcpConfigOption => ({
-  id: "reasoning_effort",
-  name: "Reasoning Effort",
-  description: "Choose how much reasoning effort Codex should use",
-  category: "thought_level",
-  type: "select",
-  currentValue,
-  options: [
-    { value: "low", name: "Low", description: "Fast responses with lighter reasoning" },
-    { value: "medium", name: "Medium", description: "Balances speed and reasoning depth" },
-    { value: "high", name: "High", description: "Greater reasoning depth" },
-    { value: "xhigh", name: "Xhigh", description: "Extra high reasoning depth" },
-  ],
-});
+export const isModeOption = (option: AcpConfigOption): boolean => optionId(option) === "mode";

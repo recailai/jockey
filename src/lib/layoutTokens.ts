@@ -10,6 +10,7 @@ export const LAYOUT_STORAGE = {
   legacyRightToolWidth: "jockey:rightToolPanelWidth",
   rightDockWidth: "jockey:rightDockWidth",
   rightDockOpen: "jockey:rightDockOpen",
+  leftSidebarOpen: "jockey:leftSidebarOpen",
   rightPanel: "jockey:rightPanel",
   previewRatio: "jockey:editorChatRatio",
 } as const;
@@ -135,6 +136,14 @@ export function initialRightDockOpen(): boolean {
     return window.localStorage.getItem(LAYOUT_STORAGE.rightDockOpen) === "1";
   } catch { /* ignore */ }
   return false;
+}
+
+export function initialLeftSidebarOpen(): boolean {
+  try {
+    const raw = window.localStorage.getItem(LAYOUT_STORAGE.leftSidebarOpen);
+    return raw === null ? true : raw === "1";
+  } catch { /* ignore */ }
+  return true;
 }
 
 export function initialRightPanel(): RightDockPanel | null {

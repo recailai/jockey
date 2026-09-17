@@ -1,9 +1,9 @@
 import { marked } from "marked";
 
-const COPY_BTN = `<button data-copy-code class="jui-code-copy absolute top-1.5 right-1.5 opacity-0 group-hover/pre:opacity-100">Copy</button>`;
+const COPY_BTN = `<button data-copy-code class="jui-code-copy" title="Copy code">Copy</button>`;
 
 function injectCopyButtons(html: string): string {
-  return html.replace(/<pre>/g, `<pre class="group/pre relative">${COPY_BTN}`);
+  return html.replace(/<pre\b([^>]*)>/g, `<pre$1 class="group/pre relative">${COPY_BTN}`);
 }
 
 export const renderMd = (text: string): string => {
@@ -17,13 +17,26 @@ export const renderMd = (text: string): string => {
 const MD_CACHE_MAX = 500;
 const mdCache = new Map<string, string>();
 
+/** FNV-1a: cheap enough to run on every render, and we only need change detection. */
+function digest(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
 export function renderMdCached(id: string, text: string): string {
-  const hit = mdCache.get(id);
+  // Keyed on content as well as id: finalizing a stream reuses a message's id while
+  // replacing its text, so an id-only key can serve the pre-finalize HTML forever.
+  const key = `${id}:${text.length}:${digest(text)}`;
+  const hit = mdCache.get(key);
   if (hit !== undefined) return hit;
   const html = renderMd(text);
   if (mdCache.size >= MD_CACHE_MAX) {
     mdCache.delete(mdCache.keys().next().value!);
   }
-  mdCache.set(id, html);
+  mdCache.set(key, html);
   return html;
 }

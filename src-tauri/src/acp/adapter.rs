@@ -20,19 +20,19 @@ struct AdapterResolution {
     transport: AdapterTransport,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeProtocol {
     CodexAppServer,
     PiRpc,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HeadlessProtocol {
     AgyStreamJson,
     ClaudeStreamJson,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdapterTransport {
     Acp,
     Native(NativeProtocol),
@@ -539,7 +539,11 @@ fn resolve_headless_adapter(protocol: HeadlessProtocol) -> Result<AdapterResolut
     Ok(AdapterResolution {
         binary,
         args: if matches!(protocol, HeadlessProtocol::ClaudeStreamJson) {
-            vec!["-p".to_string(), "--include-partial-messages".to_string()]
+            vec![
+                "-p".to_string(),
+                "--verbose".to_string(),
+                "--include-partial-messages".to_string(),
+            ]
         } else {
             Vec::new()
         },
@@ -854,4 +858,50 @@ pub fn acp_log_snapshot(limit: Option<usize>) -> Vec<AcpLogEntry> {
         .unwrap_or_default();
     out.reverse();
     out
+}
+
+#[cfg(test)]
+mod transport_probe {
+    use super::*;
+
+    /// Diagnostic: report the transport each installed runtime actually resolves to, including
+    /// the headless capability flags that decide between the persistent stream session and the
+    /// one-shot fallback. Ignored by default because it shells out to the real CLIs.
+    ///
+    /// Run with: cargo test --manifest-path src-tauri/Cargo.toml -- --ignored --nocapture
+    #[test]
+    #[ignore = "requires the agent CLIs to be installed"]
+    fn report_resolved_transports() {
+        for runtime in [
+            "claude-native",
+            "claude-code",
+            "codex-cli",
+            "pi-cli",
+            "antigravity-cli",
+        ] {
+            match build_stdio_adapter(runtime) {
+                Ok(Some(adapter)) => {
+                    let detail = match adapter.transport {
+                        AdapterTransport::Acp => "acp".to_string(),
+                        AdapterTransport::Native(protocol) => {
+                            native_protocol_name(protocol).to_string()
+                        }
+                        AdapterTransport::HeadlessJson {
+                            protocol,
+                            stream_input,
+                            output_format,
+                            conversation,
+                        } => format!(
+                            "{:?} stream_input={stream_input} output_format={output_format} conversation={conversation} persistent={}",
+                            protocol,
+                            stream_input && output_format
+                        ),
+                    };
+                    println!("{runtime:<18} {detail}\n{:<18} args={:?}", "", adapter.args);
+                }
+                Ok(None) => println!("{runtime:<18} unsupported"),
+                Err(e) => println!("{runtime:<18} UNAVAILABLE: {e}"),
+            }
+        }
+    }
 }

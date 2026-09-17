@@ -53,6 +53,8 @@ pub struct AcpPromptResult {
     pub error_code: Option<String>,
     pub deltas: Vec<String>,
     pub meta: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_handle: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -78,6 +80,11 @@ pub enum AcpEvent {
         raw_input: Option<Value>,
         raw_output: Option<Value>,
         terminal_meta: Option<Value>,
+        /// Owning tool call, when the provider reports nesting (sub-agents, spawned tasks).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        diff: Option<Value>,
     },
     ToolCallUpdate {
         tool_call_id: String,
@@ -89,6 +96,20 @@ pub enum AcpEvent {
         raw_input: Option<Value>,
         raw_output: Option<Value>,
         terminal_meta: Option<Value>,
+        /// Owning tool call, when the provider reports nesting (sub-agents, spawned tasks).
+        /// `None` keeps the call at the top level.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent_id: Option<String>,
+        /// Structured patch for file-editing tools, so a diff can be rendered without
+        /// re-parsing `raw_output`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        diff: Option<Value>,
+    },
+    /// Incremental output from a long-running tool. Separate from `ToolCallUpdate` so a
+    /// command's stdout can stream without resending the whole call on every chunk.
+    ToolOutputDelta {
+        tool_call_id: String,
+        delta: String,
     },
     Plan {
         entries: Vec<Value>,
@@ -120,6 +141,43 @@ pub enum AcpEvent {
     },
     PermissionExpired {
         request_id: String,
+    },
+    /// A structured question set the agent needs answered before it can continue.
+    /// Distinct from `PermissionRequest`, which is only allow/deny on a single action:
+    /// this can carry several questions, each multi-select, free-text or secret.
+    UserInputRequest {
+        request_id: String,
+        title: Option<String>,
+        blocking: bool,
+        questions: Vec<Value>,
+    },
+    /// The provider compacted the conversation. Worth surfacing because it silently
+    /// changes what the agent can still recall.
+    ContextCompacted {
+        reason: Option<String>,
+        before_tokens: Option<u64>,
+        after_tokens: Option<u64>,
+    },
+    /// Token accounting for the turn. Every supported CLI reports this in some form;
+    /// fields the provider does not supply stay `None` rather than being zeroed, so the UI
+    /// can tell "not reported" apart from "zero".
+    Usage {
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+        cache_read_tokens: Option<u64>,
+        cache_write_tokens: Option<u64>,
+        reasoning_tokens: Option<u64>,
+        total_tokens: Option<u64>,
+        /// Model context window, when the provider reports it — lets the UI show pressure.
+        context_window: Option<u64>,
+        cost_usd: Option<f64>,
+    },
+    /// Out-of-band advisory from the provider: rate limits, retries, model reroutes,
+    /// deprecation warnings. Distinct from `SessionError`, which aborts the turn.
+    Notice {
+        level: String,
+        code: Option<String>,
+        text: String,
     },
     /// Structured error notification surfaced to the UI before the final
     /// execute-promise rejection. Consumers route on `code` (the

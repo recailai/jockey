@@ -236,6 +236,8 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
             event.terminalMeta !== undefined ? event.terminalMeta : existing.terminalMeta;
           const updated: AppToolCall = {
             ...existing,
+            parentId: event.parentId ?? existing.parentId ?? null,
+            diff: event.diff !== undefined ? event.diff : existing.diff,
             kind: event.toolKind ?? existing.kind,
             status: event.status ?? existing.status,
             title: event.title ?? existing.title,
@@ -276,6 +278,89 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
           });
         }
         scheduleScrollToBottom();
+      }
+      break;
+    case "toolOutputDelta":
+      // Appended rather than replacing rawOutput so a long command's stdout can render as
+      // it arrives without the provider resending the whole call each chunk.
+      if (event.toolCallId && event.delta) {
+        mutateSession(sid, (s) => {
+          const tc = s.toolCalls[event.toolCallId!];
+          if (!tc) return;
+          const next = { ...tc, outputLog: `${tc.outputLog ?? ""}${event.delta}` };
+          s.toolCalls[event.toolCallId!] = next;
+          const idx = s.streamSegments.findIndex(
+            (seg) => seg.kind === "tool" && seg.tc.toolCallId === event.toolCallId,
+          );
+          if (idx >= 0) s.streamSegments[idx] = { kind: "tool", tc: next };
+        });
+      }
+      break;
+    case "userInputRequest":
+      if (event.requestId) {
+        mutateSession(sid, (s) => {
+          const next = {
+            requestId: event.requestId!,
+            title: event.title ?? null,
+            blocking: event.blocking ?? true,
+            questions: event.questions ?? [],
+          };
+          const rest = (s.pendingUserInput ?? []).filter((q) => q.requestId !== next.requestId);
+          s.pendingUserInput = [...rest, next];
+        });
+      }
+      break;
+    case "contextCompacted":
+      // Surfaced as a notice: compaction silently changes what the agent can still recall,
+      // so it should not pass unannounced.
+      mutateSession(sid, (s) => {
+        const before = event.beforeTokens;
+        const after = event.afterTokens;
+        const detail =
+          before && after ? ` (${before} → ${after} tokens)` : before ? ` (was ${before} tokens)` : "";
+        s.notices = [
+          ...(s.notices ?? []).slice(-19),
+          {
+            id: `compact-${Date.now()}`,
+            level: "info",
+            code: "context_compacted",
+            text: `Conversation compacted${detail}`,
+            at: Date.now(),
+          },
+        ];
+      });
+      break;
+    case "usage":
+      // Providers report cumulative or per-message counters depending on the CLI; merging
+      // rather than replacing keeps fields a later frame omits.
+      mutateSession(sid, (s) => {
+        const prev = s.usage;
+        s.usage = {
+          inputTokens: event.inputTokens ?? prev?.inputTokens ?? null,
+          outputTokens: event.outputTokens ?? prev?.outputTokens ?? null,
+          cacheReadTokens: event.cacheReadTokens ?? prev?.cacheReadTokens ?? null,
+          cacheWriteTokens: event.cacheWriteTokens ?? prev?.cacheWriteTokens ?? null,
+          reasoningTokens: event.reasoningTokens ?? prev?.reasoningTokens ?? null,
+          totalTokens: event.totalTokens ?? prev?.totalTokens ?? null,
+          contextWindow: event.contextWindow ?? prev?.contextWindow ?? null,
+          costUsd: event.costUsd ?? prev?.costUsd ?? null,
+        };
+      });
+      break;
+    case "notice":
+      if (event.text) {
+        mutateSession(sid, (s) => {
+          s.notices = [
+            ...(s.notices ?? []).slice(-19),
+            {
+              id: `${Date.now()}-${(s.notices ?? []).length}`,
+              level: event.level ?? "info",
+              code: event.code ?? null,
+              text: event.text!,
+              at: Date.now(),
+            },
+          ];
+        });
       }
       break;
     case "plan":

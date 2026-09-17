@@ -1,42 +1,153 @@
-import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onMount, onCleanup } from "solid-js";
 import type { Accessor } from "solid-js";
-import type { AppSession, Role, RoleUpsertInput, AcpConfigOption, AssistantRuntime } from "../types";
+import { Copy, Edit3, Files, FolderGit2, Globe, Trash2 } from "lucide-solid";
+import type { AppSession, Role, RoleUpsertInput, AcpConfigOption, AssistantRuntime, Project } from "../types";
 import { RUNTIME_COLOR, RUNTIMES, flattenConfigValues } from "../types";
 import { EmptyState, FieldRow, TextInput, InlineSelect, ActionButton } from "./primitives";
 import { roleApi, assistantApi, globalMcpApi, ruleApi, skillApi, parseError } from "../../lib/tauriApi";
 import type { RoleMcpEntry, RoleRule, RoleSkill } from "../../lib/tauriApi";
-import { codexReasoningEffortOption, isEffortOption, isModeOption, isModelOption, optionCurrentValue, optionId, optionName } from "../../lib/configOptions";
+import { isModeOption, isModelOption, optionCurrentValue } from "../../lib/configOptions";
+import {
+  appliesToModel,
+  effectiveDefault,
+  findModelOption,
+  otherRuntimeOptions,
+  readRuntimeOptions,
+  storedValue,
+  valuesForModel,
+  type RuntimeOption,
+} from "../../lib/runtimeOptions";
+import { ContextMenuSurface, ContextMenuItem, ContextMenuSeparator } from "../ui";
+
+function ToggleField(props: { label: string; on: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <FieldRow label={props.label}>
+      <label class="flex items-center gap-2 text-[11px] theme-muted">
+        <input
+          type="checkbox"
+          checked={props.on}
+          onChange={(e) => props.onChange(e.currentTarget.checked)}
+        />
+        <span>{props.on ? "On" : "Off"}</span>
+      </label>
+    </FieldRow>
+  );
+}
+
+/**
+ * Renders whatever parameters a runtime declared, other than the two this editor gives their
+ * own rows (model, and mode where a runtime exposes a separate mode list). A select becomes a
+ * dropdown of its declared values; a toggle becomes a checkbox. Previously this file knew the
+ * names "model", "mode" and "effort" and rendered anything else as a select — which is why a
+ * boolean knob appeared here as an empty dropdown while the composer showed a working switch.
+ */
+function ParameterFields(props: {
+  declared: RuntimeOption[];
+  modelId: string;
+  value: (id: string) => string;
+  onChange: (id: string, value: string) => void;
+}) {
+  const modelEntry = () =>
+    props.declared
+      .find((o) => o.id === "model")
+      ?.values.find((v) => v.value === props.modelId);
+  const visible = () =>
+    otherRuntimeOptions(props.declared)
+      .filter((o) => o.id !== "mode")
+      .filter((o) => appliesToModel(o, props.modelId));
+
+  return (
+    <For each={visible()}>
+      {(option) => {
+        if (option.kind === "toggle") {
+          return (
+            <ToggleField
+              label={option.name}
+              on={props.value(option.id) === "true"}
+              onChange={(on) => props.onChange(option.id, on ? "true" : "")}
+            />
+          );
+        }
+        const choices = () => valuesForModel(option, modelEntry());
+        const fallback = () => effectiveDefault(option, modelEntry()) || "runtime";
+        return (
+          <Show when={choices().length > 0}>
+            <FieldRow label={option.name}>
+              <InlineSelect
+                value={props.value(option.id)}
+                options={[
+                  { value: "", label: `default: ${fallback()}` },
+                  ...choices().map((v) => ({
+                    value: v.value,
+                    label: v.description ? `${v.name} — ${v.description}` : v.name,
+                  })),
+                ]}
+                onChange={(val) => props.onChange(option.id, val)}
+              />
+            </FieldRow>
+          </Show>
+        );
+      }}
+    </For>
+  );
+}
+
 
 const CAPABILITY_CHIPS: Array<[string, string]> = [
   ["mcpServers", "MCP"],
-  ["permissionRequests", "permissions"],
   ["modelCatalog", "models"],
   ["dynamicModes", "modes"],
+  ["toolDetail", "tool detail"],
+  ["outputStreaming", "output stream"],
+  ["usage", "usage"],
+  ["nestedTools", "subagents"],
   ["rewind", "rewind"],
   ["fork", "fork"],
 ];
 
+/** `interaction` is tri-state, so it gets its own chip rather than a boolean. */
+const INTERACTION_LABEL: Record<string, string> = {
+  none: "no prompts",
+  permissionOnly: "permissions",
+  full: "permissions + questions",
+};
+
 function CapabilityChips(props: { assistant: AssistantRuntime | undefined }) {
   return (
     <Show when={props.assistant}>
-      {(assistant) => (
-        <div class="mt-1 flex flex-wrap gap-1">
-          <For each={CAPABILITY_CHIPS}>
-            {([key, label]) => (
+      {(assistant) => {
+        const caps = () => assistant().capabilities || {};
+        return (
+          <div class="mt-1 flex flex-wrap gap-1">
+            <For each={CAPABILITY_CHIPS}>
+              {([key, label]) => (
+                <span
+                  title={caps()[key] ? `${label}: supported` : `${label}: not supported by this provider`}
+                  class={`rounded border px-1.5 py-0.5 font-mono text-[9px] ${
+                    caps()[key]
+                      ? "border-[var(--ui-border)] theme-text"
+                      : "border-transparent theme-muted opacity-40 line-through"
+                  }`}
+                >
+                  {label}
+                </span>
+              )}
+            </For>
+            <Show when={typeof caps().interaction === "string"}>
               <span
-                title={assistant().capabilities[key] ? `${label}: supported` : `${label}: not supported by this provider`}
-                class={`rounded border px-1.5 py-0.5 font-mono text-[9px] ${
-                  assistant().capabilities[key]
-                    ? "border-[var(--ui-border)] theme-text"
-                    : "border-transparent theme-muted opacity-40 line-through"
-                }`}
+                title="How much of the agent-asks-the-user surface this provider exposes"
+                class="rounded border px-1.5 py-0.5 font-mono text-[9px]"
+                classList={{
+                  "border-transparent theme-muted opacity-40": caps().interaction === "none",
+                  "border-[var(--ui-border)] theme-text": caps().interaction !== "none",
+                }}
               >
-                {label}
+                {INTERACTION_LABEL[caps().interaction as string] ?? String(caps().interaction)}
               </span>
-            )}
-          </For>
-        </div>
-      )}
+            </Show>
+          </div>
+        );
+      }}
     </Show>
   );
 }
@@ -47,13 +158,13 @@ export function RolesTab(props: {
   activeSession: Accessor<AppSession | null>;
   patchActiveSession: (patch: Partial<AppSession>) => void;
   updateSession: (id: string, patch: Partial<AppSession>) => void;
-  refreshRoles: () => Promise<void>;
+  refreshRoles: (projectId?: string) => Promise<void>;
   fetchRoleConfig: (runtimeKey: string, roleName?: string, forceRefresh?: boolean) => Promise<{ options: AcpConfigOption[]; modes: string[] }>;
   pushMessage: (role: string, text: string) => void;
   initialRoleName?: string;
+  currentProject?: Accessor<Project | null>;
 }) {
-  const UNION_ROLE = "Jockey";
-  const userRoles = createMemo(() => props.roles().filter((r) => r.roleName !== UNION_ROLE));
+  const userRoles = createMemo(() => props.roles());
 
   // "creating" = create form open; selectedId = which role is being edited
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
@@ -62,6 +173,128 @@ export function RolesTab(props: {
   const [deletingId, setDeletingId] = createSignal<string | null>(null);
   const [deleteError, setDeleteError] = createSignal<string | null>(null);
   const [deletingRole, setDeletingRole] = createSignal<string | null>(null);
+  const [roleContextMenu, setRoleContextMenu] = createSignal<{ x: number; y: number; role: Role } | null>(null);
+
+  const closeRoleContextMenu = () => setRoleContextMenu(null);
+
+  onMount(() => {
+    const handleGlobalClick = () => closeRoleContextMenu();
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeRoleContextMenu();
+    };
+    window.addEventListener("pointerdown", handleGlobalClick);
+    window.addEventListener("keydown", handleKeyDown);
+    onCleanup(() => {
+      window.removeEventListener("pointerdown", handleGlobalClick);
+      window.removeEventListener("keydown", handleKeyDown);
+    });
+  });
+
+  const copyRoleAssociations = async (sourceRoleId: string, targetRoleId: string) => {
+    try {
+      const [mcpList, ruleList, skillList] = await Promise.all([
+        globalMcpApi.listRoleMcp(sourceRoleId).catch(() => []),
+        ruleApi.listRoleRules(sourceRoleId).catch(() => []),
+        skillApi.listAllSkillsForRole(sourceRoleId).catch(() => []),
+      ]);
+
+      const mcpPromises = mcpList
+        .filter((m) => m.enabled)
+        .map((m) => globalMcpApi.setRoleMcpEnabled(targetRoleId, m.mcpServerName, true).catch(() => {}));
+
+      const rulePromise = ruleList.length > 0
+        ? ruleApi.setRoleRules(targetRoleId, ruleList.map((r) => [r.ruleId, r.enabled, r.ord])).catch(() => {})
+        : Promise.resolve();
+
+      const skillPromise = skillList.length > 0
+        ? skillApi.setRoleSkills(targetRoleId, skillList.map((s) => [s.skillId, s.enabled, s.ord])).catch(() => {})
+        : Promise.resolve();
+
+      await Promise.all([...mcpPromises, rulePromise, skillPromise]);
+    } catch {
+      // Best effort association copy
+    }
+  };
+
+  const duplicateRole = async (role: Role) => {
+    const newName = uniqueRoleName(`${role.roleName}_copy`, role.projectId ?? null);
+    try {
+      setSaving(true);
+      const created = await roleApi.upsert({
+        roleName: newName,
+        runtimeKind: role.runtimeKind,
+        runtimeProfileId: role.runtimeProfileId,
+        systemPrompt: role.systemPrompt,
+        model: role.model,
+        mode: role.mode,
+        mcpServersJson: role.mcpServersJson,
+        configOptionsJson: role.configOptionsJson,
+        configOptionDefsJson: role.configOptionDefsJson,
+        autoApprove: role.autoApprove,
+        projectId: role.projectId,
+      });
+      await copyRoleAssociations(role.id, created.id);
+      await props.refreshRoles(props.currentProject?.()?.id);
+      openEdit(created);
+      props.pushMessage("event", `Role duplicated as '${newName}'`);
+    } catch (e) {
+      const err = parseError(e);
+      props.pushMessage("event", `Failed to duplicate role: ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const copyRoleToProject = async (role: Role, targetProject: Project) => {
+    const targetName = uniqueRoleName(role.roleName, targetProject.id);
+    try {
+      setSaving(true);
+      const created = await roleApi.upsert({
+        roleName: targetName,
+        runtimeKind: role.runtimeKind,
+        runtimeProfileId: role.runtimeProfileId,
+        systemPrompt: role.systemPrompt,
+        model: role.model,
+        mode: role.mode,
+        mcpServersJson: role.mcpServersJson,
+        configOptionsJson: role.configOptionsJson,
+        configOptionDefsJson: role.configOptionDefsJson,
+        autoApprove: role.autoApprove,
+        projectId: targetProject.id,
+      });
+      await copyRoleAssociations(role.id, created.id);
+      await props.refreshRoles(targetProject.id);
+      openEdit(created);
+      props.pushMessage("event", `Role '${role.roleName}' copied to project '${targetProject.name}' as '${targetName}'`);
+    } catch (e) {
+      const err = parseError(e);
+      props.pushMessage("event", `Failed to copy role to project: ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Scope & filter states
+  const [cScope, setCScope] = createSignal<"project" | "global">(props.currentProject?.() ? "project" : "global");
+  const [eScope, setEScope] = createSignal<"project" | "global">("global");
+  const [roleFilter, setRoleFilter] = createSignal<"all" | "project" | "global">("all");
+
+  const projectRoles = createMemo(() => {
+    const currentProjId = props.currentProject?.()?.id;
+    if (!currentProjId) return [];
+    return userRoles().filter((r) => r.projectId === currentProjId);
+  });
+
+  const globalRoles = createMemo(() => {
+    return userRoles().filter((r) => !r.projectId);
+  });
+
+  const filteredRoles = createMemo(() => {
+    const filter = roleFilter();
+    if (filter === "project") return projectRoles();
+    if (filter === "global") return globalRoles();
+    return [...projectRoles(), ...globalRoles()];
+  });
 
   // ── Create form state ───────────────────────────────────────────────────────
   const [cName, setCName] = createSignal("Developer");
@@ -78,7 +311,7 @@ export function RolesTab(props: {
       setCRuntime(acpClaude.key);
     }
   });
-  const [cPrompt, setCPrompt] = createSignal("You are a senior developer. Implement the solution step by step.");
+  const [cPrompt, setCPrompt] = createSignal("");
   const [cModel, setCModel] = createSignal("");
   const [cMode, setCMode] = createSignal("");
   const [cConfigOpts, setCConfigOpts] = createSignal<AcpConfigOption[]>([]);
@@ -125,7 +358,7 @@ export function RolesTab(props: {
     const reqSeq = ++createConfigReqSeq;
     setCName("Developer");
     setCRuntime(defaultRuntime);
-    setCPrompt("You are a senior developer. Implement the solution step by step.");
+    setCPrompt("");
     setCModel("");
     setCMode("");
     setCConfigOpts([]);
@@ -137,6 +370,7 @@ export function RolesTab(props: {
     setDeletingId(null);
     setDeleteError(null);
     setCreating(true);
+    setCScope(props.currentProject?.() ? "project" : "global");
     setCModes([]);
     setCConfigLoading(true);
     void props.fetchRoleConfig(`runtime:${defaultRuntime}`, undefined, true)
@@ -162,6 +396,7 @@ export function RolesTab(props: {
     setCreating(false);
     setDeleteError(null);
     setSelectedId(role.id);
+    setEScope(role.projectId ? "project" : "global");
     setEPrompt(role.systemPrompt ?? "");
     setEModel(role.model ?? "");
     setEMode(role.mode ?? "");
@@ -186,9 +421,9 @@ export function RolesTab(props: {
       .finally(() => {
         if (reqSeq === editConfigReqSeq) setEConfigLoading(false);
       });
-    void globalMcpApi.listRoleMcp(role.roleName).then(setEGlobalMcp).catch(() => {});
-    void ruleApi.listAllRulesForRole(role.roleName).then(setERoleRules).catch(() => {});
-    void skillApi.listAllSkillsForRole(role.roleName).then(setERoleSkills).catch(() => {});
+    void globalMcpApi.listRoleMcp(role.id).then(setEGlobalMcp).catch(() => {});
+    void ruleApi.listAllRulesForRole(role.id).then(setERoleRules).catch(() => {});
+    void skillApi.listAllSkillsForRole(role.id).then(setERoleSkills).catch(() => {});
   };
 
   const refreshEditConfig = () => {
@@ -218,8 +453,11 @@ export function RolesTab(props: {
   });
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
-  const uniqueRoleName = (desired: string): string => {
-    const existing = new Set(userRoles().map((r) => r.roleName.toLowerCase()));
+  const uniqueRoleName = (desired: string, targetProjectId?: string | null): string => {
+    const pool = targetProjectId === undefined
+      ? userRoles()
+      : userRoles().filter((r) => (targetProjectId ? r.projectId === targetProjectId : !r.projectId));
+    const existing = new Set(pool.map((r) => r.roleName.toLowerCase()));
     if (!existing.has(desired.toLowerCase())) return desired;
     const base = desired.replace(/_copy(\d+)?$/, "");
     let n = 2;
@@ -264,21 +502,20 @@ export function RolesTab(props: {
     return parseRoleConfigDefs(role.configOptionDefsJson);
   };
 
+  /** The chip shown beside a persona in the list: its first configured select parameter. The
+   *  runtime states which parameters exist, so this no longer branches on `codex-cli` or
+   *  guesses among four historical key spellings. */
   const roleEffort = (role: Role) => {
     const cfg = parseRoleConfigMap(role.configOptionsJson);
-    const defs = roleConfigDefs(role);
-    const opt = defs.find(isEffortOption);
-    const exactId = opt ? optionId(opt) : "";
-    if (role.runtimeKind === "codex-cli") {
-      if (exactId && cfg[exactId]) return cfg[exactId];
-      const override = cfg.reasoning_effort ?? cfg.thinking_effort ?? cfg.effort ?? cfg.thought_level;
-      if (override) return override;
-      return opt ? optionCurrentValue(opt) || null : null;
+    const declared = readRuntimeOptions(roleConfigDefs(role));
+    const modelId = role.model || cfg.model || "";
+    const model = findModelOption(declared)?.values.find((v) => v.value === modelId);
+    for (const option of otherRuntimeOptions(declared)) {
+      if (option.kind !== "select" || !appliesToModel(option, modelId)) continue;
+      const value = storedValue(cfg, option) || effectiveDefault(option, model);
+      if (value) return value;
     }
-    if (cfg.effort) {
-      return cfg.effort;
-    }
-    return exactId === "effort" && opt ? optionCurrentValue(opt) || null : null;
+    return null;
   };
 
   const roleMode = (role: Role) => {
@@ -305,47 +542,84 @@ export function RolesTab(props: {
   const configOptionSelectOptions = (opt: AcpConfigOption, defaultLabel = "default") =>
     [{ value: "", label: `${defaultLabel}: ${optionCurrentValue(opt) || "runtime"}` }, ...flattenConfigValues(opt.options).map((v) => ({ value: v.value, label: v.description ? `${v.name} — ${v.description}` : v.name }))];
 
+  // Last-resort list, shown only before the backend catalog has been discovered for this
+  // runtime. Prefer family aliases over pinned ids here: the CLI resolves an alias to
+  // whatever the installed build treats as current, so these cannot go stale.
+  const RUNTIME_DEFAULT_MODELS: Record<string, { value: string; label: string }[]> = {
+    "claude-native": [
+      { value: "", label: "default: runtime" },
+      { value: "opus", label: "Opus (alias)" },
+      { value: "sonnet", label: "Sonnet (alias)" },
+      { value: "haiku", label: "Haiku (alias)" },
+      { value: "fable", label: "Fable (alias)" },
+    ],
+    "claude-code": [
+      { value: "", label: "default: runtime" },
+      { value: "opus", label: "Opus (alias)" },
+      { value: "sonnet", label: "Sonnet (alias)" },
+      { value: "haiku", label: "Haiku (alias)" },
+      { value: "fable", label: "Fable (alias)" },
+    ],
+    "antigravity-cli": [{ value: "", label: "default: runtime" }],
+    "codex-cli": [{ value: "", label: "default: runtime" }],
+  };
+
+  const isProjectOverride = (role: Role) =>
+    Boolean(role.projectId && globalRoles().some((gr) => gr.roleName.toLowerCase() === role.roleName.toLowerCase()));
+
+  const resolvedModelOptions = (runtimeKind: string, modelOpt?: AcpConfigOption) => {
+    // The catalog is scoped per-runtime in the backend, so whatever arrives here already
+    // belongs to this runtime — no client-side family filtering.
+    if (modelOpt && modelOpt.options && modelOpt.options.length > 0) {
+      return configOptionSelectOptions(modelOpt);
+    }
+
+    for (const [key, list] of Object.entries(RUNTIME_DEFAULT_MODELS)) {
+      if (runtimeKind.includes(key) || key.includes(runtimeKind)) {
+        return list;
+      }
+    }
+    return [{ value: "", label: "default: runtime" }];
+  };
+
   // ── Create submit ───────────────────────────────────────────────────────────
   const handleCreate = async () => {
-    const name = uniqueRoleName(cName().trim());
-    if (!name || saving()) return;
-    if (/\s/.test(name)) { props.pushMessage("event", "Role name cannot contain spaces."); return; }
-    if (!/^[A-Za-z0-9_-]+$/.test(name)) { props.pushMessage("event", "Role name only allows letters, numbers, - and _."); return; }
+    const targetPid = cScope() === "project" ? (props.currentProject?.()?.id ?? null) : null;
+    const rawName = cName().trim();
+    if (!rawName || saving()) return;
+    if (/\s/.test(rawName)) { props.pushMessage("event", "Role name cannot contain spaces."); return; }
+    if (!/^[A-Za-z0-9_-]+$/.test(rawName)) { props.pushMessage("event", "Role name only allows letters, numbers, - and _."); return; }
+    const name = uniqueRoleName(rawName, targetPid);
     setSaving(true);
     const configMap: Record<string, string> = {};
     for (const [k, v] of Object.entries(cConfigSel())) { if (v) configMap[k] = v; }
     try {
       const saved = await roleApi.upsert({
         roleName: name, runtimeKind: cRuntime(), runtimeProfileId: selectedAssistant()?.profileId,
-        systemPrompt: cPrompt().trim() || "You are a helpful AI assistant.",
+        systemPrompt: cPrompt().trim(),
         model: cModel().trim() || null, mode: cMode().trim() || null,
         mcpServersJson: "[]", configOptionsJson: JSON.stringify(configMap),
         configOptionDefsJson: JSON.stringify(resolvedCreateConfigOpts()),
         autoApprove: true,
+        projectId: targetPid,
       } satisfies RoleUpsertInput);
       if (supportsCapability(cRuntime(), "mcpServers")) {
         await Promise.all(cGlobalMcp().map((entry) =>
-          globalMcpApi.setRoleMcpEnabled(name, entry.mcpServerName, entry.enabled).catch(() => {}),
+          globalMcpApi.setRoleMcpEnabled(saved.id, entry.mcpServerName, entry.enabled).catch(() => {}),
         ));
       }
       await ruleApi.setRoleRules(
-        name,
+        saved.id,
         cRoleRules().map((r) => [r.ruleId, r.enabled, r.ord] as [string, boolean, number]),
       ).catch(() => {});
       await skillApi.setRoleSkills(
-        name,
+        saved.id,
         cRoleSkills().map((s) => [s.skillId, s.enabled, s.ord] as [string, boolean, number]),
       ).catch(() => {});
-      await props.refreshRoles();
-      // 创建成功后直接进入编辑状态
-      const created = props.roles().find((r) => r.roleName === saved.roleName);
-      if (created) {
-        openEdit(created);
-      } else {
-        setCreating(false);
-      }
+      await props.refreshRoles(props.currentProject?.()?.id);
+      openEdit(saved);
       setCConfigSel({}); setCConfigOpts([]); setCGlobalMcp([]); setCRoleRules([]); setCRoleSkills([]);
-      props.pushMessage("event", `role created: ${saved.roleName} (${saved.runtimeKind})`);
+      props.pushMessage("event", `Role created: ${saved.roleName} (${saved.projectId ? "project" : "global"})`);
     } catch (e) { const err = parseError(e); props.pushMessage("event", `Failed to create role: ${err.message}`); }
     finally { setSaving(false); }
   };
@@ -360,42 +634,46 @@ export function RolesTab(props: {
     const previousMode = role.mode ?? null;
     const newMode = eMode().trim() || null;
     const modeChanged = newMode !== previousMode;
+    const targetPid = eScope() === "project" ? (role.projectId ?? props.currentProject?.()?.id ?? null) : null;
     setSaving(true);
     try {
       await roleApi.upsert({
+        id: role.id,
         roleName: role.roleName, runtimeKind: role.runtimeKind, runtimeProfileId: role.runtimeProfileId,
         systemPrompt: ePrompt().trim(), model: eModel().trim() || null,
         mode: newMode, mcpServersJson: "[]",
         configOptionsJson: JSON.stringify(parsedCfg),
         configOptionDefsJson: JSON.stringify(resolvedEditConfigOpts()),
         autoApprove: true,
+        projectId: targetPid,
       } satisfies RoleUpsertInput);
-      await props.refreshRoles();
+      await props.refreshRoles(props.currentProject?.()?.id);
       // Precedence rule: Session-specific overrides (`mode_override`) in the database take precedence over
       // the global role's default `mode`. When the global default mode changes, we sync it only to the
       // active sessions of this role that do not have any explicit session-level mode override.
       if (modeChanged && newMode) {
-        const synced = await assistantApi.syncRoleMode(role.roleName, newMode).catch(() => []);
+        const synced = await assistantApi.syncRoleMode(role.id, newMode).catch(() => []);
         for (const sessionId of synced) {
           props.updateSession(sessionId, { currentMode: newMode });
         }
       }
-      props.pushMessage("event", `role saved: ${role.roleName}`);
+      props.pushMessage("event", `Role saved: ${role.roleName} (${targetPid ? "project" : "global"})`);
     } catch (e) { const err = parseError(e); props.pushMessage("event", `Failed to save: ${err.message}`); }
     finally { setSaving(false); }
   };
 
   // ── Delete ──────────────────────────────────────────────────────────────────
-  const handleDelete = async (roleName: string) => {
+  const handleDelete = async (role: Role) => {
     if (deletingRole()) return;
     setDeleteError(null);
-    setDeletingRole(roleName);
+    setDeletingRole(role.id);
+    const isOverride = isProjectOverride(role);
     try {
-      await roleApi.remove(roleName);
-      if (editingRole()?.roleName === roleName) setSelectedId(null);
+      await roleApi.remove(role.roleName, role.projectId ?? null, role.id);
+      if (editingRole()?.id === role.id) setSelectedId(null);
       setDeletingId(null);
-      await props.refreshRoles();
-      props.pushMessage("event", `role deleted: ${roleName}`);
+      await props.refreshRoles(props.currentProject?.()?.id);
+      props.pushMessage("event", isOverride ? `Role '${role.roleName}' reverted to global` : `Role deleted: ${role.roleName}`);
     } catch (e) {
       const err = parseError(e);
       setDeleteError(err.message);
@@ -408,10 +686,10 @@ export function RolesTab(props: {
   const handleToggleGlobalMcp = async (entry: RoleMcpEntry, enabled: boolean) => {
     const role = editingRole();
     if (!role || !supportsCapability(role.runtimeKind, "mcpServers")) return;
-    await globalMcpApi.setRoleMcpEnabled(role.roleName, entry.mcpServerName, enabled).catch(() => {});
+    await globalMcpApi.setRoleMcpEnabled(role.id, entry.mcpServerName, enabled).catch(() => {});
     setEGlobalMcp((prev) => prev.map((e) => e.mcpServerName === entry.mcpServerName ? { ...e, enabled } : e));
     setMcpResetting(true);
-    await globalMcpApi.resetRoleMcpSessions(role.roleName).catch(() => {});
+    await globalMcpApi.resetRoleMcpSessions(role.id).catch(() => {});
     setMcpResetting(false);
   };
 
@@ -421,7 +699,7 @@ export function RolesTab(props: {
     const updated = eRoleRules().map((r) => r.ruleId === rule.ruleId ? { ...r, enabled } : r);
     setERoleRules(updated);
     const payload: [string, boolean, number][] = updated.map((r) => [r.ruleId, r.enabled, r.ord]);
-    await ruleApi.setRoleRules(role.roleName, payload).catch(() => {});
+    await ruleApi.setRoleRules(role.id, payload).catch(() => {});
   };
 
   const handleToggleSkill = async (skill: RoleSkill, enabled: boolean) => {
@@ -430,7 +708,7 @@ export function RolesTab(props: {
     const updated = eRoleSkills().map((s) => s.skillId === skill.skillId ? { ...s, enabled } : s);
     setERoleSkills(updated);
     const payload: [string, boolean, number][] = updated.map((s) => [s.skillId, s.enabled, s.ord]);
-    await skillApi.setRoleSkills(role.roleName, payload).catch(() => {});
+    await skillApi.setRoleSkills(role.id, payload).catch(() => {});
   };
 
   const selectedAssistant = createMemo(() =>
@@ -438,41 +716,58 @@ export function RolesTab(props: {
   );
 
   const runtimeOptions = createMemo(() => {
-    const detected = props.assistants().map((assistant) => ({
-      value: assistant.key,
-      label: assistant.label,
-      group: assistant.family === "native" ? "Native CLI" : "ACP Agents",
-      disabled: !assistant.available,
-      hint: assistant.available
-        ? `${assistant.transport}${assistant.launchMethod ? ` · ${assistant.launchMethod}` : ""}`
-        : (assistant.installHint ?? "not detected on this machine"),
-    }));
-    const known = new Set(detected.map((option) => option.value));
-    return [
-      ...detected,
-      ...RUNTIMES
-        .filter((runtime) => !known.has(runtime))
-        .map((runtime) => ({ value: runtime, label: runtime })),
-    ];
+    const nativeList: Array<{ value: string; label: string; group: string; disabled?: boolean; hint?: string }> = [];
+    const acpList: Array<{ value: string; label: string; group: string; disabled?: boolean; hint?: string }> = [];
+    const seen = new Set<string>();
+
+    for (const assistant of props.assistants()) {
+      seen.add(assistant.key);
+      const isNative = assistant.family === "native";
+      const item = {
+        value: assistant.key,
+        label: `${isNative ? "⚡ Native" : "🔌 ACP"} · ${assistant.label}`,
+        group: isNative ? "⚡ Native CLI Engines (Top-Level Direct)" : "🔌 ACP Protocol Bridges (Drill-Down)",
+        disabled: !assistant.available,
+        hint: assistant.available
+          ? `${isNative ? "Native CLI Direct Stream" : "ACP Protocol Bridge"} · ${assistant.transport}${assistant.launchMethod ? ` · ${assistant.launchMethod}` : ""}`
+          : (assistant.installHint ?? "not detected on this machine"),
+      };
+      if (isNative) {
+        nativeList.push(item);
+      } else {
+        acpList.push(item);
+      }
+    }
+
+    for (const runtime of RUNTIMES) {
+      if (!seen.has(runtime)) {
+        const isNative = runtime.includes("native") || runtime === "antigravity-cli" || runtime === "codex-cli" || runtime === "pi-cli";
+        const item = {
+          value: runtime,
+          label: `${isNative ? "⚡ Native" : "🔌 ACP"} · ${runtime}`,
+          group: isNative ? "⚡ Native CLI Engines (Top-Level Direct)" : "🔌 ACP Protocol Bridges (Drill-Down)",
+        };
+        if (isNative) {
+          nativeList.push(item);
+        } else {
+          acpList.push(item);
+        }
+      }
+    }
+
+    return [...nativeList, ...acpList];
   });
 
-  // Edit form config options (local, not tied to global activeSession)
+  // Edit form config options (local, not tied to global activeSession).
+  // Codex used to get a hand-written reasoning-effort option bolted on here. It is now
+  // discovered: `model/list` reports each model's own `supportedReasoningEfforts` (including
+  // the `max` and `ultra` levels this list omitted, and without the `minimal` one it invented).
   const editConfigOpts = createMemo(() => eConfigOpts());
-  const createConfigOpts = createMemo(() => {
-    const opts = cConfigOpts();
-    if (cRuntime() !== "codex-cli" || opts.some(isEffortOption) || !cModel()) return opts;
-    return [...opts, codexReasoningEffortOption()];
-  });
-  const resolvedCreateConfigOpts = createMemo(() => createConfigOpts());
+  const resolvedCreateConfigOpts = createMemo(() => cConfigOpts());
   const editCfgMap = createMemo((): Record<string, string> => {
     try { return JSON.parse(eCfgJson() || "{}"); } catch { return {}; }
   });
-  const resolvedEditConfigOpts = createMemo(() => {
-    const opts = editConfigOpts();
-    if (editingRole()?.runtimeKind !== "codex-cli" || opts.some(isEffortOption) || !eModel()) return opts;
-    const saved = editCfgMap().reasoning_effort || "medium";
-    return [...opts, codexReasoningEffortOption(saved)];
-  });
+  const resolvedEditConfigOpts = createMemo(() => editConfigOpts());
   const updateEditCfg = (id: string, val: string) => {
     const map = { ...editCfgMap() };
     if (val) map[id] = val; else delete map[id];
@@ -484,7 +779,7 @@ export function RolesTab(props: {
     <div class="flex h-full">
       {/* ── List pane ── */}
       <div class="flex w-56 shrink-0 flex-col border-r theme-border">
-        <div class="p-3">
+        <div class="p-2.5 pb-1">
           <ActionButton
             label="+ New Role"
             variant="ghost"
@@ -492,36 +787,103 @@ export function RolesTab(props: {
             onClick={openCreate}
           />
         </div>
-        <div class="flex-1 overflow-y-auto space-y-0.5 py-1">
-          <Show when={userRoles().length === 0}>
-            <EmptyState icon="◎" title="No roles yet" sub="Create your first role" />
+        {/* Scope Filter Tabs */}
+        <div class="flex items-center gap-1 px-2.5 py-1.5 border-b theme-border text-[10px]">
+          <button
+            type="button"
+            onClick={() => setRoleFilter("all")}
+            class={`px-2 py-0.5 rounded transition-colors ${roleFilter() === "all" ? "bg-[var(--ui-surface-muted)] theme-text font-semibold" : "theme-muted hover:theme-text"}`}
+          >
+            All ({userRoles().length})
+          </button>
+          <Show when={props.currentProject?.()}>
+            {(proj) => (
+              <button
+                type="button"
+                onClick={() => setRoleFilter("project")}
+                class={`px-2 py-0.5 rounded transition-colors ${roleFilter() === "project" ? "bg-blue-500/20 text-blue-400 font-semibold" : "theme-muted hover:theme-text"}`}
+              >
+                Project ({projectRoles().length})
+              </button>
+            )}
           </Show>
-          <For each={userRoles()}>
+          <button
+            type="button"
+            onClick={() => setRoleFilter("global")}
+            class={`px-2 py-0.5 rounded transition-colors ${roleFilter() === "global" ? "bg-[var(--ui-surface-muted)] theme-text font-semibold" : "theme-muted hover:theme-text"}`}
+          >
+            Global ({globalRoles().length})
+          </button>
+        </div>
+        <div class="flex-1 overflow-y-auto space-y-0.5 py-1">
+          <Show when={filteredRoles().length === 0}>
+            <EmptyState icon="◎" title="No roles" sub={roleFilter() === "project" ? "No roles configured for this project" : "Create your first role"} />
+          </Show>
+          <For each={filteredRoles()}>
             {(role) => {
               const color = () => RUNTIME_COLOR[role.runtimeKind] ?? "theme-muted";
               const isSelected = () => selectedId() === role.id && !creating();
+              const isNative = () =>
+                role.runtimeKind.includes("native") ||
+                role.runtimeKind === "antigravity-cli" ||
+                role.runtimeKind === "codex-cli" ||
+                role.runtimeKind === "pi-cli";
+              const isOverridden = () =>
+                !role.projectId &&
+                projectRoles().some((pr) => pr.roleName.toLowerCase() === role.roleName.toLowerCase());
+
               return (
                 <div
                   onClick={() => openEdit(role)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setRoleContextMenu({ x: e.clientX, y: e.clientY, role });
+                  }}
                   class={`group flex w-full flex-col gap-0.5 rounded-lg mx-1.5 px-2.5 py-2 text-left transition-colors duration-100 cursor-default ${isSelected() ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-surface-muted)]"}`}
                 >
                   <div class="flex items-center justify-between min-w-0 gap-1">
-                    <span class={`truncate font-mono text-[10px] font-semibold ${isSelected() ? "theme-text" : "theme-text"}`}>{role.roleName}</span>
-                    <Show when={deletingId() === role.roleName} fallback={
+                    <div class="flex items-center gap-1.5 min-w-0 truncate">
+                      <span class={`truncate font-mono text-[10px] font-semibold ${isSelected() ? "theme-text" : "theme-text"}`}>{role.roleName}</span>
+                      <Show when={role.projectId} fallback={
+                        <span class="font-mono text-[8px] px-1.5 py-0.5 rounded bg-[var(--ui-surface-muted)] text-[var(--ui-muted)] border border-[var(--ui-border)]">global</span>
+                      }>
+                        <Show when={isProjectOverride(role)} fallback={
+                          <span class="font-mono text-[8px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/25">project</span>
+                        }>
+                          <span class="font-mono text-[8px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/25">override</span>
+                        </Show>
+                      </Show>
+                      <Show when={isOverridden()}>
+                        <span
+                          title="This global role is overridden by a project role of the same name"
+                          class="font-mono text-[7.5px] px-1 py-0.2 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                        >
+                          overridden
+                        </span>
+                      </Show>
+                    </div>
+                    <Show when={deletingId() === role.id} fallback={
                       <button
-                        onClick={(e) => { e.stopPropagation(); setDeletingId(role.roleName); }}
+                        onClick={(e) => { e.stopPropagation(); setDeletingId(role.id); }}
                         class="shrink-0 opacity-0 group-hover:opacity-100 theme-muted hover:text-rose-400 transition-all"
+                        title={isProjectOverride(role) ? "Revert to Global Role" : "Delete Role"}
                       >
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                       </button>
                     }>
                       <div class="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                        <button onClick={() => void handleDelete(role.roleName)} class="font-mono text-[9px] text-rose-400 hover:text-rose-300">del</button>
+                        <button onClick={() => void handleDelete(role)} class="font-mono text-[9px] text-rose-400 hover:text-rose-300">
+                          {isProjectOverride(role) ? "revert" : "del"}
+                        </button>
                         <button onClick={() => setDeletingId(null)} class="font-mono text-[9px] theme-muted hover:text-primary">✕</button>
                       </div>
                     </Show>
                   </div>
                   <div class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                    <span class={`font-mono text-[8.5px] px-1 py-0.2 rounded border ${isNative() ? "bg-amber-500/10 text-amber-400 border-amber-500/25" : "bg-blue-500/10 text-blue-400 border-blue-500/25"}`}>
+                      {isNative() ? "⚡ Native" : "🔌 ACP"}
+                    </span>
                     <span class={`font-mono text-[9px] ${color()}`}>{role.runtimeKind}</span>
                     <Show when={roleModel(role)}><span class="min-w-0 max-w-full truncate font-mono text-[9px] text-blue-400">{roleModel(role)}</span></Show>
                     <Show when={roleMode(role)}><span class="min-w-0 max-w-full truncate font-mono text-[9px] text-violet-300">mode:{roleMode(role)}</span></Show>
@@ -540,8 +902,44 @@ export function RolesTab(props: {
         {/* Create form */}
         <Show when={creating()}>
           <div class="space-y-4">
-            <h3 class="font-mono text-xs font-bold theme-text uppercase tracking-widest">New Role</h3>
+            <div class="flex items-center justify-between">
+              <h3 class="font-mono text-xs font-bold theme-text uppercase tracking-widest">New Role</h3>
+              <Show when={props.currentProject?.()}>
+                {(proj) => (
+                  <span class="text-[11px] text-blue-400 font-mono">
+                    Project: {proj().name}
+                  </span>
+                )}
+              </Show>
+            </div>
             <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
+              <FieldRow label="Scope">
+                <div class="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={!props.currentProject?.()}
+                    onClick={() => setCScope("project")}
+                    class={`px-2.5 py-1 text-xs rounded border transition-colors ${
+                      cScope() === "project"
+                        ? "bg-blue-500/20 text-blue-400 border-blue-500/40 font-semibold"
+                        : "bg-[var(--ui-surface)] text-[var(--ui-muted)] border-[var(--ui-border)] hover:text-[var(--ui-text)]"
+                    } ${!props.currentProject?.() ? "opacity-40 cursor-not-allowed" : ""}`}
+                  >
+                    Project: {props.currentProject?.() ? props.currentProject()!.name : "(No project)"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCScope("global")}
+                    class={`px-2.5 py-1 text-xs rounded border transition-colors ${
+                      cScope() === "global"
+                        ? "bg-[var(--ui-accent-muted)] text-[var(--ui-accent)] border-[var(--ui-accent)] font-semibold"
+                        : "bg-[var(--ui-surface)] text-[var(--ui-muted)] border-[var(--ui-border)] hover:text-[var(--ui-text)]"
+                    }`}
+                  >
+                    Global (All Projects)
+                  </button>
+                </div>
+              </FieldRow>
               <FieldRow label="Name">
                 <div class="flex flex-col gap-1 w-full">
                   <TextInput
@@ -578,26 +976,49 @@ export function RolesTab(props: {
                     });
                 }} />
                   <CapabilityChips assistant={selectedAssistant()} />
+                  {/* Runtime Mode Explanatory Box */}
+                  <div class="mt-2 rounded p-2.5 border text-xs flex flex-col gap-1 border-[var(--ui-border)] bg-[var(--ui-surface)]">
+                    <div class="flex items-center gap-2">
+                      <span class={`font-mono text-[9px] font-bold px-1.5 py-0.5 rounded border ${
+                        selectedAssistant()?.family === "native"
+                          ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
+                          : "bg-blue-500/15 text-blue-400 border-blue-500/30"
+                      }`}>
+                        {selectedAssistant()?.family === "native" ? "⚡ Native Mode" : "🔌 ACP Mode"}
+                      </span>
+                      <span class="font-semibold theme-text text-[11px]">
+                        {selectedAssistant()?.family === "native" ? "Native Direct CLI Execution" : "Agent Client Protocol Bridge"}
+                      </span>
+                    </div>
+                    <p class="theme-muted text-[10px] leading-relaxed">
+                      {selectedAssistant()?.family === "native"
+                        ? "Direct subprocess invocation using native streaming JSON (`--output-format=stream-json`). Lowest latency, native tools & permissions, no protocol translation."
+                        : "Connects via Agent Client Protocol (JSON-RPC 2.0). Standardized MCP server injection, dynamic mode toggles, and multi-agent coordination."}
+                    </p>
+                  </div>
                 </div>
               </FieldRow>
-              <FieldRow label="Prompt">
-                <TextInput value={cPrompt()} onInput={setCPrompt} placeholder="System prompt…" multiline rows={4} />
+              <FieldRow label="Prompt (Optional)">
+                <div class="w-full flex flex-col gap-1">
+                  <TextInput
+                    value={cPrompt()}
+                    onInput={setCPrompt}
+                    placeholder="Optional override. Leave empty to use agent's native system prompt and project rules (CLAUDE.md, AGENTS.md)..."
+                    multiline
+                    rows={3}
+                  />
+                  <span class="text-[10px] theme-muted">
+                    ⚡ Native Mode: Leave empty to preserve the agent's built-in reasoning and repository instructions.
+                  </span>
+                </div>
               </FieldRow>
               <FieldRow label="Model">
                 <Show when={!cConfigLoading()} fallback={<span class="font-mono text-[10px] theme-muted">loading…</span>}>
-                  <Show when={resolvedCreateConfigOpts().find(isModelOption)} fallback={
-                    <TextInput value={cModel()} onInput={setCModel} placeholder="Optional model override" monospace />
-                  }>
-                    {(mo) => {
-                      return (
-                        <InlineSelect
-                          value={cModel()}
-                          options={configOptionSelectOptions(mo())}
-                          onChange={setCModel}
-                        />
-                      );
-                    }}
-                  </Show>
+                  <InlineSelect
+                    value={cModel()}
+                    options={resolvedModelOptions(cRuntime(), resolvedCreateConfigOpts().find(isModelOption))}
+                    onChange={setCModel}
+                  />
                 </Show>
               </FieldRow>
               <Show when={resolvedModes(resolvedCreateConfigOpts(), cModes())}>
@@ -612,34 +1033,12 @@ export function RolesTab(props: {
                   );
                 }}
               </Show>
-              <Show when={resolvedCreateConfigOpts().find(isEffortOption)}>
-                {(opt) => {
-                  return (
-                    <FieldRow label={optionName(opt()) || "Effort"}>
-                      <InlineSelect
-                        value={cConfigSel()[optionId(opt())] ?? ""}
-                        options={configOptionSelectOptions(opt())}
-                        onChange={(val) => setCConfigSel((s) => ({ ...s, [optionId(opt())]: val }))}
-                      />
-                    </FieldRow>
-                  );
-                }}
-              </Show>
-              <Show when={resolvedCreateConfigOpts().length > 0}>
-                <For each={resolvedCreateConfigOpts().filter((o) => !isModelOption(o) && !isModeOption(o) && !isEffortOption(o))}>
-                  {(opt) => {
-                    return (
-                      <FieldRow label={optionName(opt)}>
-                        <InlineSelect
-                          value={cConfigSel()[optionId(opt)] ?? ""}
-                          options={configOptionSelectOptions(opt)}
-                          onChange={(val) => setCConfigSel((s) => ({ ...s, [optionId(opt)]: val }))}
-                        />
-                      </FieldRow>
-                    );
-                  }}
-                </For>
-              </Show>
+              <ParameterFields
+                declared={readRuntimeOptions(resolvedCreateConfigOpts())}
+                modelId={cModel()}
+                value={(id) => cConfigSel()[id] ?? ""}
+                onChange={(id, val) => setCConfigSel((prev) => ({ ...prev, [id]: val }))}
+              />
               <Show when={cGlobalMcp().length > 0}>
                 <FieldRow label="MCP">
                   <Show when={supportsCapability(cRuntime(), "mcpServers")} fallback={<span class="text-[10px] theme-muted">MCP is not supported by this runtime profile.</span>}>
@@ -715,32 +1114,112 @@ export function RolesTab(props: {
           {(role) => {
             const modelOpt = createMemo(() => resolvedEditConfigOpts().find(isModelOption));
             const modeResolved = createMemo(() => resolvedModes(resolvedEditConfigOpts(), eModes()));
-            const effortOpt = createMemo(() => resolvedEditConfigOpts().find(isEffortOption));
-            const otherOpts = createMemo(() => resolvedEditConfigOpts().filter((o) => !isModelOption(o) && !isModeOption(o) && !isEffortOption(o)));
             return (
               <div class="space-y-4">
                 <div class="flex items-start justify-between gap-4">
                   <div>
-                    <h2 class="font-mono text-sm font-bold theme-text">{role().roleName}</h2>
-                    <span class={`font-mono text-[10px] ${RUNTIME_COLOR[role().runtimeKind] ?? "theme-muted"}`}>{role().runtimeKind}</span>
-                    <Show when={role().runtimeLaunchMethod}>
-                      {(method) => <span class="font-mono text-[9px] theme-muted ml-2">{method()}</span>}
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <h2 class="font-mono text-sm font-bold theme-text">{role().roleName}</h2>
+                      <span class={`font-mono text-[9px] font-semibold px-1.5 py-0.5 rounded border ${
+                        (role().runtimeKind.includes("native") || role().runtimeKind === "antigravity-cli" || role().runtimeKind === "codex-cli" || role().runtimeKind === "pi-cli")
+                          ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
+                          : "bg-blue-500/15 text-blue-400 border-blue-500/30"
+                      }`}>
+                        {(role().runtimeKind.includes("native") || role().runtimeKind === "antigravity-cli" || role().runtimeKind === "codex-cli" || role().runtimeKind === "pi-cli")
+                          ? "⚡ Native Mode"
+                          : "🔌 ACP Mode"}
+                      </span>
+                      <Show when={role().projectId} fallback={
+                        <span class="font-mono text-[9px] font-semibold px-2 py-0.5 rounded bg-[var(--ui-surface-muted)] text-[var(--ui-muted)] border border-[var(--ui-border)]">
+                          Global Role
+                        </span>
+                      }>
+                        <span class="font-mono text-[9px] font-semibold px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/40">
+                          Project Role · {props.currentProject?.()?.name ?? "Project"}
+                        </span>
+                      </Show>
+                    </div>
+                    <div class="flex items-center gap-2 mt-1">
+                      <span class={`font-mono text-[10px] ${RUNTIME_COLOR[role().runtimeKind] ?? "theme-muted"}`}>{role().runtimeKind}</span>
+                      <Show when={role().runtimeLaunchMethod}>
+                        {(method) => <span class="font-mono text-[9px] theme-muted">{method()}</span>}
+                      </Show>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <Show when={!role().projectId && props.currentProject?.()}>
+                      {(proj) => (
+                        <button
+                          type="button"
+                          onClick={() => void copyRoleToProject(role(), proj())}
+                          disabled={saving()}
+                          class="px-2.5 py-1 text-xs rounded border border-blue-500/30 bg-blue-500/15 text-blue-300 hover:bg-blue-500/25 transition-colors font-medium"
+                        >
+                          Copy to {proj().name}
+                        </button>
+                      )}
+                    </Show>
+                    <Show when={deletingId() === role().id} fallback={
+                      <ActionButton
+                        label={isProjectOverride(role()) ? "Revert to Global" : "Delete"}
+                        variant={isProjectOverride(role()) ? "secondary" : "danger"}
+                        onClick={() => setDeletingId(role().id)}
+                      />
+                    }>
+                      <div class="flex items-center gap-2">
+                        <ActionButton
+                          label={
+                            deletingRole() === role().id
+                              ? (isProjectOverride(role()) ? "Reverting..." : "Deleting...")
+                              : (isProjectOverride(role()) ? "Confirm Revert" : "Confirm delete")
+                          }
+                          variant={isProjectOverride(role()) ? "secondary" : "danger"}
+                          disabled={deletingRole() === role().id}
+                          onClick={() => void handleDelete(role())}
+                        />
+                        <ActionButton label="Cancel" variant="ghost" onClick={() => setDeletingId(null)} />
+                      </div>
                     </Show>
                   </div>
-                  <Show when={deletingId() === role().roleName} fallback={
-                    <ActionButton label="Delete" variant="danger" onClick={() => setDeletingId(role().roleName)} />
-                  }>
-                    <div class="flex items-center gap-2">
-                      <ActionButton
-                        label={deletingRole() === role().roleName ? "Deleting..." : "Confirm delete"}
-                        variant="danger"
-                        disabled={deletingRole() === role().roleName}
-                        onClick={() => void handleDelete(role().roleName)}
-                      />
-                      <ActionButton label="Cancel" variant="ghost" onClick={() => setDeletingId(null)} />
-                    </div>
-                  </Show>
                 </div>
+
+                {/* Helpful Role Scope Guidance Banner */}
+                <Show when={!role().projectId && props.currentProject?.()}>
+                  {(proj) => (
+                    <div class="flex items-center justify-between gap-3 p-3 rounded-lg border border-amber-500/30 bg-amber-500/10 text-xs text-amber-200">
+                      <div class="flex items-center gap-2">
+                        <Globe size={15} class="text-amber-400 shrink-0" />
+                        <span>
+                          <strong>Global Role:</strong> Shared across all projects. To customize settings specifically for <strong>{proj().name}</strong>, click "Copy to {proj().name}".
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void copyRoleToProject(role(), proj())}
+                        class="shrink-0 px-2.5 py-1 rounded bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 border border-blue-500/40 text-[11px] font-semibold transition-colors"
+                      >
+                        Copy to {proj().name}
+                      </button>
+                    </div>
+                  )}
+                </Show>
+
+                <Show when={role().projectId}>
+                  <div class="flex items-center gap-2 p-3 rounded-lg border border-blue-500/30 bg-blue-500/10 text-xs text-blue-200">
+                    <FolderGit2 size={15} class="text-blue-400 shrink-0" />
+                    <span>
+                      {isProjectOverride(role()) ? (
+                        <>
+                          <strong>Project Override:</strong> This role overrides the global <strong>{role().roleName}</strong> role for <strong>{props.currentProject?.()?.name ?? "this project"}</strong>. Click "Revert to Global" to return to the global settings.
+                        </>
+                      ) : (
+                        <>
+                          <strong>Project Role:</strong> Configured specifically for <strong>{props.currentProject?.()?.name ?? "this project"}</strong>. Sessions in this project use this role instead of global fallbacks.
+                        </>
+                      )}
+                    </span>
+                  </div>
+                </Show>
                 <Show when={deleteError()}>
                   <div class="management-error-box font-mono">
                     {deleteError()}
@@ -748,24 +1227,56 @@ export function RolesTab(props: {
                 </Show>
 
                 <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
-                  <FieldRow label="Prompt">
-                    <TextInput value={ePrompt()} onInput={setEPrompt} placeholder="System prompt" multiline rows={4} />
+                  <FieldRow label="Scope">
+                    <div class="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={!props.currentProject?.()}
+                        onClick={() => setEScope("project")}
+                        class={`px-2.5 py-1 text-xs rounded border transition-colors ${
+                          eScope() === "project"
+                            ? "bg-blue-500/20 text-blue-400 border-blue-500/40 font-semibold"
+                            : "bg-[var(--ui-surface)] text-[var(--ui-muted)] border-[var(--ui-border)] hover:text-[var(--ui-text)]"
+                        } ${!props.currentProject?.() ? "opacity-40 cursor-not-allowed" : ""}`}
+                      >
+                        Project {props.currentProject?.() ? `(${props.currentProject()!.name})` : "(No project selected)"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEScope("global")}
+                        class={`px-2.5 py-1 text-xs rounded border transition-colors ${
+                          eScope() === "global"
+                            ? "bg-[var(--ui-accent-muted)] text-[var(--ui-accent)] border-[var(--ui-accent)] font-semibold"
+                            : "bg-[var(--ui-surface)] text-[var(--ui-muted)] border-[var(--ui-border)] hover:text-[var(--ui-text)]"
+                        }`}
+                      >
+                        Global (All Projects)
+                      </button>
+                    </div>
+                  </FieldRow>
+                  <FieldRow label="Prompt (Optional)">
+                    <div class="w-full flex flex-col gap-1">
+                      <TextInput
+                        value={ePrompt()}
+                        onInput={setEPrompt}
+                        placeholder="Optional override. Leave empty to use agent's native system prompt and project rules (CLAUDE.md, AGENTS.md)..."
+                        multiline
+                        rows={3}
+                      />
+                      <span class="text-[10px] theme-muted">
+                        ⚡ Native Mode: Leave empty to preserve the agent's built-in reasoning and repository instructions.
+                      </span>
+                    </div>
                   </FieldRow>
                   <FieldRow label="Model">
                     <div class="flex items-center gap-2">
                       <div class="min-w-0 flex-1">
-                        <Show when={modelOpt()} fallback={
-                          <TextInput value={eModel()} onInput={setEModel} placeholder="Optional model" monospace />
-                        }>
-                          {(mo) => {
-                            return (
-                              <InlineSelect
-                                value={eModel()}
-                                options={configOptionSelectOptions(mo())}
-                                onChange={setEModel}
-                              />
-                            );
-                          }}
+                        <Show when={!eConfigLoading()} fallback={<span class="font-mono text-[10px] theme-muted">loading…</span>}>
+                          <InlineSelect
+                            value={eModel()}
+                            options={resolvedModelOptions(role().runtimeKind, modelOpt())}
+                            onChange={setEModel}
+                          />
                         </Show>
                       </div>
                       <button
@@ -791,32 +1302,12 @@ export function RolesTab(props: {
                       );
                     }}
                   </Show>
-                  <Show when={effortOpt()}>
-                    {(opt) => {
-                      return (
-                        <FieldRow label={optionName(opt()) || "Effort"}>
-                          <InlineSelect
-                            value={editCfgMap()[optionId(opt())] ?? ""}
-                            options={configOptionSelectOptions(opt())}
-                            onChange={(val) => updateEditCfg(optionId(opt()), val)}
-                          />
-                        </FieldRow>
-                      );
-                    }}
-                  </Show>
-                  <For each={otherOpts()}>
-                    {(opt) => {
-                      return (
-                        <FieldRow label={optionName(opt)}>
-                          <InlineSelect
-                            value={editCfgMap()[optionId(opt)] ?? ""}
-                            options={configOptionSelectOptions(opt)}
-                            onChange={(val) => updateEditCfg(optionId(opt), val)}
-                          />
-                        </FieldRow>
-                      );
-                    }}
-                  </For>
+                  <ParameterFields
+                    declared={readRuntimeOptions(resolvedEditConfigOpts())}
+                    modelId={eModel()}
+                    value={(id) => editCfgMap()[id] ?? ""}
+                    onChange={updateEditCfg}
+                  />
                   <Show when={eGlobalMcp().length > 0}>
                     <FieldRow label="MCP">
                       <Show when={supportsCapability(role().runtimeKind, "mcpServers")} fallback={<span class="text-[10px] theme-muted">MCP is not supported by this runtime profile.</span>}>
@@ -898,6 +1389,106 @@ export function RolesTab(props: {
           <EmptyState icon="◎" title="Select a role" sub="Or create a new one" />
         </Show>
       </div>
+
+      {/* ── Role Context Menu ── */}
+      <Show when={roleContextMenu()}>
+        {(menu) => (
+          <ContextMenuSurface
+            x={menu().x}
+            y={menu().y}
+            width={200}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <ContextMenuItem
+              icon={<Edit3 size={13} />}
+              onSelect={() => {
+                closeRoleContextMenu();
+                openEdit(menu().role);
+              }}
+            >
+              Edit Role
+            </ContextMenuItem>
+            <Show
+              when={menu().role.projectId}
+              fallback={
+                <Show when={props.currentProject?.()}>
+                  {(proj) => (
+                    <>
+                      <ContextMenuItem
+                        icon={<Copy size={13} class="text-blue-400" />}
+                        onSelect={() => {
+                          const r = menu().role;
+                          closeRoleContextMenu();
+                          void copyRoleToProject(r, proj());
+                        }}
+                      >
+                        Copy to {proj().name}
+                      </ContextMenuItem>
+                      <ContextMenuItem
+                        icon={<FolderGit2 size={13} class="text-blue-400" />}
+                        onSelect={async () => {
+                          const r = menu().role;
+                          closeRoleContextMenu();
+                          try {
+                            await roleApi.reassignProject(r.roleName, proj().id, r.id);
+                            await props.refreshRoles(props.currentProject?.()?.id);
+                            props.pushMessage("event", `Role '${r.roleName}' assigned to project '${proj().name}'`);
+                          } catch (e) {
+                            const err = parseError(e);
+                            props.pushMessage("event", `Failed to assign role: ${err.message}`);
+                          }
+                        }}
+                      >
+                        Move to {proj().name}
+                      </ContextMenuItem>
+                    </>
+                  )}
+                </Show>
+              }
+            >
+              <ContextMenuItem
+                icon={<Globe size={13} class="text-amber-400" />}
+                onSelect={async () => {
+                  const r = menu().role;
+                  closeRoleContextMenu();
+                  try {
+                    await roleApi.reassignProject(r.roleName, null, r.id);
+                    await props.refreshRoles(props.currentProject?.()?.id);
+                    props.pushMessage("event", `Role '${r.roleName}' moved to Global scope`);
+                  } catch (e) {
+                    const err = parseError(e);
+                    props.pushMessage("event", `Failed to make role global: ${err.message}`);
+                  }
+                }}
+              >
+                Move to Global Scope
+              </ContextMenuItem>
+            </Show>
+            <ContextMenuItem
+              icon={<Files size={13} />}
+              onSelect={() => {
+                const r = menu().role;
+                closeRoleContextMenu();
+                void duplicateRole(r);
+              }}
+            >
+              Duplicate Role
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              icon={<Trash2 size={13} class="text-red-400" />}
+              class="text-red-400 hover:text-red-300"
+              onSelect={() => {
+                const r = menu().role;
+                closeRoleContextMenu();
+                void handleDelete(r);
+              }}
+            >
+              Delete Role
+            </ContextMenuItem>
+          </ContextMenuSurface>
+        )}
+      </Show>
     </div>
   );
 }

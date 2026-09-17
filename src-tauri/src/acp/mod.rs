@@ -3,6 +3,7 @@ mod client;
 mod connection;
 mod error;
 mod metrics;
+pub(crate) mod process;
 pub(crate) mod protocol;
 mod runtime_state;
 pub(crate) mod session;
@@ -17,16 +18,17 @@ pub use adapter::{
 };
 pub use metrics::{snapshot as metrics_snapshot, AcpRuntimeMetrics};
 pub use runtime_state::{
-    clear_discovered_catalogs, list_available_commands, list_discovered_config_options,
-    list_discovered_models, list_discovered_modes,
+    clear_discovered_catalogs, list_available_commands, list_discovered_models,
 };
 pub use session::perm_bridge::bridge_subcommand_main as permission_bridge_main;
 pub(crate) use session::perm_bridge::start_permission_bridge;
 pub use session::{
     cancel_session, execute_runtime, prewarm_role, prewarm_role_with_session_id, reconnect_session,
-    refresh_role_config_defs, reset_session, set_config_option, set_mode, sync_role_mode,
+    refresh_role_config_defs, refresh_role_config_defs_with, reset_session, set_config_option,
+    set_mode, sync_role_mode,
 };
 pub use worker::{
-    active_connections_snapshot, respond_to_permission, set_death_event_sender,
-    set_prewarm_event_sender, shutdown, ActiveConnectionInfo, ConnectionDeathEvent, PrewarmEvent,
+    active_connections_snapshot, respond_to_permission, respond_to_user_input,
+    set_death_event_sender, set_prewarm_event_sender, shutdown, ActiveConnectionInfo,
+    ConnectionDeathEvent, PrewarmEvent,
 };

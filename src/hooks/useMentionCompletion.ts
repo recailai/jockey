@@ -72,6 +72,7 @@ export function useMentionCompletion(
       closeMentionMenu();
       return;
     }
+    const prevQuery = mentionRange()?.query;
     setMentionRange(ctx);
     if (ctx.trigger === "#") {
       const q = ctx.query.toLowerCase();
@@ -79,7 +80,11 @@ export function useMentionCompletion(
         .filter((s) => !q || s.name.toLowerCase().includes(q))
         .map((s) => ({ value: s.name, kind: "skill" as const, detail: s.description || s.content.slice(0, 60) }));
       setMentionItems(skillItems);
-      setMentionActiveIndex(0);
+      if (prevQuery === ctx.query) {
+        setMentionActiveIndex((idx) => Math.min(Math.max(idx, 0), Math.max(0, skillItems.length - 1)));
+      } else {
+        setMentionActiveIndex(0);
+      }
       if (skillItems.length > 0) setMentionOpen(true); else closeMentionMenu();
       return;
     }
@@ -129,7 +134,11 @@ export function useMentionCompletion(
       return;
     }
     setMentionItems(merged);
-    setMentionActiveIndex(0);
+    if (prevQuery === ctx.query) {
+      setMentionActiveIndex((idx) => Math.min(Math.max(idx, 0), Math.max(0, merged.length - 1)));
+    } else {
+      setMentionActiveIndex(0);
+    }
     setMentionOpen(true);
   };
 

@@ -255,7 +255,7 @@ export default function FilesPanel(props: FilesPanelProps) {
         <Show when={!props.appSessionId() || !props.cwd()}>
           <EmptyState>
             {!props.appSessionId() ? "No active session" : (
-              <><div>No working directory</div><div class="opacity-60 mt-1 font-mono">/app_cd &lt;path&gt;</div></>
+              <><div>No working directory</div><div class="opacity-60 mt-1">Select or open a project folder</div></>
             )}
           </EmptyState>
         </Show>

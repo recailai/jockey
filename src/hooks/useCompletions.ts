@@ -9,6 +9,7 @@ export function useCompletions(
   input: () => string,
   setInput: (v: string) => void,
   getInputEl: () => HTMLInputElement | undefined,
+  onTriggerCommandUi?: (commandName: string) => boolean,
 ) {
   const {
     roles,
@@ -51,6 +52,7 @@ export function useCompletions(
     fetchConfigOptions,
     hydrateAgentCommandsForSession,
     slashCliCacheRef,
+    onTriggerCommandUi,
   );
 
   const refreshInputCompletions = (value: string, caret: number) => {

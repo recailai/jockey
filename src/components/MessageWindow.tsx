@@ -3,6 +3,8 @@ import { For, Index, Match, Show, Switch, createEffect, createMemo, createSignal
 import type { Accessor } from "solid-js";
 import type { AppSession, AppMessage, AppToolCall, AppSegment, AppPermission } from "./types";
 import { RUNTIME_COLOR, MESSAGE_RENDER_WINDOW, fmt } from "./types";
+import SessionTelemetry from "./SessionTelemetry";
+import UserInputModal from "./UserInputModal";
 import { identicon } from "../lib/identicon";
 import { renderMd, renderMdCached } from "../lib/markdown";
 import { ToolCallGroup } from "./ToolCallGroup";
@@ -10,6 +12,54 @@ import { PermissionModal } from "./PermissionModal";
 import SessionErrorBanner from "./SessionErrorBanner";
 import { assistantApi } from "../lib/tauriApi";
 import { ContextMenuItem, ContextMenuSurface } from "./ui";
+import { Check, Copy } from "lucide-solid";
+
+function getMessageCopyableText(msg: AppMessage): string {
+  if (msg.text && msg.text.trim()) {
+    return msg.text;
+  }
+  if (msg.segments && msg.segments.length > 0) {
+    return msg.segments
+      .filter((s): s is { kind: "text"; text: string } => s.kind === "text" && !!s.text)
+      .map((s) => s.text)
+      .join("\n\n");
+  }
+  return "";
+}
+
+function MessageCopyButton(props: { text: string; class?: string }) {
+  const [copied, setCopied] = createSignal(false);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const handleCopy = (e: MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!props.text) return;
+    void navigator.clipboard.writeText(props.text).then(() => {
+      setCopied(true);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
+  onCleanup(() => {
+    if (timer) clearTimeout(timer);
+  });
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      class={props.class ?? "user-action-button"}
+      title={copied() ? "Copied!" : "Copy message"}
+      aria-label="Copy message"
+    >
+      <Show when={copied()} fallback={<Copy size={12} />}>
+        <Check size={12} class="text-emerald-400" />
+      </Show>
+    </button>
+  );
+}
 
 type UserSegment = { kind: "text"; text: string } | { kind: "image"; idx: number };
 
@@ -242,6 +292,48 @@ export default function MessageWindow(props: MessageWindowProps) {
       <Show when={searchQuery() && filteredMessages().length === 0}>
         <div class="py-8 text-center text-xs theme-muted opacity-60">No messages match "{searchQuery()}"</div>
       </Show>
+      <Show when={visibleMessages().length === 0 && !props.activeSession()?.streamingMessage && !searchQuery()}>
+        <div class="my-auto py-10 flex flex-col items-center justify-center text-center max-w-sm mx-auto px-4 select-none">
+          <div class="w-10 h-10 rounded-xl bg-[var(--ui-surface-muted)] border border-[var(--ui-border)] flex items-center justify-center mb-2 shadow-sm">
+            <span class="text-sm font-mono font-bold text-[var(--ui-accent)]">⚡</span>
+          </div>
+          <h3 class="font-mono text-xs font-bold theme-text uppercase tracking-wider mb-1">
+            {props.activeSession()?.title ?? "Session"}
+          </h3>
+          <p class="text-[11px] theme-muted mb-3">
+            Ready to assist with your codebase. Type instructions below.
+          </p>
+          <div class="w-full rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-2.5 text-left space-y-1.5">
+            <div class="flex items-center justify-between text-[11px]">
+              <span class="theme-muted">Role</span>
+              <span class="font-mono font-semibold theme-text text-[11px]">{props.activeSession()?.activeRole ?? "Developer"}</span>
+            </div>
+            <div class="flex items-center justify-between text-[11px]">
+              <span class="theme-muted">Engine</span>
+              <div class="flex items-center gap-1.5 font-mono">
+                <span class={`text-[8.5px] font-semibold px-1.5 py-0.2 rounded border ${
+                  (props.activeSession()?.runtimeKind?.includes("native") || props.activeSession()?.runtimeKind === "antigravity-cli" || props.activeSession()?.runtimeKind === "codex-cli" || props.activeSession()?.runtimeKind === "pi-cli")
+                    ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
+                    : "bg-blue-500/15 text-blue-400 border-blue-500/30"
+                }`}>
+                  {(props.activeSession()?.runtimeKind?.includes("native") || props.activeSession()?.runtimeKind === "antigravity-cli" || props.activeSession()?.runtimeKind === "codex-cli" || props.activeSession()?.runtimeKind === "pi-cli")
+                    ? "⚡ Native"
+                    : "🔌 ACP"}
+                </span>
+                <span class="theme-text text-[10px]">{props.activeSession()?.runtimeKind ?? "default"}</span>
+              </div>
+            </div>
+            <Show when={props.activeSession()?.cwd}>
+              <div class="flex items-center justify-between text-[10px] pt-1 border-t theme-border">
+                <span class="theme-muted">Workspace</span>
+                <span class="font-mono text-[9.5px] theme-muted truncate max-w-[200px]" title={props.activeSession()?.cwd ?? ""}>
+                  {props.activeSession()?.cwd}
+                </span>
+              </div>
+            </Show>
+          </div>
+        </div>
+      </Show>
       <For each={filteredMessages()}>
         {(item) => {
           const msg = item.msg;
@@ -278,7 +370,12 @@ export default function MessageWindow(props: MessageWindowProps) {
                     </For>
                   </div>
                 </div>
-                <div class="mt-1.5 text-[10px] theme-muted mr-1 opacity-0 transition-opacity duration-300 group-hover/user:opacity-100 tracking-wide">{fmt(msg.at)}</div>
+                <div class="flex items-center gap-1.5 mt-1.5 text-[10px] theme-muted mr-1 opacity-0 transition-opacity duration-200 group-hover/user:opacity-100 tracking-wide">
+                  <Show when={msg.text}>
+                    <MessageCopyButton text={msg.text} class="user-action-button" />
+                  </Show>
+                  <span>{fmt(msg.at)}</span>
+                </div>
               </div>
             );
           }
@@ -307,12 +404,12 @@ export default function MessageWindow(props: MessageWindowProps) {
                 onContextMenu={handleResetContextMenu}
                 class="agent-avatar"
                 title="Right-click to reset current agent CLI context"
-                innerHTML={identicon(msg.roleName)}
+                innerHTML={identicon(msg.roleName || props.activeSession()?.activeRole || "assistant")}
               />
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2.5 mb-1.5 opacity-90">
                   <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.runtimeKind ?? ""] ?? "theme-text"}`}>
-                    {msg.roleName}
+                    {msg.roleName || props.activeSession()?.activeRole || "Assistant"}
                   </span>
                   <span class="text-[10px] theme-muted font-medium">{fmt(msg.at)}</span>
                   <Show when={props.activeSession()?.currentMode}>
@@ -325,11 +422,24 @@ export default function MessageWindow(props: MessageWindowProps) {
                   </div>
                 }>
                   <div class="agent-message-card">
-                    <SegmentList segments={msg.segments!} terminals={props.activeSession()?.terminals} onFileClick={props.onFileClick} onRejectHunk={props.onRejectHunk} />
+                    <SegmentList
+                      segments={msg.segments!}
+                      cwd={props.activeSession()?.cwd}
+                      terminals={props.activeSession()?.terminals}
+                      onFileClick={props.onFileClick}
+                      onRejectHunk={props.onRejectHunk}
+                    />
                   </div>
                 </Show>
                 <Show when={msg.thoughtText}>
                   <ThoughtBlock text={msg.thoughtText!} />
+                </Show>
+                <Show when={getMessageCopyableText(msg)}>
+                  {(copyText) => (
+                    <div class="flex items-center gap-1.5 mt-1.5 text-[10px] theme-muted opacity-0 transition-opacity duration-200 group-hover/agent:opacity-100 tracking-wide">
+                      <MessageCopyButton text={copyText()} class="user-action-button" />
+                    </div>
+                  )}
                 </Show>
               </div>
             </div>
@@ -375,6 +485,7 @@ export default function MessageWindow(props: MessageWindowProps) {
               }>
                 <StreamSegmentList
                   segments={props.activeSession()?.streamSegments ?? []}
+                  cwd={props.activeSession()?.cwd}
                   terminals={props.activeSession()?.terminals}
                   pendingPermission={
                     (props.activeSession()?.pendingPermissions ?? [])[0] ?? null
@@ -425,6 +536,11 @@ export default function MessageWindow(props: MessageWindowProps) {
           patchActiveSession={props.patchActiveSession}
         />
       </Show>
+      <UserInputModal
+        activeSession={props.activeSession}
+        patchActiveSession={props.patchActiveSession}
+      />
+      <SessionTelemetry activeSession={props.activeSession} />
       <Show when={props.activeSession()?.currentPlan}>
         {(plan) => {
           const total = () => plan().length;
@@ -631,19 +747,33 @@ function collectToolGroups(segments: AppSegment[]): Array<{ kind: "text"; text: 
   return result;
 }
 
-function SegmentList(props: { segments: AppSegment[]; terminals?: AppSession["terminals"]; onFileClick?: (path: string, kind: string) => void; onRejectHunk?: (p: string) => void }) {
+function SegmentList(props: {
+  segments: AppSegment[];
+  cwd?: string | null;
+  terminals?: AppSession["terminals"];
+  onFileClick?: (path: string, kind: string) => void;
+  onRejectHunk?: (p: string) => void;
+}) {
   const groups = createMemo(() => collectToolGroups(props.segments));
   return (
     <For each={groups()}>{(g) => (
       g.kind === "text"
         ? <div class="md-prose" innerHTML={renderMd(g.text)} />
-        : <ToolCallGroup tools={g.tools} streaming={false} terminals={props.terminals} onFileClick={props.onFileClick} onRejectHunk={props.onRejectHunk} />
+        : <ToolCallGroup
+            tools={g.tools}
+            streaming={false}
+            cwd={props.cwd}
+            terminals={props.terminals}
+            onFileClick={props.onFileClick}
+            onRejectHunk={props.onRejectHunk}
+          />
     )}</For>
   );
 }
 
 function StreamSegmentList(props: {
   segments: AppSegment[];
+  cwd?: string | null;
   terminals?: AppSession["terminals"];
   pendingPermission?: AppPermission | null;
   pendingCount?: number;
@@ -663,6 +793,7 @@ function StreamSegmentList(props: {
           <ToolCallGroup
             tools={(g() as { kind: "tools"; tools: AppToolCall[] }).tools}
             streaming={true}
+            cwd={props.cwd}
             terminals={props.terminals}
             pendingPermission={i === groups().length - 1 ? props.pendingPermission : null}
             pendingCount={props.pendingCount}

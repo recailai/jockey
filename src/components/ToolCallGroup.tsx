@@ -137,8 +137,11 @@ function TerminalView(props: { entry: TerminalEntry }) {
   );
 }
 
+import { formatToolDisplay } from "../lib/toolDisplay";
+
 type ToolCallItemProps = {
   tc: AppToolCall;
+  cwd?: string | null;
   terminals?: Record<string, TerminalEntry>;
   inlinePermission?: AppPermission | null;
   onApprove?: (optionId: string) => void;
@@ -147,8 +150,29 @@ type ToolCallItemProps = {
   onRejectHunk?: (rejectPrompt: string) => void;
 };
 
+function categoryBadgeClass(category: string): string {
+  switch (category) {
+    case "shell":
+      return "bg-amber-500/15 text-amber-400 border-amber-500/30";
+    case "read":
+      return "bg-blue-500/15 text-blue-400 border-blue-500/30";
+    case "edit":
+    case "write":
+      return "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
+    case "search":
+      return "bg-purple-500/15 text-purple-400 border-purple-500/30";
+    case "fetch":
+      return "bg-cyan-500/15 text-cyan-400 border-cyan-500/30";
+    case "task":
+      return "bg-rose-500/15 text-rose-400 border-rose-500/30";
+    default:
+      return "bg-[var(--ui-surface-muted)] text-[var(--ui-muted)] border-[var(--ui-border)]";
+  }
+}
+
 function ToolCallItem(props: ToolCallItemProps) {
   const tc = () => props.tc;
+  const rawOutputText = () => tc().rawOutputJson;
   const terminalEntry = () => {
     const tid = terminalIdOf(tc());
     if (!tid) return null;
@@ -158,6 +182,7 @@ function ToolCallItem(props: ToolCallItemProps) {
     !!props.inlinePermission && tc().status === "pending";
 
   const [remember, setRemember] = createSignal(false);
+  const displayInfo = createMemo(() => formatToolDisplay(tc(), props.cwd));
 
   const hasRememberableOptions = () =>
     !!props.inlinePermission?.options.some((o) => o.kind === "allow_always");
@@ -167,16 +192,31 @@ function ToolCallItem(props: ToolCallItemProps) {
       class="tool-call-item group/tc"
       classList={{ "needs-approval": showPermission() }}
     >
-      <summary class="tool-call-item-summary select-none">
-        <span class={`ui-tool-status-dot ${tcStatusDot(tc().status)}`} />
-        <span class="theme-text font-mono tracking-tight font-medium transition-colors truncate">{tc().title || tc().toolCallId}</span>
+      <summary class="tool-call-item-summary select-none flex items-center gap-2 py-1.5 px-3">
+        <span class={`ui-tool-status-dot shrink-0 ${tcStatusDot(tc().status)}`} />
+        
+        {/* Canonical action badge */}
+        <span class={`font-mono text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded border shrink-0 ${categoryBadgeClass(displayInfo().category)}`}>
+          {displayInfo().categoryBadge}
+        </span>
+
+        {/* Concise target summary (file path / command / query) */}
+        <span
+          class="theme-text font-mono text-[11px] tracking-tight truncate flex-1 min-w-0"
+          title={displayInfo().targetSummary || tc().title || tc().toolCallId}
+        >
+          {displayInfo().targetSummary || tc().title || tc().toolCallId}
+        </span>
+
+        <Show when={tc().parentId}>
+          <Badge tone="info">subagent</Badge>
+        </Show>
         <Show when={terminalEntry()}>
           <Badge tone="info">term</Badge>
         </Show>
         <Show when={showPermission()}>
           <Badge tone="warning">approval</Badge>
         </Show>
-        <Badge class="ml-auto">{tc().kind}</Badge>
       </summary>
       <Show when={showPermission()}>
         {(_) => {
@@ -226,12 +266,9 @@ function ToolCallItem(props: ToolCallItemProps) {
       <Show when={terminalEntry()}>
         <TerminalView entry={terminalEntry()!} />
       </Show>
-      <Show when={tc().contentJson}>
-        <pre class="whitespace-pre-wrap break-words border-t theme-border px-3 py-2.5 text-[11px] font-mono theme-muted bg-[var(--ui-panel-2)]">{tc().contentJson}</pre>
-      </Show>
       <Show when={tc().locations && tc().locations!.length > 0}>
         <div class="border-t theme-border px-3 py-2 text-[10.5px] theme-muted bg-[var(--ui-panel-2)]">
-          <div class="mb-0.5 uppercase tracking-wider text-[9px] theme-muted">Files</div>
+          <div class="mb-0.5 uppercase tracking-wider text-[9px] theme-muted font-semibold">Referenced Files</div>
           <For each={tc().locations}>{(loc) => (
             <button
               type="button"
@@ -243,8 +280,11 @@ function ToolCallItem(props: ToolCallItemProps) {
           )}</For>
         </div>
       </Show>
-      <Show when={tc().rawInputJson}>
-        <pre class="whitespace-pre-wrap break-words border-t theme-border px-3 py-2.5 text-[10.5px] font-mono theme-muted bg-[var(--ui-panel-2)]">{tc().rawInputJson}</pre>
+      <Show when={tc().outputLog}>
+        <div class="px-2 pb-1.5">
+          <div class="text-[9px] uppercase tracking-wide theme-muted">output</div>
+          <pre class="mt-0.5 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded bg-[var(--ui-surface-muted)] p-2 font-mono text-[10px] theme-muted">{tc().outputLog}</pre>
+        </div>
       </Show>
       <Show when={tc().rawOutputJson}>
         {(_) => {
@@ -263,24 +303,48 @@ function ToolCallItem(props: ToolCallItemProps) {
             return null;
           };
           return (
-            <div class="border-t theme-border bg-[var(--ui-panel-2)]">
-              <Show when={diffData()} fallback={
-                <pre class="whitespace-pre-wrap break-words px-3 py-2.5 text-[10.5px] font-mono theme-muted">{raw()}</pre>
-              }>
-                {(diffs) => (
-                  <div class="p-2.5">
-                    <DiffViewer
-                      diffs={diffs()}
-                      onRejectHunk={(filePath: string, hunk: DiffHunk) => {
-                        props.onRejectHunk?.(hunkToRejectPrompt(filePath, hunk));
-                      }}
-                    />
-                  </div>
-                )}
-              </Show>
-            </div>
+            <Show when={diffData()}>
+              {(diffs) => (
+                <div class="border-t theme-border bg-[var(--ui-panel-2)] p-2.5">
+                  <DiffViewer
+                    diffs={diffs()}
+                    onRejectHunk={(filePath: string, hunk: DiffHunk) => {
+                      props.onRejectHunk?.(hunkToRejectPrompt(filePath, hunk));
+                    }}
+                  />
+                </div>
+              )}
+            </Show>
           );
         }}
+      </Show>
+      {/* Discreet Debug Payload for raw JSON */}
+      <Show when={tc().rawInputJson || (rawOutputText() && !isDiffLike(rawOutputText()!)) || tc().contentJson}>
+        <details class="border-t theme-border bg-[var(--ui-panel-2)]">
+          <summary class="px-3 py-1.5 text-[9px] font-mono theme-muted cursor-pointer hover:text-[var(--ui-text)] transition-colors select-none">
+            Debug Payload ({tc().toolCallId})
+          </summary>
+          <div class="p-2 space-y-2 border-t theme-border">
+            <Show when={tc().rawInputJson}>
+              <div>
+                <span class="text-[8.5px] font-mono uppercase theme-muted">Input:</span>
+                <pre class="whitespace-pre-wrap break-words mt-0.5 p-2 rounded bg-[var(--ui-surface-muted)] text-[10px] font-mono theme-muted max-h-48 overflow-y-auto">{tc().rawInputJson}</pre>
+              </div>
+            </Show>
+            <Show when={rawOutputText() && !isDiffLike(rawOutputText()!)}>
+              <div>
+                <span class="text-[8.5px] font-mono uppercase theme-muted">Output:</span>
+                <pre class="whitespace-pre-wrap break-words mt-0.5 p-2 rounded bg-[var(--ui-surface-muted)] text-[10px] font-mono theme-muted max-h-48 overflow-y-auto">{tc().rawOutputJson}</pre>
+              </div>
+            </Show>
+            <Show when={tc().contentJson}>
+              <div>
+                <span class="text-[8.5px] font-mono uppercase theme-muted">Content:</span>
+                <pre class="whitespace-pre-wrap break-words mt-0.5 p-2 rounded bg-[var(--ui-surface-muted)] text-[10px] font-mono theme-muted max-h-48 overflow-y-auto">{tc().contentJson}</pre>
+              </div>
+            </Show>
+          </div>
+        </details>
       </Show>
     </details>
   );
@@ -289,6 +353,7 @@ function ToolCallItem(props: ToolCallItemProps) {
 export function ToolCallGroup(props: {
   tools: AppToolCall[];
   streaming: boolean;
+  cwd?: string | null;
   terminals?: Record<string, TerminalEntry>;
   pendingPermission?: AppPermission | null;
   pendingCount?: number;
@@ -323,6 +388,18 @@ export function ToolCallGroup(props: {
     return props.tools.length - 1;
   });
 
+  const groupSummaryLabel = createMemo(() => {
+    if (props.tools.length === 0) return "tool calls";
+    if (props.tools.length === 1) {
+      const display = formatToolDisplay(props.tools[0], props.cwd);
+      return `${display.actionLabel}: ${display.targetSummary}`;
+    }
+    const categories = Array.from(
+      new Set(props.tools.map((t) => formatToolDisplay(t, props.cwd).categoryBadge)),
+    );
+    return `Ran ${props.tools.length} tools (${categories.join(", ")})`;
+  });
+
   return (
     <div class="tool-call-card" classList={{ "needs-approval": hasPendingPermission() }}>
       <button
@@ -330,7 +407,9 @@ export function ToolCallGroup(props: {
         onClick={() => setExpanded(v => !v)}
       >
         <span class={`ui-tool-status-dot ${tcStatusDot(lastTool()?.status ?? "pending")}`} />
-        <span class="theme-text font-mono tracking-tight font-medium">{lastTool()?.title || "tool calls"}</span>
+        <span class="theme-text font-mono tracking-tight font-medium truncate max-w-[340px]">
+          {groupSummaryLabel()}
+        </span>
         <span class="flex items-center gap-1.5 ml-auto">
           <Show when={hasPendingPermission()}>
             <span class="tool-summary-badge is-warning">
@@ -356,7 +435,7 @@ export function ToolCallGroup(props: {
               {statusCounts().pending}
             </span>
           </Show>
-          <Badge class="ml-1">{count()} calls</Badge>
+          <Badge class="ml-1">{count()} {count() === 1 ? "call" : "calls"}</Badge>
           <svg class={`w-3 h-3 theme-muted transition-transform duration-150 ${expanded() ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
         </span>
       </button>
@@ -365,6 +444,7 @@ export function ToolCallGroup(props: {
           <For each={props.tools}>{(tc, i) => (
             <ToolCallItem
               tc={tc}
+              cwd={props.cwd}
               terminals={props.terminals}
               inlinePermission={i() === pendingToolCallIndex() ? props.pendingPermission : null}
               onApprove={props.onApprove}

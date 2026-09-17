@@ -2,6 +2,7 @@ import type { JSX } from "solid-js";
 import { Show } from "solid-js";
 
 type AppShellProps = {
+  leftSidebar?: JSX.Element;
   settings: JSX.Element;
   rightDock: JSX.Element;
   sessionTopbar: JSX.Element;
@@ -17,6 +18,7 @@ export default function AppShell(props: AppShellProps) {
         <div class="jockey-workbench">
           {props.sessionTopbar}
           <div class="jockey-workbench-body">
+            {props.leftSidebar}
             <main class="jockey-main">
               {props.conversation}
             </main>

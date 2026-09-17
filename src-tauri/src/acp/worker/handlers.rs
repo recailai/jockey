@@ -17,7 +17,7 @@ use super::pool::{
     PROMPT_LOCKS, PROMPT_WAITERS,
 };
 use super::types::{AcpEvent, ConnectionDeathEvent, PrewarmStatus};
-use super::{cancel_all_permissions, cancel_permissions_for};
+use super::{cancel_all_permissions, cancel_all_user_input, cancel_permissions_for};
 use futures::future::FutureExt;
 
 const PROMPT_LIVENESS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
@@ -109,6 +109,7 @@ pub(crate) async fn shutdown_worker_state() {
     clear_runtime_state();
 
     cancel_all_permissions();
+    cancel_all_user_input();
 
     use super::super::client::shutdown_terminals;
     shutdown_terminals().await;

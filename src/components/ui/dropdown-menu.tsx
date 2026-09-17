@@ -68,11 +68,14 @@ export function DropdownItem(props: ParentProps<{
   onSelect?: () => void;
   icon?: JSX.Element;
   title?: string;
+  /** Keep the menu open after selecting — for items that tune a setting in place. */
+  closeOnSelect?: boolean;
 }>) {
   return (
     <KDropdown.Item
       disabled={props.disabled}
       onSelect={props.onSelect}
+      closeOnSelect={props.closeOnSelect}
       title={props.title}
       class={`jui-dropdown-item ${props.destructive ? "is-destructive" : ""} ${props.class ?? ""}`}
     >
@@ -83,6 +86,35 @@ export function DropdownItem(props: ParentProps<{
         <span class="min-w-0 flex-1 truncate">{props.children}</span>
       </Show>
     </KDropdown.Item>
+  );
+}
+
+/**
+ * A row that opens a nested menu to the side. Used to keep a multi-dimension picker
+ * (agent / model / effort) to one short top-level list instead of one long flat one.
+ */
+export function DropdownSub(props: ParentProps<{ overlap?: boolean }>) {
+  return <KDropdown.Sub overlap={props.overlap}>{props.children}</KDropdown.Sub>;
+}
+
+export function DropdownSubTrigger(props: ParentProps<{ class?: string; disabled?: boolean }>) {
+  return (
+    <KDropdown.SubTrigger
+      disabled={props.disabled}
+      class={`jui-dropdown-item jui-dropdown-subtrigger ${props.class ?? ""}`}
+    >
+      {props.children}
+    </KDropdown.SubTrigger>
+  );
+}
+
+export function DropdownSubContent(props: ParentProps<{ class?: string }>) {
+  return (
+    <KDropdown.Portal>
+      <KDropdown.SubContent class={`jui-dropdown-content jui-dropdown-subcontent ${props.class ?? ""}`}>
+        {props.children}
+      </KDropdown.SubContent>
+    </KDropdown.Portal>
   );
 }
 

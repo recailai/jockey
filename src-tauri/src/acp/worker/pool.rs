@@ -47,13 +47,7 @@ pub(crate) struct LiveConnection {
 impl Drop for LiveConnection {
     fn drop(&mut self) {
         if let Some(pid) = self.child_pid {
-            unsafe {
-                let pgid = -(pid as i32);
-                let _ = libc::kill(pgid, libc::SIGTERM);
-                let _ = libc::kill(pgid, libc::SIGKILL);
-                let _ = libc::kill(pid as i32, libc::SIGTERM);
-                let _ = libc::kill(pid as i32, libc::SIGKILL);
-            }
+            crate::acp::process::terminate_pid(pid);
             unregister_child_pid(pid);
         }
     }

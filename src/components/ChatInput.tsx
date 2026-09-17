@@ -1,9 +1,10 @@
 import { For, Show, createEffect } from "solid-js";
 import type { Accessor, JSX } from "solid-js";
-import type { AppMentionItem } from "./types";
+import type { AppMentionItem, AppSession } from "./types";
 import { INTERACTIVE_MOTION } from "./types";
 import RichInput, { type RichNode, getPlainText } from "./RichInput";
-import { Badge, IconButton } from "./ui";
+import { Badge, IconButton, PopupSelectView } from "./ui";
+import type { PopupSelectSpec } from "../lib/commandUi/contract";
 
 type ChatInputProps = {
   richNodes: Accessor<RichNode[]>;
@@ -35,6 +36,13 @@ type ChatInputProps = {
   onRemoveImage: (index: number) => void;
   contextFooter?: JSX.Element;
   layout?: "empty" | "active";
+
+  popupSelectOpen?: Accessor<boolean>;
+  popupSelectCommandName?: Accessor<string>;
+  popupSelectSpec?: Accessor<PopupSelectSpec | null>;
+  activeSession?: Accessor<AppSession | null>;
+  onClosePopupSelect?: (focusComposer?: boolean) => void;
+  onTriggerCommandUi?: (commandName: string) => boolean;
 };
 
 function mentionKindColor(kind: string): string {
@@ -65,6 +73,7 @@ export default function ChatInput(props: ChatInputProps) {
 
   let slashListEl: HTMLDivElement | undefined;
   let mentionListEl: HTMLDivElement | undefined;
+  let lastCaretText = { text: "", caret: -1 };
 
   const hasContent = () => !!(getPlainText(props.richNodes()).trim() || props.hasImages());
 
@@ -80,6 +89,16 @@ export default function ChatInput(props: ChatInputProps) {
   const fakeSubmit = (e: KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
+      const text = getPlainText(props.richNodes()).trim();
+      if (text.startsWith("/")) {
+        const parts = text.slice(1).split(/\s+/);
+        const cmdName = parts[0];
+        const isBare = parts.length === 1;
+        if (isBare && props.onTriggerCommandUi && props.onTriggerCommandUi(cmdName)) {
+          props.setRichNodes([]);
+          return;
+        }
+      }
       const fakeEvent = new Event("submit", { bubbles: true, cancelable: true }) as unknown as SubmitEvent;
       props.onSubmit(fakeEvent);
     }
@@ -102,10 +121,12 @@ export default function ChatInput(props: ChatInputProps) {
               ref={props.richInputRef}
               nodes={props.richNodes}
               onRemoveImage={props.onRemoveImage}
-              placeholder={props.isCustomRole() ? `Chat with ${props.activeRole()}... (type / for agent commands)` : "Message Jockey..."}
+              placeholder={`Chat with ${props.activeRole()}... (type / for commands)`}
               class="composer-rich-input rich-input"
               onNodesChange={(nodes) => props.setRichNodes(nodes)}
               onCaretText={(text, caret) => {
+                if (lastCaretText.text === text && lastCaretText.caret === caret) return;
+                lastCaretText = { text, caret };
                 if (props.mentionDebounceTimerRef.current !== null) window.clearTimeout(props.mentionDebounceTimerRef.current);
                 props.mentionDebounceTimerRef.current = window.setTimeout(() => {
                   props.mentionDebounceTimerRef.current = null;
@@ -160,6 +181,15 @@ export default function ChatInput(props: ChatInputProps) {
             {props.contextFooter}
           </Show>
         </div>
+        <Show when={props.popupSelectOpen && props.popupSelectOpen()}>
+          <PopupSelectView
+            open={props.popupSelectOpen!}
+            commandName={props.popupSelectCommandName ?? (() => "")}
+            spec={props.popupSelectSpec ?? (() => null)}
+            session={props.activeSession ?? (() => null)}
+            onClose={props.onClosePopupSelect ?? (() => {})}
+          />
+        </Show>
         <Show when={props.slashOpen() && props.slashItems().length > 0}>
           <div ref={(el) => { slashListEl = el; }} class="completion-menu">
             <For each={props.slashItems()}>
@@ -173,7 +203,13 @@ export default function ChatInput(props: ChatInputProps) {
                   class="completion-row"
                   classList={{ "is-active": i() === props.slashActiveIndex() }}
                 >
-                  <span class="mention-kind-badge">cmd</span>
+                  <span
+                    class="mention-kind-badge"
+                    classList={{ "is-skill": item.kind === "skill" }}
+                    title={item.source === "agent" ? "Provided by the agent" : "Jockey command"}
+                  >
+                    {item.kind === "skill" ? "skill" : item.source === "agent" ? "agent" : "jockey"}
+                  </span>
                   <span class="truncate font-mono text-xs">{item.value}</span>
                   <span class="ml-auto truncate text-[10px] opacity-70">{item.detail}</span>
                 </button>

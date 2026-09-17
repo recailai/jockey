@@ -8,11 +8,13 @@ use super::super::adapter::{acp_log, NativeProtocol};
 use super::super::error::AcpErrorCode;
 use super::super::protocol as acp;
 use super::super::runtime_state::{
-    clear_runtime, remember_runtime_config_options, remember_runtime_modes,
+    clear_runtime, fresh_config_options, list_discovered_modes, remember_runtime_config_options,
+    remember_runtime_modes,
 };
 use super::super::worker::{register_child_pid, unregister_child_pid, AcpEvent, AcpPromptResult};
 use super::execute::{AcpDeltaPayload, AcpStreamPayload};
 
+mod approval;
 mod codex;
 pub(crate) mod codex_admin;
 mod pi;
@@ -62,7 +64,23 @@ pub(super) fn cancel_native(runtime_key: &str, role_name: &str, app_session_id: 
         return false;
     }
     native_cancelled().insert(key.clone());
-    if let Some(pid) = native_children().get(&key).map(|entry| *entry) {
+    let is_pi = runtime_key.starts_with("pi") || runtime_key.contains("pi-");
+    if is_pi {
+        if let Some(slot_arc) = native_sessions().get(&key) {
+            let slot_arc = slot_arc.clone();
+            tokio::spawn(async move {
+                if let Ok(mut slot) = slot_arc.try_lock() {
+                    if let Some(session) = slot.as_mut() {
+                        let _ = session.process.send(serde_json::json!({ "type": "abort" })).await;
+                    }
+                }
+            });
+        }
+        acp_log(
+            "native.cancel.abort_sent",
+            json!({ "runtime": runtime_key, "role": role_name }),
+        );
+    } else if let Some(pid) = native_children().get(&key).map(|entry| *entry) {
         terminate_pid(pid);
         acp_log(
             "native.cancel",
@@ -313,6 +331,10 @@ impl<'a> NativeEventSink<'a> {
     pub(super) fn sequence(&self) -> u32 {
         self.sequence
     }
+
+    pub(super) fn identity(&self) -> (&'static str, &str, &str) {
+        (self.runtime, self.role, self.app_session_id)
+    }
 }
 
 impl Drop for NativeEventSink<'_> {
@@ -496,6 +518,7 @@ async fn execute_native_inner(request: &NativeRunRequest<'_>, key: &str) -> AcpP
                 "eventCount": sequence,
                 "mcpServerCount": request.mcp_servers.len(),
             }),
+            session_handle: Some(session_id),
         },
         Err(error) => native_error(
             request.runtime_key,
@@ -548,7 +571,25 @@ pub(super) async fn refresh_native_catalog(
     role_config_options: &[(String, String)],
     resume_session_id: Option<String>,
     auto_approve: bool,
+    force_refresh: bool,
 ) -> NativeCatalog {
+    // Discovery here costs a full `codex app-server` / `pi --mode rpc` subprocess, and prewarm
+    // runs on every persona switch and session resume. Reuse the process-lifetime catalog
+    // unless the caller explicitly asked to re-read it from the binary — the same rule the
+    // headless catalog already follows. Callers that need a provider session id (Pi resume)
+    // pass `force_refresh` so they still spawn and get one.
+    // Reuse only a catalog that is actually complete and still fresh — `fresh_config_options`
+    // owns that judgement, so this cannot drift back into asking whether models happen to be
+    // known (they are populated by any chat turn, with no option set attached).
+    if !force_refresh {
+        if let Some(options) = fresh_config_options(runtime_key) {
+            return NativeCatalog {
+                options,
+                modes: list_discovered_modes(runtime_key),
+                session_id: String::new(),
+            };
+        }
+    }
     clear_runtime(runtime_key);
     let mut args = adapter_args.to_vec();
     if protocol == NativeProtocol::PiRpc {
@@ -570,7 +611,13 @@ pub(super) async fn refresh_native_catalog(
         NativeProtocol::CodexAppServer => {
             codex::refresh_catalog(&mut process, runtime_key, auto_approve).await
         }
-        NativeProtocol::PiRpc => pi::refresh_catalog(&mut process, runtime_key, auto_approve).await,
+        NativeProtocol::PiRpc => {
+            // Read from the binary that will run, not from a list maintained in here.
+            let thinking = super::cli_help::levels_from_help(binary, env, cwd, "--thinking")
+                .await
+                .unwrap_or_default();
+            pi::refresh_catalog(&mut process, runtime_key, auto_approve, &thinking).await
+        }
     };
     remember_runtime_config_options(runtime_key, catalog.options.clone());
     remember_runtime_modes(runtime_key, catalog.modes.clone());
@@ -579,37 +626,6 @@ pub(super) async fn refresh_native_catalog(
         unregister_child_pid(pid);
     }
     catalog
-}
-
-pub(super) fn native_model_options(
-    models: &[String],
-    secondary_id: &str,
-    secondary: &[&str],
-) -> Vec<Value> {
-    let model_values = models
-        .iter()
-        .map(|model| json!({ "value": model, "name": model }))
-        .collect::<Vec<_>>();
-    let mut options = vec![json!({
-        "id": "model",
-        "name": "Model",
-        "description": "Discovered from the native runtime",
-        "category": "model",
-        "type": "select",
-        "currentValue": "",
-        "options": model_values,
-    })];
-    if !secondary.is_empty() {
-        options.push(json!({
-            "id": secondary_id,
-            "name": secondary_id,
-            "category": "effort",
-            "type": "select",
-            "currentValue": "",
-            "options": secondary.iter().map(|value| json!({ "value": value, "name": value })).collect::<Vec<_>>(),
-        }));
-    }
-    options
 }
 
 fn append_pi_launch_config(
@@ -653,10 +669,10 @@ fn pi_args_without_session(args: &[String]) -> Vec<&str> {
 
 pub(super) fn extract_pi_session_id(value: &Value) -> Option<String> {
     value
-        .get("sessionFile")
-        .or_else(|| value.get("session_file"))
-        .or_else(|| value.get("sessionId"))
+        .get("sessionId")
         .or_else(|| value.get("session_id"))
+        .or_else(|| value.get("sessionFile"))
+        .or_else(|| value.get("session_file"))
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
@@ -669,6 +685,118 @@ pub(super) fn find_option(options: &[(String, String)], names: &[&str]) -> Optio
             !value.trim().is_empty() && names.iter().any(|name| key.eq_ignore_ascii_case(name))
         })
         .map(|(_, value)| value.clone())
+}
+
+/// A control-plane call a parameter declared as its delivery mechanism.
+#[derive(Debug, PartialEq)]
+pub(super) struct WiredRpc {
+    pub(super) method: String,
+    pub(super) field: String,
+    pub(super) value: String,
+}
+
+/// The user's stored values, each resolved through the `wire` its runtime declared for it.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct WiredValues {
+    pub(super) turn_params: Vec<(String, String)>,
+    pub(super) rpc_calls: Vec<WiredRpc>,
+    pub(super) model_suffixes: Vec<String>,
+    pub(super) cli_settings: Vec<Value>,
+}
+
+impl WiredValues {
+    pub(super) fn turn_param(&self, name: &str) -> Option<&str> {
+        self.turn_params
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    pub(super) fn rpc(&self, method: &str) -> Option<&WiredRpc> {
+        self.rpc_calls.iter().find(|call| call.method == method)
+    }
+}
+
+fn stored_value<'a>(config: &'a [(String, String)], id: &str) -> Option<&'a str> {
+    config
+        .iter()
+        .find(|(key, value)| key.eq_ignore_ascii_case(id) && !value.trim().is_empty())
+        .map(|(_, value)| value.trim())
+}
+
+fn toggle_is_on(value: &str) -> bool {
+    matches!(value.trim(), "true" | "1" | "on")
+}
+
+/// Resolve stored values against the runtime's own declaration of its parameters.
+///
+/// The send path used to guess which stored key meant "effort" by trying a list of plausible
+/// names (`["effort", "reasoning_effort", "reasoningEffort"]`). That guess existed because the
+/// id a value is stored under and the field the CLI expects genuinely differ — Codex stores
+/// `reasoning_effort` but `turn/start` takes `effort` — and every new runtime widened the
+/// guess. Now the runtime states the mapping in `wire` and this just follows it.
+///
+/// An option the catalog does not declare is ignored: the catalog is the list of parameters
+/// the runtime accepts, so a stored key outside it has nowhere legitimate to go.
+pub(super) fn resolve_wired_values(catalog: &[Value], config: &[(String, String)]) -> WiredValues {
+    let mut out = WiredValues::default();
+    for option in catalog {
+        let Some(id) = option.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(wire) = option.get("wire") else {
+            continue;
+        };
+        let Some(stored) = stored_value(config, id) else {
+            continue;
+        };
+        let is_toggle = option.get("kind").and_then(Value::as_str) == Some("toggle");
+        if is_toggle && !toggle_is_on(stored) {
+            continue;
+        }
+        match wire.get("kind").and_then(Value::as_str) {
+            Some("turn_param") => {
+                let Some(name) = wire.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                // A toggle carries the value to send when on; a select sends what was chosen.
+                let value = if is_toggle {
+                    match wire.get("on_value").and_then(Value::as_str) {
+                        Some(on_value) => on_value.to_string(),
+                        None => continue,
+                    }
+                } else {
+                    stored.to_string()
+                };
+                out.turn_params.push((name.to_string(), value));
+            }
+            Some("rpc") => {
+                let (Some(method), Some(field)) = (
+                    wire.get("method").and_then(Value::as_str),
+                    wire.get("field").and_then(Value::as_str),
+                ) else {
+                    continue;
+                };
+                out.rpc_calls.push(WiredRpc {
+                    method: method.to_string(),
+                    field: field.to_string(),
+                    value: stored.to_string(),
+                });
+            }
+            Some("model_suffix") => {
+                if let Some(suffix) = wire.get("suffix").and_then(Value::as_str) {
+                    out.model_suffixes.push(suffix.to_string());
+                }
+            }
+            Some("cli_settings") => {
+                if let Some(settings) = wire.get("json") {
+                    out.cli_settings.push(settings.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 pub(super) fn compose_prompt(prompt: &str, context: &[(String, String)]) -> String {
@@ -774,6 +902,7 @@ fn native_error(
         error_code: Some(code.as_str().to_string()),
         deltas: vec![],
         meta,
+        session_handle: None,
     }
 }
 
@@ -789,5 +918,101 @@ fn classify_native_error(error: &str) -> AcpErrorCode {
         AcpErrorCode::InvalidParams
     } else {
         AcpErrorCode::AgentError
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::super::option_spec::{OptionSpec, OptionValue, Wire};
+    use super::*;
+
+    fn catalog() -> Vec<Value> {
+        vec![
+            OptionSpec::select(
+                // Codex's real mismatch: stored under `reasoning_effort`, delivered as `effort`.
+                "reasoning_effort",
+                "Effort",
+                Wire::TurnParam {
+                    name: "effort".to_string(),
+                    on_value: None,
+                },
+                vec![OptionValue::new("high", "high")],
+            )
+            .to_value(),
+            OptionSpec::toggle(
+                "fast",
+                "Fast mode",
+                Wire::TurnParam {
+                    name: "serviceTier".to_string(),
+                    on_value: Some("priority".to_string()),
+                },
+            )
+            .to_value(),
+            OptionSpec::select(
+                "thinking_level",
+                "Thinking",
+                Wire::Rpc {
+                    method: "set_thinking_level".to_string(),
+                    field: "level".to_string(),
+                },
+                vec![OptionValue::new("xhigh", "xhigh")],
+            )
+            .to_value(),
+        ]
+    }
+
+    fn config(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_stored_value_is_delivered_under_the_name_its_runtime_declared() {
+        let wired = resolve_wired_values(&catalog(), &config(&[("reasoning_effort", "high")]));
+        // Stored as `reasoning_effort`, sent as `effort` — no name guessing involved.
+        assert_eq!(wired.turn_param("effort"), Some("high"));
+        assert_eq!(wired.turn_param("reasoning_effort"), None);
+    }
+
+    #[test]
+    fn a_toggle_sends_the_declared_tier_only_when_it_is_on() {
+        let on = resolve_wired_values(&catalog(), &config(&[("fast", "true")]));
+        assert_eq!(on.turn_param("serviceTier"), Some("priority"));
+
+        for off in ["false", "", "0"] {
+            let wired = resolve_wired_values(&catalog(), &config(&[("fast", off)]));
+            assert_eq!(
+                wired.turn_param("serviceTier"),
+                None,
+                "an off toggle must send nothing (value {off:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_parameter_delivered_by_rpc_is_not_mistaken_for_a_turn_parameter() {
+        let wired = resolve_wired_values(&catalog(), &config(&[("thinking_level", "xhigh")]));
+        assert!(wired.turn_params.is_empty());
+        let call = wired.rpc("set_thinking_level").expect("declared rpc");
+        assert_eq!(call.field, "level");
+        assert_eq!(call.value, "xhigh");
+    }
+
+    #[test]
+    fn a_key_the_runtime_never_declared_is_not_sent() {
+        // The catalog is the set of parameters the runtime accepts, so a leftover key from
+        // another engine has nowhere legitimate to go.
+        let wired = resolve_wired_values(&catalog(), &config(&[("one_million", "true")]));
+        assert_eq!(wired, WiredValues::default());
+    }
+
+    #[test]
+    fn an_empty_catalog_yields_nothing_so_callers_fall_back() {
+        // Discovery may not have run yet in this process; the caller then uses its own
+        // fallback rather than dropping the user's settings.
+        let wired = resolve_wired_values(&[], &config(&[("reasoning_effort", "high")]));
+        assert_eq!(wired, WiredValues::default());
     }
 }

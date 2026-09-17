@@ -18,10 +18,12 @@ import {
   RIGHT_DOCK,
   initialPreviewRatio,
   initialRightDockOpen,
+  initialLeftSidebarOpen,
   initialRightDockWidth,
   initialRightPanel,
   type RightDockPanel,
 } from "./lib/layoutTokens";
+import ProjectSessionSidebar from "./components/sidebar/ProjectSessionSidebar";
 import { hasConversationContent } from "./lib/conversationHelpers";
 
 import { useSessionManager } from "./hooks/useSessionManager";
@@ -32,9 +34,11 @@ import { useAcpEventListeners } from "./hooks/useAcpEventListeners";
 import { useCompletions } from "./hooks/useCompletions";
 import { useMessageSend } from "./hooks/useMessageSend";
 import { useInputHistory } from "./hooks/useInputHistory";
-import { uniqueName, makeDefaultSession } from "./lib/sessionHelpers";
+import { uniqueName, makeDefaultSession, makeDraftSession } from "./lib/sessionHelpers";
 import { createSessionEventBuffer } from "./lib/sessionEventBuffer";
-import { appSessionApi } from "./lib/tauriApi";
+import { appSessionApi, assistantApi, projectAgentApi } from "./lib/tauriApi";
+import { createCommandUiRegistry } from "./lib/commandUi/registry";
+import type { PopupSelectSpec } from "./lib/commandUi/contract";
 import type { RichNode } from "./components/RichInput";
 import {
   getPlainText,
@@ -54,6 +58,10 @@ const SettingsPage = lazy(() => import("./components/SettingsPage"));
 import { useResize } from "./lib/useResize";
 import { openPreviewTab, closePreviewTab, setActivePreviewTab, closeAllPreviewTabs, closeOtherPreviewTabs } from "./lib/previewTabs";
 import { destroySessionTerminal, updateTerminalThemes } from "./lib/terminalRuntime";
+import { useProjects } from "./hooks/useProjects";
+import ProjectModal from "./components/ProjectModal";
+import ImportSessionsModal from "./components/ImportSessionsModal";
+import type { Project, RawSession } from "./lib/tauriApi";
 
 export default function App() {
   const { toasts, showToast } = useToast();
@@ -69,11 +77,28 @@ export default function App() {
   const [showSettings, setShowSettings] = createSignal(false);
   const [settingsInitialTab, setSettingsInitialTab] = createSignal<SettingsTab>("general");
   const [settingsInitialRole, setSettingsInitialRole] = createSignal<string | undefined>(undefined);
+  const [showProjectModal, setShowProjectModal] = createSignal(false);
+  const [importProject, setImportProject] = createSignal<Project | null>(null);
+
+  const {
+    projects,
+    currentProject,
+    selectProject,
+    createProject,
+    deleteProject,
+    refreshProjects,
+  } = useProjects(showToast);
 
   const [rightDockOpen, setRightDockOpenInternal] = createSignal(initialRightDockOpen());
   const [rightDockPanel, setRightDockPanelInternal] = createSignal<RightDockPanel | null>(
     initialRightDockOpen() ? (initialRightPanel() ?? "git") : null,
   );
+  const [leftSidebarOpen, setLeftSidebarOpenInternal] = createSignal(initialLeftSidebarOpen());
+  const toggleLeftSidebar = () => {
+    const next = !leftSidebarOpen();
+    setLeftSidebarOpenInternal(next);
+    try { window.localStorage.setItem(LAYOUT_STORAGE.leftSidebarOpen, next ? "1" : "0"); } catch { /* ignore */ }
+  };
   const [terminalCommandRequest, setTerminalCommandRequest] = createSignal<{ id: number; command: string } | null>(null);
   const [rightDockWidth, setRightDockWidth] = createSignal(initialRightDockWidth());
   const [editorRatio, setEditorRatio] = createSignal(initialPreviewRatio());
@@ -90,6 +115,16 @@ export default function App() {
       if (panel !== null) window.localStorage.setItem(LAYOUT_STORAGE.rightPanel, panel);
       else window.localStorage.removeItem(LAYOUT_STORAGE.rightPanel);
     } catch { /* ignore */ }
+  };
+  const toggleRightDock = () => {
+    if (rightDockOpen()) {
+      setRightDockOpen(false);
+      return;
+    }
+    setRightDockOpen(true);
+    if (!rightDockPanel()) {
+      setRightDockPanel(initialRightPanel() ?? "git");
+    }
   };
   const persistEditorRatio = (r: number) => {
     const clamped = Math.min(PREVIEW.maxRatio, Math.max(PREVIEW.minRatio, r));
@@ -178,7 +213,7 @@ export default function App() {
     });
   };
 
-  const sessionManager = useSessionManager();
+  const sessionManager = useSessionManager(showToast);
   const {
     sessions, setSessions,
     activeSessionId, setActiveSessionId,
@@ -220,6 +255,56 @@ export default function App() {
     reconnectActiveAgent,
   } = agentContext;
 
+  const commandRegistry = createCommandUiRegistry({
+    activeSession,
+    patchActiveSession,
+    roles,
+    resetActiveAgentContext,
+    toggleRightDock,
+    showToast,
+    prewarmRoleConfig: assistantApi.prewarmRoleConfig,
+  });
+
+  const [popupSelectState, setPopupSelectState] = createSignal<{
+    open: boolean;
+    commandName: string;
+    spec: PopupSelectSpec | null;
+  }>({
+    open: false,
+    commandName: "",
+    spec: null,
+  });
+
+  const handleTriggerCommandUi = (commandName: string): boolean => {
+    const ui = commandRegistry.getCommandUi(commandName);
+    if (!ui) return false;
+    const s = activeSession();
+    if (!s) return false;
+    if (ui.kind === "action") {
+      void ui.run(s);
+      return true;
+    }
+    if (ui.kind === "popupSelect") {
+      completions?.closeSlashMenu?.();
+      setPopupSelectState({
+        open: true,
+        commandName,
+        spec: ui,
+      });
+      return true;
+    }
+    return false;
+  };
+
+  const handleClosePopupSelect = (focusComposer = true) => {
+    setPopupSelectState({ open: false, commandName: "", spec: null });
+    if (focusComposer) {
+      queueMicrotask(() => {
+        richInputEl?.focus();
+      });
+    }
+  };
+
   const completions = useCompletions(
     agentContext,
     sessionManager,
@@ -231,6 +316,7 @@ export default function App() {
       });
     },
     fakeInputEl,
+    handleTriggerCommandUi,
   );
   const {
     mentionOpen, mentionItems, mentionActiveIndex,
@@ -242,10 +328,34 @@ export default function App() {
   } = completions;
   const { registerAcpEventListeners, clearSessionStream } = useAcpEventListeners();
 
+  // The single owner of the agent's option catalog (models / effort / toggles). It is a pure
+  // function of (session, persona, engine), so it is pulled here whenever that triple moves
+  // rather than pushed from each switch handler — every push site needed its own staleness
+  // check, and the one that was missing is how a persona's model list kept showing another
+  // persona's engine. A response is applied only if its triple is still the current one.
+  createEffect(() => {
+    const sid = activeSessionId();
+    const session = activeSession();
+    const role = session?.activeRole;
+    const runtime = session?.runtimeKind;
+    if (!sid || !role || !runtime) return;
+    void fetchConfigOptions(runtime, role).then((opts) => {
+      const current = activeSession();
+      if (
+        activeSessionId() === sid &&
+        current?.activeRole === role &&
+        current?.runtimeKind === runtime
+      ) {
+        patchActiveSession({ discoveredConfigOptions: opts });
+      }
+    });
+  });
+
   const { bootstrapApp } = useAppBootstrap({
     setSessions,
     setActiveSessionId: (id) => setActiveSessionId(id),
     assistants,
+    currentProjectId: () => currentProject()?.id,
     refreshAssistants,
     refreshRoles,
     refreshSkills,
@@ -253,6 +363,84 @@ export default function App() {
     pushMessage,
     showToast,
   });
+
+  const handleSelectProject = async (proj: Project, targetSessionId?: string) => {
+    selectProject(proj);
+    try {
+      const raw = await appSessionApi.list();
+      let loaded = raw.map((r) => {
+        const s = makeDefaultSession(r.title);
+        s.id = r.id;
+        if (r.activeRole) s.activeRole = r.activeRole;
+        if (r.runtimeKind !== undefined) s.runtimeKind = r.runtimeKind;
+        if (r.runtimeProfileId !== undefined) s.runtimeProfileId = r.runtimeProfileId;
+        if (r.cwd !== undefined) s.cwd = r.cwd ?? null;
+        if (r.projectId !== undefined) s.projectId = r.projectId ?? null;
+        s.messages = r.messages ?? [];
+        return s;
+      });
+      const projectSessions = loaded.filter((s) => s.projectId === proj.id);
+      let nextActiveId: string;
+      if (projectSessions.length === 0) {
+        // No DB row until the user actually sends something — see `ensureSessionPersisted`.
+        const availableAssistant = await preferredAssistantForProject(proj.id);
+        const s = makeDraftSession("Session_1", {
+          projectId: proj.id,
+          cwd: proj.rootPath,
+          runtimeKind: availableAssistant?.key ?? null,
+          runtimeProfileId: availableAssistant?.profileId ?? null,
+        });
+        loaded = [...loaded, s];
+        nextActiveId = s.id;
+      } else {
+        const target = targetSessionId ? projectSessions.find((s) => s.id === targetSessionId) : null;
+        nextActiveId = target ? target.id : projectSessions[0].id;
+      }
+      setSessions(loaded);
+      setActiveSessionId(nextActiveId);
+      await refreshRoles(proj.id);
+    } catch (e) {
+      showToast(`Failed to switch project: ${String(e)}`);
+    }
+  };
+
+  const openImportSessions = () => {
+    const project = currentProject();
+    if (!project) {
+      showToast("Select a project before importing CLI sessions.", "error");
+      return;
+    }
+    // Kobalte closes the project menu after its selection callback. Deferring the dialog by a
+    // frame keeps the two modal focus lifecycles separate, so the picker reliably appears.
+    window.requestAnimationFrame(() => setImportProject(project));
+  };
+
+  /**
+   * Merge imported rows into the store. Replacing the store with a project-scoped list drops
+   * every other project's sessions, and omitting projectId strands the new ones outside the
+   * project group in the sidebar.
+   */
+  const mergeImportedSessions = (raw: RawSession[]) => {
+    if (raw.length === 0) return;
+    const existing = new Set(sessions.map((s) => s.id));
+    const fresh = raw
+      .filter((r) => !existing.has(r.id))
+      .map((r) => {
+        const s = makeDefaultSession(r.title);
+        s.id = r.id;
+        if (r.activeRole) s.activeRole = r.activeRole;
+        if (r.runtimeKind !== undefined) s.runtimeKind = r.runtimeKind;
+        if (r.runtimeProfileId !== undefined) s.runtimeProfileId = r.runtimeProfileId;
+        if (r.cwd !== undefined) s.cwd = r.cwd ?? null;
+        s.projectId = r.projectId ?? null;
+        s.messages = r.messages ?? [];
+        return s;
+      });
+    if (fresh.length > 0) setSessions((prev) => [...prev, ...fresh]);
+    const focus = fresh[0]?.id ?? raw[0].id;
+    if (focus) setActiveSessionId(focus);
+    showToast(`Imported ${raw.length} session(s)`, "info");
+  };
 
   const { sendRaw, cancelCurrentRun } = useMessageSend({
     sessionManager,
@@ -319,6 +507,18 @@ export default function App() {
     const text = getPlainText(nodes).trim();
     const imageNodes = nodes.filter(isImageNode);
     if (!text && imageNodes.length === 0) return;
+
+    if (text.startsWith("/")) {
+      const parts = text.slice(1).split(/\s+/);
+      const cmdName = parts[0];
+      const isBare = parts.length === 1;
+      if (isBare && handleTriggerCommandUi(cmdName)) {
+        setRichNodes([]);
+        setRichCaretOffset(0);
+        return;
+      }
+    }
+
     if (activeSession()?.submitting) {
       if (imageNodes.length > 0) {
         showToast("Images can't be queued and will be dropped.", "info");
@@ -333,7 +533,26 @@ export default function App() {
       }
       return;
     }
-    if (!activeSession()?.runtimeKind && !isCustomRole() && !text.startsWith("/app_")) {
+    const currentRole = roles().find((r) => r.roleName === (activeSession()?.activeRole ?? DEFAULT_ROLE_ALIAS));
+    let effectiveRuntimeKind = activeSession()?.runtimeKind ?? currentRole?.runtimeKind ?? null;
+    if (!effectiveRuntimeKind) {
+      const availableAssistant = assistants().find((a) => a.available);
+      if (availableAssistant) {
+        effectiveRuntimeKind = availableAssistant.key;
+        patchActiveSession({
+          runtimeKind: availableAssistant.key,
+          runtimeProfileId: availableAssistant.profileId,
+        });
+        const sid = activeSessionId();
+        if (sid) {
+          void appSessionApi.update(sid, {
+            runtimeKind: availableAssistant.key,
+            runtimeProfileId: availableAssistant.profileId,
+          }).catch(() => {});
+        }
+      }
+    }
+    if (!effectiveRuntimeKind && !text.startsWith("/app_")) {
       pushMessage("system", "Select an assistant or a role first.");
       return;
     }
@@ -403,30 +622,49 @@ export default function App() {
     }
   };
 
-  const newSession = () => {
-    const availableAssistant = assistants().find((a) => a.available) ?? null;
-    const title = uniqueName("Session_1", sessions.map((s) => s.title));
-    void appSessionApi.create(title).then((created) => {
-      const s = makeDefaultSession(title);
-      s.id = created.id;
-      s.runtimeKind = availableAssistant?.key ?? null;
-      s.runtimeProfileId = availableAssistant?.profileId ?? null;
-      setSessions(sessions.length, s);
-      setActiveSessionId(s.id);
-      if (availableAssistant) {
-        void appSessionApi.update(created.id, {
-          runtimeKind: availableAssistant.key,
-          runtimeProfileId: availableAssistant.profileId,
-        }).catch(() => { });
-      }
-    }).catch((e: unknown) => {
-      showToast(`Failed to create session: ${String(e)}`);
-      const s = makeDefaultSession(title);
-      s.runtimeKind = availableAssistant?.key ?? null;
-      s.runtimeProfileId = availableAssistant?.profileId ?? null;
-      setSessions(sessions.length, s);
-      setActiveSessionId(s.id);
+  const newSession = async (targetProjectId?: string) => {
+    const targetProj = targetProjectId
+      ? projects().find((p) => p.id === targetProjectId) ?? currentProject()
+      : currentProject();
+    const pid = targetProj?.id;
+    if (targetProj && targetProj.id !== currentProject()?.id) {
+      await handleSelectProject(targetProj);
+    }
+    // Draft only — no DB row until the user sends something (see `ensureSessionPersisted`),
+    // so clicking "+ New Session" a few times while browsing never litters the DB.
+    const availableAssistant = await preferredAssistantForProject(pid ?? null);
+    const projectPath = targetProj?.rootPath ?? null;
+    const targetSessions = pid ? sessions.filter((s) => s.projectId === pid) : sessions;
+    const title = uniqueName("Session_1", targetSessions.map((s) => s.title));
+    const s = makeDraftSession(title, {
+      projectId: pid ?? null,
+      cwd: projectPath,
+      runtimeKind: availableAssistant?.key ?? null,
+      runtimeProfileId: availableAssistant?.profileId ?? null,
     });
+    setSessions(sessions.length, s);
+    setActiveSessionId(s.id);
+  };
+
+  /**
+   * Engine for a new session: the one this project pinned for the persona it will open with,
+   * then that persona's own default, then whatever is available. Falling back straight to
+   * "first available" silently resets the user's choice on every new session.
+   */
+  const preferredAssistantForProject = async (projectId: string | null, roleName?: string) => {
+    const available = assistants().filter((a) => a.available);
+    const role = roleName ?? DEFAULT_ROLE_ALIAS;
+    const pinned = await projectAgentApi
+      .getConfig(projectId, role)
+      .then((c) => c.runtimeKind)
+      .catch(() => null);
+    const personaDefault = roles().find((r) => r.roleName === role)?.runtimeKind ?? null;
+    return (
+      available.find((a) => a.key === pinned) ??
+      available.find((a) => a.key === personaDefault) ??
+      available[0] ??
+      null
+    );
   };
 
   const closeSession = (id: string) => {
@@ -477,28 +715,25 @@ export default function App() {
     });
   };
 
-  const toggleRightDock = () => {
-    if (rightDockOpen()) {
-      setRightDockOpen(false);
-      return;
-    }
-    setRightDockOpen(true);
-    if (!rightDockPanel()) {
-      setRightDockPanel(initialRightPanel() ?? "git");
-    }
-  };
 
   useKeyboardShortcuts({
     newSession,
     openSettings: () => (showSettings() ? setShowSettings(false) : openSettings("general")),
     toggleManagement: () => openSettings("archived"),
     toggleRightDock,
+    toggleLeftSidebar,
     openWorkspacePanel,
   });
 
   const composerBlock = (layout: "empty" | "active") => (
     <ChatInput
       layout={layout}
+      activeSession={activeSession}
+      popupSelectOpen={() => popupSelectState().open}
+      popupSelectCommandName={() => popupSelectState().commandName}
+      popupSelectSpec={() => popupSelectState().spec}
+      onClosePopupSelect={handleClosePopupSelect}
+      onTriggerCommandUi={handleTriggerCommandUi}
       richNodes={richNodes}
       setRichNodes={setRichNodes}
       activeRole={chatActiveRole}
@@ -546,22 +781,39 @@ export default function App() {
           onCancelRun={() => { void cancelCurrentRun(); }}
           onRunAction={runToolbarAction}
           onRefreshGit={refetchGitStatus}
-          onSelectRole={(roleName) => {
-            if (roleName === DEFAULT_ROLE_ALIAS) {
-              patchActiveSession({ activeRole: DEFAULT_ROLE_ALIAS, discoveredConfigOptions: [] });
-              return;
+          onManagePersonas={() => openSettings("roles")}
+          onSelectAgent={(runtimeKind, profileId) => {
+            // Switching agent keeps the persona; only the engine underneath changes.
+            // The catalog for the new engine is loaded by syncConfigOptions' effect.
+            patchActiveSession({ runtimeKind, runtimeProfileId: profileId, discoveredConfigOptions: [] });
+            const sid = activeSessionId();
+            if (sid) {
+              void appSessionApi.update(sid, { runtimeKind, runtimeProfileId: profileId }).catch(() => {});
             }
+          }}
+          onSelectRole={(roleName) => {
             const role = roles().find((r) => r.roleName === roleName);
+            const fallbackRuntime = assistants().find((a) => a.available);
+            // A persona owns its engine: switching persona must visibly switch the CLI, or
+            // the picker shows one persona's name over another's engine. The project's pin
+            // for this persona is applied right after, by AgentPicker's load effect.
+            const nextRuntimeKind =
+              role?.runtimeKind ?? activeSession()?.runtimeKind ?? fallbackRuntime?.key ?? null;
+            const nextProfileId =
+              role?.runtimeProfileId ?? activeSession()?.runtimeProfileId ?? fallbackRuntime?.profileId ?? null;
             patchActiveSession({
               activeRole: roleName,
-              runtimeKind: role?.runtimeKind ?? activeSession()?.runtimeKind ?? null,
-              runtimeProfileId: role?.runtimeProfileId ?? activeSession()?.runtimeProfileId ?? null,
+              runtimeKind: nextRuntimeKind,
+              runtimeProfileId: nextProfileId,
               discoveredConfigOptions: [],
             });
-            if (role) {
-              void fetchConfigOptions(role.runtimeKind, role.roleName).then((opts) => {
-                patchActiveSession({ discoveredConfigOptions: opts });
-              });
+            const sid = activeSessionId();
+            if (sid) {
+              void appSessionApi.update(sid, {
+                activeRole: roleName,
+                runtimeKind: nextRuntimeKind,
+                runtimeProfileId: nextProfileId,
+              }).catch(() => {});
             }
           }}
         />
@@ -572,9 +824,10 @@ export default function App() {
   onMount(() => {
     const handlers: Array<() => void> = [];
     let startupRaf: number | null = null;
-    startupRaf = window.requestAnimationFrame(() => {
+    startupRaf = window.requestAnimationFrame(async () => {
       startupRaf = null;
-      void bootstrapApp();
+      await refreshProjects();
+      await bootstrapApp();
     });
 
     const pushMessageToSession = (sid: string, role: string, text: string) => {
@@ -615,6 +868,30 @@ export default function App() {
       handlers.forEach((h) => h());
     });
   });
+
+  const duplicateSession = async (session: AppSession) => {
+    try {
+      const newTitle = `${session.title}_copy`;
+      const created = await appSessionApi.create(
+        newTitle,
+        session.projectId ?? undefined,
+        session.runtimeKind ?? undefined,
+        session.runtimeProfileId ?? undefined,
+      );
+      const s = makeDefaultSession(created.title || newTitle);
+      s.id = created.id;
+      s.projectId = session.projectId ?? null;
+      s.runtimeKind = session.runtimeKind ?? null;
+      s.runtimeProfileId = session.runtimeProfileId ?? null;
+      s.cwd = session.cwd ?? null;
+      s.activeRole = session.activeRole;
+      setSessions((prev) => [s, ...prev]);
+      setActiveSessionId(s.id);
+      showToast(`Duplicated session '${s.title}'`, "info");
+    } catch (e) {
+      showToast(`Failed to duplicate session: ${String(e)}`, "error");
+    }
+  };
 
   return (
     <AppShell
@@ -657,6 +934,7 @@ export default function App() {
             }}
             onBack={() => setShowSettings(false)}
             showToast={showToast}
+            currentProject={currentProject}
           />
         </Suspense>
       }
@@ -685,17 +963,57 @@ export default function App() {
           />
         </RightToolDock>
       }
+      leftSidebar={
+        <Show when={leftSidebarOpen()}>
+          <ProjectSessionSidebar
+            projects={projects}
+            currentProject={currentProject}
+            sessions={() => sessions}
+            activeSessionId={activeSessionId}
+            onSelectProject={handleSelectProject}
+            onSelectSession={async (sessionId, project) => {
+              if (project && project.id !== currentProject()?.id) {
+                await handleSelectProject(project, sessionId);
+              } else {
+                setActiveSessionId(sessionId);
+              }
+            }}
+            onNewSession={(projectId) => { void newSession(projectId); }}
+            onCloseSession={closeSession}
+            onDuplicateSession={duplicateSession}
+            onDeleteProject={deleteProject}
+            onOpenAddProject={() => setShowProjectModal(true)}
+            onOpenSettings={openSettings}
+            onToggleSidebar={toggleLeftSidebar}
+            updateSession={updateSession}
+          />
+        </Show>
+      }
       sessionTopbar={
         <SessionTopbar
           sessions={sessions}
           activeSessionId={activeSessionId}
           setActiveSessionId={setActiveSessionId}
           updateSession={updateSession}
-          onNewSession={newSession}
+          onNewSession={() => { void newSession(); }}
           onCloseSession={closeSession}
           onOpenSettings={openSettings}
           onToggleRightDock={toggleRightDock}
           rightDockOpen={rightDockOpen}
+          leftSidebarOpen={leftSidebarOpen}
+          onToggleLeftSidebar={toggleLeftSidebar}
+          currentProject={currentProject}
+          projects={projects}
+          onSelectProject={handleSelectProject}
+          onSelectSession={async (sid, proj) => {
+            if (proj && proj.id !== currentProject()?.id) {
+              await handleSelectProject(proj, sid);
+            } else {
+              setActiveSessionId(sid);
+            }
+          }}
+          onOpenAddProject={() => setShowProjectModal(true)}
+          onImportSessions={openImportSessions}
         />
       }
       conversation={
@@ -746,15 +1064,34 @@ export default function App() {
         />
       }
       toasts={
-        <div class="jockey-toast-stack fixed bottom-4 right-4 flex flex-col gap-2 pointer-events-none">
-          <For each={toasts()}>
-            {(t) => (
-              <div class="jockey-toast pointer-events-auto" classList={{ "is-info": t.severity === "info", "is-danger": t.severity !== "info" }}>
-                {t.message}
-              </div>
-            )}
-          </For>
-        </div>
+        <>
+          <ImportSessionsModal
+            open={importProject() !== null}
+            project={importProject()}
+            onClose={() => setImportProject(null)}
+            onImported={mergeImportedSessions}
+          />
+          <ProjectModal
+            open={showProjectModal()}
+            onClose={() => setShowProjectModal(false)}
+            onCreateProject={async (name, rootPath) => {
+              const proj = await createProject(name, rootPath);
+              if (proj) {
+                await handleSelectProject(proj);
+                setShowProjectModal(false);
+              }
+            }}
+          />
+          <div class="jockey-toast-stack fixed bottom-4 right-4 flex flex-col gap-2 pointer-events-none">
+            <For each={toasts()}>
+              {(t) => (
+                <div class="jockey-toast pointer-events-auto" classList={{ "is-info": t.severity === "info", "is-danger": t.severity !== "info" }}>
+                  {t.message}
+                </div>
+              )}
+            </For>
+          </div>
+        </>
       }
     />
   );

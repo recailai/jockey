@@ -14,10 +14,10 @@ import {
 } from "lucide-solid";
 import type { Accessor, JSX } from "solid-js";
 import type { LeftDockPanel } from "../lib/layoutTokens";
-import type { AppSession, AssistantRuntime, Role } from "./types";
-import { DEFAULT_ROLE_ALIAS, INTERACTIVE_MOTION, RUNTIME_COLOR } from "./types";
+import type { AcpConfigOption, AppSession, AssistantRuntime, Role } from "./types";
 import type { GitStatusStore } from "../hooks/useGitPoller";
 import IdeAppIcon from "./IdeAppIcon";
+import AgentPicker from "./composer/AgentPicker";
 import { gitApi, parseError, workspaceApi, type GitFileEntry, type GitStatus, type WorkspaceOpenTarget } from "../lib/tauriApi";
 import { loadUiPrefs } from "../lib/uiPrefs";
 import { isKnownWorkspaceTarget, listWorkspaceApps, workspaceAppFor } from "../lib/workspaceApps";
@@ -51,6 +51,8 @@ type ComposerContextFooterProps = {
   activeToolPanel: Accessor<LeftDockPanel | null>;
   onOpenToolPanel: (panel: LeftDockPanel) => void;
   onSelectRole: (roleName: string) => void;
+  onSelectAgent: (runtimeKind: string, profileId: string | null) => void;
+  onManagePersonas: () => void;
   onCancelRun: () => void;
   onRunAction: (command: string) => void;
   onRefreshGit?: () => void;
@@ -207,7 +209,6 @@ function renderGitPrimaryIcon(kind: GitPrimaryActionKind, busy: boolean): JSX.El
 }
 
 export default function ComposerContextFooter(props: ComposerContextFooterProps) {
-  const [roleOpen, setRoleOpen] = createSignal(false);
   const [action, setAction] = createSignal<ToolbarAction>(loadToolbarAction());
   const [actionMenuOpen, setActionMenuOpen] = createSignal(false);
   const [actionEditorOpen, setActionEditorOpen] = createSignal(false);
@@ -228,21 +229,7 @@ export default function ComposerContextFooter(props: ComposerContextFooterProps)
   const [ideBusy, setIdeBusy] = createSignal(false);
   const [ideError, setIdeError] = createSignal<string | null>(null);
 
-  const activeRole = () => props.activeSession()?.activeRole ?? DEFAULT_ROLE_ALIAS;
   const showBranchState = () => loadUiPrefs().showBranchState;
-
-  const roleOptions = createMemo(() => {
-    const seen = new Set<string>([DEFAULT_ROLE_ALIAS]);
-    const options: Array<{ roleName: string; runtimeKind: string | null; model: string | null }> = [
-      { roleName: DEFAULT_ROLE_ALIAS, runtimeKind: props.activeSession()?.runtimeKind ?? props.assistants().find((a) => a.available)?.key ?? null, model: null },
-    ];
-    for (const role of props.roles()) {
-      if (seen.has(role.roleName)) continue;
-      seen.add(role.roleName);
-      options.push({ roleName: role.roleName, runtimeKind: role.runtimeKind, model: role.model });
-    }
-    return options;
-  });
 
   const git = () => statusView(props.gitStatus());
   const dirty = () => props.gitChangeCount();
@@ -473,38 +460,15 @@ export default function ComposerContextFooter(props: ComposerContextFooterProps)
     <footer class="composer-context-footer" data-tauri-drag-region="false">
       <div class="composer-context-footer-inner">
       <div class="composer-context-footer-actions">
-        <DropdownMenu open={roleOpen()} onOpenChange={setRoleOpen}>
-          <DropdownTrigger
-            variant="plain"
-            class={`role-switcher ${INTERACTIVE_MOTION}`}
-            title="Switch role inside this AppSession"
-          >
-            <span class="composer-role-dot" />
-            <span class="truncate">{activeRole()}</span>
-            <ChevronDown size={12} class="theme-muted" />
-          </DropdownTrigger>
-          <DropdownContent placement="bottom-end" class="jui-role-menu">
-            <DropdownLabel>AppSession Roles</DropdownLabel>
-            <For each={roleOptions()}>
-              {(role) => (
-                <DropdownItem
-                  class={role.roleName === activeRole() ? "is-active" : ""}
-                  onSelect={() => props.onSelectRole(role.roleName)}
-                >
-                  <span class="truncate text-[12px] font-medium theme-text">{role.roleName}</span>
-                  <Show when={role.runtimeKind}>
-                    <span class={`ml-auto shrink-0 font-mono text-[10px] ${RUNTIME_COLOR[role.runtimeKind ?? ""] ?? "theme-muted"}`}>
-                      {role.runtimeKind}
-                    </span>
-                  </Show>
-                  <Show when={role.model}>
-                    <span class="shrink-0 truncate font-mono text-[10px] theme-muted">{role.model}</span>
-                  </Show>
-                </DropdownItem>
-              )}
-            </For>
-          </DropdownContent>
-        </DropdownMenu>
+        <AgentPicker
+          activeSession={props.activeSession}
+          assistants={props.assistants}
+          roles={props.roles}
+          configOptions={() => (props.activeSession()?.discoveredConfigOptions ?? []) as AcpConfigOption[]}
+          onSelectAgent={props.onSelectAgent}
+          onSelectRole={props.onSelectRole}
+          onManagePersonas={props.onManagePersonas}
+        />
         <Show when={showBranchState() && git()}>
           {(s) => (
             <button

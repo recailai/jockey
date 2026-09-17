@@ -1,13 +1,10 @@
 use serde_json::json;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
-use super::super::super::adapter::{acp_log, clip, HeadlessProtocol};
-use super::super::super::error::{push_stderr_tail, stderr_tail};
-use super::super::super::protocol as acp;
+use super::super::super::adapter::{acp_log, HeadlessProtocol};
 use super::super::super::worker::{
     register_child_pid, unregister_child_pid, AcpEvent, AcpPromptResult,
 };
@@ -30,11 +27,7 @@ fn stream_sessions() -> &'static dashmap::DashMap<String, Arc<Mutex<Option<Strea
 }
 
 struct StreamProcess {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
-    stderr: Arc<std::sync::Mutex<String>>,
-    stderr_task: Option<tokio::task::JoinHandle<()>>,
+    process: crate::acp::process::AgentProcess,
 }
 
 impl StreamProcess {
@@ -45,75 +38,23 @@ impl StreamProcess {
         env: &[(String, String)],
         cwd: &str,
     ) -> Result<Self, String> {
-        let mut command = Command::new(binary);
-        command
-            .args(args)
-            .envs(
-                env.iter()
-                    .map(|(key, value)| (key.as_str(), value.as_str())),
-            )
-            .current_dir(cwd)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .process_group(0);
-        let mut child = command.spawn().map_err(|error| {
-            format!(
-                "failed to start {} stream-json: {error}",
-                protocol_display_name(protocol)
-            )
-        })?;
-        let stdin = child.stdin.take().ok_or_else(|| {
-            format!(
-                "{} stream-json stdin pipe unavailable",
-                protocol_display_name(protocol)
-            )
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            format!(
-                "{} stream-json stdout pipe unavailable",
-                protocol_display_name(protocol)
-            )
-        })?;
-        let stderr = Arc::new(std::sync::Mutex::new(String::new()));
-        let stderr_task = child.stderr.take().map(|stream| {
-            let stderr = stderr.clone();
-            tokio::spawn(async move {
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                loop {
-                    line.clear();
-                    match reader.read_line(&mut line).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {
-                            push_stderr_tail(&stderr, &line);
-                            if !line.trim().is_empty() {
-                                acp_log(
-                                    "headless.stderr",
-                                    json!({ "binary": protocol_display_name(protocol), "line": clip(line.trim(), 360) }),
-                                );
-                            }
-                        }
-                    }
-                }
-            })
-        });
-        Ok(Self {
-            child,
-            stdin,
-            stdout: BufReader::new(stdout),
-            stderr,
-            stderr_task,
-        })
+        let process = crate::acp::process::AgentProcess::spawn(
+            binary,
+            args,
+            env,
+            cwd,
+            protocol_display_name(protocol),
+            "headless.stderr",
+        )?;
+        Ok(Self { process })
     }
 
     fn pid(&self) -> Option<u32> {
-        self.child.id()
+        self.process.pid()
     }
 
     fn is_alive(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
+        self.process.is_alive()
     }
 
     async fn send_prompt(
@@ -141,13 +82,17 @@ impl StreamProcess {
             )
         })?;
         frame.push(b'\n');
-        self.stdin.write_all(&frame).await.map_err(|error| {
-            format!(
-                "failed to send prompt to {}: {error}",
-                protocol_display_name(protocol)
-            )
-        })?;
-        self.stdin.flush().await.map_err(|error| {
+        self.process
+            .stdin
+            .write_all(&frame)
+            .await
+            .map_err(|error| {
+                format!(
+                    "failed to send prompt to {}: {error}",
+                    protocol_display_name(protocol)
+                )
+            })?;
+        self.process.stdin.flush().await.map_err(|error| {
             format!(
                 "failed to flush prompt to {}: {error}",
                 protocol_display_name(protocol)
@@ -165,7 +110,7 @@ impl StreamProcess {
         sequence: &mut u32,
     ) -> HeadlessTurn {
         read_headless_turn(
-            &mut self.stdout,
+            &mut self.process.stdout,
             protocol,
             true,
             app,
@@ -178,19 +123,11 @@ impl StreamProcess {
     }
 
     fn stderr_tail(&self) -> String {
-        stderr_tail(&self.stderr)
+        self.process.stderr_tail()
     }
 
     async fn close(&mut self) {
-        let _ = self.stdin.shutdown().await;
-        if let Some(pid) = self.pid() {
-            super::terminate_pid(pid);
-        }
-        let _ = self.child.kill().await;
-        let _ = tokio::time::timeout(STREAM_CLOSE_TIMEOUT, self.child.wait()).await;
-        if let Some(task) = self.stderr_task.take() {
-            let _ = task.await;
-        }
+        self.process.close(STREAM_CLOSE_TIMEOUT).await;
     }
 }
 
@@ -232,24 +169,26 @@ impl StreamSession {
 }
 
 pub(super) async fn execute_stream_runtime(
+    request: &crate::acp::session::adapter_runtime::PromptRequest<'_>,
     protocol: HeadlessProtocol,
-    runtime_key: &'static str,
-    role_name: &str,
-    prompt: &str,
-    context: &[(String, String)],
-    cwd: &str,
-    app: &tauri::AppHandle,
-    auto_approve: bool,
-    role_mode: Option<String>,
-    role_config_options: Vec<(String, String)>,
-    binary: &str,
-    adapter_args: &[String],
-    env: &[(String, String)],
     conversation: bool,
-    resume_session_id: Option<String>,
-    mcp_servers: &[acp::McpServer],
-    app_session_id: &str,
 ) -> AcpPromptResult {
+    let runtime_key = request.runtime_key;
+    let role_name = request.role_name;
+    let prompt = request.prompt;
+    let context = request.context;
+    let cwd = request.cwd;
+    let app = request.app;
+    let auto_approve = request.auto_approve;
+    let role_mode = request.role_mode;
+    let role_config_options = request.role_config_options;
+    let binary = request.binary;
+    let adapter_args = request.adapter_args;
+    let env = request.env;
+    let resume_session_id = request.resume_session_id;
+    let mcp_servers = request.mcp_servers;
+    let app_session_id = request.app_session_id;
+
     let key = headless_key(runtime_key, role_name, app_session_id);
     headless_active()
         .entry(key.clone())
@@ -269,9 +208,10 @@ pub(super) async fn execute_stream_runtime(
     let mut args = adapter_args.to_vec();
     append_cli_config(
         &mut args,
+        runtime_key,
         protocol,
-        &role_config_options,
-        role_mode.as_deref(),
+        role_config_options,
+        role_mode,
     );
     if auto_approve {
         if matches!(protocol, HeadlessProtocol::ClaudeStreamJson) {
@@ -574,6 +514,7 @@ pub(super) async fn execute_stream_runtime(
             "status": turn.status,
             "persistent": true,
         }),
+        session_handle: resolved_conversation_id,
     }
 }
 

@@ -38,6 +38,7 @@ pub(crate) fn handle_role_template_command(
                 None,
                 None,
                 None,
+                None,
             )?;
             result.message = format!("role bound: {}", role.role_name);
             result.payload = json!({ "role": role });
@@ -49,6 +50,7 @@ pub(crate) fn handle_role_template_command(
                 (*role_name).to_string(),
                 runtime,
                 prompt.join(" "),
+                None,
                 None,
                 None,
                 None,

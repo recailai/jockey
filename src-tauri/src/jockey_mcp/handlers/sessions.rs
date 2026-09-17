@@ -90,7 +90,15 @@ pub(crate) fn update_session(state: &AppState, params: Value) -> Result<Value, S
 
 pub(crate) fn create_session(state: &AppState, params: Value) -> Result<Value, String> {
     let title = params.get("title").and_then(|v| v.as_str());
-    let session = create_app_session_internal(state, title)?;
+    let project_id = params
+        .get("projectId")
+        .or_else(|| params.get("project_id"))
+        .and_then(|v| v.as_str());
+    let runtime_kind = params
+        .get("runtimeKind")
+        .or_else(|| params.get("runtime_kind"))
+        .and_then(|v| v.as_str());
+    let session = create_app_session_internal(state, title, project_id, runtime_kind, None, None)?;
     Ok(json!({
         "id": session.id,
         "title": session.title,

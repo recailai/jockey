@@ -6,6 +6,7 @@ pub(crate) mod cwd_util;
 mod fallback_cmd;
 pub(crate) mod fs_cmd;
 pub(crate) mod git_cmd;
+pub(crate) mod project_cmd;
 pub(crate) mod provider_session_cmd;
 mod query_cmd;
 mod role_templates;

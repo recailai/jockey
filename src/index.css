@@ -4,7 +4,6 @@
    Single source of truth for the Jockey UI primitives and shell.
    Product components should consume --ui-* tokens instead of hardcoded colors.
 ──────────────────────────────────────────────────────────────────────────── */
-:root,
 :root[data-theme="light"] {
   --ui-bg: #ffffff;
   --ui-foreground: #18181b;
@@ -113,6 +112,9 @@
   --tone-300: #4b4b4f;
   --tone-200: #303033;
   --tone-100: #1f1f1f;
+}
+
+:root {
   --radius-control: 8px;
   --radius-row: 10px;
   --radius-card: 14px;
@@ -130,7 +132,6 @@
   --ui-bar-height: 40px;
   --ui-dock-toolbar-height: 36px;
   --ui-panel-header-height: 40px;
-  --ui-terminal-selection: color-mix(in srgb, var(--ui-accent) 14%, var(--ui-terminal-bg));
   --ui-space-1: 4px;
   --ui-space-2: 8px;
   --ui-space-3: 12px;
@@ -151,7 +152,7 @@
   --mac-chrome-toggle-top: calc((var(--ui-bar-height) - var(--ui-control-height-md)) / 2 + var(--mac-chrome-toggle-offset-y));
   --mac-chrome-toggle-left: calc(var(--mac-traffic-left) + var(--mac-traffic-group-width) + var(--mac-chrome-control-gap) + var(--mac-chrome-toggle-offset-x));
   /* Overlay titlebar: one row; traffic lights sit inside this band (tauri trafficLightPosition) */
-  --mac-safe-left: calc(var(--mac-traffic-left) + var(--mac-traffic-group-width) + 8px);
+  --mac-safe-left: calc(var(--mac-traffic-left) + var(--mac-traffic-group-width) + 16px);
   --mac-titlebar-height: var(--ui-bar-height);
   --z-base: 0;
   --z-sticky: 10;
@@ -165,12 +166,14 @@
   --composer-active-max-height: 160px;
   --composer-empty-max-width: 720px;
   --composer-active-max-width: 980px;
-  --session-chip-max-width: 168px;
+  --session-chip-max-width: 240px;
+  --session-chip-min-width: 72px;
   --left-dock-default-width: 360px;
   --right-dock-default-width: 280px;
   --chat-min-width: 420px;
 }
 
+:root,
 :root[data-theme="dark"] {
   --ui-bg: #09090b;
   --ui-foreground: #f4f4f5;
@@ -515,22 +518,74 @@ textarea {
 .jui-badge-danger { background: var(--ui-state-danger-bg); color: var(--ui-state-danger-text); }
 .jui-badge-info { background: var(--ui-state-info-bg); color: var(--ui-state-info-text); }
 
+pre {
+  position: relative;
+}
+
 .jui-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  opacity: 0;
   cursor: pointer;
   border: 1px solid var(--ui-border);
-  border-radius: 7px;
-  background: var(--ui-popover-bg);
+  border-radius: 6px;
+  background: var(--ui-panel-2, var(--ui-popover-bg));
   padding: 2px 7px;
   color: var(--ui-muted);
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 10px;
   line-height: 16px;
   transition: opacity 120ms ease, color 120ms ease, background-color 120ms ease, border-color 120ms ease;
+  z-index: 10;
 }
+
+pre:hover .jui-code-copy,
+.group\/pre:hover .jui-code-copy {
+  opacity: 1;
+}
+
 .jui-code-copy:hover {
   border-color: var(--ui-border-strong);
   background: var(--ui-control-hover);
   color: var(--ui-text);
+}
+
+.message-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 5px;
+  border-radius: 5px;
+  color: var(--ui-muted);
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
+}
+
+.message-action-button:hover {
+  color: var(--ui-text);
+  background: var(--ui-panel-2, var(--ui-control-hover));
+  border-color: var(--ui-border);
+}
+
+.user-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 4px;
+  border-radius: 4px;
+  color: var(--ui-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.user-action-button:hover {
+  color: var(--ui-text);
+  background: var(--ui-surface-muted);
 }
 
 .jui-field {
@@ -551,6 +606,54 @@ textarea {
   resize: vertical;
   padding: 12px 14px;
   line-height: var(--ui-line-height-body);
+}
+
+.jui-field.is-error {
+  border-color: var(--ui-state-danger-text);
+}
+.jui-field.is-error:focus {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-state-danger-text) 25%, transparent);
+}
+
+.jui-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+.jui-form-field-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.jui-form-field-label {
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--ui-text);
+}
+.jui-form-field-hint {
+  font-size: 11px;
+  color: var(--ui-muted);
+}
+.jui-form-field-action {
+  font-size: 11px;
+  color: var(--ui-accent);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.jui-form-field-control {
+  width: 100%;
+}
+.jui-form-field-description {
+  font-size: 11.5px;
+  color: var(--ui-muted);
+  line-height: 1.35;
+}
+.jui-form-field-error {
+  font-size: 11.5px;
+  color: var(--ui-state-danger-text);
+  line-height: 1.35;
 }
 
 .jui-panel {
@@ -594,6 +697,134 @@ textarea {
 
 .jui-role-menu {
   width: 320px;
+}
+
+/* Agent picker: a short top-level summary whose rows open sideways. */
+.jui-agent-menu {
+  width: 288px;
+}
+
+.jui-dropdown-subcontent {
+  min-width: 210px;
+}
+
+.jui-dropdown-subtrigger[data-expanded] {
+  background: var(--ui-row-hover);
+}
+
+.jui-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.jui-agent-row-label {
+  flex: 0 0 auto;
+  color: var(--ui-muted);
+  font-size: var(--ui-font-size-sm);
+  font-weight: 560;
+}
+
+.jui-agent-row-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ui-text);
+  font-size: var(--ui-font-size-sm);
+}
+
+.jui-agent-row-value.is-unset {
+  color: var(--ui-muted);
+}
+
+.jui-agent-row-chevron {
+  flex: 0 0 auto;
+  color: var(--ui-muted);
+}
+
+.jui-agent-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 9px 8px;
+  border-bottom: 1px solid var(--ui-chrome-separator);
+  margin-bottom: 4px;
+}
+
+.jui-agent-header-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ui-font-size-sm);
+  font-weight: 640;
+}
+
+.jui-agent-header-key {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--ui-muted);
+  font-family: var(--ui-font-mono, ui-monospace, monospace);
+  font-size: 10px;
+}
+
+/* Toggle rows read as switches, not as selectable menu entries. */
+.jui-agent-toggle {
+  margin-left: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  width: 26px;
+  height: 15px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--ui-chrome-separator);
+  transition: background 120ms ease;
+}
+
+.jui-agent-toggle::after {
+  content: "";
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  background: var(--ui-popover-bg);
+  transition: transform 120ms ease;
+}
+
+.jui-agent-toggle.is-on {
+  background: var(--ui-state-accent-bg, #d97706);
+}
+
+.jui-agent-toggle.is-on::after {
+  transform: translateX(11px);
+}
+
+.jui-agent-value-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.jui-agent-value-blurb {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--ui-muted);
+  font-size: 10px;
+}
+
+.jui-agent-value-key {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--ui-muted);
+  font-family: var(--ui-font-mono, ui-monospace, monospace);
+  font-size: 10px;
 }
 
 .jui-run-action-menu {
@@ -733,6 +964,20 @@ textarea {
   line-height: 1.45;
 }
 
+.jui-dialog-body {
+  margin-top: 16px;
+  margin-bottom: 20px;
+}
+
+.jui-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ui-border);
+}
+
 .jui-tooltip {
   z-index: 250;
   border: 1px solid var(--ui-border);
@@ -779,6 +1024,394 @@ textarea {
   color: var(--ui-text);
   font-size: var(--ui-font-size-sm);
   line-height: var(--ui-line-height-control);
+}
+
+/* ─── Primitives & Design System Controls ─────────────────────────────────── */
+
+/* Pill — 24px interactive/static capsule chip */
+.jui-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 550;
+  line-height: 1;
+  white-space: nowrap;
+  background: var(--ui-surface-muted);
+  color: var(--ui-muted);
+  border: 1px solid var(--ui-border);
+  transition: all 120ms ease;
+  user-select: none;
+}
+.jui-pill-interactive {
+  cursor: pointer;
+}
+.jui-pill-interactive:hover:not(:disabled) {
+  background: var(--ui-control-hover);
+  color: var(--ui-text);
+  border-color: var(--ui-border-strong);
+}
+.jui-pill.is-active {
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent);
+  border-color: color-mix(in srgb, var(--ui-accent) 25%, transparent);
+}
+.jui-pill.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* StateDot — 5-state status dot with ongoing SVG matrix animation */
+.jui-state-dot {
+  display: inline-block;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.jui-state-dot-idle {
+  background: var(--ui-state-muted-text);
+  opacity: 0.45;
+}
+.jui-state-dot-done {
+  background: var(--ui-state-success-text);
+}
+.jui-state-dot-warning {
+  background: var(--ui-state-warning-text);
+}
+.jui-state-dot-error {
+  background: var(--ui-state-danger-text);
+}
+
+.jui-state-dot-matrix {
+  display: inline-block;
+  flex-shrink: 0;
+}
+.jui-state-dot-cell {
+  fill: var(--ui-accent);
+  opacity: 0.2;
+  animation: jui-state-dot-blink 1s ease-in-out infinite alternate;
+}
+@keyframes jui-state-dot-blink {
+  0% { opacity: 0.15; }
+  100% { opacity: 1; }
+}
+
+/* Checkbox — Accessible Kobalte Checkbox */
+.jui-checkbox {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.jui-checkbox.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.jui-checkbox-input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.jui-checkbox-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border-radius: 4px;
+  border: 1px solid var(--ui-input-border);
+  background: var(--ui-input-bg);
+  color: var(--ui-accent-text);
+  flex-shrink: 0;
+  transition: all 120ms ease;
+}
+.jui-checkbox:hover .jui-checkbox-control:not(:disabled) {
+  border-color: var(--ui-border-strong);
+}
+.jui-checkbox-control[data-checked],
+.jui-checkbox-control[data-indeterminate] {
+  background: var(--ui-accent);
+  border-color: var(--ui-accent);
+}
+.jui-checkbox-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.jui-checkbox-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.jui-checkbox-label {
+  font-size: 13px;
+  color: var(--ui-text);
+  line-height: 1.35;
+  cursor: pointer;
+}
+.jui-checkbox-description {
+  font-size: 11.5px;
+  color: var(--ui-muted);
+  line-height: 1.3;
+}
+
+/* Alert — Semantic Callout / Banner */
+.jui-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.jui-alert-icon {
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+.jui-alert-content {
+  flex: 1;
+  min-width: 0;
+}
+.jui-alert-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+.jui-alert-body {
+  font-size: 12px;
+  opacity: 0.92;
+}
+.jui-alert-action {
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  padding: 0;
+  flex-shrink: 0;
+}
+.jui-alert-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-radius: 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 120ms ease;
+  flex-shrink: 0;
+}
+.jui-alert-close:hover {
+  opacity: 1;
+}
+
+.jui-alert-neutral {
+  background: var(--ui-state-muted-bg);
+  border-color: color-mix(in srgb, var(--ui-state-muted-text) 20%, transparent);
+  color: var(--ui-state-muted-text);
+}
+.jui-alert-info {
+  background: var(--ui-state-info-bg);
+  border-color: color-mix(in srgb, var(--ui-state-info-text) 25%, transparent);
+  color: var(--ui-state-info-text);
+}
+.jui-alert-success {
+  background: var(--ui-state-success-bg);
+  border-color: color-mix(in srgb, var(--ui-state-success-text) 25%, transparent);
+  color: var(--ui-state-success-text);
+}
+.jui-alert-warning {
+  background: var(--ui-state-warning-bg);
+  border-color: color-mix(in srgb, var(--ui-state-warning-text) 25%, transparent);
+  color: var(--ui-state-warning-text);
+}
+.jui-alert-danger {
+  background: var(--ui-state-danger-bg);
+  border-color: color-mix(in srgb, var(--ui-state-danger-text) 25%, transparent);
+  color: var(--ui-state-danger-text);
+}
+
+/* EmptyState */
+.jui-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 32px 16px;
+  margin: auto;
+  max-width: 360px;
+}
+.jui-empty-state-icon {
+  margin-bottom: 12px;
+  color: var(--ui-muted);
+}
+.jui-empty-state-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ui-text);
+  margin-bottom: 4px;
+}
+.jui-empty-state-description {
+  font-size: 12px;
+  color: var(--ui-muted);
+  line-height: 1.4;
+}
+
+/* MasterDetail View */
+.jui-master-detail {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ui-bg);
+}
+.jui-master-pane {
+  display: flex;
+  flex-direction: column;
+  width: 280px;
+  min-width: 240px;
+  max-width: 360px;
+  height: 100%;
+  border-right: 1px solid var(--ui-border);
+  background: var(--ui-surface-muted);
+  flex-shrink: 0;
+}
+.jui-master-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ui-border);
+  min-height: 40px;
+}
+.jui-master-pane-title {
+  font-size: 12px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ui-muted);
+}
+.jui-master-pane-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--ui-border);
+}
+.jui-master-pane-search-icon {
+  position: absolute;
+  left: 18px;
+  color: var(--ui-muted);
+  pointer-events: none;
+}
+.jui-master-pane-search-input {
+  width: 100%;
+  height: 28px;
+  padding: 0 10px 0 26px;
+  border-radius: 6px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-input-bg);
+  color: var(--ui-text);
+  font-size: 12px;
+  outline: none;
+}
+.jui-master-pane-search-input:focus {
+  border-color: var(--ui-border-strong);
+}
+.jui-master-pane-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.jui-master-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 100ms ease;
+  user-select: none;
+}
+.jui-master-item:hover {
+  background: var(--ui-row-hover);
+}
+.jui-master-item.is-active {
+  background: var(--ui-accent-soft);
+  border-color: color-mix(in srgb, var(--ui-accent) 20%, transparent);
+}
+.jui-master-item-title {
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--ui-text);
+  line-height: 1.25;
+}
+.jui-master-item-subtitle {
+  font-size: 11px;
+  color: var(--ui-muted);
+  line-height: 1.25;
+  margin-top: 2px;
+}
+.jui-master-item-delete {
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+.jui-master-item:hover .jui-master-item-delete {
+  opacity: 0.75;
+}
+.jui-master-item-delete:hover {
+  opacity: 1 !important;
+  color: var(--ui-state-danger-text);
+}
+
+.jui-detail-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background: var(--ui-bg);
+  overflow-y: auto;
+}
+.jui-detail-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--ui-border);
+  min-height: 52px;
+  flex-shrink: 0;
+}
+.jui-detail-pane-title {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--ui-text);
+}
+.jui-detail-pane-subtitle {
+  font-size: 12px;
+  color: var(--ui-muted);
+  margin-top: 2px;
+}
+.jui-detail-pane-body {
+  flex: 1;
+  padding: 18px;
+  overflow-y: auto;
 }
 
 .window-bg {
@@ -1965,6 +2598,125 @@ textarea {
   text-transform: uppercase;
 }
 
+.jui-popup-select-card {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 40;
+  max-height: 320px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: 12px;
+  background: var(--ui-popover-bg);
+  box-shadow: var(--ui-shadow-popover);
+  overflow: hidden;
+}
+
+.jui-popup-select-header {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--ui-border);
+  background: var(--ui-bg-subtle);
+}
+
+.jui-popup-select-search-icon {
+  color: var(--ui-text-muted);
+  flex-shrink: 0;
+}
+
+.jui-popup-select-search {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 13px;
+  color: var(--ui-text);
+}
+
+.jui-popup-select-hint {
+  font-size: 10px;
+  color: var(--ui-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+}
+
+.jui-popup-select-viewport {
+  overflow-y: auto;
+  padding: 4px;
+  max-height: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.jui-popup-select-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  font-size: 12px;
+  color: var(--ui-text-muted);
+}
+
+.jui-popup-select-status.is-error {
+  color: var(--ui-state-danger-text);
+}
+
+.jui-popup-select-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: var(--ui-space-2);
+  padding: 6px 10px;
+  border-radius: var(--radius-control);
+  text-align: left;
+  font-size: 13px;
+  color: var(--ui-text);
+  transition: background-color 100ms ease;
+  cursor: pointer;
+}
+
+.jui-popup-select-row:hover,
+.jui-popup-select-row.is-active {
+  background: var(--ui-row-hover);
+}
+
+.jui-popup-select-row-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.jui-popup-select-label {
+  font-weight: 500;
+}
+
+.jui-popup-select-detail {
+  margin-left: 8px;
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--ui-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jui-popup-select-check {
+  margin-left: auto;
+  color: var(--ui-primary);
+  flex-shrink: 0;
+}
+
+
 .preview-tabs-bar {
   display: flex;
   min-width: 0;
@@ -3060,7 +3812,7 @@ textarea {
 .session-chip-strip {
   display: flex;
   min-width: 0;
-  max-width: min(48vw, 720px);
+  max-width: min(68vw, 1080px);
   flex: 1 1 360px;
   align-items: center;
   gap: 4px;
@@ -3074,8 +3826,8 @@ textarea {
 .session-chip {
   display: inline-flex;
   height: 28px;
-  min-width: 0;
-  max-width: 176px;
+  min-width: var(--session-chip-min-width, 64px);
+  max-width: var(--session-chip-max-width, 220px);
   flex: 0 1 auto;
   align-items: center;
   gap: 6px;
@@ -3098,7 +3850,8 @@ textarea {
 }
 .session-chip > .truncate {
   min-width: 0;
-  max-width: 140px;
+  flex: 1 1 auto;
+  max-width: calc(var(--session-chip-max-width, 240px) - 36px);
   line-height: 18px;
 }
 .session-chip.is-active {

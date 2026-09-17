@@ -6,14 +6,14 @@ mod types;
 
 pub use crate::runtime_kind::RuntimeKind;
 pub use notify::{set_death_event_sender, set_prewarm_event_sender};
-pub use permission::respond_to_permission;
+pub use permission::{respond_to_permission, respond_to_user_input, UserInputAnswers};
 pub use types::{
     AcpEvent, AcpPromptResult, ActiveConnectionInfo, ConnectionDeathEvent, PrewarmEvent,
 };
 
 pub(crate) use permission::{
-    cached_approval, cancel_all_permissions, cancel_permissions_for, insert_permission,
-    permission_requests, PendingPermission,
+    cached_approval, cancel_all_permissions, cancel_all_user_input, cancel_permissions_for,
+    insert_permission, insert_user_input, permission_requests, PendingPermission,
 };
 pub(crate) use pool::{
     pool_key, register_child_pid, unregister_child_pid, ConfigStateCell, DeltaSlot, LiveConnection,

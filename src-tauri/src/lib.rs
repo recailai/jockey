@@ -6,6 +6,7 @@ mod db;
 mod error;
 mod fs_context;
 mod git;
+pub mod importer;
 pub mod jockey_mcp;
 mod parser;
 mod runtime_kind;
@@ -25,7 +26,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 
 use assistant::refresh_assistant_catalog;
-use db::context::shared_key;
 use db::{init_db, seed_default_dynamic_catalog, with_db, DbPool};
 use types::*;
 
@@ -70,19 +70,11 @@ pub(crate) fn clip_text(input: &str, max_chars: usize) -> String {
     input.chars().take(max_chars).collect::<String>()
 }
 
-pub(crate) fn build_jockey_tool_prompt() -> &'static str {
-    "You are Jockey assistant. Answer the user's question directly and concisely.\n\
-IMPORTANT: Do NOT use any tools, read files, run commands, or explore the filesystem.\n\
-\n\
-App commands (prefix /app_) — only suggest when the user explicitly asks for Jockey management:\n\
-  /app_help | /app_assistant list | /app_assistant select <runtime>\n\
-Do NOT suggest role, model, or MCP commands — those are managed via the UI sidebar."
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| -> Result<(), Box<dyn std::error::Error>> {
             let app_dir = app.path().app_local_data_dir()?;
             fs::create_dir_all(&app_dir)?;
@@ -102,36 +94,11 @@ pub fn run() {
             }
             let state = AppState {
                 db: db_pool,
-                shared_context: DashMap::new(),
                 role_cache: std::sync::Arc::new(DashMap::new()),
             };
 
-            {
-                let existing = {
-                    let guard = state.db.get().map_err(|e| std::io::Error::other(e.to_string()))?;
-                    let mut stmt = guard.prepare(
-                        "SELECT scope, key, value FROM shared_context_snapshots ORDER BY updated_at DESC",
-                    )?;
-                    let rows = stmt.query_map([], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    })?;
-                    let mut entries = Vec::new();
-                    for row in rows {
-                        entries.push(row?);
-                    }
-                    entries
-                };
-
-                for (scope, key, value) in existing {
-                    state.shared_context.insert(shared_key(&scope, &key), value);
-                }
-            }
-
             seed_default_dynamic_catalog(&state).map_err(std::io::Error::other)?;
+            db::role::seed_default_roles(&state).map_err(std::io::Error::other)?;
             {
                 let conn = state
                     .db
@@ -141,15 +108,12 @@ pub fn run() {
                     .map_err(std::io::Error::other)?;
             }
 
-            let bridge_state = std::sync::Arc::new(AppState {
-                db: state.db.clone(),
-                shared_context: state.shared_context.clone(),
-                role_cache: state.role_cache.clone(),
-            });
+            let bridge_state = std::sync::Arc::new(state.clone_refs());
             let bridge_state_clone = bridge_state.clone();
             let bridge_app = app.handle().clone();
+            let bridge_app_for_start = bridge_app.clone();
             tauri::async_runtime::spawn(async move {
-                match jockey_mcp::bridge::start_bridge(bridge_state_clone.clone()).await {
+                match jockey_mcp::bridge::start_bridge(bridge_state_clone.clone(), bridge_app_for_start).await {
                     Ok((port, token)) => {
                         eprintln!("[jockey-mcp] listening on 127.0.0.1:{port}");
                         db::global_mcp::seed_builtin_jockey_mcp(&bridge_state_clone, port, &token);
@@ -322,10 +286,18 @@ pub fn run() {
                 });
             }
 
+            #[cfg(debug_assertions)]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.open_devtools();
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             db::role::upsert_role_cmd,
+            db::role::reassign_role_project_cmd,
             db::role::delete_role_cmd,
             db::role::list_roles,
             db::workflow::create_workflow,
@@ -347,8 +319,6 @@ pub fn run() {
             commands::session_context_cmd::list_session_context_entries_cmd,
             commands::session_context_cmd::set_session_context_entry_cmd,
             commands::session_context_cmd::delete_session_context_entry_cmd,
-            commands::runtime_cmd::list_discovered_config_options_cmd,
-            commands::runtime_cmd::list_discovered_modes_cmd,
             commands::runtime_cmd::list_available_commands_cmd,
             commands::runtime_cmd::acp_metrics_snapshot_cmd,
             commands::runtime_cmd::acp_log_snapshot_cmd,
@@ -360,6 +330,12 @@ pub fn run() {
             commands::provider_session_cmd::rewind_provider_session_cmd,
             commands::runtime_cmd::sync_role_mode_cmd,
             commands::runtime_cmd::prewarm_role_config_cmd,
+            commands::runtime_cmd::bind_session_agent_cmd,
+            commands::runtime_cmd::respond_user_input_cmd,
+            commands::runtime_cmd::get_project_agent_config_cmd,
+            commands::runtime_cmd::list_project_agent_pins_cmd,
+            commands::runtime_cmd::set_project_agent_config_cmd,
+            commands::runtime_cmd::set_project_agent_runtime_cmd,
             commands::git_cmd::git_status_cmd,
             commands::git_cmd::git_diff_cmd,
             commands::git_cmd::git_file_cmd,
@@ -407,6 +383,12 @@ pub fn run() {
             commands::terminal_cmd::stop_terminal_session,
             commands::workspace_cmd::open_workspace_cmd,
             commands::workspace_cmd::get_workspace_app_icon_cmd,
+            commands::project_cmd::list_projects_cmd,
+            commands::project_cmd::get_project_cmd,
+            commands::project_cmd::create_project_cmd,
+            commands::project_cmd::delete_project_cmd,
+            commands::project_cmd::import_project_sessions_cmd,
+            commands::project_cmd::scan_importable_sessions_cmd,
             db::rule::list_rules_cmd,
             db::rule::upsert_rule_cmd,
             db::rule::delete_rule_cmd,

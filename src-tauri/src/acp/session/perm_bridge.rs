@@ -114,18 +114,20 @@ pub(crate) fn start_permission_bridge(app: tauri::AppHandle) {
                 return;
             }
         };
-        let listener = match tokio::net::TcpListener::from_std(std_listener) {
-            Ok(listener) => listener,
-            Err(error) => {
-                BRIDGE_READY.store(false, Ordering::Release);
-                acp_log(
-                    "perm_bridge.listen.failed",
-                    json!({ "error": error.to_string() }),
-                );
-                return;
-            }
-        };
-        runtime.block_on(accept_loop(listener, app));
+        runtime.block_on(async move {
+            let listener = match tokio::net::TcpListener::from_std(std_listener) {
+                Ok(listener) => listener,
+                Err(error) => {
+                    BRIDGE_READY.store(false, Ordering::Release);
+                    acp_log(
+                        "perm_bridge.listen.failed",
+                        json!({ "error": error.to_string() }),
+                    );
+                    return;
+                }
+            };
+            accept_loop(listener, app).await;
+        });
     });
 }
 

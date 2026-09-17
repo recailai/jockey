@@ -92,22 +92,10 @@ pub async fn set_mode(
         normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
     let resolved_session_id =
         resolve_session_id(app_session_id).ok_or_else(|| "app session id required".to_string())?;
-    if !matches!(
-        AnyRuntimeAdapter::resolve(runtime_key),
-        Some(AnyRuntimeAdapter::AcpWorker)
-    ) {
-        // Native/headless runtimes have no live mode switching.
-        return Ok(());
-    }
-    let (tx, rx) = oneshot::channel();
-    let _ = worker_tx().send(WorkerMsg::SetMode {
-        runtime_key,
-        role_name: role_name.to_string(),
-        app_session_id: resolved_session_id,
-        mode_id: mode_id.to_string(),
-        result_tx: tx,
-    });
-    rx.await.map_err(|_| "worker disconnected".to_string())?
+    let key = session_key(runtime_key, role_name, &resolved_session_id);
+    let adapter =
+        AnyRuntimeAdapter::resolve(runtime_key).ok_or_else(|| "adapter unavailable".to_string())?;
+    RuntimeAdapter::set_mode(&adapter, &key, mode_id).await
 }
 
 pub async fn sync_role_mode(
@@ -144,21 +132,8 @@ pub async fn set_config_option(
         normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
     let resolved_session_id =
         resolve_session_id(app_session_id).ok_or_else(|| "app session id required".to_string())?;
-    if !matches!(
-        AnyRuntimeAdapter::resolve(runtime_key),
-        Some(AnyRuntimeAdapter::AcpWorker)
-    ) {
-        // Native/headless runtimes have no live config switching.
-        return Ok(());
-    }
-    let (tx, rx) = oneshot::channel();
-    let _ = worker_tx().send(WorkerMsg::SetConfigOption {
-        runtime_key,
-        role_name: role_name.to_string(),
-        app_session_id: resolved_session_id,
-        config_id: key.to_string(),
-        value: value.to_string(),
-        result_tx: tx,
-    });
-    rx.await.map_err(|_| "worker disconnected".to_string())?
+    let session_k = session_key(runtime_key, role_name, &resolved_session_id);
+    let adapter =
+        AnyRuntimeAdapter::resolve(runtime_key).ok_or_else(|| "adapter unavailable".to_string())?;
+    RuntimeAdapter::set_config_option(&adapter, &session_k, key, value).await
 }

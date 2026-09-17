@@ -431,6 +431,8 @@ impl JockeyUiClient {
                 raw_input: cap_raw(tc.raw_input.clone()),
                 raw_output: cap_raw(tc.raw_output.clone()),
                 terminal_meta: terminal_meta(tc.meta.as_ref()),
+                parent_id: None,
+                diff: None,
             },
             acp::SessionUpdate::ToolCallUpdate(tcu) => AcpEvent::ToolCallUpdate {
                 tool_call_id: tcu.tool_call_id.to_string(),
@@ -460,6 +462,8 @@ impl JockeyUiClient {
                 raw_input: cap_raw(tcu.fields.raw_input.clone()),
                 raw_output: cap_raw(tcu.fields.raw_output.clone()),
                 terminal_meta: terminal_meta(tcu.meta.as_ref()),
+                parent_id: None,
+                diff: None,
             },
             acp::SessionUpdate::Plan(plan) => AcpEvent::Plan {
                 entries: plan
