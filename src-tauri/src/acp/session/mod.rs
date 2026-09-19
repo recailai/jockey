@@ -50,5 +50,6 @@ pub use prewarm::{
     refresh_role_config_defs_with,
 };
 pub use session_cmds::{
-    cancel_session, reconnect_session, reset_session, set_config_option, set_mode, sync_role_mode,
+    cancel_session, reconnect_session, reset_session, set_config_option, set_mode, steer_session,
+    sync_role_mode,
 };

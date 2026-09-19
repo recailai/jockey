@@ -20,10 +20,6 @@ pub(crate) fn list_roles(state: &AppState) -> Result<Value, String> {
                 "runtimeLaunchMethod": r.runtime_launch_method,
                 "model": r.model,
                 "mode": r.mode,
-                "mcpServers": serde_json::from_str::<Value>(&r.mcp_servers_json).unwrap_or(json!([])),
-                "configOptions": serde_json::from_str::<Value>(&r.config_options_json).unwrap_or(json!({})),
-                "configOptionDefs": serde_json::from_str::<Value>(&r.config_option_defs_json).unwrap_or(json!([])),
-                "autoApprove": r.auto_approve,
             })
         })
         .collect();
@@ -306,16 +302,28 @@ pub(crate) async fn invoke_role(
     let role_name = params
         .get("roleName")
         .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .ok_or("roleName is required")?;
+    if role_name.chars().count() > 128 {
+        return Err("roleName is too long (maximum 128 characters)".to_string());
+    }
     let prompt = params
         .get("prompt")
         .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .ok_or("prompt is required")?;
+    if prompt.chars().count() > 32_000 {
+        return Err("prompt is too long (maximum 32000 characters)".to_string());
+    }
     let app_session_id = params
         .get("appSessionId")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "mcp_subagent_session".to_string());
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or("appSessionId is required")?
+        .to_string();
 
     let project_id = crate::db::app_session::get_app_session_project_id(state, &app_session_id);
     let role = crate::db::role::load_role_scoped(state, role_name, project_id.as_deref())?
@@ -339,7 +347,7 @@ pub(crate) async fn invoke_role(
         prompt,
     );
 
-    let mcp_servers: Vec<crate::acp::protocol::McpServer> = {
+    let mut mcp_servers: Vec<crate::acp::protocol::McpServer> = {
         let mut servers = crate::db::global_mcp::get_enabled_mcp_for_role(state, &role.id);
         let role_servers =
             crate::db::global_mcp::parse_mcp_server_list_json_compat(&role.mcp_servers_json);
@@ -365,6 +373,21 @@ pub(crate) async fn invoke_role(
         }
         servers
     };
+
+    let runtime_key = crate::runtime_kind::RuntimeKind::from_str(&role.runtime_kind)
+        .map(|kind| kind.runtime_key())
+        .unwrap_or_else(|| role.runtime_kind.as_str());
+    if matches!(runtime_key, "codex-cli" | "pi-cli" | "antigravity-cli") {
+        mcp_servers.retain(|server| {
+            let name = match server {
+                crate::acp::protocol::McpServer::Http(item) => item.name.as_str(),
+                crate::acp::protocol::McpServer::Sse(item) => item.name.as_str(),
+                crate::acp::protocol::McpServer::Stdio(item) => item.name.as_str(),
+                _ => "",
+            };
+            name != "jockey"
+        });
+    }
 
     let role_config: Vec<(String, String)> =
         serde_json::from_str::<serde_json::Value>(&role.config_options_json)

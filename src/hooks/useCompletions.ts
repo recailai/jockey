@@ -10,23 +10,19 @@ export function useCompletions(
   setInput: (v: string) => void,
   getInputEl: () => HTMLInputElement | undefined,
   onTriggerCommandUi?: (commandName: string) => boolean,
+  getCommandList?: () => Array<{ name: string; description?: string }>,
 ) {
   const {
     roles,
     skills,
     normalizeRuntimeKey,
     commandCacheKey,
-    isCustomRole,
-    fetchConfigOptions,
     hydrateAgentCommandsForSession,
-    slashCliCacheRef,
   } = agentContext;
 
   const {
     activeSessionId,
     activeSession,
-    patchActiveSession,
-    sessions,
   } = sessionManager;
 
   const mention = useMentionCompletion(
@@ -44,15 +40,12 @@ export function useCompletions(
     getInputEl,
     activeSessionId,
     activeSession,
-    patchActiveSession,
     roles,
-    isCustomRole,
     normalizeRuntimeKey,
     commandCacheKey,
-    fetchConfigOptions,
     hydrateAgentCommandsForSession,
-    slashCliCacheRef,
     onTriggerCommandUi,
+    getCommandList,
   );
 
   const refreshInputCompletions = (value: string, caret: number) => {
@@ -65,7 +58,6 @@ export function useCompletions(
     void mention.refreshMentionSuggestions(value, caret);
   };
 
-  void sessions;
 
   return {
     mentionOpen: mention.mentionOpen,

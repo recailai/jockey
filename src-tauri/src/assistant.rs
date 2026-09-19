@@ -1,4 +1,5 @@
 use crate::acp;
+use crate::acp::session::adapter_runtime::{AnyRuntimeAdapter, RuntimeAdapter};
 use crate::runtime_kind::RuntimeKind;
 use crate::runtime_profile::{all_profiles, builtin_profiles, RuntimeCapabilities, RuntimeFamily};
 use crate::types::*;
@@ -78,6 +79,14 @@ pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
             } else {
                 RuntimeCapabilities::unavailable()
             };
+            let input_delivery = AnyRuntimeAdapter::resolve(kind.runtime_key())
+                .map(|adapter| adapter.descriptor().input_delivery)
+                .unwrap_or_else(|| {
+                    AnyRuntimeAdapter::resolve("mock")
+                        .expect("mock adapter")
+                        .descriptor()
+                        .input_delivery
+                });
             let unavailable_reason = (!available).then_some(binary.clone());
             AssistantRuntime {
                 key: kind.runtime_key().to_string(),
@@ -95,6 +104,7 @@ pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
                 launch_method,
                 transport,
                 capabilities: to_value(capabilities).unwrap_or_else(|_| serde_json::json!({})),
+                input_delivery: to_value(input_delivery).unwrap_or_else(|_| serde_json::json!({})),
             }
         })
         .collect::<Vec<_>>();
@@ -122,6 +132,14 @@ pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
             None
         };
         let unavailable_reason = (!available).then_some(binary.clone());
+        let input_delivery = AnyRuntimeAdapter::resolve(&profile.runtime_key)
+            .map(|adapter| adapter.descriptor().input_delivery)
+            .unwrap_or_else(|| {
+                AnyRuntimeAdapter::resolve("mock")
+                    .expect("mock adapter")
+                    .descriptor()
+                    .input_delivery
+            });
         rows.push(AssistantRuntime {
             key: profile.id.clone(),
             profile_id: profile.id,
@@ -140,6 +158,7 @@ pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
                 RuntimeCapabilities::unavailable()
             })
             .unwrap_or_else(|_| serde_json::json!({})),
+            input_delivery: to_value(input_delivery).unwrap_or_else(|_| serde_json::json!({})),
         });
     }
     rows

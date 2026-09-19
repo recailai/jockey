@@ -29,18 +29,22 @@ fn should_log_delta(delta_index: usize) -> bool {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct AcpDeltaPayload<'a> {
+    pub schema_version: u16,
     pub role: &'a str,
     pub runtime_kind: &'a str,
     pub app_session_id: &'a str,
+    pub turn_id: &'a str,
     pub delta: &'a str,
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct AcpStreamPayload<'a> {
+    pub schema_version: u16,
     pub role: &'a str,
     pub runtime_kind: &'a str,
     pub app_session_id: &'a str,
+    pub turn_id: &'a str,
     pub event: &'a AcpEvent,
     /// Per-execute monotonic counter; frontend uses this to detect dropped or
     /// out-of-order frames and to debug stalls.
@@ -110,6 +114,7 @@ pub async fn execute_runtime(
     } else {
         app_session_id.to_string()
     };
+    let turn_id = uuid::Uuid::new_v4().to_string();
 
     let resolved_cwd = resolve_cwd(cwd);
 
@@ -120,6 +125,7 @@ pub async fn execute_runtime(
         runtime_key: adapter.runtime_key,
         role_name,
         app_session_id: &app_session_scope,
+        turn_id: &turn_id,
         prompt,
         context,
         attachments,
@@ -138,28 +144,26 @@ pub async fn execute_runtime(
     };
     let result = RuntimeAdapter::prompt(&adapter_impl, prompt_request).await;
 
-    if result.ok {
-        let handle = result
-            .session_handle
-            .as_deref()
-            .or_else(|| {
-                result
-                    .meta
-                    .get("sessionId")
-                    .or_else(|| result.meta.get("conversationId"))
-                    .and_then(|id| id.as_str())
-            })
-            .filter(|id| !id.is_empty());
-        if let Some(session_id) = handle {
-            if let Some((s, app_sid)) = state {
-                let _ = save_app_session_role_cli_id(
-                    s,
-                    app_sid,
-                    adapter.runtime_key,
-                    role_name,
-                    session_id,
-                );
-            }
+    let handle = result
+        .session_handle
+        .as_deref()
+        .or_else(|| {
+            result
+                .meta
+                .get("sessionId")
+                .or_else(|| result.meta.get("conversationId"))
+                .and_then(|id| id.as_str())
+        })
+        .filter(|id| !id.is_empty());
+    if let Some(session_id) = handle {
+        if let Some((s, app_sid)) = state {
+            let _ = save_app_session_role_cli_id(
+                s,
+                app_sid,
+                adapter.runtime_key,
+                role_name,
+                session_id,
+            );
         }
     }
     result
@@ -171,6 +175,7 @@ pub(super) struct AcpWorkerPromptContext {
     pub(super) runtime_key: &'static str,
     pub(super) role_name: String,
     pub(super) app_session_id: String,
+    pub(super) turn_id: String,
     pub(super) agent_kind: crate::runtime_kind::RuntimeKind,
     pub(super) binary: String,
     pub(super) args: Vec<String>,
@@ -194,6 +199,7 @@ pub(super) async fn execute_acp_worker_prompt(
         runtime_key,
         role_name,
         app_session_id: app_session_id_owned,
+        turn_id,
         agent_kind,
         binary,
         args,
@@ -260,9 +266,11 @@ pub(super) async fn execute_acp_worker_prompt(
                 let _ = app.emit(
                     "acp/delta",
                     AcpDeltaPayload {
+                        schema_version: 1,
                         role: &role_owned,
                         runtime_kind: runtime_key,
                         app_session_id: &app_session_id_owned,
+                        turn_id: &turn_id,
                         delta: &delta_batch,
                     },
                 );
@@ -323,9 +331,11 @@ pub(super) async fn execute_acp_worker_prompt(
                             options.clone(),
                         );
                         let _ = app.emit("acp/stream", AcpStreamPayload {
+                            schema_version: 1,
                             role: &role_owned,
                             runtime_kind: runtime_key,
                             app_session_id: &app_session_id_owned,
+                            turn_id: &turn_id,
                             event: evt,
                             seq: emit_seq,
                         });
@@ -346,9 +356,11 @@ pub(super) async fn execute_acp_worker_prompt(
                             commands.clone(),
                         );
                         let _ = app.emit("acp/stream", AcpStreamPayload {
+                            schema_version: 1,
                             role: &role_owned,
                             runtime_kind: runtime_key,
                             app_session_id: &app_session_id_owned,
+                            turn_id: &turn_id,
                             event: evt,
                             seq: emit_seq,
                         });
@@ -367,9 +379,11 @@ pub(super) async fn execute_acp_worker_prompt(
                             "kind": event_kind_label(other),
                         }));
                         let _ = app.emit("acp/stream", AcpStreamPayload {
+                            schema_version: 1,
                             role: &role_owned,
                             runtime_kind: runtime_key,
                             app_session_id: &app_session_id_owned,
+                            turn_id: &turn_id,
                             event: other,
                             seq: emit_seq,
                         });
@@ -394,9 +408,11 @@ pub(super) async fn execute_acp_worker_prompt(
                                 last_error_code = Some(code.clone());
                             }
                             let _ = app.emit("acp/stream", AcpStreamPayload {
+                                schema_version: 1,
                                 role: &role_owned,
                                 runtime_kind: runtime_key,
                                 app_session_id: &app_session_id_owned,
+                                turn_id: &turn_id,
                                 event: other,
                                 seq: emit_seq,
                             });
@@ -501,6 +517,7 @@ fn event_kind_label(evt: &AcpEvent) -> &'static str {
         AcpEvent::Usage { .. } => "usage",
         AcpEvent::Notice { .. } => "notice",
         AcpEvent::SessionError { .. } => "sessionError",
+        AcpEvent::Unknown { .. } => "unknown",
     }
 }
 

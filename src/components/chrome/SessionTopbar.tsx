@@ -86,11 +86,6 @@ export default function SessionTopbar(props: SessionTopbarProps) {
     return props.sessions.filter((s) => s.projectId === curPid);
   });
 
-  const activeSessionObj = createMemo(() => {
-    const sid = props.activeSessionId();
-    return props.sessions.find((s) => s.id === sid);
-  });
-
   return (
     <header class="session-topbar">
       <div class="session-topbar-content" data-tauri-drag-region="false">
@@ -340,7 +335,6 @@ export default function SessionTopbar(props: SessionTopbarProps) {
         <DropdownMenu open={overflowOpen()} onOpenChange={setOverflowOpen}>
           <DropdownTrigger
             variant="plain"
-            as={ToolbarButton}
             class="session-topbar-action"
             title="More"
             aria-label="More options"

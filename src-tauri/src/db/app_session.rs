@@ -149,7 +149,7 @@ fn query_sessions(
         .collect::<Vec<_>>()
         .join(",");
     let msg_sql = format!(
-        "SELECT session_id, id, role_name, content, content_type, payload, created_at
+        "SELECT session_id, id, role_name, content, content_type, payload, created_at, client_id
          FROM app_session_messages
          WHERE session_id IN ({placeholders})
          ORDER BY id ASC"
@@ -170,6 +170,7 @@ fn query_sessions(
                 row.get::<_, String>(4)?,
                 row.get::<_, Option<String>>(5)?,
                 row.get::<_, i64>(6)?,
+                row.get::<_, Option<String>>(7)?,
             ))
         })
         .map_err(|e| e.to_string())?;
@@ -177,13 +178,17 @@ fn query_sessions(
     let mut by_session: std::collections::HashMap<String, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
     for row in rows {
-        let (session_id, message_id, role_name, content, content_type, payload, at) =
+        let (session_id, message_id, role_name, content, content_type, payload, at, client_id) =
             row.map_err(|e| e.to_string())?;
+        let id_val = client_id
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("m{message_id}"));
         let mut obj = serde_json::json!({
-            // The table's own autoincrement key. Minting a fresh uuid per load made every
-            // reload a total miss for anything keyed on message id, notably the rendered
-            // markdown cache, which then re-parsed the whole visible history.
-            "id": format!("m{message_id}"),
+            // Use client_id if available so IDs are stable and match the frontend across reloads;
+            // falls back to the table's own autoincrement key.
+            "id": id_val,
             "roleName": role_name,
             "text": content,
             "at": at
@@ -193,9 +198,11 @@ fn query_sessions(
         // failing the whole session load, same defensive stance as `parse_payload`.
         if content_type == "json" {
             if let Some(raw) = payload {
-                if let Ok(serde_json::Value::Object(extra)) =
+                if let Ok(serde_json::Value::Object(mut extra)) =
                     serde_json::from_str::<serde_json::Value>(&raw)
                 {
+                    // Do not allow payload to override the resolved message id
+                    extra.remove("id");
                     if let serde_json::Value::Object(base) = &mut obj {
                         for (k, v) in extra {
                             base.insert(k, v);
@@ -280,9 +287,10 @@ pub(crate) fn list_closed_app_sessions(
     })
 }
 
-pub(crate) fn append_app_message_internal(
+pub(crate) fn save_app_message_internal(
     state: &AppState,
     session_id: &str,
+    client_id: Option<&str>,
     role_name: &str,
     content: &str,
     content_type: Option<&str>,
@@ -292,12 +300,36 @@ pub(crate) fn append_app_message_internal(
     let content_type = content_type
         .filter(|s| !s.trim().is_empty())
         .unwrap_or("text");
+    let client_id = client_id.map(str::trim).filter(|s| !s.is_empty());
     with_db(state, |conn| {
-        conn.execute(
-            "INSERT INTO app_session_messages (session_id, role_name, content, content_type, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![session_id, role_name, content, content_type, payload, now],
-        )
-        .map_err(|e| e.to_string())?;
+        let mut updated = false;
+        if let Some(cid) = client_id {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT count(1) FROM app_session_messages WHERE session_id = ?1 AND client_id = ?2",
+                    params![session_id, cid],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            if count > 0 {
+                conn.execute(
+                    "UPDATE app_session_messages
+                     SET role_name = ?1, content = ?2, content_type = ?3, payload = ?4
+                     WHERE session_id = ?5 AND client_id = ?6",
+                    params![role_name, content, content_type, payload, session_id, cid],
+                )
+                .map_err(|e| e.to_string())?;
+                updated = true;
+            }
+        }
+        if !updated {
+            conn.execute(
+                "INSERT INTO app_session_messages (session_id, client_id, role_name, content, content_type, payload, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![session_id, client_id, role_name, content, content_type, payload, now],
+            )
+            .map_err(|e| e.to_string())?;
+        }
         conn.execute(
             "UPDATE app_sessions SET last_active_at = ?1 WHERE id = ?2",
             params![now, session_id],
@@ -305,6 +337,25 @@ pub(crate) fn append_app_message_internal(
         .map_err(|e| e.to_string())?;
         Ok(())
     })
+}
+
+pub(crate) fn append_app_message_internal(
+    state: &AppState,
+    session_id: &str,
+    role_name: &str,
+    content: &str,
+    content_type: Option<&str>,
+    payload: Option<&str>,
+) -> Result<(), String> {
+    save_app_message_internal(
+        state,
+        session_id,
+        None,
+        role_name,
+        content,
+        content_type,
+        payload,
+    )
 }
 
 #[tauri::command]
@@ -319,6 +370,27 @@ pub(crate) fn append_app_message(
     append_app_message_internal(
         get_state(&state),
         &session_id,
+        &role_name,
+        &content,
+        content_type.as_deref(),
+        payload.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub(crate) fn save_app_message(
+    state: State<'_, AppState>,
+    session_id: String,
+    client_id: Option<String>,
+    role_name: String,
+    content: String,
+    content_type: Option<String>,
+    payload: Option<String>,
+) -> Result<(), String> {
+    save_app_message_internal(
+        get_state(&state),
+        &session_id,
+        client_id.as_deref(),
         &role_name,
         &content,
         content_type.as_deref(),
@@ -570,7 +642,7 @@ fn schedule_session_role_cleanup(state: AppState, session_id: String, keep_activ
                 continue;
             }
             let _ = acp::reset_session(&runtime_kind, &role_name, Some(&session_id)).await;
-            let _ = clear_app_session_role_cli_id(&state, &session_id, &role_name);
+            let _ = clear_app_session_role_cli_id(&state, &session_id, &role_name, &runtime_kind);
         }
     });
 }
@@ -785,6 +857,50 @@ mod tests {
     }
 
     #[test]
+    fn save_app_message_updates_existing_row_by_client_id_without_duplicates() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(&dir);
+        let session = create_app_session_internal(&state, Some("s"), None, None, None, None)
+            .expect("create session");
+
+        // First checkpoint during stream
+        save_app_message_internal(
+            &state,
+            &session.id,
+            Some("stream-123"),
+            "Developer",
+            "working...",
+            Some("json"),
+            Some(r#"{"text":"working...","toolCalls":[{"toolCallId":"t1","status":"running"}]}"#),
+        )
+        .expect("checkpoint 1");
+
+        let first_load = get_app_sessions_by_ids(&state, &[session.id.clone()]).expect("load 1");
+        assert_eq!(first_load[0].messages.len(), 1);
+        assert_eq!(first_load[0].messages[0]["id"], "stream-123");
+        assert_eq!(first_load[0].messages[0]["text"], "working...");
+
+        // Second checkpoint (tool finished, more output)
+        save_app_message_internal(
+            &state,
+            &session.id,
+            Some("stream-123"),
+            "Developer",
+            "done with task!",
+            Some("json"),
+            Some(r#"{"text":"done with task!","toolCalls":[{"toolCallId":"t1","status":"completed"}]}"#),
+        )
+        .expect("checkpoint 2");
+
+        let second_load = get_app_sessions_by_ids(&state, &[session.id.clone()]).expect("load 2");
+        // Must NOT create a second message row — must update the existing one!
+        assert_eq!(second_load[0].messages.len(), 1);
+        assert_eq!(second_load[0].messages[0]["id"], "stream-123");
+        assert_eq!(second_load[0].messages[0]["text"], "done with task!");
+        assert_eq!(second_load[0].messages[0]["toolCalls"][0]["status"], "completed");
+    }
+
+    #[test]
     fn imported_provider_session_ids_are_qualified_by_runtime() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = test_state(&dir);
@@ -897,6 +1013,73 @@ mod tests {
         assert_eq!(
             restored_state.model_override.as_deref(),
             Some("claude-sonnet")
+        );
+    }
+
+    #[test]
+    fn provider_session_ids_are_kept_per_runtime_and_reset_is_scoped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(&dir);
+        let session = create_app_session_internal(&state, Some("s"), None, None, None, None)
+            .expect("create session");
+        let ids = [
+            ("claude-native", "claude-conversation-42"),
+            ("antigravity-cli", "agy-conversation-17"),
+            ("codex-cli", "codex-thread-9"),
+            ("pi-cli", "pi-session-3"),
+            ("claude-code", "acp-session-8"),
+        ];
+
+        for (runtime, provider_id) in ids {
+            crate::db::app_session_role::save_app_session_role_cli_id(
+                &state,
+                &session.id,
+                runtime,
+                "Developer",
+                provider_id,
+            )
+            .expect("save provider session id");
+        }
+
+        for (runtime, provider_id) in ids {
+            assert_eq!(
+                crate::db::app_session_role::load_app_session_role_cli_id(
+                    &state,
+                    &session.id,
+                    runtime,
+                    "Developer",
+                )
+                .as_deref(),
+                Some(provider_id)
+            );
+        }
+
+        crate::db::app_session_role::clear_app_session_role_cli_id(
+            &state,
+            &session.id,
+            "Developer",
+            "codex-cli",
+        )
+        .expect("clear Codex provider session id");
+
+        assert_eq!(
+            crate::db::app_session_role::load_app_session_role_cli_id(
+                &state,
+                &session.id,
+                "codex-cli",
+                "Developer",
+            ),
+            None
+        );
+        assert_eq!(
+            crate::db::app_session_role::load_app_session_role_cli_id(
+                &state,
+                &session.id,
+                "antigravity-cli",
+                "Developer",
+            )
+            .as_deref(),
+            Some("agy-conversation-17")
         );
     }
 

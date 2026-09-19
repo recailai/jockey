@@ -2,7 +2,8 @@ use serde_json::{json, Value};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
-use tokio::sync::Mutex;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::{oneshot, Mutex};
 
 use super::super::adapter::{acp_log, NativeProtocol};
 use super::super::error::AcpErrorCode;
@@ -33,6 +34,12 @@ static NATIVE_SESSIONS: OnceLock<dashmap::DashMap<String, Arc<Mutex<Option<Nativ
 static NATIVE_CHILDREN: OnceLock<dashmap::DashMap<String, u32>> = OnceLock::new();
 static NATIVE_ACTIVE: OnceLock<dashmap::DashSet<String>> = OnceLock::new();
 static NATIVE_CANCELLED: OnceLock<dashmap::DashSet<String>> = OnceLock::new();
+static NATIVE_WRITERS: OnceLock<dashmap::DashMap<String, Arc<Mutex<tokio::process::ChildStdin>>>> =
+    OnceLock::new();
+static NATIVE_TURNS: OnceLock<dashmap::DashMap<String, ActiveNativeTurn>> = OnceLock::new();
+static NATIVE_CONTROL_ACKS: OnceLock<
+    dashmap::DashMap<String, oneshot::Sender<Result<(), String>>>,
+> = OnceLock::new();
 
 fn native_locks() -> &'static dashmap::DashMap<String, Arc<Mutex<()>>> {
     NATIVE_LOCKS.get_or_init(dashmap::DashMap::new)
@@ -54,8 +61,152 @@ fn native_cancelled() -> &'static dashmap::DashSet<String> {
     NATIVE_CANCELLED.get_or_init(dashmap::DashSet::new)
 }
 
+fn native_writers() -> &'static dashmap::DashMap<String, Arc<Mutex<tokio::process::ChildStdin>>> {
+    NATIVE_WRITERS.get_or_init(dashmap::DashMap::new)
+}
+
+fn native_turns() -> &'static dashmap::DashMap<String, ActiveNativeTurn> {
+    NATIVE_TURNS.get_or_init(dashmap::DashMap::new)
+}
+
+fn native_control_acks() -> &'static dashmap::DashMap<String, oneshot::Sender<Result<(), String>>> {
+    NATIVE_CONTROL_ACKS.get_or_init(dashmap::DashMap::new)
+}
+
 fn native_key(runtime_key: &str, role_name: &str, app_session_id: &str) -> String {
     format!("{app_session_id}:{runtime_key}:{role_name}")
+}
+
+#[derive(Clone)]
+struct ActiveNativeTurn {
+    protocol: NativeProtocol,
+    thread_id: Option<String>,
+    turn_id: Option<String>,
+}
+
+pub(super) fn set_active_native_turn(
+    key: &str,
+    protocol: NativeProtocol,
+    thread_id: Option<String>,
+    turn_id: Option<String>,
+) {
+    native_turns().insert(
+        key.to_string(),
+        ActiveNativeTurn {
+            protocol,
+            thread_id,
+            turn_id,
+        },
+    );
+}
+
+fn clear_active_native_turn(key: &str) {
+    native_turns().remove(key);
+}
+
+async fn write_native_frame(
+    writer: Arc<Mutex<tokio::process::ChildStdin>>,
+    frame: Value,
+) -> Result<(), String> {
+    let mut bytes = serde_json::to_vec(&frame)
+        .map_err(|error| format!("native control serialization failed: {error}"))?;
+    bytes.push(b'\n');
+    let mut stdin = writer.lock().await;
+    stdin
+        .write_all(&bytes)
+        .await
+        .map_err(|error| format!("native control write failed: {error}"))?;
+    stdin
+        .flush()
+        .await
+        .map_err(|error| format!("native control flush failed: {error}"))
+}
+
+pub(super) fn resolve_native_control_response(control_key: &str, message: &Value) -> bool {
+    let Some((_, sender)) = native_control_acks().remove(control_key) else {
+        return false;
+    };
+    let result = if message.get("error").is_some()
+        || message.get("success").and_then(Value::as_bool) == Some(false)
+    {
+        let error = message
+            .get("error")
+            .or_else(|| message.get("message"))
+            .map(Value::to_string)
+            .unwrap_or_else(|| "native control request rejected".to_string());
+        Err(error)
+    } else {
+        Ok(())
+    };
+    let _ = sender.send(result);
+    true
+}
+
+pub(super) async fn steer_native(
+    runtime_key: &str,
+    role_name: &str,
+    app_session_id: &str,
+    prompt: &str,
+) -> Result<(), String> {
+    let key = native_key(runtime_key, role_name, app_session_id);
+    if !native_active().contains(&key) {
+        return Err("no active native turn to steer".to_string());
+    }
+    let active = native_turns()
+        .get(&key)
+        .map(|entry| entry.value().clone())
+        .ok_or_else(|| "native turn control is not ready".to_string())?;
+    let (control_key, frame) = match active.protocol {
+        NativeProtocol::PiRpc => (
+            key.clone(),
+            json!({
+                "type": "steer",
+                "message": prompt,
+                "images": [],
+            }),
+        ),
+        NativeProtocol::CodexAppServer => {
+            let thread_id = active
+                .thread_id
+                .as_deref()
+                .ok_or_else(|| "Codex thread id is not ready for steer".to_string())?;
+            let turn_id = active
+                .turn_id
+                .as_deref()
+                .ok_or_else(|| "Codex turn id is not ready for steer".to_string())?;
+            let control_id = format!("jockey-steer-{}", uuid::Uuid::new_v4());
+            (
+                control_id.clone(),
+                json!({
+                    "id": control_id,
+                    "method": "turn/steer",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{ "type": "text", "text": prompt }],
+                        "expectedTurnId": turn_id,
+                    },
+                }),
+            )
+        }
+    };
+    let writer = native_writers()
+        .get(&key)
+        .map(|entry| entry.value().clone())
+        .ok_or_else(|| "native process writer is unavailable".to_string())?;
+    let (ack_tx, ack_rx) = oneshot::channel();
+    native_control_acks().insert(control_key.clone(), ack_tx);
+    if let Err(error) = write_native_frame(writer, frame).await {
+        native_control_acks().remove(&control_key);
+        return Err(error);
+    }
+    match tokio::time::timeout(Duration::from_secs(5), ack_rx).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("native control acknowledgement was dropped".to_string()),
+        Err(_) => {
+            native_control_acks().remove(&control_key);
+            Err("native control acknowledgement timed out".to_string())
+        }
+    }
 }
 
 pub(super) fn cancel_native(runtime_key: &str, role_name: &str, app_session_id: &str) -> bool {
@@ -66,14 +217,12 @@ pub(super) fn cancel_native(runtime_key: &str, role_name: &str, app_session_id: 
     native_cancelled().insert(key.clone());
     let is_pi = runtime_key.starts_with("pi") || runtime_key.contains("pi-");
     if is_pi {
-        if let Some(slot_arc) = native_sessions().get(&key) {
-            let slot_arc = slot_arc.clone();
+        if let Some(writer) = native_writers()
+            .get(&key)
+            .map(|entry| entry.value().clone())
+        {
             tokio::spawn(async move {
-                if let Ok(mut slot) = slot_arc.try_lock() {
-                    if let Some(session) = slot.as_mut() {
-                        let _ = session.process.send(serde_json::json!({ "type": "abort" })).await;
-                    }
-                }
+                let _ = write_native_frame(writer, serde_json::json!({ "type": "abort" })).await;
             });
         }
         acp_log(
@@ -88,6 +237,30 @@ pub(super) fn cancel_native(runtime_key: &str, role_name: &str, app_session_id: 
         );
     }
     true
+}
+
+pub(super) async fn cancel_native_and_wait(
+    runtime_key: &str,
+    role_name: &str,
+    app_session_id: &str,
+) -> Result<(), String> {
+    if !cancel_native(runtime_key, role_name, app_session_id) {
+        return Ok(());
+    }
+    let key = native_key(runtime_key, role_name, app_session_id);
+    let drained = tokio::time::timeout(Duration::from_secs(10), async {
+        while native_active().contains(&key) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    match drained {
+        Ok(()) => {
+            native_cancelled().remove(&key);
+            Ok(())
+        }
+        Err(_) => Err(format!("timed out waiting for {runtime_key} turn to stop")),
+    }
 }
 
 pub(super) async fn discard_native_session(
@@ -180,6 +353,8 @@ pub(crate) fn reclaim_idle_native_sessions() {
             continue;
         }
         if let Some(session) = session.take() {
+            native_writers().remove(&key);
+            clear_active_native_turn(&key);
             if let Some(pid) = session.process.pid() {
                 terminate_pid(pid);
                 native_children().remove(&key);
@@ -266,6 +441,7 @@ pub(super) struct NativeRunRequest<'a> {
     pub(super) resume_session_id: Option<&'a str>,
     pub(super) mcp_servers: &'a [acp::McpServer],
     pub(super) app_session_id: &'a str,
+    pub(super) turn_id: &'a str,
 }
 
 pub(super) struct NativeEventSink<'a> {
@@ -273,6 +449,7 @@ pub(super) struct NativeEventSink<'a> {
     role: &'a str,
     runtime: &'static str,
     app_session_id: &'a str,
+    turn_id: &'a str,
     sequence: u32,
     delta_batch: String,
     last_delta_flush: Instant,
@@ -285,6 +462,7 @@ impl<'a> NativeEventSink<'a> {
             role: request.role_name,
             runtime: request.runtime_key,
             app_session_id: request.app_session_id,
+            turn_id: request.turn_id,
             sequence: 0,
             delta_batch: String::new(),
             last_delta_flush: Instant::now(),
@@ -308,6 +486,7 @@ impl<'a> NativeEventSink<'a> {
             self.role,
             self.runtime,
             self.app_session_id,
+            self.turn_id,
             &mut self.sequence,
             event,
         );
@@ -322,6 +501,7 @@ impl<'a> NativeEventSink<'a> {
             self.role,
             self.runtime,
             self.app_session_id,
+            self.turn_id,
             &self.delta_batch,
         );
         self.delta_batch.clear();
@@ -357,6 +537,7 @@ pub(super) async fn execute_native_runtime(request: NativeRunRequest<'_>) -> Acp
     native_active().insert(key.clone());
     native_cancelled().remove(&key);
     let result = execute_native_inner(&request, &key).await;
+    clear_active_native_turn(&key);
     native_active().remove(&key);
     native_cancelled().remove(&key);
     result
@@ -369,6 +550,7 @@ async fn execute_native_inner(request: &NativeRunRequest<'_>, key: &str) -> AcpP
             request.runtime_key,
             request.role_name,
             request.app_session_id,
+            request.turn_id,
             request.app,
             AcpErrorCode::RequestCancelled,
             "native prompt cancelled",
@@ -412,6 +594,7 @@ async fn execute_native_inner(request: &NativeRunRequest<'_>, key: &str) -> AcpP
                     request.runtime_key,
                     request.role_name,
                     request.app_session_id,
+                    request.turn_id,
                     request.app,
                     AcpErrorCode::ProcessCrashed,
                     error,
@@ -424,6 +607,7 @@ async fn execute_native_inner(request: &NativeRunRequest<'_>, key: &str) -> AcpP
             native_children().insert(key.to_string(), pid);
             register_child_pid(pid);
         }
+        native_writers().insert(key.to_string(), process.stdin_handle());
         *slot = Some(NativeSession {
             process,
             protocol,
@@ -444,6 +628,7 @@ async fn execute_native_inner(request: &NativeRunRequest<'_>, key: &str) -> AcpP
             request.runtime_key,
             request.role_name,
             request.app_session_id,
+            request.turn_id,
             request.app,
             AcpErrorCode::RequestCancelled,
             "native prompt cancelled",
@@ -452,11 +637,18 @@ async fn execute_native_inner(request: &NativeRunRequest<'_>, key: &str) -> AcpP
         );
     }
     let mut sink = NativeEventSink::new(request);
+    let resume_id = request.resume_session_id.filter(|s| !s.trim().is_empty());
     sink.emit(AcpEvent::StatusUpdate {
         text: if reused {
-            format!("Reusing {diagnostic} session...")
+            if let Some(sid) = resume_id {
+                format!("Reusing {diagnostic} session ({sid})...")
+            } else {
+                format!("Reusing {diagnostic} session...")
+            }
+        } else if let Some(sid) = resume_id {
+            format!("Resuming {diagnostic} session ({sid})...")
         } else {
-            format!("Connecting to {diagnostic}...")
+            format!("Initializing new {diagnostic} session...")
         },
     });
 
@@ -471,6 +663,7 @@ async fn execute_native_inner(request: &NativeRunRequest<'_>, key: &str) -> AcpP
                     request,
                     &mut sink,
                     !session.initialized,
+                    key,
                 )
                 .await
             }
@@ -480,6 +673,7 @@ async fn execute_native_inner(request: &NativeRunRequest<'_>, key: &str) -> AcpP
                     request,
                     &mut sink,
                     !session.commands_loaded,
+                    key,
                 )
                 .await
             }
@@ -524,6 +718,7 @@ async fn execute_native_inner(request: &NativeRunRequest<'_>, key: &str) -> AcpP
             request.runtime_key,
             request.role_name,
             request.app_session_id,
+            request.turn_id,
             request.app,
             if native_cancelled().contains(key) {
                 AcpErrorCode::RequestCancelled
@@ -555,6 +750,8 @@ async fn close_native_session(slot: &mut Option<NativeSession>, key: &str) {
     };
     let pid = session.process.pid();
     session.process.close().await;
+    native_writers().remove(key);
+    clear_active_native_turn(key);
     if let Some(pid) = pid {
         native_children().remove(key);
         unregister_child_pid(pid);
@@ -829,14 +1026,17 @@ pub(super) fn emit_text(
     role: &str,
     runtime: &'static str,
     app_session_id: &str,
+    turn_id: &str,
     text: &str,
 ) {
     let _ = app.emit(
         "acp/delta",
         AcpDeltaPayload {
+            schema_version: 1,
             role,
             runtime_kind: runtime,
             app_session_id,
+            turn_id,
             delta: text,
         },
     );
@@ -847,6 +1047,7 @@ pub(super) fn emit_native_event(
     role: &str,
     runtime: &'static str,
     app_session_id: &str,
+    turn_id: &str,
     sequence: &mut u32,
     event: AcpEvent,
 ) {
@@ -854,9 +1055,11 @@ pub(super) fn emit_native_event(
     let _ = app.emit(
         "acp/stream",
         AcpStreamPayload {
+            schema_version: 1,
             role,
             runtime_kind: runtime,
             app_session_id,
+            turn_id,
             event: &event,
             seq: *sequence,
         },
@@ -867,6 +1070,7 @@ fn native_error(
     runtime_key: &'static str,
     role_name: &str,
     app_session_id: &str,
+    turn_id: &str,
     app: &tauri::AppHandle,
     code: AcpErrorCode,
     raw: impl Into<String>,
@@ -885,9 +1089,11 @@ fn native_error(
     let _ = app.emit(
         "acp/stream",
         AcpStreamPayload {
+            schema_version: 1,
             role: role_name,
             runtime_kind: runtime_key,
             app_session_id,
+            turn_id,
             event: &event,
             seq: sequence,
         },

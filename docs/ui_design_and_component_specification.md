@@ -6,6 +6,17 @@ This specification establishes the frontend design system, component hierarchy, 
 
 ## 1. Core Design Principles
 
+### SolidJS Rendering Boundary
+Jockey uses SolidJS rather than React. Component APIs should expose accessors and narrow event callbacks, while session state remains owned by the session manager. Streaming updates must mutate the smallest relevant store path with `produce`; a provider event must not cause the whole application or all sessions to re-render.
+
+Agent output follows this boundary:
+
+```text
+AgentEventEnvelope -> event bus -> session update -> AgentBlockRenderer -> UI primitive
+```
+
+`AgentBlockRenderer` is the common block boundary for text, thought, tool, image, error, and unknown/other blocks. `CapabilityGate` controls optional surfaces such as usage, terminal detail, plan, and structured input. Unsupported capability means hidden or explicitly unavailable—not an empty card with fabricated values.
+
 ### Catalog-First Rule
 Never handcraft ad-hoc controls (buttons, badges, inputs, dialogs, checkboxes) inside individual views or tab components. Always check `src/components/ui/` first. If two features require a shared interactive pattern, promote it to `src/components/ui/`.
 
@@ -25,6 +36,9 @@ Distinguish strictly between the three visual micro-indicators:
 
 ### Passive Views & Mutually Exclusive Load States
 Views and tabs must remain passive: they bind state and forward user events to services/models. Avoid scattering boolean flags (`isLoading`, `hasError`, `isEmpty`); use the mutually exclusive `AsyncContent` container (`loading | error | empty | ready`).
+
+### Extension Safety
+Tool and block variants use keyed registries. Keys are normalized and duplicate registrations at the same priority fail fast; a higher-priority registration must be explicit. Custom renderers are isolated by a Solid `ErrorBoundary`, so malformed provider data produces one error card rather than breaking the message window.
 
 ---
 
@@ -61,6 +75,13 @@ Views and tabs must remain passive: they bind state and forward user events to s
 
 ---
 
+### 2.7 Provider Event Projection
+- **Transparent protocol metadata**: Known lifecycle, rate-limit, and aggregate-diff frames are consumed by the adapter and do not render as message cards.
+- **Unknown event fallback**: A genuinely unknown provider frame remains lossless, but adjacent unknown frames render as one collapsed `ProviderEventGroup` with the raw payload available on demand.
+- **Execution group**: A `ToolCallGroup` may contain ordered tool calls, thought/process text, and provider-event groups before, between, or after calls. This is one execution container; individual tool rows still use the existing `toolCallId`-based grouping and detail presentation.
+- **Message boundary**: Normal assistant `TextDelta`, final reply text, images, permission requests, and plan updates cut the execution group. Providers that stream explanatory text before the final reply must classify it as message text unless the adapter explicitly marks it as process/thought content.
+- **Rendering rule**: UI components never inspect Claude/Codex/Pi wire fields to decide whether an event is visible. That policy belongs to the adapter/compatibility projection layer.
+
 ## 3. Native Agent Protocols (`src-tauri/`)
 
 ### Pi RPC Protocol Guidelines
@@ -71,3 +92,25 @@ Views and tabs must remain passive: they bind state and forward user events to s
   ```
 - **Session ID extraction**: In `extract_pi_session_id`, always prioritize `sessionId` / `session_id` (UUID or slug) over `sessionFile` / `session_file` (absolute disk path) to prevent database pollution.
 - **Turn cancellation**: Soft-abort via `{"type": "abort"}` over stdin to allow the Pi runtime to settle cleanly without killing the child process.
+
+## 4. Streaming and Performance Contract
+
+1. The event bus validates `sessionId`, `turnId`, `seq`, and `runToken` before touching session state.
+2. Text/thought deltas are coalesced before expensive markdown or layout work; tool updates use id-based upsert and tool output uses append-only deltas.
+3. Scroll-to-bottom is scheduled through one RAF per session view and is skipped when the user has scrolled away from the bottom.
+4. Historical messages are rendered through a bounded window. Do not add virtualization until profiling shows the bounded window is insufficient.
+5. Avoid `transition-all`, repeated markdown parsing, deep cloning of `AppSession`, and provider JSON parsing in components.
+6. Preserve `null` for unreported usage fields and preserve unknown payloads for diagnostics.
+
+The performance target is interaction stability during a sustained stream, not a particular framework benchmark: the composer remains responsive, tool cards update in place, and a late/cancelled run cannot overwrite a newer run.
+
+## 5. Component Ownership
+
+| Component/layer | Owns | Must not own |
+| --- | --- | --- |
+| `acpEventBus` | event validation and routing | provider-specific rendering decisions |
+| `SessionManager` | session store, bounded updates, scroll lifecycle | adapter protocol parsing |
+| `AgentBlockRenderer` | block-to-view dispatch and error isolation | queueing or runtime selection |
+| `ToolCallGroup` | tool call presentation, terminal/diff affordances | alias detection by substring |
+| `CapabilityGate` | optional surface visibility | capability discovery or mutation |
+| `ui/*` primitives | accessible visual/control semantics | agent protocol knowledge |

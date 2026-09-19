@@ -44,16 +44,21 @@ impl NativeProcess {
         let mut frame = serde_json::to_vec(&frame)
             .map_err(|error| format!("native RPC frame serialization failed: {error}"))?;
         frame.push(b'\n');
-        self.process
-            .stdin
+        let mut stdin = self.process.stdin.lock().await;
+        stdin
             .write_all(&frame)
             .await
             .map_err(|error| self.io_error("write", error))?;
-        self.process
-            .stdin
+        stdin
             .flush()
             .await
             .map_err(|error| self.io_error("flush", error))
+    }
+
+    pub(super) fn stdin_handle(
+        &self,
+    ) -> std::sync::Arc<tokio::sync::Mutex<tokio::process::ChildStdin>> {
+        self.process.stdin_handle()
     }
 
     pub(super) async fn request(
@@ -85,7 +90,8 @@ impl NativeProcess {
         loop {
             let message = self.next_message(timeout).await?;
             if is_server_request(&message, protocol) {
-                self.answer_server_request(protocol, &message, auto_approve).await?;
+                self.answer_server_request(protocol, &message, auto_approve)
+                    .await?;
                 continue;
             }
             if message.get("id") == Some(&id) && is_response(&message, protocol) {
@@ -121,7 +127,8 @@ impl NativeProcess {
         loop {
             let message = self.next_message(timeout).await?;
             if is_server_request(&message, protocol) {
-                self.answer_server_request(protocol, &message, auto_approve).await?;
+                self.answer_server_request(protocol, &message, auto_approve)
+                    .await?;
                 continue;
             }
             return Ok(message);
@@ -194,7 +201,10 @@ impl NativeProcess {
                 self.send(json!({ "id": id, "result": result })).await
             }
             NativeProtocol::PiRpc => {
-                let method = message.get("method").and_then(Value::as_str).unwrap_or_default();
+                let method = message
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 let Some(id) = message.get("id").cloned() else {
                     return Ok(());
                 };
@@ -204,11 +214,13 @@ impl NativeProcess {
                 }
                 // Interactive UI dialogs in Pi extensions
                 if method == "confirm" {
-                    return self.send(json!({
-                        "type": "extension_ui_response",
-                        "id": id,
-                        "confirmed": auto_approve
-                    })).await;
+                    return self
+                        .send(json!({
+                            "type": "extension_ui_response",
+                            "id": id,
+                            "confirmed": auto_approve
+                        }))
+                        .await;
                 }
                 if method == "select" {
                     let first_opt = message
@@ -217,11 +229,13 @@ impl NativeProcess {
                         .and_then(|arr| arr.first())
                         .cloned()
                         .unwrap_or(Value::Null);
-                    return self.send(json!({
-                        "type": "extension_ui_response",
-                        "id": id,
-                        "value": first_opt
-                    })).await;
+                    return self
+                        .send(json!({
+                            "type": "extension_ui_response",
+                            "id": id,
+                            "value": first_opt
+                        }))
+                        .await;
                 }
                 Ok(())
             }

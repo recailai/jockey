@@ -4,7 +4,7 @@ import type { AppSession } from "../components/types";
 export function hasConversationContent(session: AppSession | null | undefined): boolean {
   if (!session) return false;
   if (session.submitting || session.streamingMessage) return true;
-  if ((session.queuedMessages?.length ?? 0) > 0) return true;
+  if (session.queuedItems.some((item) => item.status === "queued")) return true;
   return session.messages.some((m) => {
     if (m.roleName === "user") return true;
     if (m.roleName === "system" || m.roleName === "event") return false;

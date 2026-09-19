@@ -15,6 +15,41 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
   const STORAGE_KEY_SESSIONS = "jockey_mock_sessions";
   const STORAGE_KEY_ROLES = "jockey_mock_roles";
 
+  type MockProject = {
+    id: string;
+    name: string;
+    rootPath: string;
+    createdAt: number;
+    updatedAt: number;
+  };
+  type MockMessage = { id: string; roleName: string; text: string; at: number };
+  type MockSession = {
+    id: string;
+    title: string;
+    projectId: string | null;
+    activeRole: string;
+    runtimeKind: string;
+    runtimeProfileId: string;
+    cwd: string | null;
+    messages: MockMessage[];
+    createdAt: number;
+    lastActiveAt: number;
+    closedAt?: number | null;
+  };
+  type MockRole = {
+    id: string;
+    name: string;
+    roleName: string;
+    runtimeKind: string;
+    prompt: string;
+    systemPrompt: string;
+    skills: string[];
+    projectId: string | null;
+    isBuiltin: boolean;
+    createdAt: number;
+    updatedAt: number;
+  };
+
   const getStorage = <T>(key: string, defaultVal: T): T => {
     try {
       const item = localStorage.getItem(key);
@@ -142,18 +177,18 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
 
       switch (cmd) {
         case "list_projects_cmd": {
-          return getStorage(STORAGE_KEY_PROJECTS, []);
+          return getStorage<MockProject[]>(STORAGE_KEY_PROJECTS, []);
         }
         case "get_project_cmd": {
-          const list = getStorage(STORAGE_KEY_PROJECTS, []);
+          const list = getStorage<MockProject[]>(STORAGE_KEY_PROJECTS, []);
           return list.find((p: { id: string }) => p.id === args.id) ?? null;
         }
         case "create_project_cmd": {
-          const list = getStorage(STORAGE_KEY_PROJECTS, []);
+          const list = getStorage<MockProject[]>(STORAGE_KEY_PROJECTS, []);
           const created = {
             id: `proj-${Date.now()}`,
-            name: args.name || "Untitled",
-            rootPath: args.rootPath || "/tmp",
+            name: String(args.name || "Untitled"),
+            rootPath: String(args.rootPath || "/tmp"),
             createdAt: Date.now(),
             updatedAt: Date.now(),
           };
@@ -162,7 +197,7 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
           return created;
         }
         case "delete_project_cmd": {
-          let list = getStorage(STORAGE_KEY_PROJECTS, []);
+          let list = getStorage<MockProject[]>(STORAGE_KEY_PROJECTS, []);
           list = list.filter((p: { id: string }) => p.id !== args.id);
           setStorage(STORAGE_KEY_PROJECTS, list);
           return;
@@ -175,15 +210,15 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
         }
 
         case "list_app_sessions": {
-          const list = getStorage(STORAGE_KEY_SESSIONS, []);
+          const list = getStorage<MockSession[]>(STORAGE_KEY_SESSIONS, []);
           return list.filter((s: { closedAt?: number | null }) => !s.closedAt);
         }
         case "list_closed_app_sessions": {
-          const list = getStorage(STORAGE_KEY_SESSIONS, []);
+          const list = getStorage<MockSession[]>(STORAGE_KEY_SESSIONS, []);
           return list.filter((s: { closedAt?: number | null }) => !!s.closedAt);
         }
         case "reopen_app_session": {
-          const list = getStorage(STORAGE_KEY_SESSIONS, []);
+          const list = getStorage<MockSession[]>(STORAGE_KEY_SESSIONS, []);
           const s = list.find((item: { id: string }) => item.id === args.id);
           if (s) {
             s.closedAt = null;
@@ -194,11 +229,11 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
           return null;
         }
         case "create_app_session": {
-          const list = getStorage(STORAGE_KEY_SESSIONS, []);
+          const list = getStorage<MockSession[]>(STORAGE_KEY_SESSIONS, []);
           const created = {
             id: `s-${Date.now()}`,
-            title: args.title || "New Session",
-            projectId: args.projectId || null,
+            title: String(args.title || "New Session"),
+            projectId: typeof args.projectId === "string" ? args.projectId : null,
             activeRole: "Developer",
             runtimeKind: "claude-native",
             runtimeProfileId: "claude-native",
@@ -212,7 +247,7 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
           return created;
         }
         case "update_app_session": {
-          const list = getStorage(STORAGE_KEY_SESSIONS, []);
+          const list = getStorage<MockSession[]>(STORAGE_KEY_SESSIONS, []);
           const idx = list.findIndex((s: { id: string }) => s.id === args.id);
           if (idx !== -1) {
             const updates = (args.updates as Record<string, unknown>) || {};
@@ -223,7 +258,7 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
           return null;
         }
         case "delete_app_session": {
-          const list = getStorage(STORAGE_KEY_SESSIONS, []);
+          const list = getStorage<MockSession[]>(STORAGE_KEY_SESSIONS, []);
           const s = list.find((item: { id: string }) => item.id === args.id);
           if (s) {
             s.closedAt = Date.now();
@@ -233,13 +268,13 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
         }
 
         case "list_roles": {
-          return getStorage(STORAGE_KEY_ROLES, []);
+          return getStorage<MockRole[]>(STORAGE_KEY_ROLES, []);
         }
         case "list_app_skills": {
           return [];
         }
         case "upsert_role_cmd": {
-          const list = getStorage(STORAGE_KEY_ROLES, []);
+          const list = getStorage<MockRole[]>(STORAGE_KEY_ROLES, []);
           const input = (args.input || {}) as Record<string, unknown>;
           const roleName = String(input.roleName || input.name || "Role");
           const targetId = input.id ? String(input.id) : null;
@@ -254,10 +289,10 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
             id: targetId || (existingIdx !== -1 ? list[existingIdx].id : `r-${Date.now()}`),
             name: roleName,
             roleName,
-            runtimeKind: input.runtimeKind || "claude-native",
-            prompt: input.prompt || "",
-            systemPrompt: input.systemPrompt || "",
-            skills: input.skills || [],
+            runtimeKind: String(input.runtimeKind || "claude-native"),
+            prompt: String(input.prompt || ""),
+            systemPrompt: String(input.systemPrompt || ""),
+            skills: Array.isArray(input.skills) ? input.skills.map(String) : [],
             projectId: inputPid,
             isBuiltin: false,
             createdAt: Date.now(),
@@ -272,7 +307,7 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
           return roleObj;
         }
         case "delete_role_cmd": {
-          let list = getStorage(STORAGE_KEY_ROLES, []);
+          let list = getStorage<MockRole[]>(STORAGE_KEY_ROLES, []);
           list = list.filter(
             (r: { id?: string; roleName: string; projectId?: string | null }) =>
               args.roleId
@@ -325,7 +360,7 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
             reply = `Executed mock command \`${text.trim()}\` successfully.`;
           }
 
-          const list = getStorage(STORAGE_KEY_SESSIONS, []);
+          const list = getStorage<MockSession[]>(STORAGE_KEY_SESSIONS, []);
           const s = list.find((item: { id: string }) => item.id === sessionId);
           if (s) {
             s.messages = s.messages || [];

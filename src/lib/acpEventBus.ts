@@ -1,7 +1,7 @@
 import type { Accessor } from "solid-js";
 import type {
   AcpDeltaEvent,
-  AcpStreamEvent,
+  AcpStreamPayload,
   AppSession,
   Role,
   SessionUpdateEvent,
@@ -10,11 +10,13 @@ import type {
 import { now } from "../components/types";
 import {
   appendAcpDelta,
-  applyAcpStreamEvent,
   toConnectionLostMessage,
   toSessionDeltaMessage,
   toWorkflowStateMessage,
 } from "./acpEventBridge";
+import { acceptsAgentEvent, applyAgentEvent, normalizeAgentEvent } from "./agentEvent";
+
+export type { AcpStreamPayload } from "../components/types";
 
 type PrewarmStage = "warming" | "ready" | "failed";
 type PrewarmRuntimeState = { stage: PrewarmStage; error?: string };
@@ -37,25 +39,17 @@ export type AcpPrewarmPayload = {
   status: string | { failed: { error: string } };
 };
 
-export type AcpStreamPayload = {
-  role: string;
-  runtimeKind?: string;
-  appSessionId?: string;
-  seq?: number;
-  event: AcpStreamEvent;
-};
-
 export type AcpEventBusDeps = {
   acceptingStreams: Map<string, number>;
   sessions: AppSession[];
   getSessionIndex: (id: string) => number;
-  appendStream: (sid: string, chunk: string) => void;
+  appendStream: (sid: string, chunk: string, roleName?: string) => void;
   pushMessageToSession: (sid: string, role: string, text: string) => void;
   pushMessage: (role: string, text: string) => void;
-  onSessionDeltaLine: (sid: string, line: string) => void;
+  onSessionDeltaLine: (sid: string, line: string, roleName?: string) => void;
   updateSession: (id: string, patch: Partial<AppSession>) => void;
   mutateSession: (sid: string, recipe: (s: AppSession) => void) => void;
-  appendThought: (sid: string, text: string) => void;
+  appendThought: (sid: string, text: string, roleName?: string) => void;
   normalizeToolLocations: (
     raw: unknown[] | undefined,
   ) => Array<{ path: string; line?: number }> | undefined;
@@ -66,10 +60,13 @@ export type AcpEventBusDeps = {
   roles: Accessor<Role[]>;
   commandCacheKey: (runtimeKey: string, roleName: string) => string;
   scheduleScrollToBottom: () => void;
+  scheduleCheckpoint?: (sid: string) => void;
 };
 
 export function createAcpEventBus(deps: AcpEventBusDeps) {
-  const lastSeqBySession = new Map<string, number>();
+  const lastSeqByStream = new Map<string, number>();
+  const activeTurnBySession = new Map<string, { runToken?: number; turnId: string }>();
+  const retiredTurnsBySession = new Map<string, Set<string>>();
   const prewarmState = new Map<string, PrewarmScopeState>();
 
   const renderPrewarmText = (runtimes: Map<string, PrewarmRuntimeState>): string => {
@@ -148,15 +145,37 @@ export function createAcpEventBus(deps: AcpEventBusDeps) {
       }
     },
     delta(payload: AcpDeltaEvent & { appSessionId?: string }) {
+      const sid = payload.appSessionId?.trim();
+      if (sid && payload.turnId) {
+        if (retiredTurnsBySession.get(sid)?.has(payload.turnId)) {
+          console.debug("[agent/event] dropped (retired delta turn)", {
+            sid,
+            turnId: payload.turnId,
+          });
+          return;
+        }
+        const currentTurn = activeTurnBySession.get(sid);
+        const currentToken = deps.acceptingStreams.get(sid);
+        if (currentTurn && currentTurn.runToken === currentToken && currentTurn.turnId !== payload.turnId) {
+          console.debug("[agent/event] dropped (stale delta turn)", {
+            sid,
+            expected: currentTurn.turnId,
+            received: payload.turnId,
+          });
+          return;
+        }
+        activeTurnBySession.set(sid, { runToken: currentToken, turnId: payload.turnId });
+      }
       appendAcpDelta(payload, deps.acceptingStreams, deps.sessions, deps.appendStream, deps.getSessionIndex);
     },
     sessionUpdate(payload: SessionUpdateEvent & { appSessionId?: string }) {
       const line = toSessionDeltaMessage(payload);
-      if (line) deps.onSessionDeltaLine(payload.appSessionId ?? "", line);
+      const sid = payload.appSessionId?.trim() || payload.sessionId?.trim() || "";
+      if (line) deps.onSessionDeltaLine(sid, line.text, line.roleName);
     },
     workflowState(payload: WorkflowStateEvent & { appSessionId?: string }) {
       const msg = toWorkflowStateMessage(payload);
-      const sid = payload.appSessionId;
+      const sid = payload.appSessionId?.trim() || payload.sessionId?.trim() || "";
       if (sid) {
         deps.pushMessageToSession(sid, "event", msg);
       } else {
@@ -164,32 +183,68 @@ export function createAcpEventBus(deps: AcpEventBusDeps) {
       }
     },
     stream(payload: AcpStreamPayload) {
-      const sid = payload.appSessionId;
+      const sid = payload.appSessionId?.trim();
       if (!sid) return;
       if (!deps.acceptingStreams.has(sid)) {
-        console.debug("[acp/stream] dropped (not accepting)", { sid, seq: payload.seq, kind: payload.event?.kind });
+        console.debug("[agent/event] dropped (not accepting)", { sid, seq: payload.seq, kind: payload.event?.kind });
         return;
       }
       const currentToken = deps.acceptingStreams.get(sid);
       const idx = deps.getSessionIndex(sid);
       const sessionRunToken = idx !== -1 ? deps.sessions[idx]?.streamingRunToken : undefined;
       if (currentToken !== undefined && sessionRunToken !== currentToken) {
-        console.debug("[acp/stream] dropped (stale run token)", { sid, seq: payload.seq, kind: payload.event?.kind });
+        console.debug("[agent/event] dropped (stale run token)", { sid, seq: payload.seq, kind: payload.event?.kind });
         return;
       }
-      const seq = payload.seq;
-      if (typeof seq === "number") {
-        const prev = lastSeqBySession.get(sid);
-        if (prev !== undefined && seq !== prev + 1) {
-          console.warn("[acp/stream] seq gap", { sid, prev, seq, gap: seq - prev - 1, kind: payload.event?.kind });
-        }
-        lastSeqBySession.set(sid, seq);
+      const envelope = normalizeAgentEvent(payload, sessionRunToken !== undefined ? String(sessionRunToken) : undefined);
+      if (!envelope) return;
+      if (retiredTurnsBySession.get(sid)?.has(envelope.turnId)) {
+        console.debug("[agent/event] dropped (retired stream turn)", {
+          sid,
+          turnId: envelope.turnId,
+          kind: envelope.event.kind,
+        });
+        return;
       }
-      applyAcpStreamEvent({
+      const currentTurn = activeTurnBySession.get(sid);
+      const isControlPlaneEvent = ["permissionRequest", "permissionExpired", "userInputRequest"].includes(
+        envelope.event.kind,
+      );
+      if (!isControlPlaneEvent && !envelope.turnId.startsWith("legacy:")) {
+        if (currentTurn && currentTurn.runToken === currentToken && currentTurn.turnId !== envelope.turnId) {
+          console.debug("[agent/event] dropped (stale turn)", {
+            sid,
+            expected: currentTurn.turnId,
+            received: envelope.turnId,
+            kind: envelope.event.kind,
+          });
+          return;
+        }
+        activeTurnBySession.set(sid, { runToken: currentToken, turnId: envelope.turnId });
+      }
+      const session = idx !== -1 ? deps.sessions[idx] : undefined;
+      if (!acceptsAgentEvent(session, envelope)) return;
+      const seq = envelope.seq;
+      const streamKey = `${sid}:${envelope.turnId}`;
+      if (typeof seq === "number" && seq > 0) {
+        const prev = lastSeqByStream.get(streamKey);
+        if (prev !== undefined && seq <= prev) {
+          console.debug("[agent/event] dropped (duplicate/out of order)", {
+            sid,
+            turnId: envelope.turnId,
+            prev,
+            seq,
+            kind: envelope.event?.kind,
+          });
+          return;
+        }
+        if (prev !== undefined && seq !== prev + 1) {
+          console.warn("[agent/event] seq gap", { sid, prev, seq, gap: seq - prev - 1, kind: envelope.event?.kind });
+        }
+        lastSeqByStream.set(streamKey, seq);
+      }
+      applyAgentEvent({
         sid,
-        roleName: payload.role,
-        runtimeKind: payload.runtimeKind,
-        event: payload.event,
         patchSession: (sessionId, patch) => deps.updateSession(sessionId, patch),
         mutateSession: deps.mutateSession,
         appendThought: deps.appendThought,
@@ -199,15 +254,28 @@ export function createAcpEventBus(deps: AcpEventBusDeps) {
         roles: deps.roles,
         commandCacheKey: deps.commandCacheKey,
         scheduleScrollToBottom: deps.scheduleScrollToBottom,
-      });
+        scheduleCheckpoint: deps.scheduleCheckpoint,
+      }, envelope);
     },
     clearSession(sid: string) {
-      lastSeqBySession.delete(sid);
+      const activeTurn = activeTurnBySession.get(sid);
+      if (activeTurn && !activeTurn.turnId.startsWith("legacy:")) {
+        const retired = retiredTurnsBySession.get(sid) ?? new Set<string>();
+        retired.add(activeTurn.turnId);
+        while (retired.size > 8) retired.delete(retired.values().next().value as string);
+        retiredTurnsBySession.set(sid, retired);
+      }
+      for (const key of lastSeqByStream.keys()) {
+        if (key.startsWith(`${sid}:`)) lastSeqByStream.delete(key);
+      }
+      activeTurnBySession.delete(sid);
       prewarmState.delete(sid);
     },
     clear() {
       prewarmState.clear();
-      lastSeqBySession.clear();
+      lastSeqByStream.clear();
+      activeTurnBySession.clear();
+      retiredTurnsBySession.clear();
     },
   };
 }

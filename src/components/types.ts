@@ -23,6 +23,8 @@ export type RoleUpsertInput = {
 export type AppToolCall = {
   toolCallId: string;
   title: string;
+  /** Provider-native tool identifier, when the protocol exposes one. */
+  toolName?: string;
   kind: string;
   status: string;
   content?: unknown[];
@@ -39,6 +41,8 @@ export type AppToolCall = {
   diff?: unknown;
   /** Accumulated streamed stdout for long-running tools. */
   outputLog?: string;
+  /** Agent that owns this call when a turn fans out across roles. */
+  roleName?: string;
 };
 export type AppPlanEntry = { content?: string; title?: string; status?: string; description?: string; priority?: string };
 /** Token accounting for the session. `null` fields mean the provider did not report them,
@@ -72,10 +76,26 @@ export type AppUserInputRequest = {
   questions: AppUserInputQuestion[];
 };
 export type AppPermission = { requestId: string; title: string; description: string | null; options: Array<{ optionId: string; title?: string; kind?: string }> };
+export type AgentBlock =
+  | { kind: "text"; text: string; roleName?: string }
+  | { kind: "thought"; text: string; channel?: "raw" | "summary"; roleName?: string }
+  | { kind: "tool"; tc: AppToolCall; roleName?: string }
+  | { kind: "image"; data: string; mimeType: string; roleName?: string }
+  | { kind: "error"; code: string; message: string; roleName?: string }
+  | { kind: "other"; type: string; payload: unknown; roleName?: string };
+export type AgentEventEnvelope = {
+  schemaVersion: number;
+  sessionId: string;
+  turnId: string;
+  roleName: string;
+  runtimeKey: string;
+  seq: number;
+  event: AcpStreamEvent;
+};
 export type AcpStreamEvent = {
   kind: string;
   text?: string;
-  toolCallId?: string; title?: string; toolKind?: string; status?: string; content?: unknown[];
+  toolCallId?: string; title?: string; toolName?: string; toolKind?: string; status?: string; content?: unknown[];
   locations?: Array<{ path: string; line?: number }>;
   rawInput?: unknown;
   rawOutput?: unknown;
@@ -100,6 +120,18 @@ export type AcpStreamEvent = {
   level?: string;
   // `contextCompacted` event fields (`reason` shares the shape of other detail fields).
   beforeTokens?: number | null; afterTokens?: number | null; reason?: string | null;
+  // Provider event preserved by an adapter when it has no canonical rendering.
+  typeName?: string;
+  raw?: unknown;
+};
+export type AcpStreamPayload = {
+  role: string;
+  runtimeKind?: string;
+  appSessionId?: string;
+  seq?: number;
+  turnId?: string;
+  schemaVersion?: number;
+  event: AcpStreamEvent;
 };
 
 /** Display-only terminal view derived from ToolCall.meta.terminal_* payloads.
@@ -126,14 +158,77 @@ export type AcpConfigOption = {
   currentValue: string;
   options: ConfigOptionValue[] | ConfigOptionGroup[];
 };
-export type AssistantRuntime = { key: string; profileId: string; label: string; family: "native" | "acp" | string; binary: string; available: boolean; version: string | null; installHint: string | null; unavailableReason: string | null; launchMethod: string | null; transport: string; capabilities: Record<string, boolean | string> };
+export type InputDeliveryCapabilities = {
+  nextTurn: boolean;
+  nextStep: boolean;
+  interrupt: boolean;
+  runNow: boolean;
+  strategy?: "queue" | "interruptFollowUp" | "steer" | string;
+};
+export type AssistantRuntime = { key: string; profileId: string; label: string; family: "native" | "acp" | string; binary: string; available: boolean; version: string | null; installHint: string | null; unavailableReason: string | null; launchMethod: string | null; transport: string; capabilities: Record<string, boolean | string>; inputDelivery?: InputDeliveryCapabilities };
+export type RuntimeCapabilities = {
+  streaming?: boolean;
+  sessionPersistence?: boolean;
+  sessionResume?: boolean;
+  modelCatalog?: boolean;
+  dynamicModes?: boolean;
+  dynamicConfig?: boolean;
+  permissionRequests?: boolean;
+  mcpServers?: boolean;
+  attachments?: boolean;
+  toolInvocations?: boolean;
+  sessionListing?: boolean;
+  rewind?: boolean;
+  fork?: boolean;
+  toolDetail?: boolean;
+  interaction?: "none" | "permissionOnly" | "full" | string;
+  outputStreaming?: boolean;
+  usage?: boolean;
+  nestedTools?: boolean;
+  toolOutputStreaming?: boolean;
+  structuredUserInput?: boolean;
+  terminal?: boolean;
+  plan?: boolean;
+};
+export type QueuedItem = {
+  id: string;
+  clientId?: string;
+  text: string;
+  attachments: Array<{ data: string; mimeType: string }>;
+  roleName?: string | null;
+  delivery: "nextTurn" | "nextStep";
+  createdAt: number;
+  status: "queued" | "claimed" | "failed";
+};
 export type ChatCommandResult = { ok: boolean; message: string; runtimeKind: string | null; sessionId: string | null; payload: Record<string, unknown> };
-export type AssistantChatResponse = { ok: boolean; reply: string; runtimeKind: string | null; sessionId: string | null; commandResult: ChatCommandResult | null };
+export type AssistantChatResponse = { ok: boolean; reply: string; runtimeKind: string | null; sessionId: string | null; commandResult: ChatCommandResult | null; roleReplies?: Array<{ roleName: string; reply: string; ok?: boolean; errorCode?: string | null }> };
 export type SessionUpdateEvent = { sessionId: string; roleName: string; delta: string; done: boolean };
 export type WorkflowStateEvent = { sessionId: string; status: string; activeRole: string | null; message: string };
-export type AcpDeltaEvent = { role: string; delta: string; appSessionId?: string };
-export type AppSegment = { kind: "text"; text: string } | { kind: "tool"; tc: AppToolCall };
-export type AppMessage = { id: string; roleName: string; text: string; at: number; toolCalls?: AppToolCall[]; segments?: AppSegment[]; images?: { data: string; mimeType: string }[]; thoughtText?: string };
+export type AcpDeltaEvent = {
+  role: string;
+  delta: string;
+  appSessionId?: string;
+  turnId?: string;
+  schemaVersion?: number;
+};
+export type AppSegment =
+  | { kind: "text"; text: string; roleName?: string }
+  | { kind: "thought"; text: string; roleName?: string }
+  | { kind: "tool"; tc: AppToolCall; roleName?: string }
+  | { kind: "other"; type: string; payload: unknown; roleName?: string };
+export type AppMessageType = "user" | "assistant" | "tool" | "thought" | "event" | "context";
+export type AppMessage = {
+  id: string;
+  roleName: string;
+  text: string;
+  at: number;
+  messageType?: AppMessageType;
+  purpose?: "request" | "response" | "providerEvent" | "roleHandoff" | "taskState" | "conversationHistory";
+  toolCalls?: AppToolCall[];
+  segments?: AppSegment[];
+  images?: { data: string; mimeType: string }[];
+  thoughtText?: string;
+};
 export type AppMentionItem = {
   value: string;
   kind: "role" | "file" | "dir" | "command" | "skill";
@@ -185,13 +280,16 @@ export type AppSession = {
   agentModes: Array<{ id: string; title?: string }>;
   currentMode: string | null;
   submitting: boolean;
+  turnPhase?: "idle" | "running" | "cancelling" | "sending";
+  /** True while the queue runner owns the session, including the provider turn it starts. */
+  queueRunActive?: boolean;
   discoveredConfigOptions: AcpConfigOption[];
   configOptionsLoading: boolean;
   agentCommands: Map<string, Array<{ name: string; description: string; hint?: string }>>;
   status: "idle" | "running" | "done" | "error";
   agentState?: string;
   thoughtText?: string;
-  queuedMessages: string[];
+  queuedItems: QueuedItem[];
   previewTabs: PreviewTab[];
   activePreviewTabId: string | null;
   /** Display-only terminal entries keyed by terminal_id. Populated from
@@ -303,4 +401,3 @@ export const TABS: Array<{ id: TabId; label: string; icon: string }> = [
   { id: "skills", label: "Skills", icon: "zap" },
   { id: "rules", label: "Rules", icon: "file-text" },
 ];
-

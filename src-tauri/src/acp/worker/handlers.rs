@@ -570,9 +570,12 @@ pub(crate) async fn handle_execute(
 
     let conn_exists = CONN_MAP.with(|m| m.borrow().contains_key(&key));
     if !conn_exists {
-        let _ = delta_tx.try_send(AcpEvent::StatusUpdate {
-            text: "Connecting to agent runtime...".to_string(),
-        });
+        let text = if let Some(ref sid) = resume_session_id.as_deref().filter(|s| !s.trim().is_empty()) {
+            format!("Resuming agent session ({sid})...")
+        } else {
+            "Initializing new agent session...".to_string()
+        };
+        let _ = delta_tx.try_send(AcpEvent::StatusUpdate { text });
     }
 
     let is_cold = match ensure_connection(

@@ -1,7 +1,7 @@
 import { For, Show, createSignal, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import { INTERACTIVE_MOTION } from "../types";
-import { Badge as UiBadge, Button, EmptyState as UiEmptyState, Input, Textarea } from "../ui";
+import { Button, Input, Textarea } from "../ui";
 
 // Re-export domain types from canonical location (src/components/types.ts)
 export type {
@@ -13,7 +13,6 @@ export type {
   McpServerSse,
   AcpMcpServer,
   ContextEntry,
-  TabId,
 } from "../types";
 
 // Re-export helpers from canonical locations
@@ -23,22 +22,6 @@ export { fmtDate, fmtRelative } from "../../lib/formatHelpers";
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared micro-components
 // ─────────────────────────────────────────────────────────────────────────────
-
-/** @deprecated Use `Badge` from `src/components/ui` instead. */
-export function Badge(props: { label: string; color?: string; class?: string }) {
-  return (
-    <span class={`ui-badge ${props.color ?? ""} ${props.class ?? ""}`}>
-      {props.label}
-    </span>
-  );
-}
-
-/** @deprecated Use `EmptyState` from `src/components/ui` instead. */
-export function EmptyState(props: { icon: string; title: string; sub?: string }) {
-  return (
-    <UiEmptyState icon={props.icon} title={props.title} description={props.sub} />
-  );
-}
 
 export function PanelSection(props: { title: string; action?: { label: string; onClick: () => void }; children: unknown }) {
   return (
@@ -220,7 +203,7 @@ export function InlineSelect(props: {
 }
 
 export function ActionButton(props: {
-  onClick: () => void; label: string; variant?: "primary" | "danger" | "ghost"; class?: string; disabled?: boolean;
+  onClick: () => void; label: string; variant?: "primary" | "danger" | "ghost" | "secondary"; class?: string; disabled?: boolean;
 }) {
   return (
     <Button

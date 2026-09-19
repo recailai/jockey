@@ -33,7 +33,7 @@ function FileWithLineNumbers(props: { text: string; path: string }) {
             <div
               innerHTML={highlight()
                 ? highlightCodeLineHtml(line, language())
-                : line.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}
+                : line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}
             />
           )}
         </For>

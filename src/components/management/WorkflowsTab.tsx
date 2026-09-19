@@ -1,10 +1,11 @@
 import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 import type { Role } from "../types";
 import { RUNTIME_COLOR } from "../types";
-import { EmptyState, FieldRow, TextInput, InlineSelect, PanelSection, ActionButton } from "./primitives";
+import { FieldRow, TextInput, InlineSelect, PanelSection, ActionButton } from "./primitives";
 import type { Workflow, WorkflowStep } from "./primitives";
 import { fmtDate, fmtRelative } from "./primitives";
 import { workflowApi } from "../../lib/tauriApi";
+import { EmptyState } from "../ui";
 
 export function WorkflowsTab(props: { roles: Role[]; onError?: (message: string) => void }) {
   const [workflows, setWorkflows] = createSignal<Workflow[]>([]);
@@ -81,7 +82,7 @@ export function WorkflowsTab(props: { roles: Role[]; onError?: (message: string)
             <p class="p-4 font-mono text-[10px] theme-muted">Loading…</p>
           </Show>
           <Show when={!loading() && workflows().length === 0}>
-            <EmptyState icon="⬡" title="No automations" sub="Create your first automation" />
+            <EmptyState icon="⬡" title="No automations" description="Create your first automation" />
           </Show>
           <For each={workflows()}>
             {(wf) => (
@@ -203,7 +204,7 @@ export function WorkflowsTab(props: { roles: Role[]; onError?: (message: string)
         </Show>
 
         <Show when={!creating() && !selected()}>
-          <EmptyState icon="⬡" title="Select an automation" sub="Or create a new one" />
+          <EmptyState icon="⬡" title="Select an automation" description="Or create a new one" />
         </Show>
       </div>
     </div>

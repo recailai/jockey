@@ -36,7 +36,6 @@ export const resolveRoute = (input: ResolveRouteInput): ResolveRouteResult => {
   const roleExists = (name: string) => roleNames.includes(name);
 
   if (!isCommand) {
-    const mentionMatch = text.match(/^@(\S+)/);
     const isFileLikeMention = (s: string) =>
       s.startsWith("file:")
       || s.startsWith("dir:")
@@ -44,21 +43,25 @@ export const resolveRoute = (input: ResolveRouteInput): ResolveRouteResult => {
       || s.includes(".")
       || s.startsWith("~");
     const isExplicitRole = (s: string) => s.startsWith("role:");
-    if (mentionMatch && (isExplicitRole(mentionMatch[1]) || !isFileLikeMention(mentionMatch[1]))) {
-      const rawTarget = mentionMatch[1];
-      const target = rawTarget.startsWith("role:") ? rawTarget.slice(5) : rawTarget;
-      if (
-        target === "assistant"
-        || target === defaultRoleAlias
-        || target.toLowerCase() === defaultRoleAlias.toLowerCase()
-      ) {
-        activateRole = defaultRoleAlias;
-        sendRoleLabel = defaultRoleAlias;
-        effectiveRole = defaultRoleAlias;
-        explicitRoleMention = true;
-        prefetchRole = defaultRoleAlias;
-      } else {
-        if (!roleExists(target)) {
+
+    // Match all consecutive mentions at the beginning of the text
+    const words = text.trim().split(/\s+/);
+    const matchedRoles: string[] = [];
+
+    for (const w of words) {
+      if (!w.startsWith("@")) break;
+      const rawTarget = w.slice(1);
+      if (isExplicitRole(rawTarget) || !isFileLikeMention(rawTarget)) {
+        const target = rawTarget.startsWith("role:") ? rawTarget.slice(5) : rawTarget;
+        if (
+          target === "assistant"
+          || target === defaultRoleAlias
+          || target.toLowerCase() === defaultRoleAlias.toLowerCase()
+        ) {
+          matchedRoles.push(defaultRoleAlias);
+        } else if (roleExists(target)) {
+          matchedRoles.push(target);
+        } else {
           return {
             sendRoleLabel,
             effectiveRole,
@@ -66,16 +69,21 @@ export const resolveRoute = (input: ResolveRouteInput): ResolveRouteResult => {
             isCommand,
             isAppCommand,
             inRoleContext,
-            explicitRoleMention,
+            explicitRoleMention: true,
             error: `role not found: ${target}`,
           };
         }
-        explicitRoleMention = true;
-        activateRole = target;
-        prefetchRole = target;
-        sendRoleLabel = target;
-        effectiveRole = target;
+      } else {
+        break;
       }
+    }
+
+    if (matchedRoles.length > 0) {
+      explicitRoleMention = true;
+      activateRole = matchedRoles[0];
+      prefetchRole = matchedRoles[0];
+      effectiveRole = matchedRoles[0];
+      sendRoleLabel = matchedRoles.length === 1 ? matchedRoles[0] : matchedRoles.join(" & ");
     }
   }
 

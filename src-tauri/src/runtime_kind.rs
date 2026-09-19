@@ -17,7 +17,7 @@ impl RuntimeKind {
             "mock" => Some(Self::Mock),
             "claude" | "native:claude" | "claude-native" => Some(Self::ClaudeNative),
             "claude-code" | "claude-acp" | "acp:claude-code" => Some(Self::ClaudeCode),
-            "agy" | "antigravity" | "antigravity-cli" | "gemini" | "gemini-cli" => {
+            "agy" | "native:agy" | "antigravity" | "antigravity-cli" | "gemini" | "gemini-cli" => {
                 Some(Self::AntigravityCli)
             }
             "codex" | "codex-cli" | "native:codex" => Some(Self::CodexCli),
@@ -50,5 +50,27 @@ impl RuntimeKind {
             Self::PiCli => "npm install -g @mariozechner/pi-coding-agent",
             Self::Mock => "",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RuntimeKind;
+
+    #[test]
+    fn profile_ids_resolve_to_their_runtime_keys() {
+        assert_eq!(
+            RuntimeKind::from_str("native:agy"),
+            Some(RuntimeKind::AntigravityCli)
+        );
+        assert_eq!(
+            RuntimeKind::from_str("native:claude"),
+            Some(RuntimeKind::ClaudeNative)
+        );
+        assert_eq!(
+            RuntimeKind::from_str("native:codex"),
+            Some(RuntimeKind::CodexCli)
+        );
+        assert_eq!(RuntimeKind::from_str("native:pi"), Some(RuntimeKind::PiCli));
     }
 }

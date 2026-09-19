@@ -418,7 +418,7 @@ pub(crate) fn save_app_session_role_cli_id(
     role_name: &str,
     cli_session_id: &str,
 ) -> Result<(), String> {
-    if app_session_id.is_empty() {
+    if app_session_id.trim().is_empty() || cli_session_id.trim().is_empty() {
         return Ok(());
     }
     let now = now_ms();
@@ -465,24 +465,25 @@ pub(crate) fn clear_app_session_role_cli_id(
     state: &AppState,
     app_session_id: &str,
     role_name: &str,
+    runtime_key: &str,
 ) -> Result<(), String> {
-    if app_session_id.trim().is_empty() {
+    if app_session_id.trim().is_empty() || runtime_key.trim().is_empty() {
         return Err("app session id required".to_string());
     }
     with_db(state, |conn| {
         conn.execute(
             "UPDATE app_session_role_runtime_configs
              SET acp_session_id = NULL
-             WHERE app_session_id = ?1 AND role_name = ?2",
-            params![app_session_id, role_name],
+             WHERE app_session_id = ?1 AND role_name = ?2 AND runtime_kind = ?3",
+            params![app_session_id, role_name, runtime_key],
         )
         .map_err(|e| e.to_string())?;
 
         conn.execute(
             "UPDATE app_session_roles
              SET acp_session_id = NULL
-             WHERE app_session_id = ?1 AND role_name = ?2",
-            params![app_session_id, role_name],
+             WHERE app_session_id = ?1 AND role_name = ?2 AND runtime_kind = ?3",
+            params![app_session_id, role_name, runtime_key],
         )
         .map_err(|e| e.to_string())?;
         Ok(())

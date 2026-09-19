@@ -9,13 +9,59 @@ use super::{
     compose_prompt, find_option, first_text, resolve_wired_values, NativeCatalog, NativeEventSink,
     NativeProcess, NativeRunRequest, CONTROL_TIMEOUT, TURN_TIMEOUT,
 };
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};
+
+const ALLOWED_IMAGE_MIME: &[(&str, &str)] = &[
+    ("image/png", "png"),
+    ("image/jpeg", "jpg"),
+    ("image/gif", "gif"),
+    ("image/webp", "webp"),
+];
+
+/// Codex app-server's `turn/start` input only accepts images as on-disk paths
+/// (`{"type":"localImage","path":...}`, per the app-server schema), unlike ACP's inline
+/// base64 blocks — so each attachment is decoded and written to a temp file first.
+fn materialize_codex_images(attachments: &[crate::types::ImageAttachment]) -> Vec<Value> {
+    let mut items = Vec::new();
+    for attachment in attachments {
+        let Some(ext) = ALLOWED_IMAGE_MIME
+            .iter()
+            .find(|(mime, _)| *mime == attachment.mime_type)
+            .map(|(_, ext)| *ext)
+        else {
+            continue;
+        };
+        let valid_base64 = !attachment.data.is_empty()
+            && attachment
+                .data
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=');
+        if !valid_base64 {
+            continue;
+        }
+        let Ok(bytes) = STANDARD.decode(&attachment.data) else {
+            continue;
+        };
+        let dir = std::env::temp_dir().join("jockey-codex-images");
+        if std::fs::create_dir_all(&dir).is_err() {
+            continue;
+        }
+        let path = dir.join(format!("{}.{ext}", uuid::Uuid::new_v4()));
+        if std::fs::write(&path, &bytes).is_err() {
+            continue;
+        }
+        items.push(json!({ "type": "localImage", "path": path.to_string_lossy() }));
+    }
+    items
+}
 
 pub(super) async fn run(
     process: &mut NativeProcess,
     request: &NativeRunRequest<'_>,
     sink: &mut NativeEventSink<'_>,
     initialize: bool,
+    native_key: &str,
 ) -> Result<(String, String, u32), String> {
     let runtime_key = request.runtime_key;
     let prompt = request.prompt;
@@ -71,7 +117,10 @@ pub(super) async fn run(
                     if let Some(skills) = item.get("skills").and_then(Value::as_array) {
                         for skill in skills {
                             if let Some(name) = skill.get("name").and_then(Value::as_str) {
-                                let desc = skill.get("description").and_then(Value::as_str).unwrap_or("");
+                                let desc = skill
+                                    .get("description")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("");
                                 cmds.push(json!({
                                     "name": name,
                                     "description": desc,
@@ -205,16 +254,12 @@ pub(super) async fn run(
     }?;
     let thread_id = extract_thread_id(&thread.0)
         .ok_or_else(|| "Codex app-server did not return a thread id".to_string())?;
-    let mut input = compose_prompt(prompt, context);
-    if !attachments.is_empty() {
-        input.push_str(&format!(
-            "\n\n[{} image attachment(s) require a native Codex image-input mapping and were omitted]",
-            attachments.len()
-        ));
-    }
+    let input = compose_prompt(prompt, context);
+    let mut input_items = vec![json!({ "type": "text", "text": input })];
+    input_items.extend(materialize_codex_images(attachments));
     let mut turn_params = json!({
         "threadId": thread_id,
-        "input": [{ "type": "text", "text": input }],
+        "input": input_items,
         "cwd": cwd,
     });
     if let Some(model) = model.as_deref() {
@@ -229,7 +274,7 @@ pub(super) async fn run(
     if let Some(tier) = service_tier.as_deref() {
         turn_params["serviceTier"] = json!(tier);
     }
-    let (_, messages) = process
+    let (turn_start, messages) = process
         .request(
             NativeProtocol::CodexAppServer,
             "turn/start",
@@ -238,6 +283,12 @@ pub(super) async fn run(
             auto_approve,
         )
         .await?;
+    super::set_active_native_turn(
+        native_key,
+        NativeProtocol::CodexAppServer,
+        Some(thread_id.clone()),
+        extract_turn_id(&turn_start),
+    );
     let mut output = String::new();
     let mut completed = false;
     for message in messages {
@@ -291,6 +342,11 @@ pub(super) fn process_message(
         .unwrap_or_default();
     let params = message.get("params").unwrap_or(&Value::Null);
     if method.is_empty() {
+        if let Some(control_id) = message.get("id").and_then(Value::as_str) {
+            if super::resolve_native_control_response(control_id, message) {
+                return Ok(false);
+            }
+        }
         if let Some(err_val) = message.get("error") {
             if let Some(msg) = extract_error_message(err_val) {
                 return Err(msg);
@@ -328,22 +384,21 @@ pub(super) fn process_message(
                             .and_then(Value::as_str)
                             .unwrap_or("codex-item")
                             .to_string(),
+                        tool_name: first_text(item, &["name", "tool", "toolName"]),
                         parent_id: first_text(item, &["parentId", "parent_id"]),
                         diff: item.get("changes").cloned(),
                         tool_kind: Some(kind.to_string()),
-                        status: Some(
-                            if method.ends_with("completed") {
-                                "completed"
-                            } else {
-                                "running"
-                            }
-                            .to_string(),
-                        ),
+                        status: Some(codex_tool_status(item, method)),
                         title: first_text(item, &["type", "command", "name"]),
                         content: None,
                         locations: None,
                         raw_input: Some(item.clone()),
-                        raw_output: None,
+                        raw_output: item
+                            .get("aggregatedOutput")
+                            .or_else(|| item.get("output"))
+                            .or_else(|| item.get("result"))
+                            .or_else(|| item.get("contentItems"))
+                            .cloned(),
                         terminal_meta: None,
                     });
                 }
@@ -370,6 +425,7 @@ pub(super) fn process_message(
             if let Some(id) = first_text(params, &["itemId", "item_id", "id"]) {
                 sink.emit(AcpEvent::ToolCallUpdate {
                     tool_call_id: id,
+                    tool_name: None,
                     tool_kind: Some("file_change".to_string()),
                     status: None,
                     title: None,
@@ -419,6 +475,9 @@ pub(super) fn process_message(
                 });
             }
         }
+        // Thread/turn lifecycle notifications are control-plane metadata. They are not
+        // assistant content and must not become raw debug cards in the conversation.
+        _ if is_codex_lifecycle_notification(method) => {}
         // Advisories that must not abort the turn: rate/model reroutes, deprecations,
         // config problems. `error` stays out of this arm — it is handled as a failure.
         "warning" | "guardianWarning" | "deprecationNotice" | "configWarning"
@@ -469,9 +528,43 @@ pub(super) fn process_message(
         "error" => {
             return Err(extract_codex_turn_error(params, "error"));
         }
+        _ if !method.is_empty() => {
+            sink.emit(AcpEvent::Unknown {
+                type_name: method.to_string(),
+                raw: message.clone(),
+            });
+        }
         _ => {}
     }
     Ok(false)
+}
+
+fn codex_tool_status(item: &Value, method: &str) -> String {
+    let raw = item
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    match raw.as_str() {
+        "inprogress" | "in_progress" | "running" | "pending" => "running".to_string(),
+        "completed" | "success" => "completed".to_string(),
+        "failed" | "error" => "failure".to_string(),
+        "declined" | "cancelled" | "canceled" => "cancelled".to_string(),
+        _ if method.ends_with("completed") => "completed".to_string(),
+        _ => "running".to_string(),
+    }
+}
+
+fn is_codex_lifecycle_notification(method: &str) -> bool {
+    matches!(
+        method,
+        "account/rateLimits/updated"
+            | "turn/diff/updated"
+            | "thread/started"
+            | "thread/resumed"
+            | "thread/archived"
+            | "turn/started"
+    )
 }
 
 pub(super) fn extract_codex_turn_error(params: &Value, status: &str) -> String {
@@ -813,6 +906,15 @@ fn extract_thread_id(value: &Value) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn extract_turn_id(value: &Value) -> Option<String> {
+    value
+        .get("turn")
+        .and_then(|turn| turn.get("id"))
+        .and_then(Value::as_str)
+        .or_else(|| value.get("turnId").and_then(Value::as_str))
+        .map(ToString::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -841,6 +943,17 @@ mod tests {
             { "id": "gpt-legacy", "displayName": "Legacy", "hidden": true },
             { "id": "gpt-5.5", "displayName": "GPT-5.5", "supportedReasoningEfforts": [] }
         ]})
+    }
+
+    #[test]
+    fn lifecycle_notifications_do_not_become_conversation_blocks() {
+        assert!(is_codex_lifecycle_notification(
+            "account/rateLimits/updated"
+        ));
+        assert!(is_codex_lifecycle_notification("turn/diff/updated"));
+        assert!(is_codex_lifecycle_notification("thread/started"));
+        assert!(is_codex_lifecycle_notification("turn/started"));
+        assert!(!is_codex_lifecycle_notification("item/agentMessage/delta"));
     }
 
     #[test]
@@ -939,5 +1052,21 @@ mod tests {
         });
         let err = extract_codex_turn_error(&params, "interrupted");
         assert_eq!(err, "Codex turn ended with status interrupted");
+    }
+
+    #[test]
+    fn codex_item_status_preserves_failure_and_decline() {
+        assert_eq!(
+            codex_tool_status(&json!({"status": "failed"}), "item/completed"),
+            "failure"
+        );
+        assert_eq!(
+            codex_tool_status(&json!({"status": "declined"}), "item/completed"),
+            "cancelled"
+        );
+        assert_eq!(
+            codex_tool_status(&json!({"status": "inProgress"}), "item/started"),
+            "running"
+        );
     }
 }

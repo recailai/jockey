@@ -35,7 +35,6 @@ import {
   DockPanelBody,
   DockPanelToolbar,
   DockPanelToolbarActions,
-  DockPanelToolbarTitle,
   EmptyState,
   Input,
   ListRow,
@@ -93,7 +92,6 @@ function fmtRelative(ts: number): string {
 export default function GitPanel(props: GitPanelProps) {
   const [stagedOpen, setStagedOpen] = createSignal(true);
   const [changesOpen, setChangesOpen] = createSignal(true);
-  const [historyOpen, setHistoryOpen] = createSignal(true);
 
   const [branchMenuOpen, setBranchMenuOpen] = createSignal(false);
   const [branches, setBranches] = createSignal<BranchInfo[]>([]);

@@ -316,9 +316,11 @@ fn emit_permission_event(
     let _ = app.emit(
         "acp/stream",
         AcpStreamPayload {
+            schema_version: 1,
             role: role_name,
             runtime_kind: runtime_key,
             app_session_id,
+            turn_id: app_session_id,
             event: &event,
             seq,
         },

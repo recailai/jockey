@@ -98,11 +98,18 @@ export default function AgentPicker(props: AgentPickerProps) {
       .then((res) => {
         setConfig(res.configOptions ?? {});
         // The project's pinned engine wins over whatever the session was last left on, so
-        // switching persona visibly moves the Agent row too.
-        const pinned = res.runtimeKind;
-        if (pinned && pinned !== runtimeKind()) {
-          const assistant = props.assistants().find((a) => a.key === pinned);
-          props.onSelectAgent(pinned, assistant?.profileId ?? null);
+        // switching persona visibly moves the Agent row too. If the project has not pinned
+        // an engine, fall back to the persona's template runtime.
+        const roleObj = props.roles().find((r) => r.roleName === role);
+        const available = props.assistants().filter((a) => a.available);
+        const targetAssistant =
+          available.find((a) => a.key === res.runtimeKind) ??
+          available.find((a) => a.key === roleObj?.runtimeKind) ??
+          available.find((a) => a.key === runtimeKind()) ??
+          available[0] ??
+          null;
+        if (targetAssistant && targetAssistant.key !== runtimeKind()) {
+          props.onSelectAgent(targetAssistant.key, targetAssistant.profileId ?? null);
           // Backend config/model discovery reads the per-session-role binding, not the
           // project pin — without this, a stale binding from an earlier manual agent
           // switch keeps serving the old runtime's model list under the new displayed agent.
@@ -110,7 +117,7 @@ export default function AgentPicker(props: AgentPickerProps) {
           // resolves fresh once `ensureSessionPersisted` creates the row at send time.
           const sid = sessionId();
           if (sid && props.activeSession()?.persisted) {
-            void projectAgentApi.bindSessionAgent(sid, role, pinned).catch(() => {});
+            void projectAgentApi.bindSessionAgent(sid, role, targetAssistant.key).catch(() => {});
           }
         }
       })

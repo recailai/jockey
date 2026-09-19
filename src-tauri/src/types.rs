@@ -52,6 +52,7 @@ pub(crate) struct Project {
     pub(crate) root_path: String,
     pub(crate) created_at: i64,
     pub(crate) updated_at: i64,
+    pub(crate) deleted_at: Option<i64>,
 }
 
 #[derive(Serialize, Clone)]
@@ -143,13 +144,35 @@ pub(crate) struct AssistantRuntime {
     pub(crate) launch_method: Option<String>,
     pub(crate) transport: String,
     pub(crate) capabilities: Value,
+    pub(crate) input_delivery: Value,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImageAttachment {
     pub(crate) data: String,
     pub(crate) mime_type: String,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChatContextOptions {
+    #[serde(default)]
+    pub(crate) mode: Option<String>,
+    #[serde(default)]
+    pub(crate) recent_turns: Option<usize>,
+    #[serde(default)]
+    pub(crate) include_current_role: Option<bool>,
+}
+
+impl Default for ChatContextOptions {
+    fn default() -> Self {
+        Self {
+            mode: None,
+            recent_turns: None,
+            include_current_role: None,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -160,6 +183,18 @@ pub(crate) struct AssistantChatInput {
     pub(crate) app_session_id: Option<String>,
     #[serde(default)]
     pub(crate) attachments: Vec<ImageAttachment>,
+    #[serde(default)]
+    pub(crate) context: ChatContextOptions,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RoleReply {
+    pub(crate) role_name: String,
+    pub(crate) reply: String,
+    pub(crate) ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) error_code: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -170,6 +205,8 @@ pub(crate) struct AssistantChatResponse {
     pub(crate) runtime_kind: Option<String>,
     pub(crate) session_id: Option<String>,
     pub(crate) command_result: Option<ChatCommandResult>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) role_replies: Vec<RoleReply>,
 }
 
 #[derive(Deserialize)]
@@ -221,6 +258,30 @@ pub(crate) struct AppSessionUpdate {
     pub(crate) runtime_kind: Option<Option<String>>,
     pub(crate) runtime_profile_id: Option<Option<String>>,
     pub(crate) cwd: Option<Option<String>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InboxMessage {
+    pub(crate) id: String,
+    pub(crate) app_session_id: String,
+    pub(crate) role_name: Option<String>,
+    pub(crate) delivery: String,
+    pub(crate) text: String,
+    pub(crate) attachments: Vec<ImageAttachment>,
+    pub(crate) created_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentLifecycle {
+    pub(crate) app_session_id: String,
+    pub(crate) role_name: String,
+    pub(crate) runtime_kind: String,
+    pub(crate) state: String,
+    pub(crate) revision: i64,
+    pub(crate) last_error: Option<String>,
+    pub(crate) updated_at: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

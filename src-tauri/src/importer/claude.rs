@@ -46,7 +46,8 @@ pub(crate) fn scan_claude_sessions(project_path: &str) -> Vec<DiscoveredSession>
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
                 if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
                     let session_id = file_stem.to_string();
-                    let Some((title, turn_count)) = inspect_claude_session(&path, &session_id) else {
+                    let Some((title, turn_count)) = inspect_claude_session(&path, &session_id)
+                    else {
                         continue;
                     };
                     let metadata = entry.metadata().ok();
@@ -145,7 +146,9 @@ fn inspect_claude_session(path: &Path, session_id: &str) -> Option<(String, usiz
             continue;
         }
 
-        let has_ai_title = line.contains("\"aiTitle\"") || line.contains("\"agentName\"") || line.contains("\"customTitle\"");
+        let has_ai_title = line.contains("\"aiTitle\"")
+            || line.contains("\"agentName\"")
+            || line.contains("\"customTitle\"");
         let has_user = line.contains("\"type\":\"user\"");
         let has_assistant = line.contains("\"type\":\"assistant\"");
 

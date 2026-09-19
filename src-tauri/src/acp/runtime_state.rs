@@ -151,10 +151,7 @@ pub(super) fn remember_runtime_available_commands(
         session_role_key(app_session_id, runtime_key, role_name),
         commands.clone(),
     );
-    runtime_available_commands().insert(
-        format!("{runtime_key}:{role_name}"),
-        commands.clone(),
-    );
+    runtime_available_commands().insert(format!("{runtime_key}:{role_name}"), commands.clone());
     runtime_available_commands().insert(runtime_key.to_string(), commands.clone());
     if runtime_key.contains("claude") {
         runtime_available_commands().insert("claude-code".to_string(), commands.clone());
@@ -281,7 +278,12 @@ mod catalog_reuse_tests {
             json!({ "name": "model", "description": "Configure model" }),
             json!({ "name": "commit", "description": "Commit changes" }),
         ];
-        remember_runtime_available_commands("test-session", "claude-code", "Developer", commands.clone());
+        remember_runtime_available_commands(
+            "test-session",
+            "claude-code",
+            "Developer",
+            commands.clone(),
+        );
 
         // Retrieved by session + role
         let found = list_available_commands("test-session", "claude-code", "Developer");

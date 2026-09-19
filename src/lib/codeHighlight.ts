@@ -10,9 +10,9 @@ const KEYWORDS = new Set([
 
 function escapeHtml(text: string): string {
   return text
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function pushText(tokens: HighlightToken[], text: string, cls?: string): void {

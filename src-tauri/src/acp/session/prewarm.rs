@@ -190,7 +190,12 @@ async fn prewarm_config_impl(req: ConfigPrewarmRequest<'_>) -> (Vec<Value>, Vec<
             let project_id = req.app_session_id.and_then(|app_session_id| {
                 crate::db::app_session::get_app_session_project_id(s, app_session_id)
             });
-            load_role_mcp_servers(s, req.role_name, project_id.as_deref().or(req.project_id))
+            load_role_mcp_servers(
+                s,
+                req.role_name,
+                project_id.as_deref().or(req.project_id),
+                req.runtime_kind,
+            )
         })
         .unwrap_or_default();
     let Some(rx) = send_prewarm(PrewarmOpts {
@@ -241,7 +246,7 @@ pub async fn prewarm_role(
         .as_ref()
         .map(|(s, app_session_id)| {
             let project_id = crate::db::app_session::get_app_session_project_id(s, app_session_id);
-            load_role_mcp_servers(s, role_name, project_id.as_deref())
+            load_role_mcp_servers(s, role_name, project_id.as_deref(), runtime_kind)
         })
         .unwrap_or_default();
 
@@ -321,7 +326,7 @@ pub async fn prewarm_role_with_session_id(
 ) {
     let runtime_key = normalize_runtime_key(runtime_kind).unwrap_or(runtime_kind);
     let project_id = crate::db::app_session::get_app_session_project_id(state, app_session_id);
-    let mcp_servers = load_role_mcp_servers(state, role_name, project_id.as_deref());
+    let mcp_servers = load_role_mcp_servers(state, role_name, project_id.as_deref(), runtime_kind);
     let Some(rx) = send_prewarm(PrewarmOpts {
         runtime_kind,
         role_name,

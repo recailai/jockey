@@ -73,12 +73,19 @@ pub enum AcpEvent {
     ToolCall {
         tool_call_id: String,
         title: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_name: Option<String>,
         tool_kind: String,
         status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<Vec<Value>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         locations: Option<Vec<Value>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         raw_input: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         raw_output: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         terminal_meta: Option<Value>,
         /// Owning tool call, when the provider reports nesting (sub-agents, spawned tasks).
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -88,13 +95,20 @@ pub enum AcpEvent {
     },
     ToolCallUpdate {
         tool_call_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_name: Option<String>,
         tool_kind: Option<String>,
         status: Option<String>,
         title: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<Vec<Value>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         locations: Option<Vec<Value>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         raw_input: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         raw_output: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         terminal_meta: Option<Value>,
         /// Owning tool call, when the provider reports nesting (sub-agents, spawned tasks).
         /// `None` keeps the call at the top level.
@@ -186,6 +200,12 @@ pub enum AcpEvent {
         code: String,
         message: String,
         retryable: bool,
+    },
+    /// Provider event that the adapter received but cannot yet map to a stable canonical kind.
+    /// Keeping the raw payload makes protocol drift observable instead of silently losing data.
+    Unknown {
+        type_name: String,
+        raw: Value,
     },
 }
 

@@ -1,5 +1,5 @@
 import { createSignal } from "solid-js";
-import type { AppMentionItem, AcpConfigOption, AppSession, Role } from "../components/types";
+import type { AppMentionItem, AppSession, Role } from "../components/types";
 
 export function useSlashCompletion(
   input: () => string,
@@ -7,15 +7,12 @@ export function useSlashCompletion(
   getInputEl: () => HTMLInputElement | undefined,
   activeSessionId: () => string | null,
   activeSession: () => AppSession | null,
-  patchActiveSession: (patch: Partial<AppSession>) => void,
   roles: () => Role[],
-  isCustomRole: () => boolean,
   normalizeRuntimeKey: (runtimeKey: string) => string,
   commandCacheKey: (runtimeKey: string, roleName: string) => string,
-  fetchConfigOptions: (runtimeKey: string, roleName?: string) => Promise<AcpConfigOption[]>,
   hydrateAgentCommandsForSession: (sessionId: string, runtimeKey: string, roleName: string) => Promise<number>,
-  slashCliCacheRef: { cache: null | unknown[]; version: number },
   onTriggerCommandUi?: (commandName: string) => boolean,
+  getCommandList?: () => Array<{ name: string; description?: string }>,
 ) {
   const [slashOpen, setSlashOpen] = createSignal(false);
   const [slashItems, setSlashItems] = createSignal<AppMentionItem[]>([]);
@@ -62,6 +59,7 @@ export function useSlashCompletion(
       seen.add(cmd.name);
       const nameLower = cmd.name.toLowerCase();
       if (queryLower && !nameLower.includes(queryLower)) continue;
+      if (!cmd.name) continue;
       out.push({
         value: `/${cmd.name}`,
         kind: (cmd as { kind?: "command" | "skill" }).kind === "skill" ? "skill" : "command",
@@ -70,11 +68,22 @@ export function useSlashCompletion(
       });
     }
 
-    const clientContributions = [
+    const defaultContributions = [
+      { name: "model", description: "Switch model & context window" },
+      { name: "mode", description: "Switch mode (plan / act / auto)" },
+      { name: "effort", description: "Set reasoning effort level" },
+      { name: "usage", description: "View token usage, context pressure & cost" },
+      { name: "cost", description: "View cost and token usage" },
+      { name: "stats", description: "View session statistics" },
+      { name: "compact", description: "Compact conversation context" },
       { name: "clear", description: "Reset active conversation context" },
-      { name: "context", description: "Toggle workspace files & git context panel" },
       { name: "reset", description: "Reset active conversation context" },
+      { name: "context", description: "Toggle workspace files & git context panel" },
+      { name: "help", description: "Show available slash commands" },
+      { name: "rules", description: "View active instructions & rules" },
+      { name: "skills", description: "View registered agent skills" },
     ];
+    const clientContributions = getCommandList ? getCommandList() : defaultContributions;
     for (const contrib of clientContributions) {
       if (seen.has(contrib.name)) continue;
       seen.add(contrib.name);
@@ -82,7 +91,7 @@ export function useSlashCompletion(
       out.push({
         value: `/${contrib.name}`,
         kind: "command",
-        detail: contrib.description,
+        detail: contrib.description ?? "",
         source: "client",
       });
     }

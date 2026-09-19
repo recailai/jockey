@@ -2855,6 +2855,66 @@ pre:hover .jui-code-copy,
   border-color: var(--ui-border-strong);
   background: var(--ui-surface-muted);
 }
+.provider-event-group {
+  margin: 6px 0;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-card);
+  background: var(--ui-surface-muted);
+}
+.provider-event-summary {
+  display: flex;
+  min-height: var(--ui-control-height-sm);
+  cursor: pointer;
+  align-items: center;
+  gap: var(--ui-space-2);
+  padding: 0 var(--ui-space-3);
+  color: var(--ui-muted);
+  font-size: var(--ui-font-size-xs);
+}
+.provider-event-summary:hover {
+  background: var(--ui-row-hover);
+  color: var(--ui-text);
+}
+.provider-event-chevron {
+  width: 12px;
+  height: 12px;
+  transition: transform 150ms ease;
+}
+.provider-event-group[open] .provider-event-chevron {
+  transform: rotate(180deg);
+}
+.provider-event-list {
+  border-top: 1px solid var(--ui-border);
+}
+.provider-event-item {
+  border-bottom: 1px solid var(--ui-border);
+}
+.provider-event-item:last-child {
+  border-bottom: 0;
+}
+.provider-event-item-summary {
+  display: flex;
+  min-height: var(--ui-control-height-sm);
+  cursor: pointer;
+  align-items: center;
+  gap: var(--ui-space-2);
+  padding: 0 var(--ui-space-3);
+}
+.provider-event-item-summary:hover {
+  background: var(--ui-row-hover);
+}
+.provider-event-payload {
+  max-height: 12rem;
+  overflow: auto;
+  border-top: 1px solid var(--ui-border);
+  padding: var(--ui-space-3);
+  color: var(--ui-muted);
+  font-family: var(--ui-font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
 .tool-call-item-summary {
   display: flex;
   min-height: var(--ui-control-height-sm);
@@ -4210,6 +4270,10 @@ pre:hover .jui-code-copy,
 .ui-tool-status-danger {
   background: var(--ui-state-danger-text);
   box-shadow: 0 0 0 3px var(--ui-state-danger-bg);
+}
+.ui-tool-status-info {
+  background: var(--ui-accent);
+  box-shadow: 0 0 0 3px var(--ui-accent-soft);
 }
 .tool-permission-block {
   border-top: 1px solid color-mix(in srgb, var(--ui-state-warning-text), transparent 68%);
@@ -5602,4 +5666,60 @@ pre:hover .jui-code-copy,
 .agent-message-card:hover {
   border-color: transparent;
   background: color-mix(in srgb, var(--ui-text) 4%, transparent);
+}
+
+/* Multi-agent message presentation */
+.agent-avatar-mini {
+  position: relative;
+  display: flex;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: 7px;
+  background: var(--ui-surface);
+}
+.agent-avatar-mini svg {
+  width: 14px;
+  height: 14px;
+}
+
+.multi-agent-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+.multi-agent-badge-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--ui-muted);
+  margin-bottom: 2px;
+}
+.multi-agent-block {
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-card);
+  background: color-mix(in srgb, var(--ui-surface-muted) 60%, transparent);
+  overflow: hidden;
+  transition: border-color 150ms ease, background-color 150ms ease;
+}
+.multi-agent-block:hover {
+  border-color: var(--ui-border-strong);
+  background: color-mix(in srgb, var(--ui-surface-muted) 90%, transparent);
+}
+.multi-agent-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ui-border) 60%, transparent);
+  background: color-mix(in srgb, var(--ui-surface) 70%, transparent);
+}
+.multi-agent-block-body {
+  padding: 10px 14px;
 }

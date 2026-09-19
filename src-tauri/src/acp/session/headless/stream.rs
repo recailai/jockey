@@ -1,3 +1,4 @@
+use base64::Engine;
 use serde_json::json;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -18,6 +19,79 @@ use super::{
 const STREAM_TIMEOUT: Duration = Duration::from_secs(600);
 const STREAM_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const STREAM_IDLE_AFTER: Duration = Duration::from_secs(300);
+
+const ALLOWED_IMAGE_MIME: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+fn agy_image_extension(mime_type: &str) -> Option<&'static str> {
+    match mime_type {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+fn agy_prompt_with_images(
+    prompt: &str,
+    attachments: &[crate::types::ImageAttachment],
+) -> Result<String, String> {
+    if attachments.is_empty() {
+        return Ok(prompt.to_string());
+    }
+    let dir = std::env::temp_dir().join("jockey-agy-images");
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("failed to prepare agy image directory: {error}"))?;
+    let mut references = Vec::new();
+    for attachment in attachments {
+        let Some(extension) = agy_image_extension(&attachment.mime_type) else {
+            continue;
+        };
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&attachment.data) else {
+            continue;
+        };
+        if bytes.is_empty() {
+            continue;
+        }
+        let path = dir.join(format!("{}.{}", uuid::Uuid::new_v4(), extension));
+        std::fs::write(&path, bytes)
+            .map_err(|error| format!("failed to materialize agy image: {error}"))?;
+        references.push(format!("- {} ({})", path.display(), attachment.mime_type));
+    }
+    if references.is_empty() {
+        return Ok(prompt.to_string());
+    }
+    Ok(format!(
+        "{prompt}\n\n[Attached images]\n{}\nInspect these image files before answering.",
+        references.join("\n")
+    ))
+}
+
+/// Anthropic Messages-format image blocks for the subset of attachments that pass a basic
+/// mime/base64 sanity check, mirroring the ACP worker's `build_prompt_blocks` validation.
+fn valid_image_blocks(attachments: &[crate::types::ImageAttachment]) -> Vec<serde_json::Value> {
+    attachments
+        .iter()
+        .filter(|att| ALLOWED_IMAGE_MIME.contains(&att.mime_type.as_str()))
+        .filter(|att| {
+            !att.data.is_empty()
+                && att
+                    .data
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
+        })
+        .map(|att| {
+            json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": att.mime_type,
+                    "data": att.data,
+                },
+            })
+        })
+        .collect()
+}
 
 static STREAM_SESSIONS: OnceLock<dashmap::DashMap<String, Arc<Mutex<Option<StreamSession>>>>> =
     OnceLock::new();
@@ -61,19 +135,26 @@ impl StreamProcess {
         &mut self,
         protocol: HeadlessProtocol,
         prompt: &str,
+        attachments: &[crate::types::ImageAttachment],
     ) -> Result<(), String> {
         let frame_value = match protocol {
             HeadlessProtocol::AgyStreamJson => json!({
                 "event": "user",
-                "message": { "content": prompt },
-            }),
-            HeadlessProtocol::ClaudeStreamJson => json!({
-                "type": "user",
                 "message": {
-                    "role": "user",
-                    "content": [{ "type": "text", "text": prompt }],
+                    "content": agy_prompt_with_images(prompt, attachments)?
                 },
             }),
+            HeadlessProtocol::ClaudeStreamJson => {
+                let mut content = vec![json!({ "type": "text", "text": prompt })];
+                content.extend(valid_image_blocks(attachments));
+                json!({
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": content,
+                    },
+                })
+            }
         };
         let mut frame = serde_json::to_vec(&frame_value).map_err(|error| {
             format!(
@@ -82,17 +163,14 @@ impl StreamProcess {
             )
         })?;
         frame.push(b'\n');
-        self.process
-            .stdin
-            .write_all(&frame)
-            .await
-            .map_err(|error| {
-                format!(
-                    "failed to send prompt to {}: {error}",
-                    protocol_display_name(protocol)
-                )
-            })?;
-        self.process.stdin.flush().await.map_err(|error| {
+        let mut stdin = self.process.stdin.lock().await;
+        stdin.write_all(&frame).await.map_err(|error| {
+            format!(
+                "failed to send prompt to {}: {error}",
+                protocol_display_name(protocol)
+            )
+        })?;
+        stdin.flush().await.map_err(|error| {
             format!(
                 "failed to flush prompt to {}: {error}",
                 protocol_display_name(protocol)
@@ -107,6 +185,7 @@ impl StreamProcess {
         role_name: &str,
         runtime_key: &'static str,
         app_session_id: &str,
+        turn_id: &str,
         sequence: &mut u32,
     ) -> HeadlessTurn {
         read_headless_turn(
@@ -117,6 +196,7 @@ impl StreamProcess {
             role_name,
             runtime_key,
             app_session_id,
+            turn_id,
             sequence,
         )
         .await
@@ -188,6 +268,7 @@ pub(super) async fn execute_stream_runtime(
     let resume_session_id = request.resume_session_id;
     let mcp_servers = request.mcp_servers;
     let app_session_id = request.app_session_id;
+    let turn_id = request.turn_id;
 
     let key = headless_key(runtime_key, role_name, app_session_id);
     headless_active()
@@ -202,7 +283,14 @@ pub(super) async fn execute_stream_runtime(
     let _guard = lock.lock().await;
 
     if headless_cancelled().remove(&key).is_some() {
-        return cancelled_result(runtime_key, role_name, app_session_id, app);
+        return cancelled_result(
+            runtime_key,
+            role_name,
+            app_session_id,
+            turn_id,
+            app,
+            resume_session_id.map(str::to_string),
+        );
     }
 
     let mut args = adapter_args.to_vec();
@@ -233,6 +321,7 @@ pub(super) async fn execute_stream_runtime(
                     runtime_key,
                     role_name,
                     app_session_id,
+                    turn_id,
                     app,
                     super::super::super::error::AcpErrorCode::ConnectionFailed,
                     error,
@@ -283,6 +372,7 @@ pub(super) async fn execute_stream_runtime(
                     runtime_key,
                     role_name,
                     app_session_id,
+                    turn_id,
                     app,
                     super::super::super::error::AcpErrorCode::ProcessCrashed,
                     error,
@@ -309,10 +399,17 @@ pub(super) async fn execute_stream_runtime(
         });
     }
 
-    if headless_cancelled().contains(&key) {
+    if headless_cancelled().remove(&key).is_some() {
         close_session(&mut slot, &key).await;
         stream_sessions().remove(&key);
-        return cancelled_result(runtime_key, role_name, app_session_id, app);
+        return cancelled_result(
+            runtime_key,
+            role_name,
+            app_session_id,
+            turn_id,
+            app,
+            resume_session_id.map(str::to_string),
+        );
     }
 
     let mut sequence = 0u32;
@@ -322,6 +419,7 @@ pub(super) async fn execute_stream_runtime(
             role_name,
             runtime_key,
             app_session_id,
+            turn_id,
             &mut sequence,
             AcpEvent::StatusUpdate {
                 text: format!(
@@ -340,12 +438,19 @@ pub(super) async fn execute_stream_runtime(
         role_name,
         runtime_key,
         app_session_id,
+        turn_id,
         &mut sequence,
         AcpEvent::StatusUpdate {
             text: if reused {
-                format!("Reusing {} session...", protocol_display_name(protocol))
+                if let Some(ref sid) = resume_session_id.as_deref().filter(|s| !s.trim().is_empty()) {
+                    format!("Reusing {} session ({sid})...", protocol_display_name(protocol))
+                } else {
+                    format!("Reusing {} session...", protocol_display_name(protocol))
+                }
+            } else if let Some(ref sid) = resume_session_id.as_deref().filter(|s| !s.trim().is_empty()) {
+                format!("Resuming {} session ({sid})...", protocol_display_name(protocol))
             } else {
-                format!("Connecting to {}...", protocol_display_name(protocol))
+                format!("Initializing new {} session...", protocol_display_name(protocol))
             },
         },
     );
@@ -355,7 +460,10 @@ pub(super) async fn execute_stream_runtime(
         let session = slot
             .as_mut()
             .expect("headless stream session must exist after spawn or reuse");
-        session.process.send_prompt(protocol, &input).await
+        session
+            .process
+            .send_prompt(protocol, &input, request.attachments)
+            .await
     };
     if let Err(error) = send_result {
         close_session(&mut slot, &key).await;
@@ -364,6 +472,7 @@ pub(super) async fn execute_stream_runtime(
             runtime_key,
             role_name,
             app_session_id,
+            turn_id,
             app,
             super::super::super::error::AcpErrorCode::ConnectionFailed,
             error,
@@ -387,6 +496,7 @@ pub(super) async fn execute_stream_runtime(
                 role_name,
                 runtime_key,
                 app_session_id,
+                turn_id,
                 &mut sequence,
             ),
         )
@@ -401,6 +511,7 @@ pub(super) async fn execute_stream_runtime(
                 runtime_key,
                 role_name,
                 app_session_id,
+                turn_id,
                 app,
                 super::super::super::error::AcpErrorCode::PromptTimeout,
                 format!(
@@ -440,19 +551,27 @@ pub(super) async fn execute_stream_runtime(
         session.last_used = Instant::now();
     }
 
-    let cancelled = headless_cancelled().contains(&key);
+    let cancelled = headless_cancelled().remove(&key).is_some();
     if cancelled || turn.error.is_some() || !turn.result_seen || !process_alive {
         close_session(&mut slot, &key).await;
         stream_sessions().remove(&key);
     }
     if cancelled {
-        return cancelled_result(runtime_key, role_name, app_session_id, app);
+        return cancelled_result(
+            runtime_key,
+            role_name,
+            app_session_id,
+            turn_id,
+            app,
+            resolved_conversation_id,
+        );
     }
     if let Some(error) = turn.error {
         return error_result(
             runtime_key,
             role_name,
             app_session_id,
+            turn_id,
             app,
             classify_error(&error),
             append_stderr(error, &stderr),
@@ -470,6 +589,7 @@ pub(super) async fn execute_stream_runtime(
             runtime_key,
             role_name,
             app_session_id,
+            turn_id,
             app,
             super::super::super::error::AcpErrorCode::ProcessCrashed,
             append_stderr(
@@ -636,4 +756,32 @@ fn args_without_conversation(args: &[String]) -> Vec<&str> {
         filtered.push(arg.as_str());
     }
     filtered
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_image_blocks;
+    use crate::types::ImageAttachment;
+
+    #[test]
+    fn image_blocks_keep_supported_valid_images_only() {
+        let blocks = valid_image_blocks(&[
+            ImageAttachment {
+                data: "aGVsbG8=".to_string(),
+                mime_type: "image/png".to_string(),
+            },
+            ImageAttachment {
+                data: "not base64!".to_string(),
+                mime_type: "image/jpeg".to_string(),
+            },
+            ImageAttachment {
+                data: "aGVsbG8=".to_string(),
+                mime_type: "application/pdf".to_string(),
+            },
+        ]);
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["source"]["media_type"], "image/png");
+    }
 }

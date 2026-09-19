@@ -3,7 +3,7 @@ import type { Accessor } from "solid-js";
 import { Copy, Edit3, Files, FolderGit2, Globe, Trash2 } from "lucide-solid";
 import type { AppSession, Role, RoleUpsertInput, AcpConfigOption, AssistantRuntime, Project } from "../types";
 import { RUNTIME_COLOR, RUNTIMES, flattenConfigValues } from "../types";
-import { EmptyState, FieldRow, TextInput, InlineSelect, ActionButton } from "./primitives";
+import { FieldRow, TextInput, InlineSelect, ActionButton } from "./primitives";
 import { roleApi, assistantApi, globalMcpApi, ruleApi, skillApi, parseError } from "../../lib/tauriApi";
 import type { RoleMcpEntry, RoleRule, RoleSkill } from "../../lib/tauriApi";
 import { isModeOption, isModelOption, optionCurrentValue } from "../../lib/configOptions";
@@ -17,7 +17,7 @@ import {
   valuesForModel,
   type RuntimeOption,
 } from "../../lib/runtimeOptions";
-import { ContextMenuSurface, ContextMenuItem, ContextMenuSeparator } from "../ui";
+import { ContextMenuSurface, ContextMenuItem, ContextMenuSeparator, EmptyState } from "../ui";
 
 function ToggleField(props: { label: string; on: boolean; onChange: (on: boolean) => void }) {
   return (
@@ -323,6 +323,7 @@ export function RolesTab(props: {
   const [cRoleSkills, setCRoleSkills] = createSignal<RoleSkill[]>([]);
 
   // ── Edit form state ─────────────────────────────────────────────────────────
+  const [eName, setEName] = createSignal("");
   const [ePrompt, setEPrompt] = createSignal("");
   const [eModel, setEModel] = createSignal("");
   const [eMode, setEMode] = createSignal("");
@@ -397,6 +398,7 @@ export function RolesTab(props: {
     setDeleteError(null);
     setSelectedId(role.id);
     setEScope(role.projectId ? "project" : "global");
+    setEName(role.roleName);
     setEPrompt(role.systemPrompt ?? "");
     setEModel(role.model ?? "");
     setEMode(role.mode ?? "");
@@ -628,6 +630,15 @@ export function RolesTab(props: {
   const handleSaveEdit = async () => {
     const role = editingRole();
     if (!role || saving()) return;
+    const newName = eName().trim();
+    if (!newName) {
+      props.pushMessage("event", "Role name is required.");
+      return;
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(newName)) {
+      props.pushMessage("event", "Role name only allows letters, numbers, - and _.");
+      return;
+    }
     let parsedCfg: unknown;
     try { parsedCfg = JSON.parse(eCfgJson().trim() || "{}"); if (!parsedCfg || typeof parsedCfg !== "object" || Array.isArray(parsedCfg)) throw new Error("must be object"); }
     catch (e) { props.pushMessage("event", `Invalid config JSON: ${String(e)}`); return; }
@@ -639,7 +650,7 @@ export function RolesTab(props: {
     try {
       await roleApi.upsert({
         id: role.id,
-        roleName: role.roleName, runtimeKind: role.runtimeKind, runtimeProfileId: role.runtimeProfileId,
+        roleName: newName, runtimeKind: role.runtimeKind, runtimeProfileId: role.runtimeProfileId,
         systemPrompt: ePrompt().trim(), model: eModel().trim() || null,
         mode: newMode, mcpServersJson: "[]",
         configOptionsJson: JSON.stringify(parsedCfg),
@@ -648,6 +659,13 @@ export function RolesTab(props: {
         projectId: targetPid,
       } satisfies RoleUpsertInput);
       await props.refreshRoles(props.currentProject?.()?.id);
+      const active = props.activeSession();
+      if (
+        active?.activeRole === role.roleName &&
+        ((role.projectId && active.projectId === role.projectId) || (!role.projectId && !active.projectId))
+      ) {
+        props.patchActiveSession({ activeRole: newName });
+      }
       // Precedence rule: Session-specific overrides (`mode_override`) in the database take precedence over
       // the global role's default `mode`. When the global default mode changes, we sync it only to the
       // active sessions of this role that do not have any explicit session-level mode override.
@@ -657,7 +675,7 @@ export function RolesTab(props: {
           props.updateSession(sessionId, { currentMode: newMode });
         }
       }
-      props.pushMessage("event", `Role saved: ${role.roleName} (${targetPid ? "project" : "global"})`);
+      props.pushMessage("event", `Role saved: ${newName} (${targetPid ? "project" : "global"})`);
     } catch (e) { const err = parseError(e); props.pushMessage("event", `Failed to save: ${err.message}`); }
     finally { setSaving(false); }
   };
@@ -797,7 +815,6 @@ export function RolesTab(props: {
             All ({userRoles().length})
           </button>
           <Show when={props.currentProject?.()}>
-            {(proj) => (
               <button
                 type="button"
                 onClick={() => setRoleFilter("project")}
@@ -805,7 +822,6 @@ export function RolesTab(props: {
               >
                 Project ({projectRoles().length})
               </button>
-            )}
           </Show>
           <button
             type="button"
@@ -817,7 +833,7 @@ export function RolesTab(props: {
         </div>
         <div class="flex-1 overflow-y-auto space-y-0.5 py-1">
           <Show when={filteredRoles().length === 0}>
-            <EmptyState icon="◎" title="No roles" sub={roleFilter() === "project" ? "No roles configured for this project" : "Create your first role"} />
+          <EmptyState icon="◎" title="No roles" description={roleFilter() === "project" ? "No roles configured for this project" : "Create your first role"} />
           </Show>
           <For each={filteredRoles()}>
             {(role) => {
@@ -1254,6 +1270,21 @@ export function RolesTab(props: {
                       </button>
                     </div>
                   </FieldRow>
+                  <FieldRow label="Name">
+                    <div class="flex w-full flex-col gap-1">
+                      <TextInput
+                        value={eName()}
+                        onInput={setEName}
+                        placeholder="e.g. Developer"
+                        monospace
+                        error={!!eName().trim() && !/^[A-Za-z0-9_-]+$/.test(eName().trim())}
+                      />
+                      <Show when={!!eName().trim() && !/^[A-Za-z0-9_-]+$/.test(eName().trim())}>
+                        <span class="font-mono text-[9px] text-rose-400">only letters, numbers, - and _ (no spaces)</span>
+                      </Show>
+                      <span class="text-[10px] theme-muted">Renaming keeps this role's settings and existing session bindings.</span>
+                    </div>
+                  </FieldRow>
                   <FieldRow label="Prompt (Optional)">
                     <div class="w-full flex flex-col gap-1">
                       <TextInput
@@ -1386,7 +1417,7 @@ export function RolesTab(props: {
 
         {/* Empty state */}
         <Show when={!creating() && !editingRole()}>
-          <EmptyState icon="◎" title="Select a role" sub="Or create a new one" />
+          <EmptyState icon="◎" title="Select a role" description="Or create a new one" />
         </Show>
       </div>
 

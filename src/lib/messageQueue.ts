@@ -1,26 +1,40 @@
-import type { AppSession } from "../components/types";
+import type { AppSession, QueuedItem } from "../components/types";
 
-/** Read-only view of queued inputs for a given session id. */
-export const queuedInputsFor = (
+export const queuedItemsFor = (
   sessions: readonly AppSession[],
   getSessionIndex: (id: string) => number,
   sid: string | null,
-): readonly string[] => {
+): readonly QueuedItem[] => {
   if (!sid) return [];
   const idx = getSessionIndex(sid);
-  return idx !== -1 ? (sessions[idx]?.queuedMessages ?? []) : [];
+  return idx !== -1 ? (sessions[idx]?.queuedItems ?? []) : [];
 };
 
-/** Merge queued inputs into a single newline-joined prompt.
- *  Returns empty string when no non-blank entries remain. */
-export const mergeQueuedInputs = (items: readonly string[]): string =>
+const mergeQueuedInputs = (items: readonly string[]): string =>
   items.map((q) => q.trim()).filter(Boolean).join("\n");
 
-export type DequeueResult = { merged: string; count: number };
+export type QueuedDequeueResult = {
+  items: QueuedItem[];
+  merged: string;
+  attachments: Array<{ data: string; mimeType: string }>;
+  roleName: string | null;
+};
 
-/** Decide what to send next from a session's queue. Caller is responsible for
- *  actually clearing the queue in the store; this is a pure projection. */
-export const projectNextDequeue = (queue: readonly string[]): DequeueResult => ({
-  merged: mergeQueuedInputs(queue),
-  count: queue.length,
-});
+export const projectQueuedItemDequeue = (items: readonly QueuedItem[]): QueuedDequeueResult => {
+  const first = items.find((item) => item.status === "queued");
+  const roleName = first?.roleName ?? null;
+  const selected: QueuedItem[] = [];
+  if (first) {
+    for (const item of items) {
+      if (item.status !== "queued") continue;
+      if ((item.roleName ?? null) !== roleName) break;
+      selected.push(item);
+    }
+  }
+  return {
+    items: selected,
+    merged: mergeQueuedInputs(selected.map((item) => item.text)),
+    attachments: selected.flatMap((item) => item.attachments),
+    roleName,
+  };
+};

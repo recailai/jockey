@@ -38,6 +38,18 @@ fn terminal_meta(meta: Option<&acp::Meta>) -> Option<Value> {
     (!out.is_empty()).then_some(Value::Object(out))
 }
 
+fn unknown_content_event(content: &acp::ContentBlock) -> AcpEvent {
+    AcpEvent::Unknown {
+        type_name: "acp.contentBlock".to_string(),
+        raw: cap_raw(serde_json::to_value(content).ok()).unwrap_or_else(|| {
+            json!({
+                "type": "acp.contentBlock",
+                "error": "content block could not be serialized",
+            })
+        }),
+    }
+}
+
 pub(crate) struct TerminalHandle {
     state: Arc<tokio::sync::Mutex<TerminalState>>,
     exit_rx: tokio::sync::watch::Receiver<Option<acp::TerminalExitStatus>>,
@@ -378,30 +390,24 @@ impl JockeyUiClient {
     ) -> acp::Result<()> {
         self.validate_session(&args.session_id)?;
         let event = match args.update {
-            acp::SessionUpdate::AgentMessageChunk(chunk) => {
-                let text = match chunk.content {
-                    acp::ContentBlock::Text(tc) => tc.text,
-                    acp::ContentBlock::ResourceLink(rl) => rl.uri,
-                    _ => return Ok(()),
-                };
-                if text.is_empty() {
-                    return Ok(());
+            acp::SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
+                acp::ContentBlock::Text(tc) if !tc.text.is_empty() => {
+                    AcpEvent::TextDelta { text: tc.text }
                 }
-                AcpEvent::TextDelta { text }
-            }
-            acp::SessionUpdate::AgentThoughtChunk(chunk) => {
-                let text = match chunk.content {
-                    acp::ContentBlock::Text(tc) => tc.text,
-                    _ => return Ok(()),
-                };
-                if text.is_empty() {
-                    return Ok(());
+                acp::ContentBlock::Text(_) => return Ok(()),
+                content => unknown_content_event(&content),
+            },
+            acp::SessionUpdate::AgentThoughtChunk(chunk) => match chunk.content {
+                acp::ContentBlock::Text(tc) if !tc.text.is_empty() => {
+                    AcpEvent::ThoughtDelta { text: tc.text }
                 }
-                AcpEvent::ThoughtDelta { text }
-            }
+                acp::ContentBlock::Text(_) => return Ok(()),
+                content => unknown_content_event(&content),
+            },
             acp::SessionUpdate::ToolCall(tc) => AcpEvent::ToolCall {
                 tool_call_id: tc.tool_call_id.to_string(),
                 title: tc.title.clone(),
+                tool_name: None,
                 tool_kind: serde_json::to_value(&tc.kind)
                     .and_then(|v| Ok(v.as_str().unwrap_or("unknown").to_string()))
                     .unwrap_or_else(|_| "unknown".to_string()),
@@ -436,6 +442,7 @@ impl JockeyUiClient {
             },
             acp::SessionUpdate::ToolCallUpdate(tcu) => AcpEvent::ToolCallUpdate {
                 tool_call_id: tcu.tool_call_id.to_string(),
+                tool_name: None,
                 tool_kind: tcu.fields.kind.map(|k| {
                     serde_json::to_value(&k)
                         .and_then(|v| Ok(v.as_str().unwrap_or("").to_string()))
@@ -507,7 +514,10 @@ impl JockeyUiClient {
                     .map(|c| serde_json::to_value(c).unwrap_or(json!({})))
                     .collect(),
             },
-            _ => return Ok(()),
+            other => AcpEvent::Unknown {
+                type_name: "acp.sessionUpdate".to_string(),
+                raw: serde_json::to_value(other).unwrap_or_else(|_| json!({})),
+            },
         };
         let tx = self
             .delta_slot

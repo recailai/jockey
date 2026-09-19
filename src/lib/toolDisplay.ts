@@ -1,4 +1,5 @@
 import type { AppToolCall } from "../components/types";
+import { resolveToolVariant } from "./toolVariantRegistry";
 
 /** Strips cwd prefix from an absolute path so the UI shows concise relative paths. */
 export function stripCwdPrefix(filePath: string, cwd?: string | null): string {
@@ -53,44 +54,43 @@ export interface ToolDisplayInfo {
   actionLabel: string;
   targetSummary: string;
   secondaryInfo?: string;
+  /** Command was dispatched non-blocking (Claude's `run_in_background`); its output
+   *  arrives via a separate poll rather than this call's own result. */
+  background?: boolean;
 }
 
 export function formatToolDisplay(tc: AppToolCall, cwd?: string | null): ToolDisplayInfo {
-  const name = (tc.title || tc.toolCallId || "").trim();
-  const lowerName = name.toLowerCase();
+  const name = (tc.toolName || tc.title || tc.toolCallId || "").trim();
+  const variant = resolveToolVariant(name, tc.kind);
   const rawInput = parseJsonSafe(tc.rawInput) || parseJsonSafe(tc.rawInputJson) || {};
   const firstLocation = tc.locations?.[0]?.path;
 
   // 1. Shell / Terminal Commands
-  if (
-    lowerName === "bash" ||
-    lowerName === "terminal" ||
-    lowerName === "run_command" ||
-    lowerName === "execute_command" ||
-    lowerName === "shell" ||
-    tc.kind === "shell"
-  ) {
-    const cmd =
+  if (variant === "shell") {
+    const commandValue =
       (rawInput.command as string) ||
       (rawInput.cmd as string) ||
       (rawInput.CommandLine as string) ||
       "";
+    const cmd = Array.isArray(rawInput.command)
+      ? rawInput.command.filter((part): part is string => typeof part === "string").join(" ")
+      : commandValue;
+    // Claude's Bash tool attaches a short human-readable `description` alongside
+    // the literal command (e.g. "List files in src"); lead with that when present
+    // and demote the exact command to a secondary line instead of dropping it.
+    const description = (rawInput.description as string) || "";
     return {
       category: "shell",
       categoryBadge: "Shell",
       actionLabel: "Run",
-      targetSummary: cmd || "command",
+      targetSummary: description || cmd || "command",
+      secondaryInfo: description && cmd ? cmd : undefined,
+      background: rawInput.run_in_background === true,
     };
   }
 
   // 2. File Reading
-  if (
-    lowerName === "read_file" ||
-    lowerName === "view_file" ||
-    lowerName === "cat" ||
-    lowerName.includes("read") ||
-    tc.kind === "read"
-  ) {
+  if (variant === "read") {
     const rawPath =
       (rawInput.filePath as string) ||
       (rawInput.path as string) ||
@@ -110,15 +110,7 @@ export function formatToolDisplay(tc: AppToolCall, cwd?: string | null): ToolDis
   }
 
   // 3. File Editing
-  if (
-    lowerName === "str_replace_editor" ||
-    lowerName === "edit_file" ||
-    lowerName === "replace_file_content" ||
-    lowerName === "multi_replace_file_content" ||
-    lowerName === "patch" ||
-    lowerName.includes("edit") ||
-    tc.kind === "edit"
-  ) {
+  if (variant === "edit") {
     const rawPath =
       (rawInput.filePath as string) ||
       (rawInput.path as string) ||
@@ -135,13 +127,7 @@ export function formatToolDisplay(tc: AppToolCall, cwd?: string | null): ToolDis
   }
 
   // 4. File Writing / Creation
-  if (
-    lowerName === "write_to_file" ||
-    lowerName === "create_file" ||
-    lowerName === "write" ||
-    lowerName.includes("write") ||
-    tc.kind === "write"
-  ) {
+  if (variant === "write") {
     const rawPath =
       (rawInput.filePath as string) ||
       (rawInput.path as string) ||
@@ -158,14 +144,7 @@ export function formatToolDisplay(tc: AppToolCall, cwd?: string | null): ToolDis
   }
 
   // 5. Search / Grep / Glob
-  if (
-    lowerName === "grep_search" ||
-    lowerName === "file_search" ||
-    lowerName === "search" ||
-    lowerName === "find_by_name" ||
-    lowerName.includes("grep") ||
-    lowerName.includes("search")
-  ) {
+  if (variant === "search") {
     const query =
       (rawInput.Query as string) ||
       (rawInput.query as string) ||
@@ -186,13 +165,7 @@ export function formatToolDisplay(tc: AppToolCall, cwd?: string | null): ToolDis
   }
 
   // 6. Network / Web Fetch
-  if (
-    lowerName === "read_url_content" ||
-    lowerName === "web_search" ||
-    lowerName === "search_web" ||
-    lowerName === "fetch" ||
-    lowerName === "browser_subagent"
-  ) {
+  if (variant === "fetch") {
     const urlOrQuery =
       (rawInput.Url as string) ||
       (rawInput.url as string) ||
@@ -208,7 +181,7 @@ export function formatToolDisplay(tc: AppToolCall, cwd?: string | null): ToolDis
   }
 
   // 7. Subagents / Background Tasks
-  if (lowerName.includes("subagent") || lowerName.includes("task") || lowerName === "manage_task") {
+  if (variant === "task") {
     const taskName =
       (rawInput.TaskName as string) ||
       (rawInput.taskName as string) ||

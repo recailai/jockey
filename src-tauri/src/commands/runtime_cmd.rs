@@ -5,7 +5,7 @@ use crate::db::app_session_role::{
 };
 use crate::db::{get_state, with_db};
 use crate::resolve_chat_cwd;
-use crate::types::AppState;
+use crate::types::{AppState, ImageAttachment};
 use rusqlite::{params, OptionalExtension};
 use tauri::State;
 
@@ -121,10 +121,63 @@ pub(crate) async fn cancel_acp_session(
     role_name: String,
     app_session_id: String,
 ) -> Result<(), String> {
-    let runtime =
-        resolve_runtime_for_session_role(get_state(&state), &app_session_id, &role_name, None)?;
-    acp::cancel_session(&runtime, &role_name, Some(app_session_id.as_str())).await;
+    let state_ref = get_state(&state);
+    let mut targets = crate::db::lifecycle::list_internal(state_ref, &app_session_id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|entry| {
+            entry.role_name == role_name
+                && matches!(entry.state.as_str(), "running" | "prewarming" | "ready")
+        })
+        .map(|entry| (entry.runtime_kind, entry.role_name))
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        let runtime =
+            resolve_runtime_for_session_role(state_ref, &app_session_id, &role_name, None)?;
+        targets.push((runtime, role_name));
+    }
+    let mut first_error = None;
+    for (runtime, role) in targets {
+        let _ = crate::db::lifecycle::transition_internal(
+            state_ref,
+            &app_session_id,
+            &role,
+            &runtime,
+            "stopping",
+            None,
+        );
+        if let Err(error) =
+            acp::cancel_session(&runtime, &role, Some(app_session_id.as_str())).await
+        {
+            first_error.get_or_insert(error);
+        } else {
+            let _ = crate::db::lifecycle::transition_internal(
+                state_ref,
+                &app_session_id,
+                &role,
+                &runtime,
+                "stopped",
+                None,
+            );
+        }
+    }
+    if let Some(error) = first_error {
+        return Err(error);
+    }
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn steer_acp_session(
+    state: State<'_, AppState>,
+    role_name: String,
+    app_session_id: String,
+    prompt: String,
+    attachments: Vec<ImageAttachment>,
+) -> Result<(), String> {
+    let sid = require_app_session_id(&app_session_id)?;
+    let runtime = resolve_runtime_for_session_role(get_state(&state), sid, &role_name, None)?;
+    acp::steer_session(&runtime, &role_name, Some(sid), &prompt, &attachments).await
 }
 
 #[tauri::command]
@@ -136,7 +189,12 @@ pub(crate) async fn reset_acp_session(
     let sid = require_app_session_id(&app_session_id)?;
     let runtime = resolve_runtime_for_session_role(get_state(&state), sid, &role_name, None)?;
     acp::reset_session(&runtime, &role_name, Some(sid)).await?;
-    crate::db::app_session_role::clear_app_session_role_cli_id(get_state(&state), sid, &role_name)?;
+    crate::db::app_session_role::clear_app_session_role_cli_id(
+        get_state(&state),
+        sid,
+        &role_name,
+        &runtime,
+    )?;
     Ok(())
 }
 
@@ -161,6 +219,11 @@ pub(crate) async fn set_acp_mode(
 ) -> Result<(), String> {
     let sid = require_app_session_id(&app_session_id)?;
     let runtime = resolve_runtime_for_session_role(get_state(&state), sid, &role_name, None)?;
+    if let Err(e) = acp::set_mode(&runtime, &role_name, &mode_id, Some(sid)).await {
+        if !e.to_ascii_lowercase().contains("no active session") {
+            return Err(e);
+        }
+    }
     save_app_session_role_mode_override(
         get_state(&state),
         sid,
@@ -168,11 +231,6 @@ pub(crate) async fn set_acp_mode(
         &runtime,
         Some(&mode_id),
     )?;
-    if let Err(e) = acp::set_mode(&runtime, &role_name, &mode_id, Some(sid)).await {
-        if !e.to_ascii_lowercase().contains("no active session") {
-            return Err(e);
-        }
-    }
     Ok(())
 }
 
@@ -186,6 +244,13 @@ pub(crate) async fn set_acp_config_option(
 ) -> Result<(), String> {
     let sid = require_app_session_id(&app_session_id)?;
     let runtime = resolve_runtime_for_session_role(get_state(&state), sid, &role_name, None)?;
+    if let Err(e) =
+        acp::set_config_option(&runtime, &role_name, &config_id, &value, Some(sid)).await
+    {
+        if !e.to_ascii_lowercase().contains("no active session") {
+            return Err(e);
+        }
+    }
     save_app_session_role_config_option_override(
         get_state(&state),
         sid,
@@ -194,13 +259,6 @@ pub(crate) async fn set_acp_config_option(
         &config_id,
         &value,
     )?;
-    if let Err(e) =
-        acp::set_config_option(&runtime, &role_name, &config_id, &value, Some(sid)).await
-    {
-        if !e.to_ascii_lowercase().contains("no active session") {
-            return Err(e);
-        }
-    }
     Ok(())
 }
 
@@ -263,14 +321,19 @@ pub(crate) async fn prewarm_role_config_cmd(
     app_session_id: String,
     project_id: Option<String>,
     force: Option<bool>,
+    runtime_kind: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let sid = require_app_session_id(&app_session_id)?;
-    let runtime = resolve_runtime_for_session_role(
-        get_state(&state),
-        sid,
-        &role_name,
-        project_id.as_deref(),
-    )?;
+    let runtime = if let Some(rt) = runtime_kind.filter(|s| !s.trim().is_empty()) {
+        normalize_runtime_or_self(&rt)
+    } else {
+        resolve_runtime_for_session_role(
+            get_state(&state),
+            sid,
+            &role_name,
+            project_id.as_deref(),
+        )?
+    };
     let cwd = resolve_discovery_cwd(get_state(&state), sid, project_id.as_deref());
     // Role/config UI discovery uses a separate refresh connection so it cannot
     // evict the live app-session connection serving the running chat.

@@ -5,6 +5,7 @@ use crate::runtime_profile;
 use crate::types::*;
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
+use serde_json::{json, Value};
 use tauri::State;
 use uuid::Uuid;
 
@@ -23,6 +24,92 @@ fn validate_role_name(role_name: &str) -> Result<(), String> {
             AppError::validation("role name only allows letters, numbers, - and _").to_string(),
         );
     }
+    Ok(())
+}
+
+fn rename_role_references(
+    tx: &rusqlite::Transaction<'_>,
+    old_name: &str,
+    new_name: &str,
+    project_id: Option<&str>,
+) -> Result<(), String> {
+    let table_exists = |table: &str| {
+        tx.query_row(
+            "SELECT count(1) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            params![table],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+        .map_err(|e| e.to_string())
+    };
+    let session_scope = if project_id.is_some() {
+        "s.project_id = ?3"
+    } else {
+        "NOT EXISTS (
+            SELECT 1 FROM roles project_role
+            WHERE project_role.project_id = s.project_id
+              AND lower(project_role.role_name) = lower(?2)
+        )"
+    };
+
+    if table_exists("app_sessions")? {
+        let sql = format!(
+            "UPDATE app_sessions AS s
+             SET active_role = ?1
+             WHERE lower(active_role) = lower(?2) AND ({session_scope})"
+        );
+        tx.execute(&sql, params![new_name, old_name, project_id])
+            .map_err(|e| format!("failed to rename active role references: {e}"))?;
+
+        for (table, session_column) in [
+            ("app_session_roles", "app_session_id"),
+            ("app_session_role_runtime_configs", "app_session_id"),
+            ("agent_lifecycle", "app_session_id"),
+            ("session_inbox_messages", "app_session_id"),
+            ("app_session_messages", "session_id"),
+        ] {
+            if !table_exists(table)? {
+                continue;
+            }
+            let sql = format!(
+                "UPDATE {table}
+                 SET role_name = ?1
+                 WHERE lower(role_name) = lower(?2)
+                   AND {session_column} IN (
+                     SELECT s.id FROM app_sessions s WHERE {session_scope}
+                   )"
+            );
+            tx.execute(&sql, params![new_name, old_name, project_id])
+                .map_err(|e| format!("failed to rename {table} references: {e}"))?;
+        }
+    }
+
+    for table in [
+        "project_agent_configs",
+        "project_agent_runtime_configs",
+        "project_role_overrides",
+    ] {
+        if !table_exists(table)? {
+            continue;
+        }
+        let project_scope = if project_id.is_some() {
+            "project_id = ?3"
+        } else {
+            "NOT EXISTS (
+                SELECT 1 FROM roles project_role
+                WHERE project_role.project_id = pa.project_id
+                  AND lower(project_role.role_name) = lower(?2)
+            )"
+        };
+        let sql = format!(
+            "UPDATE {table} AS pa
+             SET role_name = ?1
+             WHERE lower(pa.role_name) = lower(?2) AND ({project_scope})"
+        );
+        tx.execute(&sql, params![new_name, old_name, project_id])
+            .map_err(|e| format!("failed to rename {table} references: {e}"))?;
+    }
+
     Ok(())
 }
 
@@ -147,7 +234,40 @@ pub(crate) fn upsert_role_with_id(
             .unwrap_or(0);
 
         if exists_by_id > 0 {
-            conn.execute(
+            let previous: (String, Option<String>) = conn
+                .query_row(
+                    "SELECT role_name, project_id FROM roles WHERE id = ?1",
+                    params![&target_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|e| AppError::db(e.to_string()).to_string())?;
+            if !previous.0.eq_ignore_ascii_case(&role_name) || previous.1 != resolved_project_id {
+                let duplicate: bool = conn
+                    .query_row(
+                        "SELECT count(1) FROM roles
+                         WHERE lower(role_name) = lower(?1)
+                           AND ((project_id = ?2) OR (project_id IS NULL AND ?2 IS NULL) OR (project_id = '' AND ?2 IS NULL))
+                           AND id <> ?3",
+                        params![&role_name, &resolved_project_id, &target_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map(|count| count > 0)
+                    .map_err(|e| AppError::db(e.to_string()).to_string())?;
+                if duplicate {
+                    return Err(AppError::validation(format!(
+                        "role name already exists in this scope: {role_name}"
+                    ))
+                    .to_string());
+                }
+            }
+
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| AppError::db(e.to_string()).to_string())?;
+            if !previous.0.eq_ignore_ascii_case(&role_name) {
+                rename_role_references(&tx, &previous.0, &role_name, previous.1.as_deref())?;
+            }
+            tx.execute(
                 "UPDATE roles SET
                    role_name = ?2,
                    runtime_kind = ?3,
@@ -179,6 +299,8 @@ pub(crate) fn upsert_role_with_id(
                 ],
             )
             .map_err(|e| AppError::db(e.to_string()).to_string())?;
+            tx.commit()
+                .map_err(|e| AppError::db(e.to_string()).to_string())?;
         } else {
             conn.execute(
                 "INSERT INTO roles (id, role_name, runtime_kind, runtime_profile_id, system_prompt, model, mode, mcp_servers_json, config_options_json, config_option_defs_json, auto_approve, project_id, created_at, updated_at)
@@ -204,6 +326,101 @@ pub(crate) fn upsert_role_with_id(
         }
         Ok(())
     })?;
+
+    if let Some(pid) = resolved_project_id.as_deref() {
+        let has_override_table = with_db(state, |conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT count(1) FROM sqlite_master WHERE type = 'table' AND name = 'project_role_overrides'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|count| count > 0)
+                .unwrap_or(false))
+        })?;
+        let overrides = with_db(state, |conn| {
+            let table_exists: bool = conn
+                .query_row(
+                    "SELECT count(1) FROM sqlite_master WHERE type = 'table' AND name = 'project_role_overrides'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|count| count > 0)
+                .unwrap_or(false);
+            if !table_exists {
+                return Ok("{}".to_string());
+            }
+            let global: Option<(String, Option<String>, Option<String>, String, String, String, String, bool)> = conn
+                .query_row(
+                    "SELECT runtime_kind, model, mode, system_prompt, mcp_servers_json, config_options_json, config_option_defs_json, auto_approve
+                     FROM roles WHERE lower(role_name) = lower(?1) AND (project_id IS NULL OR project_id = '')
+                     ORDER BY updated_at DESC LIMIT 1",
+                    params![&role_name],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get::<_, Option<String>>(6)?.unwrap_or_else(|| "[]".to_string()), row.get::<_, Option<bool>>(7)?.unwrap_or(true))),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            let mut map = serde_json::Map::new();
+            if let Some((
+                global_runtime,
+                global_model,
+                global_mode,
+                global_prompt,
+                global_mcp,
+                global_cfg,
+                global_cfg_defs,
+                global_approve,
+            )) = global
+            {
+                if global_runtime != runtime_kind {
+                    map.insert("runtimeKind".into(), json!(runtime_kind));
+                }
+                if global_model != model {
+                    map.insert("model".into(), json!(model));
+                }
+                if global_mode != mode {
+                    map.insert("mode".into(), json!(mode));
+                }
+                if global_prompt != system_prompt {
+                    map.insert("systemPrompt".into(), json!(system_prompt));
+                }
+                if global_mcp != mcp {
+                    map.insert("mcpServersJson".into(), json!(mcp));
+                }
+                if global_cfg != cfg {
+                    map.insert("configOptionsJson".into(), json!(cfg));
+                }
+                if global_cfg_defs != cfg_defs {
+                    map.insert("configOptionDefsJson".into(), json!(cfg_defs));
+                }
+                if global_approve != approve {
+                    map.insert("autoApprove".into(), json!(approve));
+                }
+            } else {
+                map.insert("runtimeKind".into(), json!(runtime_kind));
+                map.insert("model".into(), json!(model));
+                map.insert("mode".into(), json!(mode));
+                map.insert("systemPrompt".into(), json!(system_prompt));
+                map.insert("mcpServersJson".into(), json!(mcp));
+                map.insert("configOptionsJson".into(), json!(cfg));
+                map.insert("configOptionDefsJson".into(), json!(cfg_defs));
+                map.insert("autoApprove".into(), json!(approve));
+            }
+            serde_json::to_string(&Value::Object(map)).map_err(|e| e.to_string())
+        })?;
+        if has_override_table {
+            with_db(state, |conn| {
+                conn.execute(
+                    "INSERT INTO project_role_overrides(project_id, role_name, overrides_json, updated_at)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(project_id, role_name) DO UPDATE SET overrides_json = excluded.overrides_json, updated_at = excluded.updated_at",
+                    params![pid, &role_name, overrides, now],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            })?;
+        }
+    }
 
     let runtime_launch_method = crate::acp::adapter_launch_method(&runtime_kind);
     let role = Role {
@@ -324,6 +541,91 @@ fn role_from_row(row: &rusqlite::Row) -> rusqlite::Result<Role> {
         created_at: row.get(12)?,
         updated_at: row.get(13)?,
     })
+}
+
+fn apply_project_role_overrides(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    role: &mut Role,
+) -> Result<(), String> {
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT count(1) FROM sqlite_master WHERE type = 'table' AND name = 'project_role_overrides'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT overrides_json FROM project_role_overrides WHERE project_id = ?1 AND lower(role_name) = lower(?2)",
+            params![project_id, &role.role_name],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(raw) = raw else {
+        return Ok(());
+    };
+    let Value::Object(values) =
+        serde_json::from_str(&raw).unwrap_or(Value::Object(Default::default()))
+    else {
+        return Ok(());
+    };
+    if let Some(v) = values.get("runtimeKind").and_then(Value::as_str) {
+        role.runtime_kind = v.to_string();
+        role.runtime_profile_id = runtime_profile::profile_id(v);
+        role.runtime_launch_method = crate::acp::adapter_launch_method(v);
+    }
+    if let Some(v) = values.get("systemPrompt").and_then(Value::as_str) {
+        role.system_prompt = v.to_string();
+    }
+    if let Some(v) = values.get("model") {
+        role.model = if v.is_null() {
+            None
+        } else {
+            v.as_str().map(str::to_string)
+        };
+    }
+    if let Some(v) = values.get("mode") {
+        role.mode = if v.is_null() {
+            None
+        } else {
+            v.as_str().map(str::to_string)
+        };
+    }
+    if let Some(v) = values.get("mcpServersJson").and_then(Value::as_str) {
+        role.mcp_servers_json = v.to_string();
+    }
+    if let Some(v) = values.get("configOptionsJson").and_then(Value::as_str) {
+        role.config_options_json = v.to_string();
+    }
+    if let Some(v) = values.get("configOptionDefsJson").and_then(Value::as_str) {
+        role.config_option_defs_json = v.to_string();
+    }
+    if let Some(v) = values.get("autoApprove").and_then(Value::as_bool) {
+        role.auto_approve = v;
+    }
+    Ok(())
+}
+
+fn has_project_role_overrides(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    role_name: &str,
+) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM project_role_overrides WHERE project_id = ?1 AND lower(role_name) = lower(?2)",
+        params![project_id, role_name],
+        |_| Ok(()),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .is_some()
 }
 
 pub(crate) fn list_roles_by_project(
@@ -496,8 +798,28 @@ pub(crate) fn load_role_scoped(
                 )
                 .optional()
                 .map_err(|e| AppError::db(e.to_string()).to_string())?;
-            if hit.is_some() {
-                return Ok(hit);
+            if let Some(mut role) = hit {
+                if !has_project_role_overrides(conn, pid, role_name) {
+                    return Ok(Some(role));
+                }
+                let global = conn
+                    .query_row(
+                        "SELECT id, role_name, runtime_kind, runtime_profile_id, system_prompt, model, mode, mcp_servers_json, config_options_json, config_option_defs_json, auto_approve, project_id, created_at, updated_at
+                         FROM roles WHERE lower(role_name) = lower(?1) AND (project_id IS NULL OR project_id = '') ORDER BY updated_at DESC LIMIT 1",
+                        params![role_name], role_from_row)
+                    .optional().map_err(|e| AppError::db(e.to_string()).to_string())?;
+                if let Some(mut template) = global {
+                    apply_project_role_overrides(conn, pid, &mut template)?;
+                    template.id = role.id;
+                    template.role_name = role.role_name;
+                    template.project_id = role.project_id;
+                    template.created_at = role.created_at;
+                    template.updated_at = role.updated_at;
+                    role = template;
+                } else {
+                    apply_project_role_overrides(conn, pid, &mut role)?;
+                }
+                return Ok(Some(role));
             }
         }
         let global_hit = conn
@@ -699,6 +1021,7 @@ pub(crate) fn reassign_role_project_cmd(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::init_db;
     use crate::db::pool::DbPool;
     use dashmap::DashMap;
     use std::sync::Arc;
@@ -818,5 +1141,157 @@ mod tests {
         assert_eq!(resolved.runtime_kind, "claude-native");
         // Caching that resolution per project is correct — it is the right answer for p-unknown.
         assert!(state.role_cache.contains_key("p-unknown:Reviewer"));
+    }
+
+    #[test]
+    fn renaming_a_role_migrates_session_and_project_references() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = DbPool::new(
+            dir.path().join("rename.sqlite3"),
+            2,
+            "PRAGMA foreign_keys = ON;",
+        )
+        .expect("pool");
+        {
+            let conn = pool.get().expect("conn");
+            init_db(&conn).expect("init_db");
+            conn.execute(
+                "INSERT INTO projects (id, name, root_path, created_at, updated_at)
+                 VALUES ('p1', 'Project', '/tmp/jockey-role-rename', 1, 1)",
+                [],
+            )
+            .expect("project");
+        }
+        let state = AppState {
+            db: pool,
+            role_cache: Arc::new(DashMap::new()),
+        };
+        let role = upsert_role(
+            &state,
+            "Developer".to_string(),
+            "claude-native".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(true),
+            Some("p1".to_string()),
+        )
+        .expect("role");
+        with_db(&state, |conn| {
+            conn.execute(
+                "INSERT INTO app_sessions (id, title, active_role, project_id, created_at, last_active_at)
+                 VALUES ('s1', 'Session', 'Developer', 'p1', 1, 1)",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO app_session_roles (app_session_id, role_name, runtime_kind)
+                 VALUES ('s1', 'Developer', 'claude-native')",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO app_session_role_runtime_configs (app_session_id, role_name, runtime_kind, updated_at)
+                 VALUES ('s1', 'Developer', 'claude-native', 1)",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO agent_lifecycle (app_session_id, role_name, runtime_kind, state, revision, updated_at)
+                 VALUES ('s1', 'Developer', 'claude-native', 'ready', 1, 1)",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO session_inbox_messages (id, app_session_id, role_name, delivery, text, created_at)
+                 VALUES ('i1', 's1', 'Developer', 'nextTurn', 'hello', 1)",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO app_session_messages (session_id, role_name, content, created_at)
+                 VALUES ('s1', 'Developer', 'hello', 1)",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO project_agent_configs (project_id, role_name, runtime_kind, updated_at)
+                 VALUES ('p1', 'Developer', 'claude-native', 1)",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO project_agent_runtime_configs (project_id, role_name, runtime_kind, updated_at)
+                 VALUES ('p1', 'Developer', 'claude-native', 1)",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .expect("references");
+
+        let renamed = upsert_role_with_id(
+            &state,
+            Some(role.id),
+            "Builder".to_string(),
+            "claude-native".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(true),
+            Some("p1".to_string()),
+        )
+        .expect("rename");
+        assert_eq!(renamed.role_name, "Builder");
+
+        with_db(&state, |conn| {
+            for (table, id_column) in [
+                ("app_session_roles", "app_session_id"),
+                ("app_session_role_runtime_configs", "app_session_id"),
+                ("agent_lifecycle", "app_session_id"),
+                ("session_inbox_messages", "app_session_id"),
+                ("app_session_messages", "session_id"),
+            ] {
+                let sql = format!(
+                    "SELECT count(1) FROM {table} WHERE {id_column} = 's1' AND role_name = 'Builder'"
+                );
+                assert_eq!(
+                    conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
+                        .map_err(|e| e.to_string())?,
+                    1
+                );
+            }
+            assert_eq!(
+                conn.query_row(
+                    "SELECT active_role FROM app_sessions WHERE id = 's1'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|e| e.to_string())?,
+                "Builder"
+            );
+            for table in [
+                "project_agent_configs",
+                "project_agent_runtime_configs",
+                "project_role_overrides",
+            ] {
+                let sql = format!(
+                    "SELECT count(1) FROM {table} WHERE project_id = 'p1' AND role_name = 'Builder'"
+                );
+                assert_eq!(
+                    conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
+                        .map_err(|e| e.to_string())?,
+                    1
+                );
+            }
+            Ok(())
+        })
+        .expect("renamed references");
     }
 }

@@ -32,6 +32,7 @@ export type Project = {
   rootPath: string;
   createdAt: number;
   updatedAt: number;
+  deletedAt?: number | null;
 };
 
 export type RawSession = {
@@ -107,6 +108,25 @@ export type ImportableSession = {
   imported: boolean;
 };
 
+export type InboxMessage = {
+  id: string;
+  appSessionId: string;
+  roleName: string | null;
+  delivery: "nextTurn" | "nextStep" | string;
+  text: string;
+  attachments: ImageAttachment[];
+  createdAt: number;
+};
+export type AgentLifecycle = {
+  appSessionId: string;
+  roleName: string;
+  runtimeKind: string;
+  state: "idle" | "prewarming" | "ready" | "running" | "stopping" | "stopped" | "error" | string;
+  revision: number;
+  lastError: string | null;
+  updatedAt: number;
+};
+
 export const appSessionApi = {
   create: (
     title: string,
@@ -134,6 +154,26 @@ export const appSessionApi = {
     contentType?: string,
     payload?: string,
   ) => call<void>("append_app_message", { sessionId, roleName, content, contentType, payload }),
+  saveMessage: (
+    sessionId: string,
+    roleName: string,
+    content: string,
+    contentType?: string,
+    payload?: string,
+    clientId?: string,
+  ) => call<void>("save_app_message", { sessionId, clientId, roleName, content, contentType, payload }),
+  listInbox: (sessionId: string) => call<InboxMessage[]>("list_session_inbox_cmd", { sessionId }),
+  enqueueInbox: (
+    sessionId: string,
+    text: string,
+    roleName?: string | null,
+    delivery: "nextTurn" | "nextStep" = "nextTurn",
+    attachments?: ImageAttachment[],
+  ) => call<InboxMessage>("enqueue_session_inbox_cmd", { sessionId, text, roleName, delivery, attachments }),
+  removeInbox: (id: string) => call<void>("remove_session_inbox_cmd", { id }),
+  claimInbox: (ids: string[]) => call<void>("claim_session_inbox_cmd", { ids }),
+  restoreInbox: (ids: string[]) => call<void>("restore_session_inbox_cmd", { ids }),
+  listLifecycle: (sessionId: string) => call<AgentLifecycle[]>("list_agent_lifecycle_cmd", { appSessionId: sessionId }),
 };
 
 export const roleApi = {
@@ -292,13 +332,30 @@ export const workflowApi = {
 };
 
 export type ImageAttachment = { data: string; mimeType: string };
+export type ChatContextOptions = {
+  mode?: "handoff" | "history" | "none";
+  recentTurns?: number;
+  includeCurrentRole?: boolean;
+};
 
 export const assistantApi = {
-  chat: (input: { input: string; runtimeKind: string | null; appSessionId: string | null; attachments?: ImageAttachment[] }) =>
+  chat: (input: {
+    input: string;
+    runtimeKind: string | null;
+    appSessionId: string | null;
+    attachments?: ImageAttachment[];
+    context?: ChatContextOptions;
+  }) =>
     call<AssistantChatResponse>("assistant_chat", { input }),
   detect: () => call<AssistantRuntime[]>("detect_assistants"),
   cancelSession: (roleName: string, appSessionId: string) =>
     call<void>("cancel_acp_session", { roleName, appSessionId }),
+  steerSession: (
+    roleName: string,
+    appSessionId: string,
+    prompt: string,
+    attachments: ImageAttachment[] = [],
+  ) => call<void>("steer_acp_session", { roleName, appSessionId, prompt, attachments }),
   setMode: (roleName: string, modeId: string, appSessionId: string) =>
     call<void>("set_acp_mode", { roleName, modeId, appSessionId }),
   resetSession: (roleName: string, appSessionId: string) =>
@@ -310,12 +367,14 @@ export const assistantApi = {
     appSessionId: string,
     projectId?: string | null,
     force?: boolean,
+    runtimeKind?: string | null,
   ) =>
     call<{ configOptions: unknown[]; modes: string[] }>("prewarm_role_config_cmd", {
       roleName,
       appSessionId,
       projectId,
       force,
+      runtimeKind,
     }),
   listAvailableCommands: (roleName: string, appSessionId: string, projectId?: string | null) =>
     call<unknown[]>("list_available_commands_cmd", { roleName, appSessionId, projectId }),

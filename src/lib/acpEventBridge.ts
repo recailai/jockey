@@ -15,6 +15,17 @@ type TerminalInfo = { terminalId?: string; cwd?: string | null; label?: string }
 type TerminalOutput = { terminalId?: string; data?: string } | undefined;
 type TerminalExit = { terminalId?: string; exitCode?: number; signal?: string | null } | undefined;
 
+function normalizeToolStatus(status: string | undefined): string | undefined {
+  if (!status) return status;
+  const normalized = status.replace(/[-_]/g, "").toLowerCase();
+  if (normalized === "inprogress" || normalized === "running") return "running";
+  if (normalized === "pending") return "pending";
+  if (normalized === "completed" || normalized === "success") return "completed";
+  if (normalized === "failed" || normalized === "failure" || normalized === "error") return "failure";
+  if (normalized === "declined" || normalized === "cancelled" || normalized === "canceled") return "cancelled";
+  return status;
+}
+
 function readTerminalMeta(meta: unknown): {
   info: TerminalInfo;
   output: TerminalOutput;
@@ -81,14 +92,14 @@ function applyTerminalMetaToSession(
   }
 }
 
-type BridgeDeps = {
+export type BridgeDeps = {
   sid: string;
   roleName: string;
   runtimeKind?: string;
   event: AcpStreamEvent;
   patchSession: (sid: string, patch: Partial<AppSession>) => void;
   mutateSession: (sid: string, recipe: (s: AppSession) => void) => void;
-  appendThought: (sid: string, text: string) => void;
+  appendThought: (sid: string, text: string, roleName?: string) => void;
   normalizeToolLocations: (
     raw: unknown[] | undefined,
   ) => Array<{ path: string; line?: number }> | undefined;
@@ -99,6 +110,7 @@ type BridgeDeps = {
   roles: () => Role[];
   commandCacheKey: (runtimeKey: string, roleName: string) => string;
   scheduleScrollToBottom: () => void;
+  scheduleCheckpoint?: (sid: string) => void;
 };
 
 export function toConnectionLostMessage(payload: {
@@ -114,16 +126,16 @@ export function toWorkflowStateMessage(payload: WorkflowStateEvent): string {
   return `[workflow] ${payload.status} ${payload.activeRole ?? ""} ${payload.message}`;
 }
 
-export function toSessionDeltaMessage(payload: SessionUpdateEvent): string | null {
+export function toSessionDeltaMessage(payload: SessionUpdateEvent): { text: string; roleName?: string } | null {
   if (!payload.delta) return null;
-  return `[${payload.roleName}] ${payload.delta}`;
+  return { text: payload.delta, roleName: payload.roleName || undefined };
 }
 
 export function appendAcpDelta(
   payload: AcpDeltaEvent & { appSessionId?: string },
   acceptingStreams: Map<string, number>,
   sessions: AppSession[],
-  appendStream: (sid: string, chunk: string) => void,
+  appendStream: (sid: string, chunk: string, roleName?: string) => void,
   getSessionIndex?: (id: string) => number,
 ): void {
   const sid = payload.appSessionId;
@@ -131,7 +143,10 @@ export function appendAcpDelta(
   const idx = getSessionIndex ? getSessionIndex(sid) : sessions.findIndex((s) => s.id === sid);
   if (idx === -1) return;
   if (!sessions[idx]?.streamingMessage) return;
-  appendStream(sid, payload.delta);
+  if (payload.role && sessions[idx].streamingMessage && sessions[idx].streamingMessage!.roleName !== payload.role) {
+    sessions[idx].streamingMessage!.roleName = payload.role;
+  }
+  appendStream(sid, payload.delta, payload.role);
 }
 
 export function applyAcpStreamEvent(deps: BridgeDeps): void {
@@ -153,12 +168,14 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
 
   switch (event.kind) {
     case "statusUpdate":
-      if (event.text) patchSession(sid, { agentState: event.text });
+      if (event.text) {
+        patchSession(sid, { agentState: event.text });
+      }
       break;
     case "thoughtDelta":
       if (event.text) {
         patchSession(sid, { agentState: `Thinking: ${event.text.slice(0, 120)}` });
-        appendThought(sid, event.text);
+        appendThought(sid, event.text, roleName);
       }
       break;
     case "toolCall":
@@ -168,23 +185,25 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
         const tc: AppToolCall = {
           toolCallId: event.toolCallId,
           title: event.title ?? "",
+          toolName: event.toolName,
           kind: event.toolKind ?? "unknown",
-          status: event.status ?? "pending",
+          status: normalizeToolStatus(event.status) ?? "pending",
           content,
           contentJson:
             content && content.length > 0
               ? JSON.stringify(content, null, 2)
               : undefined,
           locations,
-          rawInput: event.rawInput,
-          rawOutput: event.rawOutput,
+          rawInput: event.rawInput ?? undefined,
+          rawOutput: event.rawOutput ?? undefined,
           terminalMeta: event.terminalMeta,
+          roleName,
           rawInputJson:
-            event.rawInput !== undefined
+            event.rawInput !== undefined && event.rawInput !== null
               ? JSON.stringify(event.rawInput, null, 2)
               : undefined,
           rawOutputJson:
-            event.rawOutput !== undefined
+            event.rawOutput !== undefined && event.rawOutput !== null
               ? JSON.stringify(event.rawOutput, null, 2)
               : undefined,
         };
@@ -194,16 +213,17 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
             (seg) => seg.kind === "tool" && seg.tc.toolCallId === event.toolCallId,
           );
           if (existing >= 0) {
-            s.streamSegments[existing] = { kind: "tool", tc };
+            s.streamSegments[existing] = { kind: "tool", tc, roleName };
           } else {
-            s.streamSegments.push({ kind: "tool", tc });
+            s.streamSegments.push({ kind: "tool", tc, roleName });
           }
           applyTerminalMetaToSession(s, event, tc);
         });
         patchSession(sid, {
-          agentState: `${event.toolKind ?? "tool"}: ${event.title ?? event.toolCallId}`,
+          agentState: `${event.toolName ?? event.toolKind ?? "tool"}: ${event.title ?? event.toolCallId}`,
         });
         scheduleScrollToBottom();
+        deps.scheduleCheckpoint?.(sid);
       }
       break;
     case "toolCallUpdate":
@@ -213,6 +233,7 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
           const existing = s.toolCalls[event.toolCallId!] ?? {
             toolCallId: event.toolCallId!,
             title: event.title ?? "",
+            toolName: event.toolName,
             kind: event.toolKind ?? "unknown",
             status: "pending",
           };
@@ -229,17 +250,19 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
                 : undefined
               : existing.contentJson;
           const newRawInput =
-            event.rawInput !== undefined ? event.rawInput : existing.rawInput;
+            event.rawInput !== undefined && event.rawInput !== null ? event.rawInput : existing.rawInput;
           const newRawOutput =
-            event.rawOutput !== undefined ? event.rawOutput : existing.rawOutput;
+            event.rawOutput !== undefined && event.rawOutput !== null ? event.rawOutput : existing.rawOutput;
           const newTerminalMeta =
             event.terminalMeta !== undefined ? event.terminalMeta : existing.terminalMeta;
           const updated: AppToolCall = {
             ...existing,
+            roleName: existing.roleName ?? roleName,
+            toolName: event.toolName ?? existing.toolName,
             parentId: event.parentId ?? existing.parentId ?? null,
             diff: event.diff !== undefined ? event.diff : existing.diff,
             kind: event.toolKind ?? existing.kind,
-            status: event.status ?? existing.status,
+            status: normalizeToolStatus(event.status) ?? existing.status,
             title: event.title ?? existing.title,
             content: newContent,
             contentJson,
@@ -248,22 +271,22 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
             rawOutput: newRawOutput,
             terminalMeta: newTerminalMeta,
             rawInputJson:
-              event.rawInput !== undefined
+              event.rawInput !== undefined && event.rawInput !== null
                 ? JSON.stringify(newRawInput, null, 2)
                 : existing.rawInputJson,
             rawOutputJson:
-              event.rawOutput !== undefined
+              event.rawOutput !== undefined && event.rawOutput !== null
                 ? JSON.stringify(newRawOutput, null, 2)
                 : existing.rawOutputJson,
           };
           s.toolCalls[event.toolCallId!] = updated;
           if (isNew) {
-            s.streamSegments.push({ kind: "tool", tc: updated });
+            s.streamSegments.push({ kind: "tool", tc: updated, roleName });
           } else {
             for (let i = s.streamSegments.length - 1; i >= 0; i--) {
               const seg = s.streamSegments[i];
               if (seg.kind === "tool" && seg.tc.toolCallId === event.toolCallId) {
-                s.streamSegments[i] = { kind: "tool", tc: updated };
+                s.streamSegments[i] = { kind: "tool", tc: updated, roleName: seg.roleName ?? roleName };
                 break;
               }
             }
@@ -272,12 +295,13 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
         });
         if (event.status || event.title) {
           patchSession(sid, {
-            agentState: `${event.toolKind ?? "tool"} ${event.status ?? "updated"}: ${
+            agentState: `${event.toolName ?? event.toolKind ?? "tool"} ${event.status ?? "updated"}: ${
               event.title ?? event.toolCallId
             }`,
           });
         }
         scheduleScrollToBottom();
+        deps.scheduleCheckpoint?.(sid);
       }
       break;
     case "toolOutputDelta":
@@ -292,7 +316,7 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
           const idx = s.streamSegments.findIndex(
             (seg) => seg.kind === "tool" && seg.tc.toolCallId === event.toolCallId,
           );
-          if (idx >= 0) s.streamSegments[idx] = { kind: "tool", tc: next };
+          if (idx >= 0) s.streamSegments[idx] = { kind: "tool", tc: next, roleName: s.streamSegments[idx].kind === "tool" ? s.streamSegments[idx].roleName : roleName };
         });
       }
       break;
@@ -433,7 +457,27 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
         });
       }
       break;
+    case "unknown":
+      mutateSession(sid, (s) => {
+        s.streamSegments.push({
+          kind: "other",
+          type: event.typeName ?? "unknown",
+          payload: event.raw ?? event,
+          roleName,
+        });
+      });
+      scheduleScrollToBottom();
+      break;
     default:
+      mutateSession(sid, (s) => {
+        s.streamSegments.push({
+          kind: "other",
+          type: event.kind || "unknown",
+          payload: event,
+          roleName,
+        });
+      });
+      scheduleScrollToBottom();
       break;
   }
 }

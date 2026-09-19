@@ -8,6 +8,7 @@
 //! session runner. The trait fixes the entry points so callers (UI commands,
 //! execute dispatch, app teardown) never branch on transport kind.
 
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::super::adapter::{AdapterTransport, HeadlessProtocol, NativeProtocol};
@@ -16,9 +17,53 @@ use super::super::worker::{worker_tx, AcpPromptResult, WorkerMsg};
 use super::execute::{mock_execute, AcpWorkerPromptContext};
 use super::headless::{cancel_headless, discard_headless_session, execute_headless_runtime};
 use super::native::{
-    cancel_native, discard_native_session, execute_native_runtime, NativeRunRequest,
+    cancel_native, discard_native_session, execute_native_runtime, steer_native, NativeRunRequest,
 };
 use crate::runtime_profile::RuntimeCapabilities;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AdapterError {
+    UnsupportedCapability(&'static str),
+    UnsupportedRuntime(String),
+    Unavailable(String),
+    Failed(String),
+}
+
+impl AdapterError {
+    pub(crate) fn unsupported(capability: &'static str) -> Self {
+        Self::UnsupportedCapability(capability)
+    }
+}
+
+impl std::fmt::Display for AdapterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedCapability(capability) => {
+                write!(f, "UnsupportedCapability({capability})")
+            }
+            Self::UnsupportedRuntime(runtime) => write!(f, "unsupported runtime: {runtime}"),
+            Self::Unavailable(message) | Self::Failed(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<String> for AdapterError {
+    fn from(value: String) -> Self {
+        Self::Failed(value)
+    }
+}
+
+impl From<&str> for AdapterError {
+    fn from(value: &str) -> Self {
+        Self::Failed(value.to_string())
+    }
+}
+
+impl From<AdapterError> for String {
+    fn from(value: AdapterError) -> Self {
+        value.to_string()
+    }
+}
 
 /// Identity of a per-session provider slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,12 +108,55 @@ pub(crate) struct AdapterProbe {
     pub(crate) detail: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InputDeliveryCapabilities {
+    pub(crate) next_turn: bool,
+    pub(crate) next_step: bool,
+    pub(crate) interrupt: bool,
+    pub(crate) run_now: bool,
+    pub(crate) strategy: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AdapterDescriptor {
+    pub(crate) runtime_key: String,
+    pub(crate) transport: String,
+    pub(crate) capabilities: RuntimeCapabilities,
+    pub(crate) input_delivery: InputDeliveryCapabilities,
+}
+
+impl AdapterDescriptor {
+    fn from_adapter(runtime_key: &str, transport: &str, capabilities: RuntimeCapabilities) -> Self {
+        let strategy = match transport {
+            "native-codex-app-server" | "native-pi-rpc" => "steer",
+            _ if capabilities.streaming => "interruptFollowUp",
+            _ => "queue",
+        };
+        let next_step = transport == "native-pi-rpc";
+        Self {
+            runtime_key: runtime_key.to_string(),
+            transport: transport.to_string(),
+            input_delivery: InputDeliveryCapabilities {
+                next_turn: capabilities.streaming,
+                next_step,
+                interrupt: capabilities.streaming,
+                run_now: capabilities.streaming,
+                strategy: strategy.to_string(),
+            },
+            capabilities,
+        }
+    }
+}
+
 /// Everything one turn needs. Built by the execute dispatcher after adapter
 /// resolution; adapters never re-resolve binaries mid-turn.
 pub(crate) struct PromptRequest<'a> {
     pub(crate) runtime_key: &'static str,
     pub(crate) role_name: &'a str,
     pub(crate) app_session_id: &'a str,
+    pub(crate) turn_id: &'a str,
     pub(crate) prompt: &'a str,
     pub(crate) context: &'a [(String, String)],
     pub(crate) attachments: &'a [crate::types::ImageAttachment],
@@ -91,6 +179,16 @@ pub(crate) trait RuntimeAdapter {
     /// Stable transport label (diagnostics / launch method surface).
     fn transport_name(&self) -> &'static str;
 
+    fn runtime_key(&self) -> &'static str;
+
+    fn descriptor(&self) -> AdapterDescriptor {
+        AdapterDescriptor::from_adapter(
+            self.runtime_key(),
+            self.transport_name(),
+            self.capabilities(),
+        )
+    }
+
     /// Binary availability + capability gating, without touching slots.
     /// Consumed by the runtime diagnostics surface once it wires into this
     /// trait instead of the assistant catalog probe.
@@ -100,16 +198,29 @@ pub(crate) trait RuntimeAdapter {
     /// Execute one turn; slot reuse and cold-start resume are internal.
     async fn prompt(&self, request: PromptRequest<'_>) -> AcpPromptResult;
 
-    /// Cancel the in-flight turn for `key`; true when a slot was known.
-    fn cancel(&self, key: &SessionKey) -> bool;
+    /// Request cancellation for `key`; an idle or missing slot is idempotent success.
+    fn cancel(&self, key: &SessionKey) -> Result<(), AdapterError>;
+
+    /// Deliver input to an active turn without opening a second prompt. Providers without a
+    /// concurrent control channel use the explicit unsupported-capability result so callers can
+    /// fall back to cancel-and-drain without guessing from transport names.
+    async fn steer(
+        &self,
+        key: &SessionKey,
+        prompt: &str,
+        attachments: &[crate::types::ImageAttachment],
+    ) -> Result<(), AdapterError> {
+        let _ = (key, prompt, attachments);
+        Err(AdapterError::unsupported("steer"))
+    }
 
     /// Discard the provider session slot; the next turn cold-starts and
     /// resumes from the persisted provider handle.
-    async fn discard_slot(&self, key: &SessionKey) -> Result<(), String>;
+    async fn discard_slot(&self, key: &SessionKey) -> Result<(), AdapterError>;
 
     /// Rebuild the slot. Defaults to a discard; connection-oriented runtimes
     /// (ACP) re-run their handshake instead.
-    async fn reconnect_slot(&self, key: &SessionKey) -> Result<(), String> {
+    async fn reconnect_slot(&self, key: &SessionKey) -> Result<(), AdapterError> {
         self.discard_slot(key).await
     }
 
@@ -127,23 +238,21 @@ pub(crate) trait RuntimeAdapter {
         crate::runtime_profile::capabilities_for_transport(self.transport_name())
     }
 
-    /// Switch mode on live session (e.g. ACP plan/act). Defaults to no-op for
-    /// runtimes without live mode switching.
-    async fn set_mode(&self, key: &SessionKey, mode_id: &str) -> Result<(), String> {
+    /// Switch mode on live session (e.g. ACP plan/act).
+    async fn set_mode(&self, key: &SessionKey, mode_id: &str) -> Result<(), AdapterError> {
         let _ = (key, mode_id);
-        Ok(())
+        Err(AdapterError::unsupported("dynamicModes"))
     }
 
-    /// Set config option on live session. Defaults to no-op for runtimes
-    /// without live config switching.
+    /// Set config option on live session.
     async fn set_config_option(
         &self,
         key: &SessionKey,
         option_id: &str,
         value: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), AdapterError> {
         let _ = (key, option_id, value);
-        Ok(())
+        Err(AdapterError::unsupported("dynamicConfig"))
     }
 
     /// Diagnostic snapshot for the runtime list. Consumed by the runtime
@@ -230,6 +339,21 @@ impl RuntimeAdapter for AnyRuntimeAdapter {
         }
     }
 
+    fn runtime_key(&self) -> &'static str {
+        match self {
+            Self::Headless { protocol } => match protocol {
+                HeadlessProtocol::AgyStreamJson => "antigravity-cli",
+                HeadlessProtocol::ClaudeStreamJson => "claude-native",
+            },
+            Self::Native { protocol } => match protocol {
+                NativeProtocol::CodexAppServer => "codex-cli",
+                NativeProtocol::PiRpc => "pi-cli",
+            },
+            Self::AcpWorker => "claude-code",
+            Self::Mock => "mock",
+        }
+    }
+
     fn probe(&self) -> AdapterProbe {
         let runtime_key = match self {
             Self::Headless { protocol } => match protocol {
@@ -287,6 +411,7 @@ impl RuntimeAdapter for AnyRuntimeAdapter {
                     resume_session_id: request.resume_session_id,
                     mcp_servers: request.mcp_servers,
                     app_session_id: request.app_session_id,
+                    turn_id: request.turn_id,
                 })
                 .await
             }
@@ -297,6 +422,7 @@ impl RuntimeAdapter for AnyRuntimeAdapter {
                     runtime_key: request.runtime_key,
                     role_name: request.role_name.to_string(),
                     app_session_id: request.app_session_id.to_string(),
+                    turn_id: request.turn_id.to_string(),
                     agent_kind: request.agent_kind,
                     binary: request.binary.to_string(),
                     args: request.adapter_args.to_vec(),
@@ -317,53 +443,96 @@ impl RuntimeAdapter for AnyRuntimeAdapter {
         }
     }
 
-    fn cancel(&self, key: &SessionKey) -> bool {
+    fn cancel(&self, key: &SessionKey) -> Result<(), AdapterError> {
         let Some(runtime_key) = static_runtime_key(&key.runtime_key) else {
-            return false;
+            return Err(AdapterError::UnsupportedRuntime(key.runtime_key.clone()));
         };
         match self {
             Self::Headless { .. } => {
-                cancel_headless(runtime_key, &key.role_name, &key.app_session_id)
+                cancel_headless(runtime_key, &key.role_name, &key.app_session_id);
+                Ok(())
             }
-            Self::Native { .. } => cancel_native(runtime_key, &key.role_name, &key.app_session_id),
+            Self::Native { .. } => {
+                cancel_native(runtime_key, &key.role_name, &key.app_session_id);
+                Ok(())
+            }
             // Fire-and-forget: callers that need the drained confirmation use
             // the cancel_session command path, which awaits the worker oneshot.
             Self::AcpWorker => {
-                let _ = worker_tx().send(WorkerMsg::Cancel {
-                    runtime_key,
-                    role_name: key.role_name.clone(),
-                    app_session_id: key.app_session_id.clone(),
-                    result_tx: None,
-                });
-                true
+                worker_tx()
+                    .send(WorkerMsg::Cancel {
+                        runtime_key,
+                        role_name: key.role_name.clone(),
+                        app_session_id: key.app_session_id.clone(),
+                        result_tx: None,
+                    })
+                    .map_err(|_| {
+                        AdapterError::Unavailable("ACP worker is unavailable".to_string())
+                    })?;
+                Ok(())
             }
-            Self::Mock => false,
+            Self::Mock => Ok(()),
         }
     }
 
-    async fn discard_slot(&self, key: &SessionKey) -> Result<(), String> {
+    async fn steer(
+        &self,
+        key: &SessionKey,
+        prompt: &str,
+        attachments: &[crate::types::ImageAttachment],
+    ) -> Result<(), AdapterError> {
+        if !attachments.is_empty() {
+            return Err(AdapterError::unsupported("steerAttachments"));
+        }
         let Some(runtime_key) = static_runtime_key(&key.runtime_key) else {
-            return Err(format!("unsupported runtime: {}", key.runtime_key));
+            return Err(AdapterError::UnsupportedRuntime(key.runtime_key.clone()));
+        };
+        match self {
+            Self::Native { protocol }
+                if matches!(
+                    protocol,
+                    NativeProtocol::CodexAppServer | NativeProtocol::PiRpc
+                ) =>
+            {
+                steer_native(runtime_key, &key.role_name, &key.app_session_id, prompt)
+                    .await
+                    .map_err(AdapterError::from)
+            }
+            _ => Err(AdapterError::unsupported("steer")),
+        }
+    }
+
+    async fn discard_slot(&self, key: &SessionKey) -> Result<(), AdapterError> {
+        let Some(runtime_key) = static_runtime_key(&key.runtime_key) else {
+            return Err(AdapterError::UnsupportedRuntime(key.runtime_key.clone()));
         };
         match self {
             Self::Headless { .. } => {
-                discard_headless_session(runtime_key, &key.role_name, &key.app_session_id).await
+                discard_headless_session(runtime_key, &key.role_name, &key.app_session_id)
+                    .await
+                    .map_err(AdapterError::from)
             }
             Self::Native { .. } => {
-                discard_native_session(runtime_key, &key.role_name, &key.app_session_id).await
+                discard_native_session(runtime_key, &key.role_name, &key.app_session_id)
+                    .await
+                    .map_err(AdapterError::from)
             }
             Self::AcpWorker | Self::Mock => {
-                acp_worker_reset(runtime_key, key, WorkerMsgKind::Reset).await
+                acp_worker_reset(runtime_key, key, WorkerMsgKind::Reset)
+                    .await
+                    .map_err(AdapterError::from)
             }
         }
     }
 
-    async fn reconnect_slot(&self, key: &SessionKey) -> Result<(), String> {
+    async fn reconnect_slot(&self, key: &SessionKey) -> Result<(), AdapterError> {
         let Some(runtime_key) = static_runtime_key(&key.runtime_key) else {
-            return Err(format!("unsupported runtime: {}", key.runtime_key));
+            return Err(AdapterError::UnsupportedRuntime(key.runtime_key.clone()));
         };
         match self {
-            Self::AcpWorker => acp_worker_reset(runtime_key, key, WorkerMsgKind::Reconnect).await,
+            Self::AcpWorker => acp_worker_reset(runtime_key, key, WorkerMsgKind::Reconnect)
+                .await
+                .map_err(AdapterError::from),
             _ => RuntimeAdapter::discard_slot(self, key).await,
         }
     }
@@ -390,11 +559,11 @@ impl RuntimeAdapter for AnyRuntimeAdapter {
         }
     }
 
-    async fn set_mode(&self, key: &SessionKey, mode_id: &str) -> Result<(), String> {
+    async fn set_mode(&self, key: &SessionKey, mode_id: &str) -> Result<(), AdapterError> {
         match self {
             Self::AcpWorker => {
                 let Some(runtime_key) = static_runtime_key(&key.runtime_key) else {
-                    return Err(format!("unsupported runtime: {}", key.runtime_key));
+                    return Err(AdapterError::UnsupportedRuntime(key.runtime_key.clone()));
                 };
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 if worker_tx()
@@ -407,11 +576,15 @@ impl RuntimeAdapter for AnyRuntimeAdapter {
                     })
                     .is_err()
                 {
-                    return Err("worker channel closed".to_string());
+                    return Err(AdapterError::Unavailable(
+                        "worker channel closed".to_string(),
+                    ));
                 }
-                rx.await.map_err(|_| "worker disconnected".to_string())?
+                rx.await
+                    .map_err(|_| AdapterError::Unavailable("worker disconnected".to_string()))?
+                    .map_err(AdapterError::from)
             }
-            _ => Ok(()),
+            _ => Err(AdapterError::unsupported("dynamicModes")),
         }
     }
 
@@ -420,11 +593,11 @@ impl RuntimeAdapter for AnyRuntimeAdapter {
         key: &SessionKey,
         option_id: &str,
         value: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), AdapterError> {
         match self {
             Self::AcpWorker => {
                 let Some(runtime_key) = static_runtime_key(&key.runtime_key) else {
-                    return Err(format!("unsupported runtime: {}", key.runtime_key));
+                    return Err(AdapterError::UnsupportedRuntime(key.runtime_key.clone()));
                 };
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 if worker_tx()
@@ -438,11 +611,15 @@ impl RuntimeAdapter for AnyRuntimeAdapter {
                     })
                     .is_err()
                 {
-                    return Err("worker channel closed".to_string());
+                    return Err(AdapterError::Unavailable(
+                        "worker channel closed".to_string(),
+                    ));
                 }
-                rx.await.map_err(|_| "worker disconnected".to_string())?
+                rx.await
+                    .map_err(|_| AdapterError::Unavailable("worker disconnected".to_string()))?
+                    .map_err(AdapterError::from)
             }
-            _ => Ok(()),
+            _ => Err(AdapterError::unsupported("dynamicConfig")),
         }
     }
 }
@@ -516,6 +693,10 @@ mod tests {
             "fake"
         }
 
+        fn runtime_key(&self) -> &'static str {
+            "fake"
+        }
+
         fn probe(&self) -> AdapterProbe {
             self.probe_result.clone()
         }
@@ -531,12 +712,12 @@ mod tests {
             }
         }
 
-        fn cancel(&self, key: &SessionKey) -> bool {
+        fn cancel(&self, key: &SessionKey) -> Result<(), AdapterError> {
             self.cancelled.lock().unwrap().push(key.clone());
-            true
+            Ok(())
         }
 
-        async fn discard_slot(&self, _key: &SessionKey) -> Result<(), String> {
+        async fn discard_slot(&self, _key: &SessionKey) -> Result<(), AdapterError> {
             Ok(())
         }
 
@@ -570,7 +751,7 @@ mod tests {
     async fn cancel_routes_session_keys() {
         let adapter = fake_adapter();
         let key = key();
-        assert!(RuntimeAdapter::cancel(&adapter, &key));
+        assert!(RuntimeAdapter::cancel(&adapter, &key).is_ok());
         let cancelled = adapter.cancelled.lock().unwrap();
         assert_eq!(cancelled.len(), 1);
         assert_eq!(cancelled[0], key);
@@ -591,6 +772,53 @@ mod tests {
         let adapter = fake_adapter();
         let diagnostics = RuntimeAdapter::diagnostics(&adapter);
         assert_eq!(diagnostics["transport"], "fake");
+    }
+
+    #[test]
+    fn descriptor_exposes_runtime_and_input_delivery_contract() {
+        let adapter = fake_adapter();
+        let descriptor = RuntimeAdapter::descriptor(&adapter);
+        assert_eq!(descriptor.runtime_key, "fake");
+        assert_eq!(descriptor.transport, "fake");
+        assert!(!descriptor.input_delivery.next_turn);
+        assert!(!descriptor.input_delivery.interrupt);
+    }
+
+    #[test]
+    fn descriptor_distinguishes_native_steer_from_interrupt_fallback() {
+        let codex = AnyRuntimeAdapter::Native {
+            protocol: NativeProtocol::CodexAppServer,
+        };
+        assert_eq!(codex.descriptor().input_delivery.strategy, "steer");
+
+        let claude = AnyRuntimeAdapter::Headless {
+            protocol: HeadlessProtocol::ClaudeStreamJson,
+        };
+        assert_eq!(
+            claude.descriptor().input_delivery.strategy,
+            "interruptFollowUp"
+        );
+    }
+
+    #[tokio::test]
+    async fn unsupported_live_controls_fail_explicitly() {
+        let adapter = AnyRuntimeAdapter::Native {
+            protocol: NativeProtocol::CodexAppServer,
+        };
+        assert_eq!(
+            RuntimeAdapter::set_mode(&adapter, &key(), "plan")
+                .await
+                .unwrap_err()
+                .to_string(),
+            "UnsupportedCapability(dynamicModes)"
+        );
+        assert_eq!(
+            RuntimeAdapter::set_config_option(&adapter, &key(), "model", "x")
+                .await
+                .unwrap_err()
+                .to_string(),
+            "UnsupportedCapability(dynamicConfig)"
+        );
     }
 
     #[test]

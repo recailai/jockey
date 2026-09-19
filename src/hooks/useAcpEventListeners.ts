@@ -18,13 +18,13 @@ type RegisterAcpEventListenersInput = {
   acceptingStreams: Map<string, number>;
   sessions: AppSession[];
   getSessionIndex: (id: string) => number;
-  appendStream: (sid: string, chunk: string) => void;
+  appendStream: (sid: string, chunk: string, roleName?: string) => void;
   pushMessageToSession: (sid: string, role: string, text: string) => void;
   pushMessage: (role: string, text: string) => void;
-  onSessionDeltaLine: (sid: string, line: string) => void;
+  onSessionDeltaLine: (sid: string, line: string, roleName?: string) => void;
   updateSession: (id: string, patch: Partial<AppSession>) => void;
   mutateSession: (sid: string, recipe: (s: AppSession) => void) => void;
-  appendThought: (sid: string, text: string) => void;
+  appendThought: (sid: string, text: string, roleName?: string) => void;
   normalizeToolLocations: (
     raw: unknown[] | undefined,
   ) => Array<{ path: string; line?: number }> | undefined;
@@ -35,6 +35,7 @@ type RegisterAcpEventListenersInput = {
   roles: Accessor<Role[]>;
   commandCacheKey: (runtimeKey: string, roleName: string) => string;
   scheduleScrollToBottom: () => void;
+  scheduleCheckpoint?: (sid: string) => void;
 };
 
 export function useAcpEventListeners() {
@@ -64,6 +65,7 @@ export function useAcpEventListeners() {
       roles,
       commandCacheKey,
       scheduleScrollToBottom,
+      scheduleCheckpoint,
     } = input;
 
     const bus = createAcpEventBus({
@@ -83,6 +85,7 @@ export function useAcpEventListeners() {
       roles,
       commandCacheKey,
       scheduleScrollToBottom,
+      scheduleCheckpoint,
     });
     busRef = bus;
 

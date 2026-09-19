@@ -1,5 +1,6 @@
 import { For, Show, createMemo, createSignal, onMount } from "solid-js";
-import { Badge, EmptyState, FieldRow, TextInput, InlineSelect, ActionButton, PanelSection } from "./primitives";
+import { EmptyState, Badge, type BadgeTone } from "../ui";
+import { FieldRow, TextInput, InlineSelect, ActionButton, PanelSection } from "./primitives";
 import type { AcpMcpServer } from "./primitives";
 import { mcpTransport, parseCommandArgs } from "./primitives";
 import { globalMcpApi, type GlobalMcpEntry } from "../../lib/tauriApi";
@@ -42,11 +43,11 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
 
   onMount(() => { void refresh(); });
 
-  const transportBadge = (t: string) => ({
-    stdio: "management-badge-warning",
-    http: "management-badge-info",
-    sse: "management-badge-muted",
-  }[t] ?? "management-badge-muted");
+  const transportTone = (t: string): BadgeTone => ({
+    stdio: "warning",
+    http: "info",
+    sse: "neutral",
+  }[t] as BadgeTone ?? "neutral");
 
   function parseEnvPairs(text: string): Array<{ name: string; value: string }> {
     return text.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
@@ -126,7 +127,7 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
         </div>
         <div class="flex-1 overflow-y-auto space-y-0.5 py-1">
           <Show when={entries().length === 0}>
-            <EmptyState icon="◈" title="No MCP servers" sub="Add an MCP server to the registry" />
+            <EmptyState icon="◈" title="No MCP servers" description="Add an MCP server to the registry" />
           </Show>
           <For each={entries()}>
             {(entry) => (
@@ -138,11 +139,11 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
                   <span class="settings-runtime-dot is-online" />
                   <span class="truncate font-mono text-[10px] font-semibold theme-text">{entry.server.name}</span>
                   <Show when={entry.isBuiltin}>
-                    <Badge label="built-in" color="management-badge-muted" />
+                    <Badge label="built-in" tone="neutral" />
                   </Show>
                 </div>
                 <div class="flex items-center gap-1.5 pl-3">
-                  <Badge label={mcpTransport(entry.server)} color={transportBadge(mcpTransport(entry.server))} />
+                  <Badge label={mcpTransport(entry.server)} tone={transportTone(mcpTransport(entry.server))} />
                 </div>
               </button>
             )}
@@ -217,9 +218,9 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
                   <div class="flex items-center gap-2">
                     <span class="settings-runtime-dot is-online" />
                     <h2 class="font-mono text-sm font-bold theme-text">{s().name}</h2>
-                    <Badge label={t()} color={transportBadge(t())} />
+                    <Badge label={t()} tone={transportTone(t())} />
                     <Show when={entry().isBuiltin}>
-                      <Badge label="built-in" color="management-badge-muted" />
+                      <Badge label="built-in" tone="neutral" />
                     </Show>
                   </div>
                   <Show when={!entry().isBuiltin}>
@@ -264,7 +265,7 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
                     </Show>
                   </Show>
                   <FieldRow label="Transport">
-                    <Badge label={t()} color={transportBadge(t())} />
+                    <Badge label={t()} tone={transportTone(t())} />
                   </FieldRow>
                 </div>
 
@@ -279,7 +280,7 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
         </Show>
 
         <Show when={!creating() && !selected()}>
-          <EmptyState icon="◈" title="Select an MCP server" sub="Or add a new one to the registry" />
+          <EmptyState icon="◈" title="Select an MCP server" description="Or add a new one to the registry" />
         </Show>
       </div>
     </div>

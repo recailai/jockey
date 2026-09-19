@@ -9,8 +9,8 @@ pub(crate) fn list_projects_internal(state: &AppState) -> Result<Vec<Project>, S
     with_db(state, |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, root_path, created_at, updated_at \
-                 FROM projects ORDER BY updated_at DESC",
+                "SELECT id, name, root_path, created_at, updated_at, deleted_at \
+                 FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC",
             )
             .map_err(|e| e.to_string())?;
 
@@ -22,6 +22,7 @@ pub(crate) fn list_projects_internal(state: &AppState) -> Result<Vec<Project>, S
                     root_path: row.get(2)?,
                     created_at: row.get(3)?,
                     updated_at: row.get(4)?,
+                    deleted_at: row.get(5)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -37,8 +38,8 @@ pub(crate) fn list_projects_internal(state: &AppState) -> Result<Vec<Project>, S
 pub(crate) fn get_project_internal(state: &AppState, id: &str) -> Result<Option<Project>, String> {
     with_db(state, |conn| {
         conn.query_row(
-            "SELECT id, name, root_path, created_at, updated_at \
-             FROM projects WHERE id = ?1",
+            "SELECT id, name, root_path, created_at, updated_at, deleted_at \
+             FROM projects WHERE id = ?1 AND deleted_at IS NULL",
             params![id],
             |row| {
                 Ok(Project {
@@ -47,6 +48,7 @@ pub(crate) fn get_project_internal(state: &AppState, id: &str) -> Result<Option<
                     root_path: row.get(2)?,
                     created_at: row.get(3)?,
                     updated_at: row.get(4)?,
+                    deleted_at: row.get(5)?,
                 })
             },
         )
@@ -61,8 +63,8 @@ pub(crate) fn find_project_by_path_internal(
 ) -> Result<Option<Project>, String> {
     with_db(state, |conn| {
         conn.query_row(
-            "SELECT id, name, root_path, created_at, updated_at \
-             FROM projects WHERE root_path = ?1",
+            "SELECT id, name, root_path, created_at, updated_at, deleted_at \
+             FROM projects WHERE root_path = ?1 AND deleted_at IS NULL",
             params![root_path],
             |row| {
                 Ok(Project {
@@ -71,8 +73,24 @@ pub(crate) fn find_project_by_path_internal(
                     root_path: row.get(2)?,
                     created_at: row.get(3)?,
                     updated_at: row.get(4)?,
+                    deleted_at: row.get(5)?,
                 })
             },
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    })
+}
+
+fn find_deleted_project_by_path_internal(
+    state: &AppState,
+    root_path: &str,
+) -> Result<Option<String>, String> {
+    with_db(state, |conn| {
+        conn.query_row(
+            "SELECT id FROM projects WHERE root_path = ?1 AND deleted_at IS NOT NULL",
+            params![root_path],
+            |row| row.get(0),
         )
         .optional()
         .map_err(|e| e.to_string())
@@ -114,6 +132,18 @@ pub(crate) fn create_project_internal(
         return Ok(proj);
     }
 
+    if let Some(deleted_id) = find_deleted_project_by_path_internal(state, &canonical_path)? {
+        with_db(state, |conn| {
+            conn.execute(
+                "UPDATE projects SET name = ?1, updated_at = ?2, deleted_at = NULL WHERE id = ?3",
+                params![&name, now, &deleted_id],
+            )
+            .map_err(|e| e.to_string())
+        })?;
+        return get_project_internal(state, &deleted_id)?
+            .ok_or_else(|| "project restore failed".to_string());
+    }
+
     let id = Uuid::new_v4().to_string();
     let project = Project {
         id: id.clone(),
@@ -121,12 +151,13 @@ pub(crate) fn create_project_internal(
         root_path: canonical_path.clone(),
         created_at: now,
         updated_at: now,
+        deleted_at: None,
     };
 
     with_db(state, |conn| {
         conn.execute(
-            "INSERT INTO projects (id, name, root_path, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO projects (id, name, root_path, created_at, updated_at, deleted_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
             params![id, name, canonical_path, now, now],
         )
         .map_err(|e| AppError::db(e.to_string()).to_string())?;
@@ -138,41 +169,16 @@ pub(crate) fn create_project_internal(
 
 pub(crate) fn delete_project_internal(state: &AppState, id: &str) -> Result<(), String> {
     with_db(state, |conn| {
-        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-        tx.execute(
-            "UPDATE app_sessions SET project_id = NULL WHERE project_id = ?1",
-            params![id],
-        )
-        .map_err(|e| e.to_string())?;
-        tx.execute(
-            "DELETE FROM project_agent_runtime_configs WHERE project_id = ?1",
-            params![id],
-        )
-        .map_err(|e| e.to_string())?;
-        tx.execute(
-            "DELETE FROM project_agent_configs WHERE project_id = ?1",
-            params![id],
-        )
-        .map_err(|e| e.to_string())?;
-        tx.execute(
-            "DELETE FROM import_session_catalog WHERE project_id = ?1",
-            params![id],
-        )
-        .map_err(|e| e.to_string())?;
-        tx.execute(
-            "DELETE FROM import_session_catalog_scans WHERE project_id = ?1",
-            params![id],
-        )
-        .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM roles WHERE project_id = ?1", params![id])
-            .map_err(|e| e.to_string())?;
-        let deleted = tx
-            .execute("DELETE FROM projects WHERE id = ?1", params![id])
+        let deleted = conn
+            .execute(
+                "UPDATE projects SET deleted_at = ?1, updated_at = ?1
+                 WHERE id = ?2 AND deleted_at IS NULL",
+                params![now_ms(), id],
+            )
             .map_err(|e| e.to_string())?;
         if deleted == 0 {
             return Err(format!("project not found: {id}"));
         }
-        tx.commit().map_err(|e| e.to_string())?;
         Ok(())
     })?;
     state.role_cache.clear();
@@ -199,7 +205,7 @@ pub(crate) fn ensure_project_exists(
     }
     let exists: i64 = conn
         .query_row(
-            "SELECT count(1) FROM projects WHERE id = ?1",
+            "SELECT count(1) FROM projects WHERE id = ?1 AND deleted_at IS NULL",
             params![pid],
             |r| r.get(0),
         )
@@ -235,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_a_project_removes_scoped_configuration_and_detaches_sessions() {
+    fn deleting_a_project_soft_unlinks_without_destroying_scoped_data() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = test_state(&dir);
         let project =
@@ -295,7 +301,7 @@ mod tests {
                     |row| row.get(0),
                 )
                 .map_err(|e| e.to_string())?;
-            assert_eq!(session_project, None);
+            assert_eq!(session_project, Some(project.id.clone()));
             for (table, sql, param) in [
                 (
                     "roles",
@@ -321,8 +327,16 @@ mod tests {
                 let count: i64 = conn
                     .query_row(sql, params![param], |row| row.get(0))
                     .map_err(|e| e.to_string())?;
-                assert_eq!(count, 0, "{table} should not retain project data");
+                assert!(count > 0, "{table} should retain project data");
             }
+            let deleted_at: Option<i64> = conn
+                .query_row(
+                    "SELECT deleted_at FROM projects WHERE id = ?1",
+                    params![&project.id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            assert!(deleted_at.is_some());
             Ok(())
         })
         .expect("verify cleanup");

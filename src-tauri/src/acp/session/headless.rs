@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
@@ -36,6 +37,14 @@ fn should_flush_deltas(pending_bytes: usize, since_last: Duration, emitted_any: 
         || since_last >= HEADLESS_DELTA_FLUSH_AFTER
 }
 
+fn is_claude_lifecycle_event(event_type: &str, nested_type: &str) -> bool {
+    event_type == "stream_event"
+        && matches!(
+            nested_type,
+            "message_start" | "message_stop" | "content_block_stop" | "ping"
+        )
+}
+
 /// Accumulates text deltas and emits them as one `acp/delta` per batch. The payload shape is
 /// unchanged — concatenated text is what the listener would have appended anyway.
 struct DeltaBatch<'a> {
@@ -43,6 +52,7 @@ struct DeltaBatch<'a> {
     role: &'a str,
     runtime: &'static str,
     app_session_id: &'a str,
+    turn_id: &'a str,
     buf: String,
     last_flush: Instant,
     emitted_any: bool,
@@ -54,12 +64,14 @@ impl<'a> DeltaBatch<'a> {
         role: &'a str,
         runtime: &'static str,
         app_session_id: &'a str,
+        turn_id: &'a str,
     ) -> Self {
         Self {
             app,
             role,
             runtime,
             app_session_id,
+            turn_id,
             buf: String::new(),
             last_flush: Instant::now(),
             emitted_any: false,
@@ -83,9 +95,11 @@ impl<'a> DeltaBatch<'a> {
         let _ = self.app.emit(
             "acp/delta",
             AcpDeltaPayload {
+                schema_version: 1,
                 role: self.role,
                 runtime_kind: self.runtime,
                 app_session_id: self.app_session_id,
+                turn_id: self.turn_id,
                 delta: &self.buf,
             },
         );
@@ -103,6 +117,7 @@ impl<'a> DeltaBatch<'a> {
             self.role,
             self.runtime,
             self.app_session_id,
+            self.turn_id,
             sequence,
             event,
         );
@@ -191,6 +206,30 @@ pub(super) fn cancel_headless(runtime_key: &str, role_name: &str, app_session_id
     true
 }
 
+pub(super) async fn cancel_headless_and_wait(
+    runtime_key: &str,
+    role_name: &str,
+    app_session_id: &str,
+) -> Result<(), String> {
+    if !cancel_headless(runtime_key, role_name, app_session_id) {
+        return Ok(());
+    }
+    let key = headless_key(runtime_key, role_name, app_session_id);
+    let drained = tokio::time::timeout(Duration::from_secs(10), async {
+        while headless_active().contains_key(&key) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    match drained {
+        Ok(()) => {
+            headless_cancelled().remove(&key);
+            Ok(())
+        }
+        Err(_) => Err(format!("timed out waiting for {runtime_key} turn to stop")),
+    }
+}
+
 pub(super) async fn discard_headless_session(
     runtime_key: &str,
     role_name: &str,
@@ -249,6 +288,7 @@ pub(super) async fn execute_headless_runtime(
     let resume_session_id = request.resume_session_id;
     let mcp_servers = request.mcp_servers;
     let app_session_id = request.app_session_id;
+    let turn_id = request.turn_id;
 
     let key = headless_key(runtime_key, role_name, app_session_id);
     headless_active()
@@ -263,7 +303,14 @@ pub(super) async fn execute_headless_runtime(
     let _guard = lock.lock().await;
 
     if headless_cancelled().remove(&key).is_some() {
-        return cancelled_result(runtime_key, role_name, app_session_id, app);
+        return cancelled_result(
+            runtime_key,
+            role_name,
+            app_session_id,
+            turn_id,
+            app,
+            resume_session_id.map(str::to_string),
+        );
     }
 
     let mut command_args = adapter_args.to_vec();
@@ -293,6 +340,7 @@ pub(super) async fn execute_headless_runtime(
                     runtime_key,
                     role_name,
                     app_session_id,
+                    turn_id,
                     app,
                     AcpErrorCode::ConnectionFailed,
                     error,
@@ -366,6 +414,7 @@ pub(super) async fn execute_headless_runtime(
                 runtime_key,
                 role_name,
                 app_session_id,
+                turn_id,
                 app,
                 AcpErrorCode::ProcessCrashed,
                 format!(
@@ -418,6 +467,7 @@ pub(super) async fn execute_headless_runtime(
                     runtime_key,
                     role_name,
                     app_session_id,
+                    turn_id,
                     app,
                     AcpErrorCode::ConnectionFailed,
                     format!(
@@ -433,6 +483,7 @@ pub(super) async fn execute_headless_runtime(
                     runtime_key,
                     role_name,
                     app_session_id,
+                    turn_id,
                     app,
                     AcpErrorCode::ConnectionFailed,
                     format!(
@@ -453,6 +504,7 @@ pub(super) async fn execute_headless_runtime(
             role_name,
             runtime_key,
             app_session_id,
+            turn_id,
             &mut sequence,
             AcpEvent::StatusUpdate {
                 text: format!(
@@ -471,9 +523,14 @@ pub(super) async fn execute_headless_runtime(
         role_name,
         runtime_key,
         app_session_id,
+        turn_id,
         &mut sequence,
         AcpEvent::StatusUpdate {
-            text: format!("Connected to {}", protocol_display_name(protocol)),
+            text: if let Some(ref sid) = resume_session_id.as_deref().filter(|s| !s.trim().is_empty()) {
+                format!("Resuming {} session ({sid})...", protocol_display_name(protocol))
+            } else {
+                format!("Initializing new {} session...", protocol_display_name(protocol))
+            },
         },
     );
 
@@ -485,6 +542,7 @@ pub(super) async fn execute_headless_runtime(
                 runtime_key,
                 role_name,
                 app_session_id,
+                turn_id,
                 app,
                 AcpErrorCode::ConnectionFailed,
                 format!("{} stdout unavailable", protocol_display_name(protocol)),
@@ -503,6 +561,7 @@ pub(super) async fn execute_headless_runtime(
             role_name,
             runtime_key,
             app_session_id,
+            turn_id,
             &mut sequence,
         ),
     )
@@ -516,6 +575,7 @@ pub(super) async fn execute_headless_runtime(
                 runtime_key,
                 role_name,
                 app_session_id,
+                turn_id,
                 app,
                 AcpErrorCode::PromptTimeout,
                 format!(
@@ -539,6 +599,7 @@ pub(super) async fn execute_headless_runtime(
                     runtime_key,
                     role_name,
                     app_session_id,
+                    turn_id,
                     app,
                     AcpErrorCode::ProcessCrashed,
                     format!(
@@ -558,7 +619,16 @@ pub(super) async fn execute_headless_runtime(
     cleanup_pid(&key, pid);
 
     if headless_cancelled().remove(&key).is_some() {
-        return cancelled_result(runtime_key, role_name, app_session_id, app);
+        return cancelled_result(
+            runtime_key,
+            role_name,
+            app_session_id,
+            turn_id,
+            app,
+            turn.conversation_id
+                .clone()
+                .or_else(|| resume_session_id.map(str::to_string)),
+        );
     }
 
     let stderr = stderr_tail(&stderr_buf);
@@ -568,6 +638,7 @@ pub(super) async fn execute_headless_runtime(
             runtime_key,
             role_name,
             app_session_id,
+            turn_id,
             app,
             code,
             append_stderr(error, &stderr),
@@ -586,6 +657,7 @@ pub(super) async fn execute_headless_runtime(
                 runtime_key,
                 role_name,
                 app_session_id,
+                turn_id,
                 app,
                 AcpErrorCode::ProcessCrashed,
                 append_stderr(
@@ -641,6 +713,7 @@ async fn read_headless_output(
     role_name: &str,
     runtime_key: &'static str,
     app_session_id: &str,
+    turn_id: &str,
     sequence: &mut u32,
 ) -> HeadlessTurn {
     let mut reader = BufReader::new(stdout);
@@ -652,6 +725,7 @@ async fn read_headless_output(
         role_name,
         runtime_key,
         app_session_id,
+        turn_id,
         sequence,
     )
     .await
@@ -665,9 +739,10 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
     role_name: &str,
     runtime_key: &'static str,
     app_session_id: &str,
+    turn_id: &str,
     sequence: &mut u32,
 ) -> HeadlessTurn {
-    let mut deltas = DeltaBatch::new(app, role_name, runtime_key, app_session_id);
+    let mut deltas = DeltaBatch::new(app, role_name, runtime_key, app_session_id, turn_id);
     let mut line = String::new();
     let mut raw_output = String::new();
     let mut response = None;
@@ -675,6 +750,7 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
     let mut status = None;
     let mut result_error = None;
     let mut result_seen = false;
+    let mut claude_tool_inputs: HashMap<String, (String, String, String)> = HashMap::new();
 
     loop {
         line.clear();
@@ -796,7 +872,7 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                         deltas.emit(
                             sequence,
                             AcpEvent::StatusUpdate {
-                                text: "Claude session initialized".to_string(),
+                                text: "Claude session ready".to_string(),
                             },
                         );
                     }
@@ -809,6 +885,43 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                         deltas.emit(sequence, usage_event(usage, None, None));
                     }
                 }
+                // Claude lifecycle frames carry provider metadata only. They are not
+                // conversation content and must not become raw debug blocks in the UI.
+                "stream_event" if is_claude_lifecycle_event(&event_type, &nested_type) => {}
+                "stream_event" if nested_type == "content_block_start" => {
+                    let index = event
+                        .get("index")
+                        .or_else(|| event_payload.and_then(|value| value.get("index")))
+                        .map(Value::to_string);
+                    let block = event_payload.and_then(|value| value.get("content_block"));
+                    if let (Some(index), Some(block)) = (index, block) {
+                        if block.get("type").and_then(Value::as_str) == Some("tool_use") {
+                            if let (Some(id), Some(name)) =
+                                (first_string(block, &["id"]), first_string(block, &["name"]))
+                            {
+                                claude_tool_inputs
+                                    .insert(index, (id.clone(), name.clone(), String::new()));
+                                deltas.emit(
+                                    sequence,
+                                    AcpEvent::ToolCallUpdate {
+                                        tool_call_id: id,
+                                        tool_name: Some(name.clone()),
+                                        tool_kind: Some("tool".to_string()),
+                                        status: Some("running".to_string()),
+                                        title: Some(name),
+                                        content: None,
+                                        locations: None,
+                                        raw_input: block.get("input").cloned(),
+                                        raw_output: None,
+                                        terminal_meta: None,
+                                        parent_id: parent_tool_use_id.clone(),
+                                        diff: None,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
                 "stream_event" if nested_type == "content_block_delta" => {
                     let delta_value = event_payload.and_then(|value| value.get("delta"));
                     let delta_type = delta_value
@@ -816,6 +929,41 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                         .and_then(Value::as_str)
                         .unwrap_or_default();
                     match delta_type {
+                        "input_json_delta" => {
+                            let index = event
+                                .get("index")
+                                .or_else(|| event_payload.and_then(|value| value.get("index")))
+                                .map(Value::to_string);
+                            let partial = delta_value
+                                .and_then(|value| value.get("partial_json"))
+                                .and_then(Value::as_str);
+                            if let (Some(index), Some(partial)) = (index, partial) {
+                                if let Some((tool_id, tool_name, buffer)) =
+                                    claude_tool_inputs.get_mut(&index)
+                                {
+                                    buffer.push_str(partial);
+                                    if let Ok(input) = serde_json::from_str::<Value>(buffer) {
+                                        deltas.emit(
+                                            sequence,
+                                            AcpEvent::ToolCallUpdate {
+                                                tool_call_id: tool_id.clone(),
+                                                tool_name: Some(tool_name.clone()),
+                                                tool_kind: Some("tool".to_string()),
+                                                status: Some("running".to_string()),
+                                                title: Some(tool_name.clone()),
+                                                content: None,
+                                                locations: None,
+                                                raw_input: Some(input),
+                                                raw_output: None,
+                                                terminal_meta: None,
+                                                parent_id: parent_tool_use_id.clone(),
+                                                diff: None,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         "thinking_delta" => {
                             if let Some(text) = delta_value
                                 .and_then(|value| value.get("thinking"))
@@ -869,6 +1017,7 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                                 sequence,
                                 AcpEvent::ToolCallUpdate {
                                     tool_call_id,
+                                    tool_name: None,
                                     tool_kind: None,
                                     status: Some(
                                         if is_error { "failure" } else { "completed" }.to_string(),
@@ -933,6 +1082,7 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                                         AcpEvent::ToolCallUpdate {
                                             tool_call_id: first_string(block, &["id"])
                                                 .unwrap_or_else(|| "claude-tool".to_string()),
+                                            tool_name: first_string(block, &["name"]),
                                             tool_kind: Some("tool".to_string()),
                                             status: Some("running".to_string()),
                                             title: first_string(block, &["name"]),
@@ -974,6 +1124,15 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                             .or_else(|| Some("Claude returned an error result".to_string()));
                     }
                     break;
+                }
+                _ if !event_type.is_empty() => {
+                    deltas.emit(
+                        sequence,
+                        AcpEvent::Unknown {
+                            type_name: event_type.clone(),
+                            raw: event.clone(),
+                        },
+                    );
                 }
                 _ => {}
             }
@@ -1018,8 +1177,23 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                         sequence,
                         AcpEvent::ToolCallUpdate {
                             tool_call_id: format!("agy-step-{tool_id}"),
+                            tool_name: first_string(payload, &["tool_name", "toolName"]).or_else(
+                                || {
+                                    tool_info
+                                        .and_then(|info| first_string(info, &["name", "toolName"]))
+                                },
+                            ),
                             tool_kind: Some("tool".to_string()),
-                            status: first_string(payload, &["state", "status"]),
+                            status: first_string(payload, &["state", "status"]).map(|status| {
+                                match status.to_ascii_lowercase().as_str() {
+                                    "active" | "running" | "in_progress" | "inprogress" => {
+                                        "running".to_string()
+                                    }
+                                    "done" | "completed" | "success" => "completed".to_string(),
+                                    "failed" | "failure" | "error" => "failure".to_string(),
+                                    other => other.to_string(),
+                                }
+                            }),
                             title: first_string(
                                 payload,
                                 &["tool_name", "toolName", "step_type", "stepType"],
@@ -1072,6 +1246,15 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                             .map(|value| format!("headless runtime returned status {value}"))
                     });
                 break;
+            }
+            _ if !event_type.is_empty() => {
+                deltas.emit(
+                    sequence,
+                    AcpEvent::Unknown {
+                        type_name: event_type.clone(),
+                        raw: event.clone(),
+                    },
+                );
             }
             _ => {}
         }
@@ -1372,6 +1555,7 @@ fn emit_event(
     role_name: &str,
     runtime_key: &'static str,
     app_session_id: &str,
+    turn_id: &str,
     sequence: &mut u32,
     event: AcpEvent,
 ) {
@@ -1379,9 +1563,11 @@ fn emit_event(
     let _ = app.emit(
         "acp/stream",
         AcpStreamPayload {
+            schema_version: 1,
             role: role_name,
             runtime_kind: runtime_key,
             app_session_id,
+            turn_id,
             event: &event,
             seq: *sequence,
         },
@@ -1430,6 +1616,7 @@ fn error_result(
     runtime_key: &'static str,
     role_name: &str,
     app_session_id: &str,
+    turn_id: &str,
     app: &tauri::AppHandle,
     code: AcpErrorCode,
     raw: impl Into<String>,
@@ -1448,9 +1635,11 @@ fn error_result(
     let _ = app.emit(
         "acp/stream",
         AcpStreamPayload {
+            schema_version: 1,
             role: role_name,
             runtime_kind: runtime_key,
             app_session_id,
+            turn_id,
             event: &event,
             seq: 0,
         },
@@ -1469,21 +1658,31 @@ fn error_result(
     }
 }
 
-fn cancelled_result(
+pub(super) fn cancelled_result(
     runtime_key: &'static str,
     role_name: &str,
     app_session_id: &str,
+    turn_id: &str,
     app: &tauri::AppHandle,
+    conversation_id: Option<String>,
 ) -> AcpPromptResult {
-    error_result(
+    let mut result = error_result(
         runtime_key,
         role_name,
         app_session_id,
+        turn_id,
         app,
         AcpErrorCode::RequestCancelled,
         "headless prompt cancelled",
-        json!({ "mode": "headless-json", "runtimeKey": runtime_key }),
-    )
+        json!({
+            "mode": "headless-json",
+            "runtimeKey": runtime_key,
+            "sessionId": conversation_id.as_deref(),
+            "conversationId": conversation_id.as_deref(),
+        }),
+    );
+    result.session_handle = conversation_id;
+    result
 }
 
 async fn cleanup_child(
@@ -1534,6 +1733,31 @@ mod append_cli_config_tests {
             1,
             Duration::from_millis(0),
             false
+        ));
+    }
+
+    #[test]
+    fn claude_message_lifecycle_frames_are_not_conversation_blocks() {
+        assert!(super::is_claude_lifecycle_event(
+            "stream_event",
+            "message_start"
+        ));
+        assert!(super::is_claude_lifecycle_event(
+            "stream_event",
+            "message_stop"
+        ));
+        assert!(super::is_claude_lifecycle_event(
+            "stream_event",
+            "content_block_stop"
+        ));
+        assert!(super::is_claude_lifecycle_event("stream_event", "ping"));
+        assert!(!super::is_claude_lifecycle_event(
+            "stream_event",
+            "content_block_delta"
+        ));
+        assert!(!super::is_claude_lifecycle_event(
+            "assistant",
+            "message_start"
         ));
     }
 

@@ -1,14 +1,14 @@
 import { For, Show, createMemo } from "solid-js";
 import { AlertTriangle, Info } from "lucide-solid";
 import type { Accessor } from "solid-js";
-import type { AppSession } from "./types";
+import type { AppSession, RuntimeCapabilities } from "./types";
 
 /**
  * Token accounting and provider advisories. Every supported CLI reports usage in some
  * form; before this it was parsed and thrown away, so context pressure and spend were
  * invisible. Fields the provider does not report stay hidden rather than showing zero.
  */
-export default function SessionTelemetry(props: { activeSession: Accessor<AppSession | null> }) {
+export default function SessionTelemetry(props: { activeSession: Accessor<AppSession | null>; capabilities?: Accessor<RuntimeCapabilities | undefined> }) {
   const usage = () => props.activeSession()?.usage ?? null;
   const notices = () => props.activeSession()?.notices ?? [];
 
@@ -49,8 +49,9 @@ export default function SessionTelemetry(props: { activeSession: Accessor<AppSes
         </div>
       </Show>
 
-      <Show when={usage()}>
-        {(u) => (
+      <Show when={props.capabilities?.()?.usage !== false}>
+        <Show when={usage()}>
+          {(u) => (
           <div class="my-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 font-mono text-[10px] theme-muted">
             <Show when={u().inputTokens !== null}>
               <span title="Input tokens">in {fmtTokens(u().inputTokens!)}</span>
@@ -76,7 +77,8 @@ export default function SessionTelemetry(props: { activeSession: Accessor<AppSes
               <span title="Cost for this session">${u().costUsd!.toFixed(4)}</span>
             </Show>
           </div>
-        )}
+          )}
+        </Show>
       </Show>
     </>
   );

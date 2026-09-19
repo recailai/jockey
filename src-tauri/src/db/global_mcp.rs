@@ -244,7 +244,8 @@ pub(crate) fn list_role_mcp_servers(
     with_db(state, |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT g.name, g.config_json, g.is_builtin, COALESCE(r.enabled, 0)
+                "SELECT g.name, g.config_json, g.is_builtin,
+                        COALESCE(r.enabled, CASE WHEN g.is_builtin = 1 THEN 1 ELSE 0 END)
                  FROM global_mcp_servers g
                  LEFT JOIN role_mcp_servers r ON r.mcp_server_name = g.name AND r.role_id = ?1
                  ORDER BY g.is_builtin DESC, g.name ASC",
@@ -302,8 +303,9 @@ pub(crate) fn get_enabled_mcp_for_role(state: &AppState, role_id: &str) -> Vec<a
             .prepare(
                 "SELECT g.config_json, g.name
                  FROM global_mcp_servers g
-                 JOIN role_mcp_servers r ON r.mcp_server_name = g.name AND r.role_id = ?1
-                 WHERE r.enabled = 1
+                 LEFT JOIN role_mcp_servers r ON r.mcp_server_name = g.name AND r.role_id = ?1
+                 WHERE (g.is_builtin = 1 AND COALESCE(r.enabled, 1) = 1)
+                    OR (g.is_builtin = 0 AND r.enabled = 1)
                  ORDER BY g.is_builtin DESC, g.name ASC",
             )
             .map_err(|e| e.to_string())?;

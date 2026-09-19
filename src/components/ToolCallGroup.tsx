@@ -7,10 +7,36 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { Badge, Button, Switch as UiSwitch } from "./ui";
+import { ProviderEventGroup } from "./ProviderEventGroup";
+import { renderMd } from "../lib/markdown";
+
+export type ToolCallGroupItem =
+  | { kind: "tool"; tool: AppToolCall }
+  | { kind: "events"; events: Array<{ type: string; payload: unknown }> }
+  | { kind: "thought"; text: string }
+  | { kind: "executionText"; text: string };
+
+function ToolGroupThought(props: { text: string }) {
+  return (
+    <details class="agent-thought-block">
+      <summary class="flex cursor-pointer items-center gap-2 px-2.5 py-1.5 text-left">
+        <Badge tone="neutral" variant="subtle">Thought</Badge>
+      </summary>
+      <div class="border-t theme-border px-2.5 py-2 text-[11px] theme-muted font-mono leading-relaxed whitespace-pre-wrap break-words max-h-72 overflow-auto">
+        {props.text}
+      </div>
+    </details>
+  );
+}
+
+function ToolGroupExecutionText(props: { text: string }) {
+  return <div class="tool-execution-text md-prose">{renderMd(props.text)}</div>;
+}
 
 function tcStatusDot(status: string): string {
-  if (status === "success" || status === "completed") return "ui-tool-status-success";
-  if (status === "failure" || status === "error") return "ui-tool-status-danger";
+  const normalized = status.replace(/[-_]/g, "").toLowerCase();
+  if (normalized === "success" || normalized === "completed") return "ui-tool-status-success";
+  if (normalized === "failure" || normalized === "failed" || normalized === "error" || normalized === "declined" || normalized === "cancelled" || normalized === "canceled") return "ui-tool-status-danger";
   return "ui-tool-status-warning animate-pulse";
 }
 
@@ -150,23 +176,23 @@ type ToolCallItemProps = {
   onRejectHunk?: (rejectPrompt: string) => void;
 };
 
-function categoryBadgeClass(category: string): string {
+function categoryBadgeTone(category: string): "neutral" | "success" | "warning" | "danger" | "info" {
   switch (category) {
     case "shell":
-      return "bg-amber-500/15 text-amber-400 border-amber-500/30";
+      return "warning";
     case "read":
-      return "bg-blue-500/15 text-blue-400 border-blue-500/30";
+      return "info";
     case "edit":
     case "write":
-      return "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
+      return "success";
     case "search":
-      return "bg-purple-500/15 text-purple-400 border-purple-500/30";
+      return "info";
     case "fetch":
-      return "bg-cyan-500/15 text-cyan-400 border-cyan-500/30";
+      return "info";
     case "task":
-      return "bg-rose-500/15 text-rose-400 border-rose-500/30";
+      return "warning";
     default:
-      return "bg-[var(--ui-surface-muted)] text-[var(--ui-muted)] border-[var(--ui-border)]";
+      return "neutral";
   }
 }
 
@@ -196,18 +222,34 @@ function ToolCallItem(props: ToolCallItemProps) {
         <span class={`ui-tool-status-dot shrink-0 ${tcStatusDot(tc().status)}`} />
         
         {/* Canonical action badge */}
-        <span class={`font-mono text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded border shrink-0 ${categoryBadgeClass(displayInfo().category)}`}>
-          {displayInfo().categoryBadge}
-        </span>
-
-        {/* Concise target summary (file path / command / query) */}
-        <span
-          class="theme-text font-mono text-[11px] tracking-tight truncate flex-1 min-w-0"
-          title={displayInfo().targetSummary || tc().title || tc().toolCallId}
+        <Badge
+          tone={categoryBadgeTone(displayInfo().category)}
+          variant="outline"
+          class="font-mono text-[9px] font-semibold uppercase px-1.5 py-0.5 shrink-0"
         >
-          {displayInfo().targetSummary || tc().title || tc().toolCallId}
+          {displayInfo().categoryBadge}
+        </Badge>
+
+        {/* Concise target summary (file path / command / query), plus the exact
+            command as a secondary line when the provider also sent a human
+            description (e.g. Claude's Bash `description` field). */}
+        <span class="min-w-0 flex-1 flex flex-col justify-center leading-tight">
+          <span
+            class="theme-text font-mono text-[11px] tracking-tight truncate"
+            title={displayInfo().targetSummary || tc().title || tc().toolCallId}
+          >
+            {displayInfo().targetSummary || tc().title || tc().toolCallId}
+          </span>
+          <Show when={displayInfo().secondaryInfo}>
+            <span class="theme-muted font-mono text-[9.5px] tracking-tight truncate opacity-70" title={displayInfo().secondaryInfo}>
+              {displayInfo().secondaryInfo}
+            </span>
+          </Show>
         </span>
 
+        <Show when={displayInfo().background}>
+          <Badge tone="info">bg</Badge>
+        </Show>
         <Show when={tc().parentId}>
           <Badge tone="info">subagent</Badge>
         </Show>
@@ -351,7 +393,8 @@ function ToolCallItem(props: ToolCallItemProps) {
 }
 
 export function ToolCallGroup(props: {
-  tools: AppToolCall[];
+  tools?: AppToolCall[];
+  items?: ToolCallGroupItem[];
   streaming: boolean;
   cwd?: string | null;
   terminals?: Record<string, TerminalEntry>;
@@ -362,6 +405,14 @@ export function ToolCallGroup(props: {
   onFileClick?: (path: string, kind: string) => void;
   onRejectHunk?: (rejectPrompt: string) => void;
 }) {
+  const groupItems = createMemo<ToolCallGroupItem[]>(() =>
+    props.items ?? (props.tools ?? []).map((tool) => ({ kind: "tool", tool })),
+  );
+  const tools = createMemo(() =>
+    groupItems()
+      .filter((item): item is { kind: "tool"; tool: AppToolCall } => item.kind === "tool")
+      .map((item) => item.tool),
+  );
   const hasPendingPermission = () => !!props.pendingPermission;
   const [expanded, setExpanded] = createSignal(false);
 
@@ -369,35 +420,36 @@ export function ToolCallGroup(props: {
     if (hasPendingPermission()) setExpanded(true);
   });
 
-  const count = () => props.tools.length;
-  const lastTool = () => props.tools[props.tools.length - 1];
+  const count = () => tools().length;
+  const lastTool = () => tools()[tools().length - 1];
   const statusCounts = createMemo(() => {
     let success = 0, error = 0;
-    for (const t of props.tools) {
-      if (t.status === "success" || t.status === "completed") success++;
-      else if (t.status === "failure" || t.status === "error") error++;
+    for (const t of tools()) {
+      const status = t.status.replace(/[-_]/g, "").toLowerCase();
+      if (status === "success" || status === "completed") success++;
+      else if (status === "failure" || status === "failed" || status === "error" || status === "declined" || status === "cancelled" || status === "canceled") error++;
     }
-    return { success, error, pending: props.tools.length - success - error };
+    return { success, error, pending: tools().length - success - error };
   });
 
   const pendingToolCallIndex = createMemo(() => {
     if (!props.pendingPermission) return -1;
-    for (let i = props.tools.length - 1; i >= 0; i--) {
-      if (props.tools[i].status === "pending") return i;
+    for (let i = tools().length - 1; i >= 0; i--) {
+      if (tools()[i].status === "pending") return i;
     }
-    return props.tools.length - 1;
+    return tools().length - 1;
   });
 
   const groupSummaryLabel = createMemo(() => {
-    if (props.tools.length === 0) return "tool calls";
-    if (props.tools.length === 1) {
-      const display = formatToolDisplay(props.tools[0], props.cwd);
+    if (tools().length === 0) return "execution";
+    if (tools().length === 1) {
+      const display = formatToolDisplay(tools()[0], props.cwd);
       return `${display.actionLabel}: ${display.targetSummary}`;
     }
     const categories = Array.from(
-      new Set(props.tools.map((t) => formatToolDisplay(t, props.cwd).categoryBadge)),
+      new Set(tools().map((t) => formatToolDisplay(t, props.cwd).categoryBadge)),
     );
-    return `Ran ${props.tools.length} tools (${categories.join(", ")})`;
+    return `Ran ${tools().length} tools (${categories.join(", ")})`;
   });
 
   return (
@@ -441,18 +493,30 @@ export function ToolCallGroup(props: {
       </button>
       <Show when={expanded()}>
         <div class="tool-call-list space-y-1">
-          <For each={props.tools}>{(tc, i) => (
-            <ToolCallItem
-              tc={tc}
-              cwd={props.cwd}
-              terminals={props.terminals}
-              inlinePermission={i() === pendingToolCallIndex() ? props.pendingPermission : null}
-              onApprove={props.onApprove}
-              onDeny={props.onDeny}
-              onFileClick={props.onFileClick}
-              onRejectHunk={props.onRejectHunk}
-            />
-          )}</For>
+          <For each={groupItems()}>{(item, itemIndex) => {
+            const toolIndex = () =>
+              groupItems()
+                .slice(0, itemIndex())
+                .filter((candidate) => candidate.kind === "tool").length;
+            return item.kind === "tool" ? (
+              <ToolCallItem
+                tc={item.tool}
+                cwd={props.cwd}
+                terminals={props.terminals}
+                inlinePermission={toolIndex() === pendingToolCallIndex() ? props.pendingPermission : null}
+                onApprove={props.onApprove}
+                onDeny={props.onDeny}
+                onFileClick={props.onFileClick}
+                onRejectHunk={props.onRejectHunk}
+              />
+            ) : item.kind === "events" ? (
+              <ProviderEventGroup events={item.events} />
+            ) : item.kind === "thought" ? (
+              <ToolGroupThought text={item.text} />
+            ) : (
+              <ToolGroupExecutionText text={item.text} />
+            );
+          }}</For>
         </div>
       </Show>
     </div>

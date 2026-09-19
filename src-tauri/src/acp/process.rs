@@ -3,13 +3,14 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::sync::Mutex as AsyncMutex;
 
 use super::adapter::{acp_log, clip};
 use super::error::{push_stderr_tail, stderr_tail};
 
 pub(crate) struct AgentProcess {
     pub(crate) child: Child,
-    pub(crate) stdin: ChildStdin,
+    pub(crate) stdin: Arc<AsyncMutex<ChildStdin>>,
     pub(crate) stdout: BufReader<ChildStdout>,
     pub(crate) stderr: Arc<std::sync::Mutex<String>>,
     pub(crate) stderr_task: Option<tokio::task::JoinHandle<()>>,
@@ -79,7 +80,7 @@ impl AgentProcess {
 
         Ok(Self {
             child,
-            stdin,
+            stdin: Arc::new(AsyncMutex::new(stdin)),
             stdout: BufReader::new(stdout),
             stderr,
             stderr_task,
@@ -98,8 +99,14 @@ impl AgentProcess {
         stderr_tail(&self.stderr)
     }
 
+    pub(crate) fn stdin_handle(&self) -> Arc<AsyncMutex<ChildStdin>> {
+        self.stdin.clone()
+    }
+
     pub(crate) async fn close(&mut self, timeout: Duration) {
-        let _ = self.stdin.shutdown().await;
+        let mut stdin = self.stdin.lock().await;
+        let _ = stdin.shutdown().await;
+        drop(stdin);
         if let Some(pid) = self.pid() {
             terminate_pid(pid);
         }

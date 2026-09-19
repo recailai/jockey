@@ -2,6 +2,8 @@ pub(crate) mod app_session;
 pub(crate) mod app_session_role;
 pub(crate) mod context;
 pub(crate) mod global_mcp;
+pub(crate) mod inbox;
+pub(crate) mod lifecycle;
 pub(crate) mod pool;
 pub(crate) mod profiles;
 pub(crate) mod project;
@@ -22,7 +24,7 @@ use tauri::State;
 
 /// Bump when a new one-shot data migration is added below. Table and column creation stay
 /// unconditional (they are idempotent); only data rewrites are gated on this.
-const SCHEMA_VERSION: i64 = 15;
+const SCHEMA_VERSION: i64 = 16;
 
 fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
     if !is_safe_identifier(table) || !is_safe_identifier(column) {
@@ -196,6 +198,28 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           content TEXT NOT NULL,
           created_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS session_inbox_messages (
+          id TEXT PRIMARY KEY,
+          app_session_id TEXT NOT NULL REFERENCES app_sessions(id) ON DELETE CASCADE,
+          role_name TEXT,
+          delivery TEXT NOT NULL DEFAULT 'nextTurn',
+          text TEXT NOT NULL,
+          attachments_json TEXT NOT NULL DEFAULT '[]',
+          created_at INTEGER NOT NULL,
+          claimed_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS agent_lifecycle (
+          app_session_id TEXT NOT NULL REFERENCES app_sessions(id) ON DELETE CASCADE,
+          role_name TEXT NOT NULL,
+          runtime_kind TEXT NOT NULL,
+          state TEXT NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(app_session_id, role_name, runtime_kind)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_lifecycle_session
+          ON agent_lifecycle(app_session_id, updated_at DESC);
 
         CREATE INDEX IF NOT EXISTS idx_roles_updated_at
           ON roles(updated_at DESC);
@@ -217,6 +241,8 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           ON app_skills(updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_app_session_messages_session_id
           ON app_session_messages(session_id, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_session_inbox_pending
+          ON session_inbox_messages(app_session_id, claimed_at, created_at, id);
 
         CREATE TABLE IF NOT EXISTS global_mcp_servers (
           name TEXT PRIMARY KEY,
@@ -287,6 +313,15 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
           updated_at INTEGER NOT NULL,
           PRIMARY KEY(project_id, role_name)
         );
+        CREATE TABLE IF NOT EXISTS project_role_overrides (
+          project_id TEXT NOT NULL,
+          role_name TEXT NOT NULL,
+          overrides_json TEXT NOT NULL DEFAULT '{}',
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(project_id, role_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_role_overrides_project
+          ON project_role_overrides(project_id, role_name);
 
         CREATE TABLE IF NOT EXISTS import_session_catalog (
           project_id TEXT NOT NULL,
@@ -324,6 +359,7 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
     ensure_column(conn, "roles", "project_id", "TEXT")?;
     ensure_column(conn, "app_sessions", "runtime_profile_id", "TEXT")?;
     ensure_column(conn, "app_sessions", "project_id", "TEXT")?;
+    ensure_column(conn, "projects", "deleted_at", "INTEGER")?;
     ensure_column(conn, "app_sessions", "external_session_id", "TEXT")?;
     ensure_column(conn, "app_session_roles", "runtime_profile_id", "TEXT")?;
     ensure_column(conn, "app_session_roles", "model_override", "TEXT")?;
@@ -341,6 +377,7 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         "TEXT NOT NULL DEFAULT 'text'",
     )?;
     ensure_column(conn, "app_session_messages", "payload", "TEXT")?;
+    ensure_column(conn, "app_session_messages", "client_id", "TEXT")?;
 
     // Indexed after the column additions above, because `external_session_id` is itself one
     // of them and a fresh database has no such column while the schema batch runs.
@@ -359,6 +396,8 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         -- persona, listing the sessions bound to one) cannot use it.
         CREATE INDEX IF NOT EXISTS idx_app_session_roles_role_name
           ON app_session_roles(role_name);
+        CREATE INDEX IF NOT EXISTS idx_app_session_messages_session_client_id
+          ON app_session_messages(session_id, client_id) WHERE client_id IS NOT NULL;
         ",
     )
     .map_err(|e| e.to_string())?;
@@ -775,6 +814,14 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
             DELETE FROM import_session_catalog;
             DELETE FROM import_session_catalog_scans;
             ",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    if from_version < 16 {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_projects_active_root_path
+             ON projects(root_path, deleted_at);",
         )
         .map_err(|e| e.to_string())?;
     }

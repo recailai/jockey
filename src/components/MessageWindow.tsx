@@ -1,18 +1,72 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { For, Index, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { Accessor } from "solid-js";
-import type { AppSession, AppMessage, AppToolCall, AppSegment, AppPermission } from "./types";
+import type { AppSession, AppMessage, AppSegment, AppPermission, InputDeliveryCapabilities, RuntimeCapabilities } from "./types";
 import { RUNTIME_COLOR, MESSAGE_RENDER_WINDOW, fmt } from "./types";
 import SessionTelemetry from "./SessionTelemetry";
+import CapabilityGate from "./CapabilityGate";
+import { ProviderEventGroup } from "./ProviderEventGroup";
+import { AgentBlockRenderer } from "./AgentBlockRenderer";
 import UserInputModal from "./UserInputModal";
 import { identicon } from "../lib/identicon";
 import { renderMd, renderMdCached } from "../lib/markdown";
-import { ToolCallGroup } from "./ToolCallGroup";
+import { ToolCallGroup, type ToolCallGroupItem } from "./ToolCallGroup";
 import { PermissionModal } from "./PermissionModal";
 import SessionErrorBanner from "./SessionErrorBanner";
 import { assistantApi } from "../lib/tauriApi";
-import { ContextMenuItem, ContextMenuSurface } from "./ui";
+import { isTransparentProviderEvent } from "../lib/providerEventPolicy";
+import { Badge, ContextMenuItem, ContextMenuSurface } from "./ui";
 import { Check, Copy } from "lucide-solid";
+
+function AgentStatusIndicator(props: { stateText?: string; fallback?: string }) {
+  const text = () => props.stateText || props.fallback || "running";
+
+  const parsed = createMemo(() => {
+    const raw = text();
+    const match = raw.match(/^(.*?)\s*\(([^)]+)\)(\.{0,3})$/);
+    if (match) {
+      return {
+        prefix: match[1],
+        sessionTag: match[2],
+        suffix: match[3],
+      };
+    }
+    return {
+      prefix: raw,
+      sessionTag: null,
+      suffix: "",
+    };
+  });
+
+  const isResume = () => parsed().prefix.toLowerCase().includes("resum");
+  const isInit = () => parsed().prefix.toLowerCase().includes("init");
+  const isReset = () => parsed().prefix.toLowerCase().includes("reset");
+  const isReconnect = () => parsed().prefix.toLowerCase().includes("reconnect");
+
+  const badgeTone = () => {
+    if (isResume()) return "info" as const;
+    if (isInit()) return "success" as const;
+    if (isReset()) return "warning" as const;
+    if (isReconnect()) return "info" as const;
+    return "neutral" as const;
+  };
+
+  return (
+    <span class="inline-flex items-center gap-1.5 flex-wrap">
+      <span class="text-[10px] theme-muted italic">{parsed().prefix}</span>
+      <Show when={parsed().sessionTag}>
+        {(tag) => (
+          <Badge tone={badgeTone()} variant="subtle" class="font-mono text-[9px] px-1 py-0 tracking-tight">
+            {tag()}
+          </Badge>
+        )}
+      </Show>
+      <Show when={parsed().suffix}>
+        <span class="text-[10px] theme-muted italic">{parsed().suffix}</span>
+      </Show>
+    </span>
+  );
+}
 
 function getMessageCopyableText(msg: AppMessage): string {
   if (msg.text && msg.text.trim()) {
@@ -87,9 +141,11 @@ type MessageWindowProps = {
   activeSessionId: Accessor<string | null>;
   activeSession: Accessor<AppSession | null>;
   activeBackendRole: () => string;
+  runtimeCapabilities?: Accessor<RuntimeCapabilities | undefined>;
+  inputDelivery?: Accessor<InputDeliveryCapabilities | undefined>;
   patchActiveSession: (patch: Partial<AppSession>) => void;
-  onRemoveQueuedMessage: (index: number) => void;
-  onFlushQueue?: () => void;
+  onRemoveQueuedMessage: (itemId: string) => void;
+  onSendQueuedNow?: () => void;
   onResetAgentContext?: () => void;
   onReconnectAgent?: () => void;
   onListMounted?: (id: string, el: HTMLElement) => void;
@@ -105,6 +161,7 @@ export default function MessageWindow(props: MessageWindowProps) {
   const [queueCollapsed, setQueueCollapsed] = createSignal(true);
   const [searchOpen, setSearchOpen] = createSignal(false);
   const [searchQuery, setSearchQuery] = createSignal("");
+  const queuedItems = () => props.activeSession()?.queuedItems.filter((item) => item.status === "queued") ?? [];
 
   createEffect(() => {
     const id = props.activeSessionId();
@@ -397,6 +454,25 @@ export default function MessageWindow(props: MessageWindowProps) {
           );
           const hasContent = !!msg.text?.trim() || (msg.segments && msg.segments.length > 0) || (msg.toolCalls && msg.toolCalls.length > 0);
           if (!hasContent) return null;
+
+          const effectiveSegments = createMemo(() => {
+            if (msg.segments && msg.segments.length > 0) {
+              return msg.segments;
+            }
+            if (msg.toolCalls && msg.toolCalls.length > 0) {
+              const segs: AppSegment[] = msg.toolCalls.map((tc) => ({
+                kind: "tool" as const,
+                tc,
+                roleName: tc.roleName || msg.roleName,
+              }));
+              if (msg.text?.trim()) {
+                segs.push({ kind: "text" as const, text: msg.text, roleName: msg.roleName });
+              }
+              return segs;
+            }
+            return undefined;
+          });
+
           return (
             <div class="flex gap-4 w-full max-w-[95%] mb-6 group/agent">
               <button
@@ -416,23 +492,35 @@ export default function MessageWindow(props: MessageWindowProps) {
                     <span class="message-mode-badge">{props.activeSession()?.currentMode}</span>
                   </Show>
                 </div>
-                <Show when={msg.segments && msg.segments.length > 0} fallback={
+                <Show when={effectiveSegments()} fallback={
                   <div class="agent-message-card">
-                    <div class="md-prose" innerHTML={q ? highlightText(renderMdCached(msg.id, msg.text), q) : renderMdCached(msg.id, msg.text)} />
-                  </div>
-                }>
-                  <div class="agent-message-card">
-                    <SegmentList
-                      segments={msg.segments!}
+                    <AgentBlockRenderer
+                      block={{ kind: "text", text: msg.text }}
+                      renderText={(text) => q ? highlightText(renderMdCached(msg.id, text), q) : renderMdCached(msg.id, text)}
                       cwd={props.activeSession()?.cwd}
                       terminals={props.activeSession()?.terminals}
-                      onFileClick={props.onFileClick}
-                      onRejectHunk={props.onRejectHunk}
                     />
                   </div>
+                }>
+                  {(segs) => (
+                    <div class="agent-message-card">
+                      <SegmentList
+                        segments={segs()}
+                        cwd={props.activeSession()?.cwd}
+                        terminals={props.activeSession()?.terminals}
+                        onFileClick={props.onFileClick}
+                        onRejectHunk={props.onRejectHunk}
+                      />
+                    </div>
+                  )}
                 </Show>
-                <Show when={msg.thoughtText}>
-                  <ThoughtBlock text={msg.thoughtText!} />
+                <Show when={msg.thoughtText && !(effectiveSegments() ?? []).some((segment) => segment.kind === "thought")}>
+                  <AgentBlockRenderer
+                    block={{ kind: "thought", text: msg.thoughtText! }}
+                    renderText={renderMd}
+                    cwd={props.activeSession()?.cwd}
+                    terminals={props.activeSession()?.terminals}
+                  />
                 </Show>
                 <Show when={getMessageCopyableText(msg)}>
                   {(copyText) => (
@@ -468,23 +556,32 @@ export default function MessageWindow(props: MessageWindowProps) {
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2.5 mb-2">
                 <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.runtimeKind ?? ""] ?? "theme-text"}`}>
-                  {props.activeSession()?.activeRole ?? "Agent"}
+                  {streaming().roleName || props.activeSession()?.activeRole || "Agent"}
                 </span>
               </div>
               <Show when={(props.activeSession()?.streamSegments ?? []).length > 0} fallback={
                 <>
                   <Show when={streaming().text}>
                     <div class="agent-message-card">
-                      <div class="md-prose" innerHTML={renderMd(streaming().text)} />
+                      <AgentBlockRenderer
+                        block={{ kind: "text", text: streaming().text }}
+                        renderText={renderMd}
+                        cwd={props.activeSession()?.cwd}
+                        terminals={props.activeSession()?.terminals}
+                        streaming
+                      />
                     </div>
                   </Show>
                   <Show when={!streaming().text && props.activeSession()?.agentState}>
-                    <div class="text-[11px] theme-muted italic">{props.activeSession()?.agentState}</div>
+                    <div class="mt-1">
+                      <AgentStatusIndicator stateText={props.activeSession()?.agentState} />
+                    </div>
                   </Show>
                 </>
               }>
-                <StreamSegmentList
+                <AgentStreamList
                   segments={props.activeSession()?.streamSegments ?? []}
+                  fallbackRole={streaming().roleName || props.activeSession()?.activeRole || "Agent"}
                   cwd={props.activeSession()?.cwd}
                   terminals={props.activeSession()?.terminals}
                   pendingPermission={
@@ -511,14 +608,20 @@ export default function MessageWindow(props: MessageWindowProps) {
                   onRejectHunk={props.onRejectHunk}
                 />
               </Show>
-              <Show when={props.activeSession()?.thoughtText}>
-                <ThoughtBlock text={props.activeSession()!.thoughtText!} streaming />
+              <Show when={props.activeSession()?.thoughtText && !(props.activeSession()?.streamSegments ?? []).some((segment) => segment.kind === "thought")}>
+                <AgentBlockRenderer
+                  block={{ kind: "thought", text: props.activeSession()!.thoughtText! }}
+                  renderText={renderMd}
+                  cwd={props.activeSession()?.cwd}
+                  terminals={props.activeSession()?.terminals}
+                  streaming
+                />
               </Show>
               <div class="flex items-center gap-2 mt-2 pt-1.5">
-                <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                <svg class="h-3 w-3 animate-spin shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
                   <path d="M12 2a10 10 0 0 1 7.07 2.93" stroke="var(--ui-accent)" /><path d="M22 12a10 10 0 0 1-2.93 7.07" stroke="var(--ui-accent)" opacity="0.6" /><path d="M12 22a10 10 0 0 1-7.07-2.93" stroke="var(--ui-accent)" opacity="0.3" /><path d="M2 12a10 10 0 0 1 2.93-7.07" stroke="var(--ui-accent)" opacity="0.1" />
                 </svg>
-                <span class="text-[10px] theme-muted italic">{props.activeSession()?.agentState || "running"}</span>
+                <AgentStatusIndicator stateText={props.activeSession()?.agentState} fallback="running" />
               </div>
             </div>
           </div>
@@ -540,7 +643,9 @@ export default function MessageWindow(props: MessageWindowProps) {
         activeSession={props.activeSession}
         patchActiveSession={props.patchActiveSession}
       />
-      <SessionTelemetry activeSession={props.activeSession} />
+      <CapabilityGate capabilities={props.runtimeCapabilities?.()} capability="usage">
+        <SessionTelemetry activeSession={props.activeSession} capabilities={props.runtimeCapabilities} />
+      </CapabilityGate>
       <Show when={props.activeSession()?.currentPlan}>
         {(plan) => {
           const total = () => plan().length;
@@ -599,11 +704,11 @@ export default function MessageWindow(props: MessageWindowProps) {
       </Show>
       <Show when={props.activeSession()?.submitting && !props.activeSession()?.streamingMessage}>
         <div class="flex items-center gap-2 px-1 text-xs theme-muted opacity-80 mt-2">
-          <span class="h-2 w-2 rounded-full bg-white/60 animate-pulse" />
-          <span>{props.activeSession()?.agentState || "Agent is thinking..."}</span>
+          <span class="h-2 w-2 rounded-full bg-white/60 animate-pulse shrink-0" />
+          <AgentStatusIndicator stateText={props.activeSession()?.agentState} fallback="Agent is thinking..." />
         </div>
       </Show>
-      <Show when={(props.activeSession()?.queuedMessages ?? []).length > 0}>
+      <Show when={queuedItems().length > 0}>
         <div class="mt-3 rounded-lg border theme-border backdrop-blur-sm overflow-hidden theme-panel">
           <div
             class="flex items-center gap-2 px-3 py-1.5"
@@ -615,32 +720,41 @@ export default function MessageWindow(props: MessageWindowProps) {
             >
               <span class="queued-status-dot" />
               <span class="text-[10px] theme-muted font-medium uppercase tracking-wider">Queued</span>
-              <span class="text-[9px] theme-muted font-mono bg-[var(--ui-panel-2)] px-1.5 py-0.5 rounded-md">{props.activeSession()!.queuedMessages.length}</span>
+              <span class="text-[9px] theme-muted font-mono bg-[var(--ui-panel-2)] px-1.5 py-0.5 rounded-md">{queuedItems().length}</span>
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="theme-muted transition-transform" classList={{ "rotate-180": !queueCollapsed() }}>
                 <polyline points="6 9 12 15 18 9" />
               </svg>
             </button>
-            <Show when={props.onFlushQueue && props.activeSession()?.submitting}>
+            <Show when={props.onSendQueuedNow && props.activeSession()?.submitting && (props.inputDelivery?.()?.runNow ?? true)}>
               <button
                 type="button"
-                onClick={() => props.onFlushQueue!()}
+                onClick={() => props.onSendQueuedNow!()}
+                disabled={props.activeSession()?.turnPhase === "sending"
+                  || props.activeSession()?.queueRunActive === true
+                  || props.activeSession()?.turnPhase === "cancelling"}
                 class="queued-flush-button"
-                title="Interrupt current turn and send queued messages"
+                title={props.inputDelivery?.()?.strategy === "steer"
+                  ? "Steer the current turn with queued messages"
+                  : props.activeSession()?.turnPhase === "sending" || props.activeSession()?.queueRunActive === true
+                    ? "A queued message is already being sent"
+                    : "Interrupt the current turn, wait for it to stop, then send queued messages"}
               >
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 11 12 6 7 11"/><polyline points="17 18 12 13 7 18"/></svg>
-                Send now
+                {props.activeSession()?.turnPhase === "sending" || props.activeSession()?.queueRunActive === true
+                  ? "Sending…"
+                  : props.inputDelivery?.()?.strategy === "steer" ? "Steer now" : "Send now"}
               </button>
             </Show>
           </div>
           <Show when={!queueCollapsed()}>
             <div class="px-2 py-1.5 space-y-1">
-              <For each={props.activeSession()!.queuedMessages}>{(text, i) => (
+              <For each={queuedItems()}>{(item, i) => (
                 <div class="group flex items-start gap-2 px-2 py-1 rounded-md hover:bg-[var(--ui-accent-soft)] transition-colors">
                   <span class="text-[9px] theme-muted font-mono mt-0.5 shrink-0 w-4 text-right">{i() + 1}</span>
-                  <span class="flex-1 text-[11px] theme-text font-mono break-all leading-relaxed">{text}</span>
+                  <span class="flex-1 text-[11px] theme-text font-mono break-all leading-relaxed">{item.text}</span>
                   <button
                     type="button"
-                    onClick={() => props.onRemoveQueuedMessage(i())}
+                    onClick={() => props.onRemoveQueuedMessage(item.id)}
                     class="queued-remove-button"
                     title="Remove from queue"
                   >
@@ -689,58 +803,69 @@ export default function MessageWindow(props: MessageWindowProps) {
   );
 }
 
-function ThoughtBlock(props: { text: string; streaming?: boolean }) {
-  const [open, setOpen] = createSignal(false);
-  const preview = () => {
-    const t = props.text.trim();
-    const nl = t.indexOf("\n");
-    const first = nl === -1 ? t : t.slice(0, nl);
-    return first.length > 80 ? first.slice(0, 80) + "…" : first + (props.text.trim().length > first.length ? "…" : "");
-  };
-  return (
-    <div class="mt-1.5 rounded-md border theme-border theme-panel overflow-hidden">
-      <button
-        type="button"
-        class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left hover:bg-[var(--ui-accent-soft)] transition-colors"
-        onClick={() => setOpen(v => !v)}
-      >
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 theme-muted">
-          <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
-        </svg>
-        <span class="text-[10px] theme-muted font-medium uppercase tracking-wider shrink-0">
-          {props.streaming ? "Thinking" : "Thought"}
-        </span>
-        <Show when={!open()}>
-          <span class="flex-1 truncate text-[10px] theme-muted font-mono ml-1 opacity-60">{preview()}</span>
-        </Show>
-        <svg
-          width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
-          stroke-linecap="round" stroke-linejoin="round"
-          class={`shrink-0 theme-muted transition-transform duration-150 ml-auto ${open() ? "rotate-180" : ""}`}
-        >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-      </button>
-      <Show when={open()}>
-        <div class="px-2.5 py-2 border-t theme-border text-[11px] theme-muted font-mono leading-relaxed whitespace-pre-wrap break-words max-h-72 overflow-auto">
-          {props.text}
-        </div>
-      </Show>
-    </div>
-  );
-}
-
-function collectToolGroups(segments: AppSegment[]): Array<{ kind: "text"; text: string } | { kind: "tools"; tools: AppToolCall[] }> {
-  const result: Array<{ kind: "text"; text: string } | { kind: "tools"; tools: AppToolCall[] }> = [];
+function collectToolGroups(segments: AppSegment[]): Array<
+  | { kind: "text"; text: string }
+  | { kind: "thought"; text: string }
+  | { kind: "tools"; items: ToolCallGroupItem[] }
+  | { kind: "events"; events: Array<{ type: string; payload: unknown }> }
+> {
+  const result: Array<
+    | { kind: "text"; text: string }
+    | { kind: "thought"; text: string }
+    | { kind: "tools"; items: ToolCallGroupItem[] }
+    | { kind: "events"; events: Array<{ type: string; payload: unknown }> }
+  > = [];
   for (const seg of segments) {
     if (seg.kind === "text") {
-      result.push(seg);
-    } else {
       const last = result[result.length - 1];
-      if (last && last.kind === "tools") {
-        last.tools.push(seg.tc);
+      if (last?.kind === "text") last.text += seg.text;
+      else result.push({ kind: "text", text: seg.text });
+    } else if (seg.kind === "tool") {
+      const last = result[result.length - 1];
+      if (last?.kind === "tools") {
+        last.items.push({ kind: "tool", tool: seg.tc });
+      } else if (last?.kind === "events" || last?.kind === "thought") {
+        const items: ToolCallGroupItem[] = [];
+        while (result.length > 0) {
+          const tail = result[result.length - 1];
+          if (tail.kind === "events") {
+            items.unshift({ kind: "events", events: tail.events });
+            result.pop();
+          } else if (tail.kind === "thought") {
+            items.unshift({ kind: "thought", text: tail.text });
+            result.pop();
+          } else {
+            break;
+          }
+        }
+        items.push({ kind: "tool", tool: seg.tc });
+        result.push({ kind: "tools", items });
       } else {
-        result.push({ kind: "tools", tools: [seg.tc] });
+        result.push({ kind: "tools", items: [{ kind: "tool", tool: seg.tc }] });
+      }
+    } else if (seg.kind === "thought") {
+      const last = result[result.length - 1];
+      if (last?.kind === "tools") {
+        const tail = last.items[last.items.length - 1];
+        if (tail?.kind === "thought") tail.text += seg.text;
+        else last.items.push({ kind: "thought", text: seg.text });
+      } else if (last?.kind === "thought") {
+        last.text += seg.text;
+      } else {
+        result.push({ kind: "thought", text: seg.text });
+      }
+    } else {
+      if (isTransparentProviderEvent({ type: seg.type, payload: seg.payload })) continue;
+      const last = result[result.length - 1];
+      const event = { type: seg.type, payload: seg.payload };
+      if (last?.kind === "tools") {
+        const tail = last.items[last.items.length - 1];
+        if (tail?.kind === "events") tail.events.push(event);
+        else last.items.push({ kind: "events", events: [event] });
+      } else if (last?.kind === "events") {
+        last.events.push(event);
+      } else {
+        result.push({ kind: "events", events: [event] });
       }
     }
   }
@@ -758,9 +883,13 @@ function SegmentList(props: {
   return (
     <For each={groups()}>{(g) => (
       g.kind === "text"
-        ? <div class="md-prose" innerHTML={renderMd(g.text)} />
+        ? <AgentBlockRenderer block={{ kind: "text", text: g.text }} renderText={renderMd} cwd={props.cwd} terminals={props.terminals} />
+        : g.kind === "thought"
+          ? <AgentBlockRenderer block={{ kind: "thought", text: g.text }} renderText={renderMd} cwd={props.cwd} terminals={props.terminals} />
+        : g.kind === "events"
+          ? <ProviderEventGroup events={g.events} />
         : <ToolCallGroup
-            tools={g.tools}
+            items={g.items}
             streaming={false}
             cwd={props.cwd}
             terminals={props.terminals}
@@ -787,11 +916,29 @@ function StreamSegmentList(props: {
     <Index each={groups()}>{(g, i) => (
       <Switch>
         <Match when={g().kind === "text"}>
-          <div class="md-prose" innerHTML={renderMd((g() as { kind: "text"; text: string }).text)} />
+          <AgentBlockRenderer
+            block={{ kind: "text", text: (g() as { kind: "text"; text: string }).text }}
+            renderText={renderMd}
+            cwd={props.cwd}
+            terminals={props.terminals}
+            streaming
+          />
+        </Match>
+        <Match when={g().kind === "thought"}>
+          <AgentBlockRenderer
+            block={{ kind: "thought", text: (g() as { kind: "thought"; text: string }).text }}
+            renderText={renderMd}
+            cwd={props.cwd}
+            terminals={props.terminals}
+            streaming
+          />
+        </Match>
+        <Match when={g().kind === "events"}>
+          <ProviderEventGroup events={(g() as { kind: "events"; events: Array<{ type: string; payload: unknown }> }).events} />
         </Match>
         <Match when={g().kind === "tools"}>
           <ToolCallGroup
-            tools={(g() as { kind: "tools"; tools: AppToolCall[] }).tools}
+            items={(g() as { kind: "tools"; items: ToolCallGroupItem[] }).items}
             streaming={true}
             cwd={props.cwd}
             terminals={props.terminals}
@@ -805,5 +952,67 @@ function StreamSegmentList(props: {
         </Match>
       </Switch>
     )}</Index>
+  );
+}
+
+function groupSegmentsByRole(segments: AppSegment[], fallbackRole: string): Array<{ roleName: string; segments: AppSegment[] }> {
+  const groups: Array<{ roleName: string; segments: AppSegment[] }> = [];
+  for (const segment of segments) {
+    const roleName = segment.roleName ?? (segment.kind === "tool" ? segment.tc.roleName : undefined) ?? fallbackRole;
+    const previous = groups[groups.length - 1];
+    if (!previous || previous.roleName !== roleName) {
+      const group = { roleName, segments: [segment] };
+      groups.push(group);
+    } else {
+      previous.segments.push(segment);
+    }
+  }
+  return groups;
+}
+
+function AgentStreamList(props: {
+  segments: AppSegment[];
+  fallbackRole: string;
+  cwd?: string | null;
+  terminals?: AppSession["terminals"];
+  pendingPermission?: AppPermission | null;
+  pendingCount?: number;
+  onApprove?: (optionId: string) => void;
+  onDeny?: () => void;
+  onFileClick?: (path: string, kind: string) => void;
+  onRejectHunk?: (p: string) => void;
+}) {
+  const groups = createMemo(() => groupSegmentsByRole(props.segments, props.fallbackRole));
+  return (
+    <For each={groups()}>{(group, index) => {
+      const sameAsOuterRole = () => group.roleName.trim().toLowerCase() === props.fallbackRole.trim().toLowerCase();
+      const showRoleBoundary = () => !sameAsOuterRole() || (groups().length > 1 && index() > 0);
+      return (
+      <div
+        class={showRoleBoundary() ? "agent-message-card" : ""}
+        data-agent-role={group.roleName}
+      >
+        <Show when={showRoleBoundary()}>
+          <div class="flex items-center gap-2.5 px-3 pt-2.5 text-[11px] font-bold tracking-wider uppercase theme-muted">
+            <span class="agent-avatar-mini" innerHTML={identicon(group.roleName)} />
+            {group.roleName}
+          </div>
+        </Show>
+        <div class={showRoleBoundary() ? "px-3 pb-3" : ""}>
+          <StreamSegmentList
+            segments={group.segments}
+            cwd={props.cwd}
+            terminals={props.terminals}
+            pendingPermission={index() === groups().length - 1 ? props.pendingPermission : null}
+            pendingCount={props.pendingCount}
+            onApprove={props.onApprove}
+            onDeny={props.onDeny}
+            onFileClick={props.onFileClick}
+            onRejectHunk={props.onRejectHunk}
+          />
+        </div>
+      </div>
+      );
+    }}</For>
   );
 }

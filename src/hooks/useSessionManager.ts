@@ -146,6 +146,20 @@ export function useSessionManager(
     scheduleScrollToBottom();
   });
 
+  const sanitizeToolCall = (tc: AppToolCall): AppToolCall => {
+    let outputLog = tc.outputLog;
+    if (outputLog && outputLog.length > 256 * 1024) {
+      outputLog = outputLog.slice(0, 128 * 1024) + "\n...[truncated]...\n" + outputLog.slice(outputLog.length - 128 * 1024);
+    }
+    return {
+      ...tc,
+      rawInputJson: undefined,
+      rawOutputJson: undefined,
+      contentJson: undefined,
+      outputLog,
+    };
+  };
+
   const persistMessage = (sessionId: string, message: AppMessage) => {
     if (!sessionId || message.roleName === "event") return;
     // A draft session has no `app_sessions` row yet (FK target for app_session_messages),
@@ -157,23 +171,53 @@ export function useSessionManager(
       (message.toolCalls?.length ?? 0) > 0 ||
       (message.segments?.some((s) => s.kind !== "text") ?? false) ||
       (message.images?.length ?? 0) > 0 ||
-      !!message.thoughtText;
+      !!message.thoughtText ||
+      !!message.messageType ||
+      !!message.purpose;
     if (hasStructured) {
+      const sanitizedTools = message.toolCalls?.map(sanitizeToolCall);
+      const sanitizedSegments = message.segments?.map((seg) => {
+        if (seg.kind === "tool") {
+          return { ...seg, tc: sanitizeToolCall(seg.tc) };
+        }
+        return seg;
+      });
       const payload = JSON.stringify({
         text: message.text,
-        toolCalls: message.toolCalls,
-        segments: message.segments,
+        toolCalls: sanitizedTools,
+        segments: sanitizedSegments,
         images: message.images,
         thoughtText: message.thoughtText,
+        messageType: message.messageType,
+        purpose: message.purpose,
       });
       void appSessionApi
-        .appendMessage(sessionId, message.roleName, message.text, "json", payload)
+        .saveMessage(sessionId, message.roleName, message.text, "json", payload, message.id)
         .catch((e: unknown) => reportPersistFailure("a message", e));
     } else {
       void appSessionApi
-        .appendMessage(sessionId, message.roleName, message.text)
+        .saveMessage(sessionId, message.roleName, message.text, undefined, undefined, message.id)
         .catch((e: unknown) => reportPersistFailure("a message", e));
     }
+  };
+
+  const checkpointStreamingMessage = (sessionId: string) => {
+    const idx = getSessionIndex(sessionId);
+    if (idx === -1) return;
+    const s = sessions[idx];
+    if (!s?.persisted || !s.streamingMessage) return;
+    const row = s.streamingMessage;
+    const snapshotToolCalls = Object.keys(s.toolCalls).length > 0 ? Object.values(s.toolCalls) : undefined;
+    const snapshotSegments = s.streamSegments.length > 0 ? [...s.streamSegments] : undefined;
+    const snapshotThought = s.thoughtText || undefined;
+    const msg: AppMessage = {
+      ...row,
+      at: now(),
+      toolCalls: snapshotToolCalls,
+      segments: snapshotSegments,
+      thoughtText: snapshotThought,
+    };
+    persistMessage(sessionId, msg);
   };
 
   // In-flight creates for draft sessions, so a fast double-send (or a queued send racing a
@@ -236,6 +280,7 @@ export function useSessionManager(
     patchActiveSession,
     persistSessionPatch,
     persistMessage,
+    checkpointStreamingMessage,
     ensureSessionPersisted,
     appendMessageToSession,
     appendMessage,

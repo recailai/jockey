@@ -1,6 +1,6 @@
 import { createSignal } from "solid-js";
 import type { Role, AssistantRuntime, AppSkill } from "../components/types";
-import { DEFAULT_ROLE_ALIAS, DEFAULT_BACKEND_ROLE } from "../components/types";
+import { DEFAULT_BACKEND_ROLE } from "../components/types";
 import type { SessionManager } from "./useSessionManager";
 import { assistantApi, roleApi, skillApi } from "../lib/tauriApi";
 

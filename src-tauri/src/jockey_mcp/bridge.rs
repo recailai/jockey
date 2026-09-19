@@ -279,6 +279,7 @@ async fn dispatch(
         "update_session" => sessions::update_session(state, params),
         "create_session" => sessions::create_session(state, params),
         "close_session" => sessions::close_session(state, params),
+        "get_session_context" => sessions::get_session_context(state, params),
         "get_session_history" => sessions::get_session_history(state, params),
         // Workflows
         "get_workflow" => workflows::get_workflow(state, params),
@@ -290,291 +291,66 @@ async fn dispatch(
         "set_shared_context" => context::set_shared_context(state, params),
         "get_shared_context" => context::get_shared_context(state, params),
         "delete_shared_context" => context::delete_shared_context(state, params),
+        "get_role_context" => context::get_role_context(state, params),
         _ => Err(format!("unknown method: {method}")),
     }
 }
 
 fn tool_definitions() -> Vec<Value> {
     vec![
-        // Roles
-        json!({ "name": "list_roles", "description": "List all configured roles. A role is a named persona that wraps a runtime (claude-code, codex-cli, pi-cli, or antigravity-cli/agy) with a system prompt, model override, mode, and MCP servers. You (the agent) are running inside one of these roles right now — call get_context to find out which one.", "inputSchema": { "type": "object", "properties": {} } }),
         json!({
-            "name": "get_role", "description": "Get full details of a role including system prompt, MCP servers, config option definitions, and saved option values.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "roleName": { "type": "string", "description": "Role name. Call list_roles to get available names." } },
-                "required": ["roleName"]
-            }
-        }),
-        json!({
-            "name": "upsert_role", "description": "Create or update a role. Omitted fields preserve existing values.",
+            "name": "get_session_context",
+            "description": "Read the current Jockey session without receiving a proactively injected transcript. Use summary for a compact overview, roles for role activity, turns for grouped conversation turns, or messages for precise message filtering.",
+            "annotations": { "readOnlyHint": true },
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "roleName": { "type": "string", "description": "Role name (unique identifier)." },
-                    "runtimeKind": { "type": "string", "description": "Runtime to use: claude-native, claude-code (ACP), antigravity-cli (agy), codex-cli, or pi-cli.", "default": "claude-native" },
-                    "runtimeProfileId": { "type": "string", "description": "Optional stable profile id, for example native:claude, native:codex, or acp:custom:<id>. Takes precedence over runtimeKind." },
-                    "systemPrompt": { "type": "string", "description": "System prompt injected at the start of each session." },
-                    "model": { "type": "string", "description": "Model override (e.g. claude-opus-4-5). Leave empty to use the runtime default." },
-                    "mode": { "type": "string", "description": "Execution mode (e.g. acceptEdits). Leave empty for the runtime default." },
-                    "autoApprove": { "type": "boolean", "description": "If true, tool calls are auto-approved without user confirmation." },
-                    "mcpServersJson": { "type": "string", "description": "JSON array of MCP server objects to set, replacing any existing servers. Omit to preserve current servers." },
-                    "configOptionsJson": { "type": "string", "description": "JSON object of saved option values by option id, for example {\"model\":\"claude-sonnet-4\"}. Omit to preserve current values." },
-                    "configOptionDefsJson": { "type": "string", "description": "JSON array of config option definitions discovered from runtime prewarm. Omit to preserve current definitions." }
+                    "appSessionId": { "type": "string", "description": "Jockey app session id from the Jockey context note." },
+                    "view": { "type": "string", "enum": ["summary", "roles", "turns", "messages"], "default": "summary" },
+                    "roleName": { "type": "string", "description": "Optional exact role filter for messages and turns." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50, "default": 5, "description": "Maximum messages or turns to inspect." },
+                    "order": { "type": "string", "enum": ["latest", "oldest"], "default": "latest" },
+                    "cursor": { "type": "integer", "description": "Message id returned as nextCursor for the next page." },
+                    "messageTypes": { "type": "array", "items": { "type": "string", "enum": ["user", "assistant", "tool", "thought", "event"] }, "description": "Optional semantic message filters." },
+                    "include": { "type": "array", "items": { "type": "string", "enum": ["text", "toolSummary", "tools", "toolOutput", "raw"] }, "description": "Optional fields to include. Defaults to text and toolSummary." },
+                    "includePayload": { "type": "boolean", "default": false, "description": "Compatibility shortcut for include:[raw]." }
                 },
-                "required": ["roleName"]
+                "required": ["appSessionId"]
             }
         }),
         json!({
-            "name": "delete_role", "description": "Delete a role by name.",
+            "name": "list_roles",
+            "description": "List configured roles and their runtime identity. Use get_session_context to inspect this session's conversation instead of receiving history automatically.",
+            "annotations": { "readOnlyHint": true },
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "list_skills",
+            "description": "List available skills with their ids, names, and descriptions.",
+            "annotations": { "readOnlyHint": true },
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "get_skill",
+            "description": "Read the full content of a skill by name when the task explicitly needs it.",
+            "annotations": { "readOnlyHint": true },
             "inputSchema": {
                 "type": "object",
-                "properties": { "roleName": { "type": "string", "description": "Role name to delete." } },
-                "required": ["roleName"]
+                "properties": { "name": { "type": "string", "minLength": 1, "maxLength": 128 } },
+                "required": ["name"]
             }
         }),
         json!({
             "name": "invoke_role",
-            "description": "Invoke another configured role/agent to perform a sub-task and return the result. Enables inter-agent cooperation and multi-agent delegation. Call list_roles to get available role names.",
+            "description": "Explicitly delegate a bounded sub-task to another configured role in this Jockey session. The target role can inspect the same session through get_session_context.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "roleName": { "type": "string", "description": "Target role name to invoke (e.g. Developer, Reviewer, Architect)." },
-                    "prompt": { "type": "string", "description": "The specific instruction or sub-task to delegate to the target role." },
-                    "appSessionId": { "type": "string", "description": "Optional session ID to inherit workspace directory and context from." }
+                    "roleName": { "type": "string", "minLength": 1, "maxLength": 128 },
+                    "prompt": { "type": "string", "minLength": 1, "maxLength": 32000 },
+                    "appSessionId": { "type": "string", "minLength": 1, "description": "Jockey app session id for workspace and transcript ownership." }
                 },
-                "required": ["roleName", "prompt"]
-            }
-        }),
-        // MCP role-level
-        json!({
-            "name": "list_mcp_servers",
-            "description": "List MCP servers configured in Jockey. Returns the global registry (servers available to all roles) and per-role assignments. The 'jockey' server is always injected automatically — it is this tool server itself. MCP servers attached to a role are passed into the agent's session at startup; after adding/removing a server the role must be reconnected for the change to take effect. Provide roleName to scope results to one role.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "roleName": { "type": "string", "description": "Optional. Filter to a single role. Call list_roles for available names." } }
-            }
-        }),
-        json!({
-            "name": "add_mcp_to_role",
-            "description": "Add an MCP server to a role. For stdio servers provide command+args+env. For HTTP/SSE servers provide type+url+headers.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "roleName": { "type": "string", "description": "Role to add the server to." },
-                    "server": {
-                        "type": "object",
-                        "description": "MCP server definition.",
-                        "properties": {
-                            "name": { "type": "string", "description": "Unique name for this server on the role." },
-                            "command": { "type": "string", "description": "Executable to launch (stdio transport only)." },
-                            "args": { "type": "array", "items": { "type": "string" }, "description": "CLI arguments passed to command (stdio transport)." },
-                            "env": { "type": "array", "items": { "type": "object", "properties": { "name": { "type": "string" }, "value": { "type": "string" } } }, "description": "Environment variables for the subprocess (stdio transport)." },
-                            "type": { "type": "string", "enum": ["http", "sse"], "description": "Transport type for remote servers. Omit for stdio." },
-                            "url": { "type": "string", "description": "Server URL (http or sse transport)." },
-                            "headers": { "type": "array", "items": { "type": "object", "properties": { "name": { "type": "string" }, "value": { "type": "string" } } }, "description": "HTTP headers sent with each request (http/sse transport)." }
-                        },
-                        "required": ["name"]
-                    }
-                },
-                "required": ["roleName", "server"]
-            }
-        }),
-        json!({
-            "name": "remove_mcp_from_role",
-            "description": "Remove an MCP server from a role by server name.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "roleName": { "type": "string", "description": "Role to remove the server from." },
-                    "serverName": { "type": "string", "description": "Name of the MCP server to remove." }
-                },
-                "required": ["roleName", "serverName"]
-            }
-        }),
-        // MCP global registry
-        json!({
-            "name": "upsert_global_mcp",
-            "description": "Register or update an MCP server in the global registry. Use add_mcp_to_role to attach it to specific roles.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "Unique server name in the global registry." },
-                    "config": {
-                        "type": "object",
-                        "description": "Server config. stdio: {command, args[], env[]}. Remote: {type:'http'|'sse', url, headers[]}."
-                    }
-                },
-                "required": ["name", "config"]
-            }
-        }),
-        json!({
-            "name": "delete_global_mcp",
-            "description": "Remove a custom MCP server from the global registry. Built-in servers cannot be deleted.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "name": { "type": "string", "description": "Server name to delete from the global registry." } },
-                "required": ["name"]
-            }
-        }),
-        // Skills
-        json!({ "name": "list_skills", "description": "List all skills with id, name, and description.", "inputSchema": { "type": "object", "properties": {} } }),
-        json!({
-            "name": "get_skill", "description": "Get full content of a skill by name.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "name": { "type": "string", "description": "Skill name. Call list_skills for available names." } },
-                "required": ["name"]
-            }
-        }),
-        json!({
-            "name": "upsert_skill", "description": "Create or update a skill. Provide id to update an existing skill; omit id to create a new one.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string", "description": "Skill id. Omit to create a new skill; provide to update an existing one." },
-                    "name": { "type": "string", "description": "Skill name (unique identifier shown in /skill completions)." },
-                    "description": { "type": "string", "description": "Short description shown to agents when selecting skills." },
-                    "content": { "type": "string", "description": "Full skill prompt/instructions content." }
-                },
-                "required": ["name"]
-            }
-        }),
-        json!({
-            "name": "delete_skill", "description": "Delete a skill by id.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "id": { "type": "string", "description": "Skill id to delete. Call list_skills to get available ids." } },
-                "required": ["id"]
-            }
-        }),
-        // Sessions
-        json!({
-            "name": "list_sessions", "description": "List active (non-closed) sessions ordered by most recently active.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "limit": { "type": "integer", "description": "Maximum number of sessions to return. Default is 50.", "default": 50 }
-                }
-            }
-        }),
-        json!({
-            "name": "get_session", "description": "Get details of a session by id.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "id": { "type": "string", "description": "Session id. Call list_sessions to get available ids." } },
-                "required": ["id"]
-            }
-        }),
-        json!({
-            "name": "update_session", "description": "Update a session's title or active role.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string", "description": "Session id." },
-                    "title": { "type": "string", "description": "New title (no spaces)." },
-                    "activeRole": { "type": "string", "description": "Role name to set as the active role." }
-                },
-                "required": ["id"]
-            }
-        }),
-        json!({
-            "name": "create_session", "description": "Create a new chat session.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "title": { "type": "string", "description": "Session title (no spaces). Defaults to Session_1." } }
-            }
-        }),
-        json!({
-            "name": "close_session", "description": "Close (soft-delete) a session by id.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "id": { "type": "string", "description": "Session id to close." } },
-                "required": ["id"]
-            }
-        }),
-        json!({
-            "name": "get_session_history",
-            "description": "Get recent chat messages for a session, ordered chronologically.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "sessionId": { "type": "string", "description": "Session id. Call list_sessions to get available ids." },
-                    "limit": { "type": "integer", "description": "Maximum number of messages to return. Default is 50.", "default": 50 }
-                },
-                "required": ["sessionId"]
-            }
-        }),
-        // Workflows
-        json!({ "name": "list_workflows", "description": "List all workflows.", "inputSchema": { "type": "object", "properties": {} } }),
-        json!({
-            "name": "get_workflow", "description": "Get full details of a workflow by id.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "id": { "type": "string", "description": "Workflow id. Call list_workflows to get available ids." } },
-                "required": ["id"]
-            }
-        }),
-        json!({
-            "name": "create_workflow", "description": "Create a workflow with an ordered list of role steps.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "Workflow name (no spaces)." },
-                    "steps": { "type": "array", "items": { "type": "string" }, "description": "Ordered list of role names to execute in sequence." }
-                },
-                "required": ["name", "steps"]
-            }
-        }),
-        json!({
-            "name": "update_workflow", "description": "Update a workflow's name or steps.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string", "description": "Workflow id." },
-                    "name": { "type": "string", "description": "New workflow name (no spaces)." },
-                    "steps": { "type": "array", "items": { "type": "string" }, "description": "Replacement ordered list of role names." }
-                },
-                "required": ["id"]
-            }
-        }),
-        json!({
-            "name": "delete_workflow", "description": "Delete a workflow by id.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "id": { "type": "string", "description": "Workflow id to delete." } },
-                "required": ["id"]
-            }
-        }),
-        // Shared context
-        json!({
-            "name": "set_shared_context", "description": "Set a key-value entry in shared context. Use scopes to namespace entries (e.g. a session id or 'global').",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "scope": { "type": "string", "description": "Namespace for the entry. Default is 'global'.", "default": "global" },
-                    "key": { "type": "string", "description": "Context key." },
-                    "value": { "type": "string", "description": "Context value." }
-                },
-                "required": ["key", "value"]
-            }
-        }),
-        json!({
-            "name": "get_shared_context", "description": "Get all shared context entries for a scope.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "scope": { "type": "string", "description": "Scope to query. Default is 'global'.", "default": "global" } }
-            }
-        }),
-        json!({
-            "name": "delete_shared_context", "description": "Delete a shared context entry by scope and key.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "scope": { "type": "string", "description": "Scope of the entry. Default is 'global'.", "default": "global" },
-                    "key": { "type": "string", "description": "Key to delete." }
-                },
-                "required": ["key"]
+                "required": ["roleName", "prompt", "appSessionId"]
             }
         }),
     ]

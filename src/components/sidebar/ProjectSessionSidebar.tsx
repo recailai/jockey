@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, onMount, onCleanup } from "solid-js";
+import { For, Show, createMemo, createSignal, onMount, onCleanup } from "solid-js";
 import type { Accessor } from "solid-js";
 import {
   ChevronDown,

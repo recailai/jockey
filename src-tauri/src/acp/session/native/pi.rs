@@ -10,12 +10,14 @@ use super::{
     NativeCatalog, NativeEventSink, NativeProcess, NativeRunRequest, CONTROL_TIMEOUT, TURN_TIMEOUT,
 };
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 pub(super) async fn run(
     process: &mut NativeProcess,
     request: &NativeRunRequest<'_>,
     sink: &mut NativeEventSink<'_>,
     load_commands: bool,
+    native_key: &str,
 ) -> Result<(String, String, u32), String> {
     let runtime_key = request.runtime_key;
     let role_name = request.role_name;
@@ -46,8 +48,14 @@ pub(super) async fn run(
             auto_approve,
         )
         .await?;
+    let mut state_tool_call_buffers = HashMap::new();
     for message in state_messages {
-        process_message(&message, sink, &mut String::new())?;
+        process_message(
+            &message,
+            sink,
+            &mut String::new(),
+            &mut state_tool_call_buffers,
+        )?;
     }
     if !has_discovered_models(runtime_key) {
         let (models, _) = process
@@ -140,6 +148,7 @@ pub(super) async fn run(
             })
         })
         .collect::<Vec<_>>();
+    super::set_active_native_turn(native_key, NativeProtocol::PiRpc, None, None);
     let (ack, prompt_messages) = process
         .request(
             NativeProtocol::PiRpc,
@@ -151,8 +160,9 @@ pub(super) async fn run(
         .await?;
     let mut output = String::new();
     let mut completed = false;
+    let mut tool_call_buffers: HashMap<String, (String, String, String)> = HashMap::new();
     for message in prompt_messages {
-        completed |= process_message(&message, sink, &mut output)?;
+        completed |= process_message(&message, sink, &mut output, &mut tool_call_buffers)?;
     }
     if ack.get("agentInvoked").and_then(Value::as_bool) == Some(false) {
         completed = true;
@@ -161,7 +171,7 @@ pub(super) async fn run(
         let message = process
             .next_agent_message(NativeProtocol::PiRpc, TURN_TIMEOUT, auto_approve)
             .await?;
-        completed = process_message(&message, sink, &mut output)?;
+        completed = process_message(&message, sink, &mut output, &mut tool_call_buffers)?;
     }
     let session_id = if let Some(session_id) = extract_pi_session_id(&state) {
         Some(session_id)
@@ -207,13 +217,42 @@ pub(super) fn process_message(
     message: &Value,
     sink: &mut NativeEventSink<'_>,
     output: &mut String,
+    tool_call_buffers: &mut HashMap<String, (String, String, String)>,
 ) -> Result<bool, String> {
     let message_type = message
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    if message_type == "response" {
+        let (runtime, role, session) = sink.identity();
+        let control_key = super::native_key(runtime, role, session);
+        if super::resolve_native_control_response(&control_key, message) {
+            return Ok(false);
+        }
+    }
     match message_type {
         "message_update" => {
+            if let Some(usage) = message.get("usage") {
+                let number = |names: &[&str]| {
+                    names
+                        .iter()
+                        .find_map(|name| usage.get(*name).and_then(Value::as_u64))
+                };
+                let cost_usd = usage
+                    .get("cost")
+                    .and_then(|cost| cost.get("total"))
+                    .and_then(Value::as_f64);
+                sink.emit(AcpEvent::Usage {
+                    input_tokens: number(&["input", "inputTokens"]),
+                    output_tokens: number(&["output", "outputTokens"]),
+                    cache_read_tokens: number(&["cacheRead", "cacheReadTokens"]),
+                    cache_write_tokens: number(&["cacheWrite", "cacheWriteTokens"]),
+                    reasoning_tokens: number(&["reasoning", "reasoningTokens"]),
+                    total_tokens: number(&["totalTokens", "total"]),
+                    context_window: None,
+                    cost_usd,
+                });
+            }
             let event = message
                 .get("assistantMessageEvent")
                 .or_else(|| message.get("assistant_message_event"))
@@ -233,7 +272,92 @@ pub(super) fn process_message(
                         sink.emit(AcpEvent::ThoughtDelta { text });
                     }
                 }
+                "toolcall_start" => {
+                    let key = first_text(event, &["contentIndex", "id", "toolCallId"])
+                        .unwrap_or_else(|| "pi-tool".to_string());
+                    let id =
+                        first_text(event, &["id", "toolCallId"]).unwrap_or_else(|| key.clone());
+                    let name = first_text(event, &["toolName", "tool_name"])
+                        .unwrap_or_else(|| "Pi tool".to_string());
+                    tool_call_buffers.insert(key, (id.clone(), name.clone(), String::new()));
+                    sink.emit(AcpEvent::ToolCallUpdate {
+                        tool_call_id: id,
+                        tool_name: Some(name.clone()),
+                        tool_kind: Some("tool".to_string()),
+                        status: Some("running".to_string()),
+                        title: Some(name),
+                        content: None,
+                        locations: None,
+                        raw_input: None,
+                        raw_output: None,
+                        terminal_meta: None,
+                        parent_id: None,
+                        diff: None,
+                    });
+                }
+                "toolcall_delta" => {
+                    let key = first_text(event, &["contentIndex", "id", "toolCallId"])
+                        .unwrap_or_else(|| "pi-tool".to_string());
+                    if let Some(delta) = first_text(event, &["delta", "text"]) {
+                        if let Some((id, name, buffer)) = tool_call_buffers.get_mut(&key) {
+                            buffer.push_str(&delta);
+                            if let Ok(input) = serde_json::from_str::<Value>(buffer) {
+                                sink.emit(AcpEvent::ToolCallUpdate {
+                                    tool_call_id: id.clone(),
+                                    tool_name: Some(name.clone()),
+                                    tool_kind: Some("tool".to_string()),
+                                    status: Some("running".to_string()),
+                                    title: Some(name.clone()),
+                                    content: None,
+                                    locations: None,
+                                    raw_input: Some(input),
+                                    raw_output: None,
+                                    terminal_meta: None,
+                                    parent_id: None,
+                                    diff: None,
+                                });
+                            }
+                        }
+                    }
+                }
+                "toolcall_end" => {
+                    let tool_call = event.get("toolCall").or_else(|| event.get("tool_call"));
+                    if let Some(tool_call) = tool_call {
+                        let id = first_text(tool_call, &["id", "toolCallId"])
+                            .unwrap_or_else(|| "pi-tool".to_string());
+                        let name = first_text(tool_call, &["toolName", "tool_name", "name"])
+                            .unwrap_or_else(|| "Pi tool".to_string());
+                        sink.emit(AcpEvent::ToolCallUpdate {
+                            tool_call_id: id,
+                            tool_name: Some(name.clone()),
+                            tool_kind: Some("tool".to_string()),
+                            status: Some("running".to_string()),
+                            title: Some(name),
+                            content: None,
+                            locations: None,
+                            raw_input: tool_call
+                                .get("args")
+                                .or_else(|| tool_call.get("input"))
+                                .cloned(),
+                            raw_output: None,
+                            terminal_meta: None,
+                            parent_id: None,
+                            diff: None,
+                        });
+                    }
+                }
                 _ => {}
+            }
+        }
+        "bash_execution_update" => {
+            if let (Some(id), Some(delta)) = (
+                first_text(message, &["id"]),
+                first_text(message, &["delta"]),
+            ) {
+                sink.emit(AcpEvent::ToolOutputDelta {
+                    tool_call_id: id,
+                    delta,
+                });
             }
         }
         "tool_execution_start" | "tool_execution_update" | "tool_execution_end" => {
@@ -242,12 +366,21 @@ pub(super) fn process_message(
             let title = first_text(message, &["toolName", "tool_name"])
                 .unwrap_or_else(|| "Pi tool".to_string());
             let status = if message_type.ends_with("end") {
-                "completed"
+                if message
+                    .get("isError")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    "failure"
+                } else {
+                    "completed"
+                }
             } else {
                 "running"
             };
             sink.emit(AcpEvent::ToolCallUpdate {
                 tool_call_id: id,
+                tool_name: Some(title.clone()),
                 tool_kind: Some("tool".to_string()),
                 status: Some(status.to_string()),
                 title: Some(title),
@@ -263,10 +396,41 @@ pub(super) fn process_message(
                 diff: None,
             });
         }
-        "agent_end" | "agent_settled" => return Ok(true),
+        "turn_end" | "agent_settled" => return Ok(true),
         "process_exit" => {
             return Err(first_text(message, &["error", "message"])
                 .unwrap_or_else(|| "Pi RPC process exited".to_string()))
+        }
+        _ if !matches!(
+            message_type,
+            "response"
+                | "agent_start"
+                | "agent_end"
+                | "turn_start"
+                | "session_start"
+                | "state_update"
+                | "get_state"
+                | "get_available_models"
+                | "get_commands"
+                | "message_start"
+                | "message_end"
+                | "queue_update"
+                | "compaction_start"
+                | "compaction_end"
+                | "auto_retry_start"
+                | "auto_retry_end"
+                | "session_info_changed"
+                | "thinking_level_changed"
+                | "session_shutdown"
+                | "summarization_retry_scheduled"
+                | "summarization_retry_attempt_start"
+                | "summarization_retry_finished"
+        ) =>
+        {
+            sink.emit(AcpEvent::Unknown {
+                type_name: message_type.to_string(),
+                raw: message.clone(),
+            });
         }
         _ => {}
     }

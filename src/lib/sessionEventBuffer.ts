@@ -5,7 +5,7 @@ import { MAX_MESSAGES } from "./sessionHelpers";
 
 const FLUSH_DELAY_MS = 120;
 
-type BufferEntry = { sid: string; line: string };
+type BufferEntry = { sid: string; line: string; roleName?: string };
 
 export type SessionEventBufferDeps = {
   sessions: AppSession[];
@@ -15,10 +15,7 @@ export type SessionEventBufferDeps = {
 };
 
 export type SessionEventBuffer = {
-  push: (sid: string, line: string) => void;
-  schedule: () => void;
-  flush: () => void;
-  clear: () => void;
+  push: (sid: string, line: string, roleName?: string) => void;
 };
 
 /** Coalesces `session/update` lines over a 120ms window and appends them as a
@@ -35,29 +32,29 @@ export function createSessionEventBuffer(deps: SessionEventBufferDeps): SessionE
     }
     if (pending.length === 0) return;
 
-    const bySid = new Map<string, string[]>();
-    for (const { sid, line } of pending) {
-      const key = sid || "__active__";
-      const arr = bySid.get(key) ?? [];
-      arr.push(line);
-      bySid.set(key, arr);
+    const byGroup = new Map<string, { sid: string; roleName?: string; lines: string[] }>();
+    for (const { sid, line, roleName } of pending) {
+      const key = `${sid || "__active__"}\u0000${roleName ?? "event"}`;
+      const group = byGroup.get(key) ?? { sid, roleName, lines: [] };
+      group.lines.push(line);
+      byGroup.set(key, group);
     }
     pending = [];
 
-    for (const [sid, lines] of bySid) {
-      const text = lines.join("\n");
-      if (sid === "__active__") {
-        deps.pushMessage("event", text);
+    for (const group of byGroup.values()) {
+      const text = group.lines.join("\n");
+      if (!group.sid) {
+        deps.pushMessage(group.roleName ?? "event", text);
         continue;
       }
-      const idx = deps.getSessionIndex(sid);
+      const idx = deps.getSessionIndex(group.sid);
       if (idx === -1) {
-        deps.pushMessage("event", text);
+        deps.pushMessage(group.roleName ?? "event", text);
         continue;
       }
       const msg: AppMessage = {
         id: `${now()}-${Math.random().toString(36).slice(2)}`,
-        roleName: "event",
+        roleName: group.roleName ?? "event",
         text,
         at: now(),
       };
@@ -76,18 +73,10 @@ export function createSessionEventBuffer(deps: SessionEventBufferDeps): SessionE
     }, FLUSH_DELAY_MS);
   };
 
-  const push = (sid: string, line: string) => {
-    pending.push({ sid, line });
+  const push = (sid: string, line: string, roleName?: string) => {
+    pending.push({ sid, line, roleName });
     schedule();
   };
 
-  const clear = () => {
-    if (timer !== null) {
-      window.clearTimeout(timer);
-      timer = null;
-    }
-    pending = [];
-  };
-
-  return { push, schedule, flush, clear };
+  return { push };
 }

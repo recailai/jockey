@@ -1,7 +1,8 @@
 import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 import type { AppSession } from "../types";
 import { RUNTIME_COLOR } from "../types";
-import { Badge, EmptyState, FieldRow, ActionButton } from "./primitives";
+import { EmptyState, Badge } from "../ui";
+import { FieldRow, ActionButton } from "./primitives";
 import type { ContextEntry, StoredSession } from "./primitives";
 import { fmtDate, fmtRelative } from "./primitives";
 import { appSessionApi, contextApi } from "../../lib/tauriApi";
@@ -425,7 +426,7 @@ export function SessionsTab(props: {
       {/* Detail pane */}
       <div class="flex-1 overflow-y-auto p-5">
         <Show when={selected()} fallback={
-          <EmptyState icon="◫" title="Select a session" sub="Click any session on the left to inspect it" />
+          <EmptyState icon="◫" title="Select a session" description="Click any session on the left to inspect it" />
         }>
           {(s) => (
             <div class="space-y-5">
@@ -437,7 +438,7 @@ export function SessionsTab(props: {
                 </div>
                 <div class="flex gap-2 shrink-0">
                   <Show when={activeIds().has(s().id)}>
-                    <Badge label="active" color="bg-emerald-500/15 text-emerald-300" />
+                    <Badge label="active" tone="success" />
                   </Show>
                   <Show when={s().closedAt !== null && !activeIds().has(s().id)}>
                     <ActionButton

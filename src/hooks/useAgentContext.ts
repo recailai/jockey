@@ -1,4 +1,4 @@
-import type { AcpConfigOption } from "../components/types";
+import { now, type AcpConfigOption } from "../components/types";
 import type { SessionManager } from "./useSessionManager";
 import type { StreamEngine } from "./useStreamEngine";
 import { assistantApi } from "../lib/tauriApi";
@@ -17,6 +17,7 @@ export function useAgentContext(
     activeSession,
     updateSession,
     mutateSession,
+    appendMessageToSession,
     pushMessage,
     getSessionIndex,
   } = sessionManager;
@@ -45,6 +46,19 @@ export function useAgentContext(
   const { getRunToken, bumpRunToken, getCanceledRunToken, isRunCancelled } = runTokens;
 
   const commandCacheKey = (runtimeKey: string, roleName: string) => `${runtimeKey}:${roleName}`;
+
+  const pushSessionEvent = (sessionId: string | null, text: string) => {
+    if (sessionId) {
+      appendMessageToSession(sessionId, {
+        id: `${now()}-${Math.random().toString(36).slice(2)}`,
+        roleName: "event",
+        text,
+        at: now(),
+      });
+    } else {
+      pushMessage("event", text);
+    }
+  };
 
   const runtimeForRole = (roleName: string): string | null => {
     return roles().find((r) => r.roleName === roleName)?.runtimeKind ?? activeSession()?.runtimeKind ?? null;
@@ -76,7 +90,7 @@ export function useAgentContext(
       if (!sid) return { options: roleStoredOptions(), modes: [] };
       const projectId = activeSession()?.projectId ?? undefined;
 
-      const result = await assistantApi.prewarmRoleConfig(resolvedRole, sid, projectId, forceRefresh);
+      const result = await assistantApi.prewarmRoleConfig(resolvedRole, sid, projectId, forceRefresh, runtimeKey);
       const opts = result.configOptions as AcpConfigOption[];
       const modes = result.modes as string[];
       if (opts.length > 0) void refreshRoles(projectId);
@@ -156,6 +170,7 @@ export function useAgentContext(
       return;
     }
     try {
+      updateSession(sid, { agentState: `Resetting ${role} context...` });
       await assistantApi.resetSession(role, sid);
       mutateSession(sid, (s) => {
         const next = new Map(s.agentCommands);
@@ -169,17 +184,22 @@ export function useAgentContext(
         toolCalls: {},
         streamSegments: [],
         currentPlan: null,
-      usage: null,
-      notices: [],
-      pendingUserInput: [],
+        usage: null,
+        notices: [],
+        pendingUserInput: [],
         pendingPermissions: [],
         thoughtText: "",
         agentState: undefined,
         currentMode: null,
         agentModes: [],
+        submitting: false,
+        status: "idle",
+        turnPhase: "idle",
       });
-      pushMessage("event", `[${role}] CLI context reset.`);
+      pushSessionEvent(sid, `Reset ${role} context — cleared agent session ID.`);
+      showToast(`Reset ${role} context`, "info");
     } catch (e) {
+      updateSession(sid, { agentState: undefined });
       showToast(`Failed to reset ${role} context: ${String(e)}`);
     }
   };
@@ -196,6 +216,7 @@ export function useAgentContext(
       return;
     }
     try {
+      updateSession(sid, { agentState: `Reconnecting to ${role}...` });
       await assistantApi.reconnectSession(role, sid);
       mutateSession(sid, (s) => {
         const next = new Map(s.agentCommands);
@@ -209,28 +230,37 @@ export function useAgentContext(
         toolCalls: {},
         streamSegments: [],
         currentPlan: null,
-      usage: null,
-      notices: [],
-      pendingUserInput: [],
+        usage: null,
+        notices: [],
+        pendingUserInput: [],
         pendingPermissions: [],
         thoughtText: "",
         agentState: undefined,
         currentMode: null,
         agentModes: [],
+        submitting: false,
+        status: "idle",
+        turnPhase: "idle",
       });
-      pushMessage("event", `[${role}] Reconnected — MCP changes will apply on next message.`);
+      pushSessionEvent(sid, `Reconnected ${role} — agent connection refreshed.`);
+      showToast(`Reconnected ${role}`, "info");
     } catch (e) {
+      updateSession(sid, { agentState: undefined });
       showToast(`Failed to reconnect ${role}: ${String(e)}`);
     }
   };
 
-  const cancelCurrentRun = async (runNextQueued: () => void, clearSessionStream?: (sid: string) => void) => {
+  const cancelCurrentRun = async (
+    runNextQueued: () => void | Promise<void>,
+    clearSessionStream?: (sid: string) => void,
+    reason: "cancel" | "sendQueued" = "cancel",
+  ) => {
     const sid = activeSessionId();
     const cidx = sid ? getSessionIndex(sid) : -1;
     const sess = cidx !== -1 ? sessions[cidx] : null;
     if (!sess?.submitting || !sid) return;
 
-    const role = activeBackendRole();
+    const role = sess.activeRole || activeBackendRole();
 
     if (sess.streamingRunToken !== null && sess.streamingMessage) {
       finalizeSessionStream(sid, role, undefined, sess.streamingRunToken);
@@ -246,14 +276,27 @@ export function useAgentContext(
       pendingUserInput: [],
       pendingPermissions: [],
       submitting: false,
-      status: "idle",
+      status: "running",
+      turnPhase: "cancelling",
+      agentState: reason === "sendQueued" ? "Waiting for current turn to stop…" : undefined,
     });
-    pushMessage("event", "Cancellation requested.");
+    if (reason === "cancel") {
+      pushSessionEvent(sid, "Cancellation requested.");
+    }
 
+    let drained = false;
     try {
       await assistantApi.cancelSession(role, sid);
-    } catch { }
-    runNextQueued();
+      drained = true;
+    } catch (error) {
+      pushSessionEvent(sid, `Cancellation did not drain cleanly: ${String(error)}`);
+      updateSession(sid, {
+        status: "error",
+        turnPhase: "cancelling",
+        agentState: "Cancellation did not complete; reconnect before sending.",
+      });
+    }
+    if (drained) await runNextQueued();
   };
 
   return {

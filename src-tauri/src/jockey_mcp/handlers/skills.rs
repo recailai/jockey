@@ -18,7 +18,12 @@ pub(crate) fn get_skill(state: &AppState, params: Value) -> Result<Value, String
     let name = params
         .get("name")
         .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .ok_or("name is required")?;
+    if name.chars().count() > 128 {
+        return Err("name is too long (maximum 128 characters)".to_string());
+    }
     let skill =
         load_skill_by_name(state, name)?.ok_or_else(|| format!("skill not found: {name}"))?;
     Ok(json!({

@@ -35,6 +35,7 @@ pub(super) fn load_role_mcp_servers(
     state: &crate::types::AppState,
     role_name: &str,
     project_id: Option<&str>,
+    runtime_kind: &str,
 ) -> Vec<acp::McpServer> {
     let role = crate::db::role::load_role_scoped(state, role_name, project_id)
         .ok()
@@ -47,6 +48,12 @@ pub(super) fn load_role_mcp_servers(
         .as_ref()
         .map(|r| crate::db::global_mcp::parse_mcp_server_list_json_compat(&r.mcp_servers_json))
         .unwrap_or_default();
+    let runtime_key = crate::runtime_kind::RuntimeKind::from_str(runtime_kind)
+        .map(|kind| kind.runtime_key())
+        .unwrap_or(runtime_kind);
     merge_mcp_servers(&mut servers, role_servers);
+    if matches!(runtime_key, "codex-cli" | "pi-cli" | "antigravity-cli") {
+        servers.retain(|server| mcp_server_name(server) != Some("jockey"));
+    }
     servers
 }

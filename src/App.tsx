@@ -3,6 +3,7 @@ import { For, Show, Suspense, createEffect, createMemo, createSignal, lazy, onCl
 import MessageWindow from "./components/MessageWindow";
 import ChatInput from "./components/ChatInput";
 import { now, DEFAULT_ROLE_ALIAS } from "./components/types";
+import type { AppSession, RuntimeCapabilities } from "./components/types";
 import { UI_THEME_KEY } from "./lib/theme";
 
 import SessionTopbar from "./components/chrome/SessionTopbar";
@@ -21,6 +22,7 @@ import {
   initialLeftSidebarOpen,
   initialRightDockWidth,
   initialRightPanel,
+  type LeftDockPanel,
   type RightDockPanel,
 } from "./lib/layoutTokens";
 import ProjectSessionSidebar from "./components/sidebar/ProjectSessionSidebar";
@@ -56,7 +58,7 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 
 const SettingsPage = lazy(() => import("./components/SettingsPage"));
 import { useResize } from "./lib/useResize";
-import { openPreviewTab, closePreviewTab, setActivePreviewTab, closeAllPreviewTabs, closeOtherPreviewTabs } from "./lib/previewTabs";
+import { openPreviewTab } from "./lib/previewTabs";
 import { destroySessionTerminal, updateTerminalThemes } from "./lib/terminalRuntime";
 import { useProjects } from "./hooks/useProjects";
 import ProjectModal from "./components/ProjectModal";
@@ -229,10 +231,11 @@ export default function App() {
 
   const streamEngine = useStreamEngine(sessionManager);
   const {
-    acceptingStreams, streamBatchBuffers, thoughtBatchBuffers,
+    acceptingStreams,
     appendStream, appendThought,
     dropStream,
     normalizeToolLocations,
+    scheduleCheckpoint,
   } = streamEngine;
 
   const sessionEventBuffer = createSessionEventBuffer({
@@ -255,13 +258,39 @@ export default function App() {
     reconnectActiveAgent,
   } = agentContext;
 
+  const activeRuntimeCapabilities = createMemo<RuntimeCapabilities | undefined>(() => {
+    const session = activeSession();
+    const runtime = assistants().find((assistant) =>
+      (session?.runtimeProfileId && assistant.profileId === session.runtimeProfileId) ||
+      (!session?.runtimeProfileId && assistant.key === session?.runtimeKind),
+    );
+    return runtime?.capabilities as RuntimeCapabilities | undefined;
+  });
+
+  const activeInputDelivery = createMemo(() => {
+    const session = activeSession();
+    const runtime = assistants().find((assistant) =>
+      (session?.runtimeProfileId && assistant.profileId === session.runtimeProfileId) ||
+      (!session?.runtimeProfileId && assistant.key === session?.runtimeKind),
+    );
+    return runtime?.inputDelivery;
+  });
+
+  let sendRawFn: ((text: string, silent?: boolean) => Promise<boolean>) | undefined;
+
   const commandRegistry = createCommandUiRegistry({
     activeSession,
     patchActiveSession,
     roles,
     resetActiveAgentContext,
     toggleRightDock,
-    showToast,
+    showToast: (message, tone) =>
+      showToast(message, tone === "danger" || tone === "warning" ? "error" : tone === "success" ? "info" : tone),
+    pushMessage: sessionManager.pushMessage,
+    sendRaw: (t, s) => {
+      if (sendRawFn) void sendRawFn(t, s);
+      return Promise.resolve();
+    },
     prewarmRoleConfig: assistantApi.prewarmRoleConfig,
   });
 
@@ -317,6 +346,7 @@ export default function App() {
     },
     fakeInputEl,
     handleTriggerCommandUi,
+    commandRegistry.getCommandList,
   );
   const {
     mentionOpen, mentionItems, mentionActiveIndex,
@@ -355,12 +385,12 @@ export default function App() {
     setSessions,
     setActiveSessionId: (id) => setActiveSessionId(id),
     assistants,
+    roles,
     currentProjectId: () => currentProject()?.id,
     refreshAssistants,
     refreshRoles,
     refreshSkills,
     fetchConfigOptions,
-    pushMessage,
     showToast,
   });
 
@@ -380,6 +410,23 @@ export default function App() {
         return s;
       });
       const projectSessions = loaded.filter((s) => s.projectId === proj.id);
+      await Promise.all(loaded.map(async (session, index) => {
+        if (!session.persisted) return;
+        try {
+          const inbox = await appSessionApi.listInbox(session.id);
+          loaded[index].queuedItems = inbox.map((item) => ({
+            id: item.id,
+            text: item.text,
+            attachments: item.attachments ?? [],
+            roleName: item.roleName,
+            delivery: item.delivery === "nextStep" ? "nextStep" : "nextTurn",
+            createdAt: item.createdAt,
+            status: "queued" as const,
+          }));
+        } catch {
+          // Keep project switching available if restoring a legacy database inbox fails.
+        }
+      }));
       let nextActiveId: string;
       if (projectSessions.length === 0) {
         // No DB row until the user actually sends something — see `ensureSessionPersisted`.
@@ -442,7 +489,7 @@ export default function App() {
     showToast(`Imported ${raw.length} session(s)`, "info");
   };
 
-  const { sendRaw, cancelCurrentRun } = useMessageSend({
+  const { sendRaw, cancelCurrentRun, sendQueuedNow } = useMessageSend({
     sessionManager,
     streamEngine,
     agentContext,
@@ -450,13 +497,17 @@ export default function App() {
     closeSlashMenu,
     showToast,
     clearSessionStream,
+    inputDelivery: activeInputDelivery,
   });
+  sendRawFn = sendRaw;
 
   const inputHistory = useInputHistory(setInput);
 
   const chatActiveRole = createMemo(() => activeSession()?.activeRole ?? DEFAULT_ROLE_ALIAS);
   const chatSubmitting = createMemo(() => activeSession()?.submitting ?? false);
-  const chatQueuedCount = createMemo(() => activeSession()?.queuedMessages.length ?? 0);
+  const chatQueuedCount = createMemo(() =>
+    activeSession()?.queuedItems.filter((item) => item.status === "queued").length ?? 0,
+  );
 
   const handlePasteImage = (items: DataTransferItemList, currentNodes: RichNode[]) => {
     // Provider capability gate: attachments=false profiles (e.g. native agy)
@@ -519,16 +570,58 @@ export default function App() {
       }
     }
 
-    if (activeSession()?.submitting) {
-      if (imageNodes.length > 0) {
-        showToast("Images can't be queued and will be dropped.", "info");
-      }
+    if (activeSession()?.submitting || activeSession()?.turnPhase === "cancelling" || activeSession()?.turnPhase === "sending") {
       setRichNodes([]);
       setRichCaretOffset(0);
       const sid = activeSessionId();
       if (sid) {
         const qidx = getSessionIndex(sid);
-        if (qidx !== -1) setSessions(qidx, "queuedMessages", (prev) => [...prev, text]);
+        const queuedText = text;
+        const queuedAttachments = imageNodes.map((n) => n.img);
+        const optimisticId = `pending-${now()}-${Math.random().toString(36).slice(2)}`;
+        if (qidx !== -1) {
+          setSessions(qidx, "queuedItems", (prev) => [...prev, {
+            id: optimisticId,
+            clientId: optimisticId,
+            text: queuedText,
+            attachments: queuedAttachments,
+            roleName: activeSession()?.activeRole ?? null,
+            delivery: "nextTurn" as const,
+            createdAt: now(),
+            status: "queued" as const,
+          }]);
+        }
+        void appSessionApi.enqueueInbox(
+          sid,
+          queuedText,
+          activeSession()?.activeRole ?? null,
+          "nextTurn",
+          queuedAttachments,
+        ).then((saved) => {
+          const current = getSessionIndex(sid);
+          if (current === -1) {
+            void appSessionApi.removeInbox(saved.id).catch(() => {});
+            return;
+          }
+          const stillQueued = sessions[current]?.queuedItems.some(
+            (item) => item.clientId === optimisticId || item.id === optimisticId,
+          );
+          if (!stillQueued) {
+            void appSessionApi.removeInbox(saved.id).catch(() => {});
+            return;
+          }
+          setSessions(current, "queuedItems", (prev) => prev.map((item) => item.clientId === optimisticId || item.id === optimisticId
+            ? { ...item, id: saved.id, clientId: optimisticId, createdAt: saved.createdAt }
+            : item));
+        }).catch((error) => {
+          const current = getSessionIndex(sid);
+          if (current !== -1) {
+          setSessions(current, "queuedItems", (prev) => prev.filter(
+            (item) => item.id !== optimisticId && item.clientId !== optimisticId,
+          ));
+          }
+          showToast(`Could not persist queued message: ${String(error)}`, "error");
+        });
         scheduleScrollToBottom();
       }
       return;
@@ -668,8 +761,6 @@ export default function App() {
   };
 
   const closeSession = (id: string) => {
-    streamBatchBuffers.delete(id);
-    thoughtBatchBuffers.delete(id);
     acceptingStreams.delete(id);
     void destroySessionTerminal(id);
     const remaining = sessions.filter((s) => s.id !== id);
@@ -681,9 +772,10 @@ export default function App() {
     void appSessionApi.remove(id).catch(() => {});
   };
 
-  const openWorkspacePanel = (panel: RightDockPanel) => {
+  const composerToolPanel = createMemo<LeftDockPanel | null>(() => rightDockPanel());
+  const openWorkspacePanel = (panel: LeftDockPanel) => {
     setRightDockOpen(true);
-    setRightDockPanel(panel);
+    setRightDockPanel(panel === "commit" ? "git" : panel);
   };
   const openTerminalPanel = (command?: string) => {
     setRightDockOpen(true);
@@ -776,7 +868,7 @@ export default function App() {
           assistants={assistants}
           gitStatus={gitStatus}
           gitChangeCount={gitChangeCount}
-          activeToolPanel={rightDockPanel}
+          activeToolPanel={composerToolPanel}
           onOpenToolPanel={openWorkspacePanel}
           onCancelRun={() => { void cancelCurrentRun(); }}
           onRunAction={runToolbarAction}
@@ -841,7 +933,7 @@ export default function App() {
       appendStream,
       pushMessageToSession,
       pushMessage,
-      onSessionDeltaLine: (sid, line) => sessionEventBuffer.push(sid, line),
+      onSessionDeltaLine: (sid, line, roleName) => sessionEventBuffer.push(sid, line, roleName),
       updateSession,
       mutateSession,
       appendThought,
@@ -851,6 +943,7 @@ export default function App() {
       roles,
       commandCacheKey,
       scheduleScrollToBottom,
+      scheduleCheckpoint,
     }).then((hs) => handlers.push(...hs));
 
     onCleanup(() => {
@@ -983,7 +1076,7 @@ export default function App() {
             onDuplicateSession={duplicateSession}
             onDeleteProject={deleteProject}
             onOpenAddProject={() => setShowProjectModal(true)}
-            onOpenSettings={openSettings}
+            onOpenSettings={(tab) => openSettings((tab ?? "general") as SettingsTab)}
             onToggleSidebar={toggleLeftSidebar}
             updateSession={updateSession}
           />
@@ -1033,15 +1126,19 @@ export default function App() {
               activeSessionId={activeSessionId}
               activeSession={activeSession}
               activeBackendRole={activeBackendRole}
+              runtimeCapabilities={activeRuntimeCapabilities}
+              inputDelivery={activeInputDelivery}
               patchActiveSession={patchActiveSession}
-              onRemoveQueuedMessage={(index) => {
+              onRemoveQueuedMessage={(itemId) => {
                 const sid = activeSessionId();
                 if (!sid) return;
                 const idx = getSessionIndex(sid);
                 if (idx === -1) return;
-                setSessions(idx, "queuedMessages", (prev) => prev.filter((_, i) => i !== index));
+                const item = activeSession()?.queuedItems.find((queued) => queued.id === itemId || queued.clientId === itemId);
+                setSessions(idx, "queuedItems", (prev) => prev.filter((queued) => queued.id !== itemId && queued.clientId !== itemId));
+                if (item && !item.id.startsWith("pending-")) void appSessionApi.removeInbox(item.id).catch(() => {});
               }}
-              onFlushQueue={() => { void cancelCurrentRun(); }}
+              onSendQueuedNow={() => { void sendQueuedNow(); }}
               onResetAgentContext={resetActiveAgentContext}
               onReconnectAgent={reconnectActiveAgent}
               onListMounted={onListMounted}

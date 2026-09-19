@@ -37,6 +37,14 @@ pub(crate) struct RuntimeCapabilities {
     pub(crate) usage: bool,
     /// Tool calls carry a parent, so sub-agent work can be nested.
     pub(crate) nested_tools: bool,
+    /// Structured tool output arrives as deltas instead of only at completion.
+    pub(crate) tool_output_streaming: bool,
+    /// The provider can ask arbitrary structured questions, beyond allow/deny.
+    pub(crate) structured_user_input: bool,
+    /// The adapter can surface provider-managed terminal lifecycle/output.
+    pub(crate) terminal: bool,
+    /// The adapter can surface a provider-managed plan.
+    pub(crate) plan: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +79,10 @@ impl RuntimeCapabilities {
             output_streaming: false,
             usage: false,
             nested_tools: false,
+            tool_output_streaming: false,
+            structured_user_input: false,
+            terminal: false,
+            plan: false,
         }
     }
 }
@@ -217,7 +229,7 @@ pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
                 dynamic_config: true,
                 permission_requests: true,
                 mcp_servers: true,
-                attachments: false,
+                attachments: true,
                 tool_invocations: true,
                 session_listing: false,
                 rewind: false,
@@ -227,6 +239,10 @@ pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
                 output_streaming: false,
                 usage: true,
                 nested_tools: true,
+                tool_output_streaming: false,
+                structured_user_input: false,
+                terminal: true,
+                plan: false,
             },
             launch_spec: None,
             version_requirement: None,
@@ -248,7 +264,7 @@ pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
                 dynamic_config: true,
                 permission_requests: false,
                 mcp_servers: false,
-                attachments: false,
+                attachments: true,
                 tool_invocations: true,
                 session_listing: false,
                 rewind: true,
@@ -258,6 +274,10 @@ pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
                 output_streaming: true,
                 usage: true,
                 nested_tools: true,
+                tool_output_streaming: true,
+                structured_user_input: true,
+                terminal: true,
+                plan: true,
             },
             launch_spec: None,
             version_requirement: None,
@@ -289,6 +309,10 @@ pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
                 output_streaming: false,
                 usage: true,
                 nested_tools: false,
+                tool_output_streaming: true,
+                structured_user_input: false,
+                terminal: true,
+                plan: false,
             },
             launch_spec: None,
             version_requirement: None,
@@ -310,7 +334,7 @@ pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
                 dynamic_config: true,
                 permission_requests: false,
                 mcp_servers: false,
-                attachments: false,
+                attachments: true,
                 tool_invocations: true,
                 session_listing: false,
                 rewind: false,
@@ -320,6 +344,10 @@ pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
                 output_streaming: false,
                 usage: true,
                 nested_tools: false,
+                tool_output_streaming: false,
+                structured_user_input: false,
+                terminal: false,
+                plan: false,
             },
             launch_spec: None,
             version_requirement: None,
@@ -351,6 +379,10 @@ pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
                 output_streaming: false,
                 usage: false,
                 nested_tools: false,
+                tool_output_streaming: false,
+                structured_user_input: false,
+                terminal: true,
+                plan: true,
             },
             launch_spec: None,
             version_requirement: Some("@agentclientprotocol/claude-agent-acp@0.70.0".to_string()),

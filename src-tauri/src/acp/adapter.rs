@@ -536,17 +536,22 @@ fn resolve_headless_adapter(protocol: HeadlessProtocol) -> Result<AdapterResolut
                 .to_string(),
         );
     }
+    let args = if matches!(protocol, HeadlessProtocol::ClaudeStreamJson) {
+        let mut args = vec![
+            "-p".to_string(),
+            "--verbose".to_string(),
+            "--include-partial-messages".to_string(),
+        ];
+        if supports_arg_in_help(&binary, "--forward-subagent-text") {
+            args.push("--forward-subagent-text".to_string());
+        }
+        args
+    } else {
+        Vec::new()
+    };
     Ok(AdapterResolution {
         binary,
-        args: if matches!(protocol, HeadlessProtocol::ClaudeStreamJson) {
-            vec![
-                "-p".to_string(),
-                "--verbose".to_string(),
-                "--include-partial-messages".to_string(),
-            ]
-        } else {
-            Vec::new()
-        },
+        args,
         env: agent_env_overrides(),
         launch_method: match protocol {
             HeadlessProtocol::AgyStreamJson => "headless-binary".to_string(),
