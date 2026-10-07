@@ -647,3 +647,21 @@ export const fsApi = {
       path,
     }),
 };
+
+export type GatewayStatus = {
+  running: boolean;
+  port: number;
+  token: string;
+  localUrl: string;
+  tailscaleUrl?: string | null;
+  lanUrls: string[];
+};
+
+export const gatewayApi = {
+  getStatus: () => call<GatewayStatus>("get_gateway_status_cmd"),
+  start: (port?: number, token?: string) =>
+    call<GatewayStatus>("start_gateway_cmd", { port: port ?? null, token: token ?? null }),
+  stop: () => call<GatewayStatus>("stop_gateway_cmd"),
+  regenerateToken: () => call<GatewayStatus>("regenerate_gateway_token_cmd"),
+};
+

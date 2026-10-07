@@ -210,6 +210,13 @@ async fn handle_bridge_connection(stream: tokio::net::TcpStream, app: tauri::App
 
         let (tx, rx) = oneshot::channel();
         let request_id = uuid::Uuid::new_v4().to_string();
+        let perm_title = tool_name.clone();
+        let perm_desc = Some(clip(&input.to_string(), 500));
+        let perm_options = vec![json!({
+            "optionId": "allow",
+            "title": "Allow",
+            "kind": "allow_once"
+        })];
         insert_permission(
             request_id.clone(),
             PendingPermission {
@@ -220,6 +227,9 @@ async fn handle_bridge_connection(stream: tokio::net::TcpStream, app: tauri::App
                 allow_always_option_ids: Vec::new(),
                 delta_tx: None,
                 tx,
+                title: Some(perm_title.clone()),
+                description: perm_desc.clone(),
+                options: perm_options.clone(),
             },
         );
         registered.push(request_id.clone());

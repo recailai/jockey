@@ -16,6 +16,42 @@ pub(crate) struct PendingPermission {
     pub(crate) allow_always_option_ids: Vec<String>,
     pub(crate) delta_tx: Option<mpsc::Sender<AcpEvent>>,
     pub(crate) tx: oneshot::Sender<acp::RequestPermissionOutcome>,
+    pub(crate) title: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) options: Vec<serde_json::Value>,
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingPermissionInfo {
+    pub request_id: String,
+    pub runtime_key: String,
+    pub role_name: String,
+    pub app_session_id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub options: Vec<serde_json::Value>,
+}
+
+pub fn list_pending_permissions() -> Vec<PendingPermissionInfo> {
+    permission_requests()
+        .iter()
+        .map(|entry| {
+            let (req_id, p) = entry.pair();
+            PendingPermissionInfo {
+                request_id: req_id.clone(),
+                runtime_key: p.runtime_key.clone(),
+                role_name: p.role_name.clone(),
+                app_session_id: p.app_session_id.clone(),
+                title: p
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| "Permission Request".to_string()),
+                description: p.description.clone(),
+                options: p.options.clone(),
+            }
+        })
+        .collect()
 }
 
 static PERMISSION_REQUESTS: OnceLock<DashMap<String, PendingPermission>> = OnceLock::new();

@@ -442,15 +442,30 @@ pub(super) async fn execute_stream_runtime(
         &mut sequence,
         AcpEvent::StatusUpdate {
             text: if reused {
-                if let Some(ref sid) = resume_session_id.as_deref().filter(|s| !s.trim().is_empty()) {
-                    format!("Reusing {} session ({sid})...", protocol_display_name(protocol))
+                if let Some(ref sid) = resume_session_id
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                {
+                    format!(
+                        "Reusing {} session ({sid})...",
+                        protocol_display_name(protocol)
+                    )
                 } else {
                     format!("Reusing {} session...", protocol_display_name(protocol))
                 }
-            } else if let Some(ref sid) = resume_session_id.as_deref().filter(|s| !s.trim().is_empty()) {
-                format!("Resuming {} session ({sid})...", protocol_display_name(protocol))
+            } else if let Some(ref sid) = resume_session_id
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+            {
+                format!(
+                    "Resuming {} session ({sid})...",
+                    protocol_display_name(protocol)
+                )
             } else {
-                format!("Initializing new {} session...", protocol_display_name(protocol))
+                format!(
+                    "Initializing new {} session...",
+                    protocol_display_name(protocol)
+                )
             },
         },
     );

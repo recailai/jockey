@@ -526,10 +526,19 @@ pub(super) async fn execute_headless_runtime(
         turn_id,
         &mut sequence,
         AcpEvent::StatusUpdate {
-            text: if let Some(ref sid) = resume_session_id.as_deref().filter(|s| !s.trim().is_empty()) {
-                format!("Resuming {} session ({sid})...", protocol_display_name(protocol))
+            text: if let Some(ref sid) = resume_session_id
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+            {
+                format!(
+                    "Resuming {} session ({sid})...",
+                    protocol_display_name(protocol)
+                )
             } else {
-                format!("Initializing new {} session...", protocol_display_name(protocol))
+                format!(
+                    "Initializing new {} session...",
+                    protocol_display_name(protocol)
+                )
             },
         },
     );

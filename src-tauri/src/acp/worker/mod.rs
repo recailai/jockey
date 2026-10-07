@@ -6,7 +6,10 @@ mod types;
 
 pub use crate::runtime_kind::RuntimeKind;
 pub use notify::{set_death_event_sender, set_prewarm_event_sender};
-pub use permission::{respond_to_permission, respond_to_user_input, UserInputAnswers};
+pub use permission::{
+    list_pending_permissions, respond_to_permission, respond_to_user_input,
+    UserInputAnswers,
+};
 pub use types::{
     AcpEvent, AcpPromptResult, ActiveConnectionInfo, ConnectionDeathEvent, PrewarmEvent,
 };

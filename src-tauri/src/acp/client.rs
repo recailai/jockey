@@ -353,6 +353,17 @@ impl JockeyUiClient {
             .filter(|o| matches!(o.kind, acp::PermissionOptionKind::AllowAlways))
             .map(|o| o.option_id.to_string())
             .collect();
+        let perm_title = args
+            .tool_call
+            .fields
+            .title
+            .clone()
+            .unwrap_or_else(|| "Tool Call".to_string());
+        let perm_options: Vec<serde_json::Value> = args
+            .options
+            .iter()
+            .map(|o| serde_json::to_value(o).unwrap_or(json!({})))
+            .collect();
         insert_permission(
             request_id.clone(),
             PendingPermission {
@@ -363,6 +374,9 @@ impl JockeyUiClient {
                 allow_always_option_ids,
                 delta_tx: permission_delta_tx,
                 tx,
+                title: Some(perm_title),
+                description: None,
+                options: perm_options,
             },
         );
         match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {

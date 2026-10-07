@@ -97,6 +97,9 @@ pub(super) async fn resolve_approval(
             allow_always_option_ids: vec![accept_session.to_string()],
             delta_tx: None,
             tx,
+            title: Some(title.clone()),
+            description: description.clone(),
+            options: options.clone(),
         },
     );
 

@@ -12,6 +12,7 @@ mod parser;
 mod runtime_kind;
 mod runtime_profile;
 mod types;
+pub mod web_gateway;
 
 /// Internal stdio MCP permission bridge used by the native Claude adapter
 /// (`current_exe --__jockey-permission-bridge`). See
@@ -402,7 +403,11 @@ pub fn run() {
             db::rule::delete_rule_cmd,
             db::rule::set_role_rules_cmd,
             db::rule::list_role_rules_cmd,
-            db::rule::list_all_rules_for_role_cmd
+            db::rule::list_all_rules_for_role_cmd,
+            web_gateway::get_gateway_status_cmd,
+            web_gateway::start_gateway_cmd,
+            web_gateway::stop_gateway_cmd,
+            web_gateway::regenerate_gateway_token_cmd
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0c0d0e">
+  <title>Jockey Companion</title>
+  <style>
+    :root {
+      --bg: #0c0d0e;
+      --surface: #141618;
+      --surface-hover: #1c1f22;
+      --surface-card: #181b1e;
+      --border: #262a30;
+      --text: #f0f3f6;
+      --muted: #8c959f;
+      --accent: #6366f1;
+      --accent-hover: #4f46e5;
+      --success: #10b981;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      font-size: 15px;
+    }
+    /* Header */
+    header {
+      padding: max(10px, env(safe-area-inset-top)) 16px 10px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+      z-index: 20;
+    }
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #4b5563;
+      transition: background 0.3s;
+    }
+    .status-dot.online { background: var(--success); box-shadow: 0 0 8px rgba(16, 185, 129, 0.6); }
+    .status-dot.connecting { background: var(--warning); box-shadow: 0 0 8px rgba(245, 158, 11, 0.6); }
+    .status-dot.offline { background: var(--danger); }
+    
+    .header-title {
+      font-weight: 600;
+      font-size: 15px;
+      letter-spacing: -0.2px;
+      white-space: nowrap;
+    }
+    .session-picker {
+      flex: 1;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 6px 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      min-width: 0;
+      text-overflow: ellipsis;
+      outline: none;
+    }
+    .btn-icon {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 8px;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+    .btn-icon:active { background: var(--surface-hover); color: var(--text); }
+
+    /* Approvals Drawer / Section */
+    #approvals-section {
+      background: #1e1710;
+      border-bottom: 1px solid rgba(245, 158, 11, 0.3);
+      padding: 10px 16px;
+      display: none;
+      flex-shrink: 0;
+      max-height: 45vh;
+      overflow-y: auto;
+    }
+    .approval-card {
+      background: #281d11;
+      border: 1px solid #784a15;
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 8px;
+    }
+    .approval-card:last-child { margin-bottom: 0; }
+    .approval-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .approval-badge {
+      background: rgba(245, 158, 11, 0.2);
+      color: #fbbf24;
+      padding: 2px 7px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .approval-title {
+      font-weight: 600;
+      font-size: 14px;
+      color: #fef3c7;
+      margin-bottom: 4px;
+    }
+    .approval-desc {
+      font-size: 12px;
+      color: #d1d5db;
+      font-family: monospace;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 6px 8px;
+      border-radius: 6px;
+      word-break: break-all;
+      max-height: 80px;
+      overflow-y: auto;
+      margin-bottom: 10px;
+    }
+    .approval-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .btn-allow {
+      flex: 2;
+      background: var(--success);
+      color: #fff;
+      border: none;
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .btn-allow:active { opacity: 0.85; }
+    .btn-allow-always {
+      flex: 1.5;
+      background: #3b82f6;
+      color: #fff;
+      border: none;
+      padding: 10px 8px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .btn-deny {
+      flex: 1;
+      background: rgba(239, 68, 68, 0.2);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      padding: 10px 8px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .btn-deny:active { background: rgba(239, 68, 68, 0.4); }
+
+    /* Messages Stream */
+    #messages-container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      -webkit-overflow-scrolling: touch;
+    }
+    .msg-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .msg-user {
+      align-self: flex-end;
+      background: #272a30;
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 16px 16px 2px 16px;
+      max-width: 88%;
+      word-break: break-word;
+      font-size: 14.5px;
+      line-height: 1.45;
+    }
+    .msg-agent {
+      align-self: flex-start;
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      padding: 12px 14px;
+      border-radius: 16px 16px 16px 2px;
+      max-width: 95%;
+      word-break: break-word;
+      font-size: 14.5px;
+      line-height: 1.5;
+    }
+    .msg-meta {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .msg-role-tag {
+      background: rgba(99, 102, 241, 0.2);
+      color: #a5b4fc;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+    .thought-box {
+      margin-bottom: 8px;
+      background: rgba(0, 0, 0, 0.25);
+      border-left: 2px solid #6366f1;
+      padding: 6px 10px;
+      border-radius: 0 6px 6px 0;
+      font-size: 13px;
+      color: #9ca3af;
+    }
+    .thought-box summary {
+      cursor: pointer;
+      font-size: 12px;
+      color: #818cf8;
+      font-weight: 500;
+    }
+    .tool-call-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 12px;
+      font-family: monospace;
+      color: #d1d5db;
+      margin: 4px 0;
+    }
+    .cursor-pulse {
+      display: inline-block;
+      width: 7px;
+      height: 14px;
+      background: var(--accent);
+      vertical-align: middle;
+      animation: pulse 1s infinite;
+      margin-left: 2px;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+    /* Footer / Input Bar */
+    footer {
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      padding: 10px 14px max(10px, env(safe-area-inset-bottom));
+      display: flex;
+      align-items: flex-end;
+      gap: 10px;
+      flex-shrink: 0;
+      z-index: 20;
+    }
+    .chat-input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 10px 16px;
+      color: var(--text);
+      font-size: 15px;
+      font-family: inherit;
+      resize: none;
+      max-height: 120px;
+      min-height: 42px;
+      line-height: 20px;
+      outline: none;
+    }
+    .chat-input:focus {
+      border-color: var(--accent);
+    }
+    .btn-send {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .btn-send:disabled {
+      background: #2d3139;
+      color: #6b7280;
+    }
+    .btn-send:active:not(:disabled) {
+      background: var(--accent-hover);
+    }
+
+    /* Modal / Auth */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.85);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      padding: 20px;
+    }
+    .modal-card {
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 24px;
+      width: 100%;
+      max-width: 360px;
+      text-align: center;
+    }
+    .modal-title { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+    .modal-desc { font-size: 13px; color: var(--muted); margin-bottom: 18px; line-height: 1.4; }
+    .modal-input {
+      width: 100%;
+      padding: 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 14px;
+      margin-bottom: 16px;
+      outline: none;
+      text-align: center;
+    }
+    .modal-btn {
+      width: 100%;
+      padding: 12px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 15px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <header>
+    <div id="status-indicator" class="status-dot connecting" title="连接中..."></div>
+    <div class="header-title">Jockey</div>
+    <select id="session-select" class="session-picker">
+      <option value="">正在加载会话...</option>
+    </select>
+    <button id="btn-refresh" class="btn-icon" title="刷新">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
+    </button>
+  </header>
+
+  <!-- Approvals Section (Populated dynamically) -->
+  <div id="approvals-section">
+    <div id="approvals-list"></div>
+  </div>
+
+  <!-- Messages Scroll Area -->
+  <main id="messages-container">
+    <div style="text-align: center; color: var(--muted); font-size: 13px; padding: 40px 0;">
+      连接到家里主机中...
+    </div>
+  </main>
+
+  <!-- Input Footer -->
+  <footer>
+    <textarea id="chat-input" class="chat-input" rows="1" placeholder="发送指令给当前 Agent..."></textarea>
+    <button id="btn-send" class="btn-send" disabled>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
+    </button>
+  </footer>
+
+  <!-- Auth Modal -->
+  <div id="auth-modal" class="modal-backdrop">
+    <div class="modal-card">
+      <h3 class="modal-title">需要访问令牌</h3>
+      <p class="modal-desc">请在桌面端 Jockey 设置中复制远程访问 Token 填入此处。</p>
+      <input id="token-input" type="password" class="modal-input" placeholder="输入 Token..." />
+      <button id="btn-save-token" class="modal-btn">连接</button>
+    </div>
+  </div>
+
+  <script>
+    // State
+    let authToken = new URLSearchParams(window.location.search).get('token') || localStorage.getItem('jockey_token') || '';
+    if (new URLSearchParams(window.location.search).get('token')) {
+      localStorage.setItem('jockey_token', authToken);
+    }
+
+    let activeSessionId = '';
+    let sessions = [];
+    let pendingPermissions = [];
+    let eventSource = null;
+    let streamText = '';
+    let isStreaming = false;
+
+    // DOM Elements
+    const statusDot = document.getElementById('status-indicator');
+    const sessionSelect = document.getElementById('session-select');
+    const messagesContainer = document.getElementById('messages-container');
+    const chatInput = document.getElementById('chat-input');
+    const btnSend = document.getElementById('btn-send');
+    const btnRefresh = document.getElementById('btn-refresh');
+    const approvalsSection = document.getElementById('approvals-section');
+    const approvalsList = document.getElementById('approvals-list');
+    const authModal = document.getElementById('auth-modal');
+    const tokenInput = document.getElementById('token-input');
+    const btnSaveToken = document.getElementById('btn-save-token');
+
+    // Auth verification
+    function checkAuth() {
+      if (!authToken) {
+        authModal.style.display = 'flex';
+        return false;
+      }
+      authModal.style.display = 'none';
+      return true;
+    }
+
+    btnSaveToken.onclick = () => {
+      const val = tokenInput.value.trim();
+      if (val) {
+        authToken = val;
+        localStorage.setItem('jockey_token', authToken);
+        authModal.style.display = 'none';
+        initApp();
+      }
+    };
+
+    function authHeaders() {
+      return {
+        'Authorization': `Bearer ${authToken}`,
+        'Content-Type': 'application/json'
+      };
+    }
+
+    // Auto-resize textarea
+    chatInput.addEventListener('input', () => {
+      chatInput.style.height = 'auto';
+      chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
+      btnSend.disabled = !chatInput.value.trim();
+    });
+
+    chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        if (!btnSend.disabled) sendMessage();
+      }
+    });
+
+    btnSend.onclick = sendMessage;
+    btnRefresh.onclick = () => {
+      loadSessions();
+      loadPermissions();
+      if (activeSessionId) loadMessages(activeSessionId);
+    };
+
+    sessionSelect.onchange = () => {
+      activeSessionId = sessionSelect.value;
+      if (activeSessionId) {
+        loadMessages(activeSessionId);
+      }
+    };
+
+    // Load Sessions
+    async function loadSessions() {
+      if (!checkAuth()) return;
+      try {
+        const res = await fetch('/api/sessions', { headers: authHeaders() });
+        if (res.status === 401) {
+          authModal.style.display = 'flex';
+          return;
+        }
+        sessions = await res.json();
+        sessionSelect.innerHTML = '';
+        if (sessions.length === 0) {
+          const opt = document.createElement('option');
+          opt.value = '';
+          opt.textContent = '暂无活动会话';
+          sessionSelect.appendChild(opt);
+          return;
+        }
+        sessions.forEach(s => {
+          const opt = document.createElement('option');
+          opt.value = s.id;
+          opt.textContent = `${s.title || '会话 ' + s.id.slice(0, 6)} (${s.activeRole || 'default'})`;
+          sessionSelect.appendChild(opt);
+        });
+
+        if (!activeSessionId || !sessions.some(s => s.id === activeSessionId)) {
+          activeSessionId = sessions[0].id;
+        }
+        sessionSelect.value = activeSessionId;
+        loadMessages(activeSessionId);
+      } catch (err) {
+        console.error('Failed to load sessions:', err);
+      }
+    }
+
+    // Load Messages
+    async function loadMessages(sid) {
+      if (!sid || !checkAuth()) return;
+      try {
+        const res = await fetch(`/api/sessions/${sid}`, { headers: authHeaders() });
+        const data = await res.json();
+        renderMessages(data.messages || []);
+      } catch (err) {
+        console.error('Failed to load messages:', err);
+      }
+    }
+
+    function renderMessages(messages) {
+      messagesContainer.innerHTML = '';
+      if (messages.length === 0) {
+        messagesContainer.innerHTML = `
+          <div style="text-align: center; color: var(--muted); font-size: 13px; padding: 40px 0;">
+            会话暂无消息，在下方输入指令开始
+          </div>
+        `;
+        return;
+      }
+
+      messages.forEach(msg => {
+        const group = document.createElement('div');
+        group.className = 'msg-group';
+
+        const role = msg.roleName || (msg.isUser ? 'user' : 'assistant');
+        const isUser = role === 'user' || msg.isUser;
+
+        if (isUser) {
+          const bubble = document.createElement('div');
+          bubble.className = 'msg-user';
+          bubble.textContent = msg.text || '';
+          group.appendChild(bubble);
+        } else {
+          const meta = document.createElement('div');
+          meta.className = 'msg-meta';
+          meta.innerHTML = `<span class="msg-role-tag">${role}</span>`;
+          group.appendChild(meta);
+
+          const card = document.createElement('div');
+          card.className = 'msg-agent';
+
+          // Thought text if any
+          if (msg.thoughtText) {
+            const thought = document.createElement('details');
+            thought.className = 'thought-box';
+            thought.innerHTML = `<summary>思考过程</summary><div style="margin-top: 4px; white-space: pre-wrap;">${escapeHtml(msg.thoughtText)}</div>`;
+            card.appendChild(thought);
+          }
+
+          // Tool calls
+          if (msg.toolCalls && Array.isArray(msg.toolCalls)) {
+            msg.toolCalls.forEach(tc => {
+              const pill = document.createElement('div');
+              pill.className = 'tool-call-pill';
+              pill.textContent = `⚙ ${tc.title || tc.name || 'tool'}`;
+              card.appendChild(pill);
+            });
+          }
+
+          // Text content
+          const textDiv = document.createElement('div');
+          textDiv.style.whiteSpace = 'pre-wrap';
+          textDiv.textContent = msg.text || '';
+          card.appendChild(textDiv);
+
+          group.appendChild(card);
+        }
+
+        messagesContainer.appendChild(group);
+      });
+
+      scrollToBottom();
+    }
+
+    function scrollToBottom() {
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    function escapeHtml(str) {
+      return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // Load Pending Permissions
+    async function loadPermissions() {
+      if (!checkAuth()) return;
+      try {
+        const res = await fetch('/api/permissions', { headers: authHeaders() });
+        pendingPermissions = await res.json();
+        renderPermissions();
+      } catch (err) {
+        console.error('Failed to load permissions:', err);
+      }
+    }
+
+    function renderPermissions() {
+      if (!pendingPermissions || pendingPermissions.length === 0) {
+        approvalsSection.style.display = 'none';
+        approvalsList.innerHTML = '';
+        return;
+      }
+
+      approvalsSection.style.display = 'block';
+      approvalsList.innerHTML = '';
+
+      pendingPermissions.forEach(perm => {
+        const card = document.createElement('div');
+        card.className = 'approval-card';
+
+        const hasAlwaysOption = (perm.options || []).some(o => o.kind === 'allow_always' || o.optionId === 'allow_always');
+        const allowAlwaysId = (perm.options || []).find(o => o.kind === 'allow_always')?.optionId || 'allow_always';
+
+        card.innerHTML = `
+          <div class="approval-header">
+            <span class="approval-badge">⚡ 待审批 (${perm.roleName || 'Agent'})</span>
+          </div>
+          <div class="approval-title">${escapeHtml(perm.title || '操作审批')}</div>
+          ${perm.description ? `<div class="approval-desc">${escapeHtml(perm.description)}</div>` : ''}
+          <div class="approval-actions">
+            <button class="btn-allow" onclick="respondPermission('${perm.requestId}', 'allow', false)">✓ 批准 (Allow)</button>
+            ${hasAlwaysOption ? `<button class="btn-allow-always" onclick="respondPermission('${perm.requestId}', '${allowAlwaysId}', false)">本会话允许</button>` : ''}
+            <button class="btn-deny" onclick="respondPermission('${perm.requestId}', '', true)">✕ 拒绝</button>
+          </div>
+        `;
+        approvalsList.appendChild(card);
+      });
+    }
+
+    window.respondPermission = async function(requestId, optionId, cancelled) {
+      try {
+        await fetch('/api/permissions/respond', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({ requestId, optionId, cancelled })
+        });
+        pendingPermissions = pendingPermissions.filter(p => p.requestId !== requestId);
+        renderPermissions();
+      } catch (err) {
+        alert('审批提交失败: ' + err.message);
+      }
+    };
+
+    // Send Message
+    async function sendMessage() {
+      const text = chatInput.value.trim();
+      if (!text || !activeSessionId) return;
+
+      chatInput.value = '';
+      chatInput.style.height = '42px';
+      btnSend.disabled = true;
+
+      // Add user message to UI immediately
+      const group = document.createElement('div');
+      group.className = 'msg-group';
+      const bubble = document.createElement('div');
+      bubble.className = 'msg-user';
+      bubble.textContent = text;
+      group.appendChild(bubble);
+      messagesContainer.appendChild(group);
+      scrollToBottom();
+
+      try {
+        await fetch(`/api/sessions/${activeSessionId}/chat`, {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({ input: text })
+        });
+      } catch (err) {
+        console.error('Send error:', err);
+      }
+    }
+
+    // SSE Real-time Events
+    function setupSSE() {
+      if (eventSource) eventSource.close();
+      if (!authToken) return;
+
+      const url = `/api/events?token=${encodeURIComponent(authToken)}`;
+      eventSource = new EventSource(url);
+
+      eventSource.onopen = () => {
+        statusDot.className = 'status-dot online';
+        statusDot.title = '在线 (Connected)';
+      };
+
+      eventSource.onerror = () => {
+        statusDot.className = 'status-dot connecting';
+        statusDot.title = '重连中...';
+      };
+
+      eventSource.addEventListener('acp/delta', (ev) => {
+        try {
+          const delta = JSON.parse(ev.data);
+          // Check for permissions
+          if (delta.event && delta.event.kind === 'permissionRequest') {
+            loadPermissions();
+          }
+          if (delta.event && delta.event.kind === 'permissionExpired') {
+            loadPermissions();
+          }
+          // Refresh session messages if active
+          if (delta.appSessionId === activeSessionId) {
+            handleLiveDelta(delta);
+          }
+        } catch (_) {}
+      });
+
+      eventSource.addEventListener('session/update', (ev) => {
+        try {
+          const payload = JSON.parse(ev.data);
+          if (payload.appSessionId === activeSessionId) {
+            loadMessages(activeSessionId);
+          }
+        } catch (_) {}
+      });
+
+      eventSource.addEventListener('permission_update', () => {
+        loadPermissions();
+      });
+    }
+
+    let activeLiveAgentBubble = null;
+    function handleLiveDelta(delta) {
+      if (!delta.event) return;
+      if (delta.event.kind === 'textDelta' && delta.event.delta) {
+        if (!activeLiveAgentBubble) {
+          const group = document.createElement('div');
+          group.className = 'msg-group';
+          const meta = document.createElement('div');
+          meta.className = 'msg-meta';
+          meta.innerHTML = `<span class="msg-role-tag">${delta.role || 'assistant'}</span>`;
+          group.appendChild(meta);
+
+          const card = document.createElement('div');
+          card.className = 'msg-agent';
+          card.innerHTML = `<span class="content"></span><span class="cursor-pulse"></span>`;
+          group.appendChild(card);
+          messagesContainer.appendChild(group);
+          activeLiveAgentBubble = card.querySelector('.content');
+        }
+        activeLiveAgentBubble.textContent += delta.event.delta;
+        scrollToBottom();
+      } else if (delta.event.kind === 'turnCompleted') {
+        activeLiveAgentBubble = null;
+        loadMessages(activeSessionId);
+      }
+    }
+
+    // App Initialization
+    function initApp() {
+      if (!checkAuth()) return;
+      loadSessions();
+      loadPermissions();
+      setupSSE();
+    }
+
+    initApp();
+  </script>
+</body>
+</html>

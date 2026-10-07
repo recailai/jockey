@@ -28,7 +28,7 @@ pub use session::{
     set_mode, steer_session, sync_role_mode,
 };
 pub use worker::{
-    active_connections_snapshot, respond_to_permission, respond_to_user_input,
-    set_death_event_sender, set_prewarm_event_sender, shutdown, ActiveConnectionInfo,
-    ConnectionDeathEvent, PrewarmEvent,
+    active_connections_snapshot, list_pending_permissions, respond_to_permission,
+    respond_to_user_input, set_death_event_sender, set_prewarm_event_sender, shutdown,
+    ActiveConnectionInfo, ConnectionDeathEvent, PrewarmEvent,
 };

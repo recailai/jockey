@@ -327,12 +327,7 @@ pub(crate) async fn prewarm_role_config_cmd(
     let runtime = if let Some(rt) = runtime_kind.filter(|s| !s.trim().is_empty()) {
         normalize_runtime_or_self(&rt)
     } else {
-        resolve_runtime_for_session_role(
-            get_state(&state),
-            sid,
-            &role_name,
-            project_id.as_deref(),
-        )?
+        resolve_runtime_for_session_role(get_state(&state), sid, &role_name, project_id.as_deref())?
     };
     let cwd = resolve_discovery_cwd(get_state(&state), sid, project_id.as_deref());
     // Role/config UI discovery uses a separate refresh connection so it cannot

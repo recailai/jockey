@@ -897,7 +897,10 @@ mod tests {
         assert_eq!(second_load[0].messages.len(), 1);
         assert_eq!(second_load[0].messages[0]["id"], "stream-123");
         assert_eq!(second_load[0].messages[0]["text"], "done with task!");
-        assert_eq!(second_load[0].messages[0]["toolCalls"][0]["status"], "completed");
+        assert_eq!(
+            second_load[0].messages[0]["toolCalls"][0]["status"],
+            "completed"
+        );
     }
 
     #[test]

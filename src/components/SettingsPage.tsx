@@ -13,6 +13,7 @@ import {
   Settings,
   ShieldCheck,
   SlidersHorizontal,
+  Smartphone,
   Sparkles,
   Workflow,
 } from "lucide-solid";
@@ -27,12 +28,14 @@ import { SkillRegistryTab } from "./management/SkillRegistryTab";
 import { RulesTab } from "./management/RulesTab";
 import { ExternalAgentsTab } from "./management/ExternalAgentsTab";
 import CustomAppsSettings from "./management/CustomAppsSettings";
+import { RemoteCompanionTab } from "./management/RemoteCompanionTab";
 import { Panel, PanelBody, RowButton, Switch as UiSwitch } from "./ui";
 import { loadUiPrefs, saveUiPrefs, type UiPrefs, type WorkMode } from "../lib/uiPrefs";
 import type { Toast } from "../lib/useToast";
 
 export type SettingsTab =
   | "general"
+  | "remote"
   | "appearance"
   | "configuration"
   | "personalization"
@@ -69,6 +72,7 @@ type SettingsPageProps = {
 
 const NAV: Array<{ id: SettingsTab; label: string; icon: typeof Settings }> = [
   { id: "general", label: "General", icon: Settings },
+  { id: "remote", label: "Remote companion", icon: Smartphone },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "configuration", label: "Configuration", icon: ShieldCheck },
   { id: "personalization", label: "Personalization", icon: Sparkles },
@@ -223,6 +227,15 @@ export default function SettingsPage(props: SettingsPageProps) {
                 apps={prefs().customWorkspaceApps}
                 onChange={(customWorkspaceApps) => patchPrefs({ customWorkspaceApps })}
               />
+            </section>
+          </Show>
+
+          <Show when={activeTab() === "remote"}>
+            <section>
+              <h1 class="settings-title">Remote Companion</h1>
+              <div class="settings-management-panel">
+                <RemoteCompanionTab />
+              </div>
             </section>
           </Show>
 
