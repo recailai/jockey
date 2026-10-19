@@ -187,24 +187,14 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
           toolName: event.toolName,
           kind: event.toolKind ?? "unknown",
           status: normalizeToolStatus(event.status) ?? "pending",
+          // Display text is derived on demand in ToolCallGroup; pretty-printing large payloads
+          // on every update cost far more than it bought.
           content,
-          contentJson:
-            content && content.length > 0
-              ? JSON.stringify(content, null, 2)
-              : undefined,
           locations,
           rawInput: event.rawInput ?? undefined,
           rawOutput: event.rawOutput ?? undefined,
           terminalMeta: event.terminalMeta,
           roleName,
-          rawInputJson:
-            event.rawInput !== undefined && event.rawInput !== null
-              ? JSON.stringify(event.rawInput, null, 2)
-              : undefined,
-          rawOutputJson:
-            event.rawOutput !== undefined && event.rawOutput !== null
-              ? JSON.stringify(event.rawOutput, null, 2)
-              : undefined,
         };
         mutateSession(sid, (s) => {
           s.toolCalls[event.toolCallId!] = tc;
@@ -241,12 +231,6 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
           const newLocations =
             normalizeToolLocations(event.locations as unknown[] | undefined) ??
             existing.locations;
-          const contentJson =
-            newContent !== existing.content
-              ? newContent && newContent.length > 0
-                ? JSON.stringify(newContent, null, 2)
-                : undefined
-              : existing.contentJson;
           const newRawInput =
             event.rawInput !== undefined && event.rawInput !== null ? event.rawInput : existing.rawInput;
           const newRawOutput =
@@ -263,19 +247,10 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
             status: normalizeToolStatus(event.status) ?? existing.status,
             title: event.title ?? existing.title,
             content: newContent,
-            contentJson,
             locations: newLocations,
             rawInput: newRawInput,
             rawOutput: newRawOutput,
             terminalMeta: newTerminalMeta,
-            rawInputJson:
-              event.rawInput !== undefined && event.rawInput !== null
-                ? JSON.stringify(newRawInput, null, 2)
-                : existing.rawInputJson,
-            rawOutputJson:
-              event.rawOutput !== undefined && event.rawOutput !== null
-                ? JSON.stringify(newRawOutput, null, 2)
-                : existing.rawOutputJson,
           };
           s.toolCalls[event.toolCallId!] = updated;
           if (isNew) {

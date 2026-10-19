@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal } from "solid-js";
 import { createStore, produce } from "solid-js/store";
-import type { AppMessage, AppSession } from "../components/types";
+import type { AppMessage, AppSession, AppToolCall } from "../components/types";
 import { now } from "../components/types";
 import { MAX_MESSAGES } from "../lib/sessionHelpers";
 import { appSessionApi } from "../lib/tauriApi";

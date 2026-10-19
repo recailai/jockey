@@ -196,9 +196,36 @@ function categoryBadgeTone(category: string): "neutral" | "success" | "warning" 
   }
 }
 
+/** Pretty JSON for display. Computed on demand: tool payloads can be large, and the stored
+ *  message carries only the raw values (the `*Json` mirrors are a live-only legacy). */
+const prettyJson = (value: unknown): string | undefined => {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") return value;
+  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+};
+
+/** The patch a file-editing tool reported, read straight from its raw output. */
+const diffTextOf = (tc: AppToolCall): string | null => {
+  let raw: unknown = tc.rawOutput;
+  if (raw === undefined && tc.rawOutputJson) {
+    try { raw = JSON.parse(tc.rawOutputJson); } catch { raw = tc.rawOutputJson; }
+  }
+  const obj = raw as { patch?: unknown; diff?: unknown } | null;
+  const text = typeof raw === "string" ? raw
+    : typeof obj?.patch === "string" ? obj.patch
+    : typeof obj?.diff === "string" ? obj.diff
+    : null;
+  return text && isDiffLike(text) ? text : null;
+};
+
 function ToolCallItem(props: ToolCallItemProps) {
   const tc = () => props.tc;
-  const rawOutputText = () => tc().rawOutputJson;
+  const hasRawInput = () => tc().rawInput != null || !!tc().rawInputJson;
+  const hasRawOutput = () => tc().rawOutput != null || !!tc().rawOutputJson;
+  const hasContent = () => (tc().content?.length ?? 0) > 0 || !!tc().contentJson;
+  const diffText = () => diffTextOf(tc());
+  // The debug payload is pretty-printed only while it is open.
+  const [debugOpen, setDebugOpen] = createSignal(false);
   const terminalEntry = () => {
     const tid = terminalIdOf(tc());
     if (!tid) return null;
@@ -328,22 +355,9 @@ function ToolCallItem(props: ToolCallItemProps) {
           <pre class="mt-0.5 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded bg-[var(--ui-surface-muted)] p-2 font-mono text-[10px] theme-muted">{tc().outputLog}</pre>
         </div>
       </Show>
-      <Show when={tc().rawOutputJson}>
-        {(_) => {
-          const raw = () => tc().rawOutputJson!;
-          const diffData = () => {
-            try {
-              const parsed = JSON.parse(raw());
-              const text = typeof parsed === "string" ? parsed
-                : typeof parsed?.patch === "string" ? parsed.patch
-                : typeof parsed?.diff === "string" ? parsed.diff
-                : null;
-              if (text && isDiffLike(text)) return parseDiff(text);
-            } catch {
-              if (isDiffLike(raw())) return parseDiff(raw());
-            }
-            return null;
-          };
+      <Show when={diffText()}>
+        {(text) => {
+          const diffData = () => parseDiff(text());
           return (
             <Show when={diffData()}>
               {(diffs) => (
@@ -361,31 +375,36 @@ function ToolCallItem(props: ToolCallItemProps) {
         }}
       </Show>
       {/* Discreet Debug Payload for raw JSON */}
-      <Show when={tc().rawInputJson || (rawOutputText() && !isDiffLike(rawOutputText()!)) || tc().contentJson}>
-        <details class="border-t theme-border bg-[var(--ui-panel-2)]">
+      <Show when={hasRawInput() || (hasRawOutput() && !diffText()) || hasContent()}>
+        <details
+          class="border-t theme-border bg-[var(--ui-panel-2)]"
+          onToggle={(e) => setDebugOpen(e.currentTarget.open)}
+        >
           <summary class="px-3 py-1.5 text-[9px] font-mono theme-muted cursor-pointer hover:text-[var(--ui-text)] transition-colors select-none">
             Debug Payload ({tc().toolCallId})
           </summary>
+          <Show when={debugOpen()}>
           <div class="p-2 space-y-2 border-t theme-border">
-            <Show when={tc().rawInputJson}>
+            <Show when={hasRawInput()}>
               <div>
                 <span class="text-[8.5px] font-mono uppercase theme-muted">Input:</span>
-                <pre class="whitespace-pre-wrap break-words mt-0.5 p-2 rounded bg-[var(--ui-surface-muted)] text-[10px] font-mono theme-muted max-h-48 overflow-y-auto">{tc().rawInputJson}</pre>
+                <pre class="whitespace-pre-wrap break-words mt-0.5 p-2 rounded bg-[var(--ui-surface-muted)] text-[10px] font-mono theme-muted max-h-48 overflow-y-auto">{tc().rawInputJson ?? prettyJson(tc().rawInput)}</pre>
               </div>
             </Show>
-            <Show when={rawOutputText() && !isDiffLike(rawOutputText()!)}>
+            <Show when={hasRawOutput() && !diffText()}>
               <div>
                 <span class="text-[8.5px] font-mono uppercase theme-muted">Output:</span>
-                <pre class="whitespace-pre-wrap break-words mt-0.5 p-2 rounded bg-[var(--ui-surface-muted)] text-[10px] font-mono theme-muted max-h-48 overflow-y-auto">{tc().rawOutputJson}</pre>
+                <pre class="whitespace-pre-wrap break-words mt-0.5 p-2 rounded bg-[var(--ui-surface-muted)] text-[10px] font-mono theme-muted max-h-48 overflow-y-auto">{tc().rawOutputJson ?? prettyJson(tc().rawOutput)}</pre>
               </div>
             </Show>
-            <Show when={tc().contentJson}>
+            <Show when={hasContent()}>
               <div>
                 <span class="text-[8.5px] font-mono uppercase theme-muted">Content:</span>
-                <pre class="whitespace-pre-wrap break-words mt-0.5 p-2 rounded bg-[var(--ui-surface-muted)] text-[10px] font-mono theme-muted max-h-48 overflow-y-auto">{tc().contentJson}</pre>
+                <pre class="whitespace-pre-wrap break-words mt-0.5 p-2 rounded bg-[var(--ui-surface-muted)] text-[10px] font-mono theme-muted max-h-48 overflow-y-auto">{tc().contentJson ?? prettyJson(tc().content)}</pre>
               </div>
             </Show>
           </div>
+          </Show>
         </details>
       </Show>
     </details>

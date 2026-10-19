@@ -34,7 +34,6 @@ export function useAppBootstrap(input: UseAppBootstrapInput) {
     refreshAssistants,
     refreshRoles,
     refreshSkills,
-    fetchConfigOptions,
     showToast,
   } = input;
 
@@ -42,7 +41,9 @@ export function useAppBootstrap(input: UseAppBootstrapInput) {
     let loaded: AppSession[] = [];
     const pid = currentProjectId?.();
     try {
-      const raw = await appSessionApi.list();
+      // Only the current project's sessions (with transcripts); other projects load when the
+      // user switches to them (handleSelectProject merges them in).
+      const raw = await appSessionApi.list(pid);
       loaded = raw.map((r) => {
         const s = makeDefaultSession(r.title);
         s.id = r.id;

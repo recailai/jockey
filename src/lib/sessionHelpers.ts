@@ -20,37 +20,8 @@ export const uniqueName = (desired: string, existing: string[]): string => {
   return candidate;
 };
 
-export const normalizeSessionTitle = (raw: string): string => raw.trim().replace(/\s+/g, "_");
-export const isDefaultSessionTitle = (raw: string): boolean => /^Session_1(?:_copy\d*)?$/.test(raw);
-export const deriveSessionTitleFromMessage = (text: string, existingTitles: string[]): string => {
-  const cleaned = text.replace(/[@#][^\s]*/g, "").replace(/^\/\S+\s*/, "").trim();
-  const words = cleaned.split(/\s+/);
-  let autoTitle = "";
-  for (const w of words) {
-    if ((autoTitle + " " + w).trim().length > 40) break;
-    autoTitle = (autoTitle + " " + w).trim();
-  }
-  if (!autoTitle) autoTitle = cleaned.slice(0, 30);
-  autoTitle = normalizeSessionTitle(autoTitle);
-  if (!autoTitle) autoTitle = `Session_${Date.now()}`;
-  return uniqueName(autoTitle, existingTitles);
-};
-
-/** Should this session's title be auto-derived from the upcoming user message?
- *  True iff title is still the default placeholder and no user message has been sent yet. */
-export const shouldAutoTitleSession = (sess: AppSession): boolean =>
-  isDefaultSessionTitle(sess.title) &&
-  sess.messages.filter((m) => m.roleName === "user").length === 0;
-
-/** Compute a unique auto-title for a session from the first user message. */
-export const computeAutoTitleForSession = (
-  sess: AppSession,
-  allSessions: readonly AppSession[],
-  text: string,
-): string => {
-  const existing = allSessions.filter((x) => x.id !== sess.id).map((x) => x.title);
-  return deriveSessionTitleFromMessage(text, existing);
-};
+// Auto-titling a session from its first message is engine behaviour
+// (`engine::sessions::auto_title`), applied to every client through `turn/started`.
 
 export const makeDefaultSession = (title: string): AppSession => ({
   id: makeSessionId(),

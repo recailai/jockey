@@ -5723,3 +5723,12 @@ pre:hover .jui-code-copy,
 .multi-agent-block-body {
   padding: 10px 14px;
 }
+
+/* Long sessions mount up to MESSAGE_RENDER_WINDOW rows. Off-screen rows skip layout and paint
+   until scrolled to; `auto` remembers each row's real size once rendered, so scrolling stays
+   stable. The last rows (the visible tail and the streaming message) always render fully, so
+   scroll-to-bottom measures real heights. Ignored where unsupported. */
+.message-list-inner > *:not(:nth-last-child(-n + 6)) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 160px;
+}
