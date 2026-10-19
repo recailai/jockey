@@ -19,6 +19,9 @@ mod stream;
 
 pub(in crate::acp) use catalog::refresh_headless_catalog;
 
+/// How long a Claude `result` that arrived before this turn produced anything is held back
+/// before being accepted as the turn's answer (see `read_headless_turn`).
+const STALE_RESULT_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 const HEADLESS_TIMEOUT: Duration = Duration::from_secs(600);
 const PROCESS_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -760,10 +763,32 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
     let mut result_error = None;
     let mut result_seen = false;
     let mut claude_tool_inputs: HashMap<String, (String, String, String)> = HashMap::new();
+    // A Claude `result` frame is the end of *a* turn, not necessarily ours: after an
+    // interrupted turn, `--resume` can emit the interrupted turn's own empty result before
+    // the new prompt runs. Taking that one as our answer returned an empty "success" and left
+    // every later turn one result behind. Such a result (before this turn produced any
+    // output) is held back and only accepted if nothing else arrives within a short grace.
+    let mut turn_produced = false;
+    let mut held_result: Option<(Option<String>, Option<String>)> = None;
 
     loop {
         line.clear();
-        let read = match reader.read_line(&mut line).await {
+        let read = if held_result.is_some() {
+            match tokio::time::timeout(STALE_RESULT_GRACE, reader.read_line(&mut line)).await {
+                Ok(read) => read,
+                Err(_) => {
+                    // Nothing followed: it really was this turn's (empty) result.
+                    if let Some((held_response, held_status)) = held_result.take() {
+                        response = held_response;
+                        status = held_status;
+                    }
+                    break;
+                }
+            }
+        } else {
+            reader.read_line(&mut line).await
+        };
+        let read = match read {
             Ok(read) => read,
             Err(error) => {
                 result_error = Some(format!("failed to read headless output: {error}"));
@@ -834,6 +859,9 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
         }
 
         if matches!(protocol, HeadlessProtocol::ClaudeStreamJson) {
+            if matches!(event_type.as_str(), "assistant" | "stream_event" | "user") {
+                turn_produced = true;
+            }
             // Sub-agent turns (the Task tool) carry the spawning tool call's id, which lets
             // the UI nest their tool calls instead of flattening everything to one level.
             let parent_tool_use_id =
@@ -951,7 +979,14 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                                     claude_tool_inputs.get_mut(&index)
                                 {
                                     buffer.push_str(partial);
-                                    if let Ok(input) = serde_json::from_str::<Value>(buffer) {
+                                    // Re-parsing the whole buffer per chunk was quadratic for
+                                    // large inputs (a Write's file body); an object can only be
+                                    // complete once it ends with `}`.
+                                    let maybe_complete = buffer.trim_end().ends_with('}');
+                                    if let Some(input) = maybe_complete
+                                        .then(|| serde_json::from_str::<Value>(buffer).ok())
+                                        .flatten()
+                                    {
                                         deltas.emit(
                                             sequence,
                                             AcpEvent::ToolCallUpdate {
@@ -1111,6 +1146,19 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                     }
                 }
                 "result" => {
+                    let is_error = event
+                        .get("is_error")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let text = event.get("result").and_then(value_text);
+                    let empty = text.as_deref().is_none_or(|t| t.trim().is_empty());
+                    if !turn_produced && empty && !is_error && held_result.is_none() {
+                        held_result = Some((
+                            text,
+                            event_subtype.or_else(|| first_string(&event, &["status"])),
+                        ));
+                        continue;
+                    }
                     result_seen = true;
                     if let Some(usage) = event.get("usage").filter(|u| has_usage_counters(u)) {
                         let cost = event

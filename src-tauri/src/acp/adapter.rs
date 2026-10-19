@@ -135,7 +135,11 @@ pub(super) fn build_stdio_adapter(runtime: &str) -> Result<Option<StdioAdapterSp
         r
     } else {
         let r = resolve_adapter_for_kind(kind);
-        adapter_cache().insert(kind, r.clone());
+        // Only successes are cached: a transient failure (e.g. the permission bridge not
+        // ready yet at startup) must not stick until the user re-runs detection.
+        if r.is_ok() {
+            adapter_cache().insert(kind, r.clone());
+        }
         r
     };
     let resolved = resolved?;
