@@ -1,31 +1,18 @@
-use axum::{
-    extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
-    response::{
-        sse::{Event as SseEvent, KeepAlive, Sse},
-        Html, Json,
-    },
-    routing::{get, post},
-    Router,
-};
-use futures::stream::{Stream, StreamExt};
+mod api;
+
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
-use tauri::{AppHandle, Listener, Manager};
-
-use crate::types::AppState;
+use tauri::{AppHandle, Listener};
 
 const DEFAULT_PORT: u16 = 8420;
-const COMPANION_HTML: &str = include_str!("companion.html");
 const TOKEN_FILE: &str = "companion_token";
 /// Upper bound on how long stop waits for in-flight requests (e.g. a long
 /// `assistant_chat`) before the server future is dropped outright.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
-const FORWARDED_EVENTS: &[&str] = &["acp/delta", "session/update", "acp/stream"];
+const FORWARDED_EVENTS: &[&str] = &["acp/delta", "acp/stream", api::CHANGED_EVENT];
 
 #[derive(Clone, Debug)]
 pub struct GatewayEvent {
@@ -227,206 +214,6 @@ fn build_status(running: bool, port: u16, token: &str) -> GatewayStatus {
 }
 
 // ---------------------------------------------------------------------------
-// Axum HTTP Handlers
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-struct AuthQuery {
-    token: Option<String>,
-}
-
-fn constant_time_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
-fn verify_token(headers: &HeaderMap, query: &AuthQuery, expected: &str) -> bool {
-    if let Some(ref q) = query.token {
-        if constant_time_eq(q, expected) {
-            return true;
-        }
-    }
-    if let Some(auth) = headers.get("authorization").and_then(|h| h.to_str().ok()) {
-        if let Some(token) = auth.strip_prefix("Bearer ") {
-            if constant_time_eq(token.trim(), expected) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-async fn handle_index() -> Html<&'static str> {
-    Html(COMPANION_HTML)
-}
-
-async fn handle_status(
-    State(ctx): State<ServerContext>,
-    headers: HeaderMap,
-    Query(auth): Query<AuthQuery>,
-) -> Result<Json<Value>, StatusCode> {
-    if !verify_token(&headers, &auth, &ctx.token.borrow()) {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    Ok(Json(
-        json!({ "ok": true, "name": "jockey-companion", "version": "0.1.0" }),
-    ))
-}
-
-async fn handle_sessions(
-    State(ctx): State<ServerContext>,
-    headers: HeaderMap,
-    Query(auth): Query<AuthQuery>,
-) -> Result<Json<Value>, StatusCode> {
-    if !verify_token(&headers, &auth, &ctx.token.borrow()) {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    let app_state = ctx.app.state::<AppState>();
-    match crate::db::app_session::list_app_sessions(app_state, None) {
-        Ok(sessions) => Ok(Json(serde_json::to_value(sessions).unwrap_or(json!([])))),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
-}
-
-async fn handle_session_detail(
-    State(ctx): State<ServerContext>,
-    Path(session_id): Path<String>,
-    headers: HeaderMap,
-    Query(auth): Query<AuthQuery>,
-) -> Result<Json<Value>, StatusCode> {
-    if !verify_token(&headers, &auth, &ctx.token.borrow()) {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    let app_state = ctx.app.state::<AppState>();
-    match crate::db::app_session::get_app_sessions_by_ids(app_state.inner(), &[session_id]) {
-        Ok(mut list) => {
-            if let Some(session) = list.pop() {
-                Ok(Json(serde_json::to_value(session).unwrap_or(json!({}))))
-            } else {
-                Err(StatusCode::NOT_FOUND)
-            }
-        }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
-}
-
-#[derive(Deserialize)]
-struct ChatInput {
-    input: String,
-}
-
-async fn handle_session_chat(
-    State(ctx): State<ServerContext>,
-    Path(session_id): Path<String>,
-    headers: HeaderMap,
-    Query(auth): Query<AuthQuery>,
-    Json(body): Json<ChatInput>,
-) -> Result<Json<Value>, StatusCode> {
-    if !verify_token(&headers, &auth, &ctx.token.borrow()) {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    let app_state = ctx.app.state::<AppState>();
-    let input = crate::types::AssistantChatInput {
-        input: body.input,
-        runtime_kind: None,
-        app_session_id: Some(session_id),
-        attachments: Vec::new(),
-        context: crate::types::ChatContextOptions::default(),
-    };
-    match crate::chat::assistant_chat(ctx.app.clone(), app_state, input).await {
-        Ok(res) => Ok(Json(serde_json::to_value(res).unwrap_or(json!({})))),
-        Err(e) => Ok(Json(json!({ "ok": false, "error": e }))),
-    }
-}
-
-async fn handle_permissions(
-    State(ctx): State<ServerContext>,
-    headers: HeaderMap,
-    Query(auth): Query<AuthQuery>,
-) -> Result<Json<Value>, StatusCode> {
-    if !verify_token(&headers, &auth, &ctx.token.borrow()) {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    let perms = crate::acp::list_pending_permissions();
-    Ok(Json(serde_json::to_value(perms).unwrap_or(json!([]))))
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RespondPermissionInput {
-    request_id: String,
-    option_id: String,
-    cancelled: bool,
-}
-
-async fn handle_permission_respond(
-    State(ctx): State<ServerContext>,
-    headers: HeaderMap,
-    Query(auth): Query<AuthQuery>,
-    Json(body): Json<RespondPermissionInput>,
-) -> Result<Json<Value>, StatusCode> {
-    if !verify_token(&headers, &auth, &ctx.token.borrow()) {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    match crate::commands::runtime_cmd::respond_permission(
-        body.request_id,
-        body.option_id,
-        body.cancelled,
-    )
-    .await
-    {
-        Ok(_) => {
-            let _ = ctx.broadcaster.send(GatewayEvent {
-                event_name: "permission_update".to_string(),
-                payload: json!({ "status": "resolved" }).to_string(),
-            });
-            Ok(Json(json!({ "ok": true })))
-        }
-        Err(e) => Ok(Json(json!({ "ok": false, "error": e }))),
-    }
-}
-
-async fn handle_events(
-    State(ctx): State<ServerContext>,
-    headers: HeaderMap,
-    Query(auth): Query<AuthQuery>,
-) -> Result<Sse<impl Stream<Item = Result<SseEvent, std::convert::Infallible>>>, StatusCode> {
-    if !verify_token(&headers, &auth, &ctx.token.borrow()) {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    let rx = ctx.broadcaster.subscribe();
-    let mut shutdown = ctx.shutdown.clone();
-    let mut token = ctx.token.clone();
-    token.mark_unchanged();
-    // SSE streams never end on their own; without this, graceful shutdown would
-    // wait forever on any connected client and keep the port bound.
-    let stopped = async move {
-        tokio::select! {
-            _ = shutdown.wait_for(|stop| *stop) => {}
-            _ = token.changed() => {}
-        }
-    };
-    let stream = futures::stream::unfold(rx, |mut rx| async move {
-        loop {
-            match rx.recv().await {
-                Ok(ev) => {
-                    let sse_event = SseEvent::default().event(ev.event_name).data(ev.payload);
-                    return Some((Ok::<_, std::convert::Infallible>(sse_event), rx));
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
-            }
-        }
-    })
-    .take_until(Box::pin(stopped));
-
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
-}
-
-// ---------------------------------------------------------------------------
 // Tauri Commands
 // ---------------------------------------------------------------------------
 
@@ -496,16 +283,7 @@ pub async fn start_gateway_cmd(
         shutdown: shutdown_rx.clone(),
     };
 
-    let router = Router::new()
-        .route("/", get(handle_index))
-        .route("/api/status", get(handle_status))
-        .route("/api/sessions", get(handle_sessions))
-        .route("/api/sessions/:id", get(handle_session_detail))
-        .route("/api/sessions/:id/chat", post(handle_session_chat))
-        .route("/api/permissions", get(handle_permissions))
-        .route("/api/permissions/respond", post(handle_permission_respond))
-        .route("/api/events", get(handle_events))
-        .with_state(server_ctx);
+    let router = api::router(server_ctx);
 
     let task = tokio::spawn(async move {
         eprintln!("[web_gateway] running on http://{addr}");
@@ -559,14 +337,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn constant_time_eq_matches_only_identical_tokens() {
-        assert!(constant_time_eq("abc123", "abc123"));
-        assert!(!constant_time_eq("abc123", "abc124"));
-        assert!(!constant_time_eq("abc", "abc123"));
-        assert!(!constant_time_eq("", "x"));
-    }
-
-    #[test]
     fn private_lan_ip_covers_only_rfc1918() {
         assert!(is_private_lan_ip("192.168.1.20"));
         assert!(is_private_lan_ip("10.0.0.5"));
@@ -576,20 +346,5 @@ mod tests {
         assert!(!is_private_lan_ip("172.32.0.1"));
         assert!(!is_private_lan_ip("100.64.0.1"));
         assert!(!is_private_lan_ip("not-an-ip"));
-    }
-
-    #[test]
-    fn verify_token_accepts_query_or_bearer() {
-        let mut headers = HeaderMap::new();
-        let none = AuthQuery { token: None };
-        assert!(!verify_token(&headers, &none, "t0k"));
-        let q = AuthQuery {
-            token: Some("t0k".into()),
-        };
-        assert!(verify_token(&headers, &q, "t0k"));
-        headers.insert("authorization", "Bearer t0k".parse().unwrap());
-        assert!(verify_token(&headers, &none, "t0k"));
-        headers.insert("authorization", "Bearer nope".parse().unwrap());
-        assert!(!verify_token(&headers, &none, "t0k"));
     }
 }

@@ -7,6 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#0c0d0e">
   <title>Jockey Companion</title>
+  <script src="/assets/marked.js"></script>
   <style>
     :root {
       --bg: #0c0d0e;
@@ -18,406 +19,398 @@
       --muted: #8c959f;
       --accent: #6366f1;
       --accent-hover: #4f46e5;
+      --accent-soft: rgba(99, 102, 241, 0.16);
       --success: #10b981;
       --danger: #ef4444;
       --warning: #f59e0b;
+      --code-bg: #0f1113;
       --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sidebar-w: 300px;
     }
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-      -webkit-tap-highlight-color: transparent;
-    }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    html, body { height: 100%; }
     body {
-      background-color: var(--bg);
+      background: var(--bg);
       color: var(--text);
       font-family: var(--font);
+      font-size: 15px;
       height: 100dvh;
+      overflow: hidden;
+      display: flex;
+    }
+    button { font-family: inherit; color: inherit; }
+
+    /* ---------- Sidebar ---------- */
+    #sidebar {
+      width: var(--sidebar-w);
+      max-width: 86vw;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
       display: flex;
       flex-direction: column;
-      overflow: hidden;
-      font-size: 15px;
+      flex-shrink: 0;
+      z-index: 40;
     }
-    /* Header */
+    .sidebar-head {
+      padding: max(12px, env(safe-area-inset-top)) 14px 10px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .sidebar-head .brand { font-weight: 600; flex: 1; }
+    #project-list { flex: 1; overflow-y: auto; padding: 8px 8px 16px; -webkit-overflow-scrolling: touch; }
+    .sidebar-foot {
+      padding: 10px 12px max(10px, env(safe-area-inset-bottom));
+      border-top: 1px solid var(--border);
+    }
+    .project { margin-bottom: 4px; }
+    .project-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 8px;
+      border-radius: 8px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .project-row:active, .project-row:hover { background: var(--surface-hover); }
+    .project-row .chev { color: var(--muted); font-size: 11px; width: 12px; transition: transform 0.15s; }
+    .project.open .chev { transform: rotate(90deg); }
+    .project-name { font-weight: 600; font-size: 13.5px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .project-count { font-size: 11px; color: var(--muted); }
+    .project-body { display: none; padding: 2px 0 6px 18px; }
+    .project.open .project-body { display: block; }
+    .project-path { font-size: 11px; color: var(--muted); font-family: var(--mono); padding: 0 8px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session-item {
+      padding: 8px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      border: 1px solid transparent;
+    }
+    .session-item:active, .session-item:hover { background: var(--surface-hover); }
+    .session-item.active { background: var(--accent-soft); border-color: rgba(99, 102, 241, 0.35); }
+    .session-title-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .session-title { font-size: 13.5px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session-time { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+    .session-preview { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .run-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warning); flex-shrink: 0; animation: pulse 1.2s infinite; }
+    .project-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 4px 2px; }
+    .chip {
+      font-size: 12px;
+      padding: 5px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .chip:active, .chip:hover { color: var(--text); background: var(--surface-hover); }
+    .chip.primary { color: #c7d2fe; border-color: rgba(99, 102, 241, 0.45); }
+    .empty-hint { font-size: 12px; color: var(--muted); padding: 6px 10px; }
+    #backdrop { display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 30; }
+
+    @media (max-width: 899px) {
+      #sidebar { position: fixed; top: 0; bottom: 0; left: 0; transform: translateX(-100%); transition: transform 0.2s ease; }
+      body.drawer-open #sidebar { transform: translateX(0); }
+      body.drawer-open #backdrop { display: block; }
+    }
+    @media (min-width: 900px) {
+      #btn-menu, #btn-close-drawer { display: none !important; }
+    }
+
+    /* ---------- Main ---------- */
+    #main { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100dvh; }
     header {
-      padding: max(10px, env(safe-area-inset-top)) 16px 10px;
+      padding: max(10px, env(safe-area-inset-top)) 12px 10px;
       background: var(--surface);
       border-bottom: 1px solid var(--border);
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
       flex-shrink: 0;
-      z-index: 20;
     }
-    .status-dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      background: #4b5563;
-      transition: background 0.3s;
-    }
+    .status-dot { width: 9px; height: 9px; border-radius: 50%; background: #4b5563; flex-shrink: 0; }
     .status-dot.online { background: var(--success); box-shadow: 0 0 8px rgba(16, 185, 129, 0.6); }
-    .status-dot.connecting { background: var(--warning); box-shadow: 0 0 8px rgba(245, 158, 11, 0.6); }
-    .status-dot.offline { background: var(--danger); }
-    
-    .header-title {
-      font-weight: 600;
-      font-size: 15px;
-      letter-spacing: -0.2px;
-      white-space: nowrap;
-    }
-    .session-picker {
-      flex: 1;
-      background: var(--bg);
-      color: var(--text);
-      border: 1px solid var(--border);
-      padding: 6px 10px;
-      border-radius: 8px;
-      font-size: 13px;
-      min-width: 0;
-      text-overflow: ellipsis;
-      outline: none;
-    }
+    .status-dot.connecting { background: var(--warning); }
+    .header-titles { flex: 1; min-width: 0; cursor: pointer; }
+    .header-session { font-weight: 600; font-size: 14.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .header-sub { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .btn-icon {
       background: transparent;
       border: 1px solid var(--border);
       color: var(--muted);
       border-radius: 8px;
-      width: 32px;
-      height: 32px;
+      width: 34px;
+      height: 34px;
       display: flex;
       align-items: center;
       justify-content: center;
       cursor: pointer;
+      flex-shrink: 0;
     }
     .btn-icon:active { background: var(--surface-hover); color: var(--text); }
 
-    /* Approvals Drawer / Section */
+    /* Approvals */
     #approvals-section {
       background: #1e1710;
       border-bottom: 1px solid rgba(245, 158, 11, 0.3);
-      padding: 10px 16px;
+      padding: 10px 12px;
       display: none;
       flex-shrink: 0;
       max-height: 45vh;
       overflow-y: auto;
     }
-    .approval-card {
-      background: #281d11;
-      border: 1px solid #784a15;
-      border-radius: 10px;
-      padding: 12px;
-      margin-bottom: 8px;
-    }
+    .approval-card { background: #281d11; border: 1px solid #784a15; border-radius: 10px; padding: 12px; margin-bottom: 8px; }
     .approval-card:last-child { margin-bottom: 0; }
-    .approval-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 6px;
-    }
-    .approval-badge {
-      background: rgba(245, 158, 11, 0.2);
-      color: #fbbf24;
-      padding: 2px 7px;
-      border-radius: 6px;
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-    }
-    .approval-title {
-      font-weight: 600;
-      font-size: 14px;
-      color: #fef3c7;
-      margin-bottom: 4px;
-    }
-    .approval-desc {
-      font-size: 12px;
-      color: #d1d5db;
-      font-family: monospace;
-      background: rgba(0, 0, 0, 0.3);
-      padding: 6px 8px;
-      border-radius: 6px;
-      word-break: break-all;
-      max-height: 80px;
-      overflow-y: auto;
-      margin-bottom: 10px;
-    }
-    .approval-actions {
-      display: flex;
-      gap: 8px;
-    }
-    .btn-allow {
-      flex: 2;
-      background: var(--success);
-      color: #fff;
-      border: none;
-      padding: 10px 12px;
-      border-radius: 8px;
-      font-weight: 600;
-      font-size: 14px;
-      cursor: pointer;
-    }
-    .btn-allow:active { opacity: 0.85; }
-    .btn-allow-always {
-      flex: 1.5;
-      background: #3b82f6;
-      color: #fff;
-      border: none;
-      padding: 10px 8px;
-      border-radius: 8px;
-      font-weight: 600;
-      font-size: 13px;
-      cursor: pointer;
-    }
-    .btn-deny {
-      flex: 1;
-      background: rgba(239, 68, 68, 0.2);
-      color: #f87171;
-      border: 1px solid rgba(239, 68, 68, 0.4);
-      padding: 10px 8px;
-      border-radius: 8px;
-      font-weight: 600;
-      font-size: 13px;
-      cursor: pointer;
-    }
-    .btn-deny:active { background: rgba(239, 68, 68, 0.4); }
+    .approval-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 8px; }
+    .approval-badge { background: rgba(245, 158, 11, 0.2); color: #fbbf24; padding: 2px 7px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+    .approval-session { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .approval-title { font-weight: 600; font-size: 14px; color: #fef3c7; margin-bottom: 4px; overflow-wrap: anywhere; }
+    .approval-desc { font-size: 12px; color: #d1d5db; font-family: var(--mono); background: rgba(0, 0, 0, 0.3); padding: 6px 8px; border-radius: 6px; overflow-wrap: anywhere; max-height: 80px; overflow-y: auto; margin-bottom: 10px; }
+    .approval-actions { display: flex; gap: 8px; }
+    .approval-actions button { border: none; padding: 10px 8px; border-radius: 8px; font-weight: 600; font-size: 13px; cursor: pointer; }
+    .btn-allow { flex: 2; background: var(--success); color: #fff; }
+    .btn-allow-always { flex: 1.5; background: #3b82f6; color: #fff; }
+    .btn-deny { flex: 1; background: rgba(239, 68, 68, 0.2) !important; color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4) !important; }
 
-    /* Messages Stream */
+    /* Messages */
     #messages-container {
       flex: 1;
       overflow-y: auto;
-      padding: 16px;
+      overflow-x: hidden;
+      padding: 16px 12px;
       display: flex;
       flex-direction: column;
       gap: 14px;
       -webkit-overflow-scrolling: touch;
     }
-    .msg-group {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
+    .placeholder { text-align: center; color: var(--muted); font-size: 13px; padding: 48px 12px; line-height: 1.6; }
+    .msg-group { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
     .msg-user {
       align-self: flex-end;
       background: #272a30;
-      color: var(--text);
       padding: 10px 14px;
       border-radius: 16px 16px 2px 16px;
       max-width: 88%;
-      word-break: break-word;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
       font-size: 14.5px;
       line-height: 1.45;
     }
     .msg-agent {
-      align-self: flex-start;
+      align-self: stretch;
       background: var(--surface-card);
       border: 1px solid var(--border);
       padding: 12px 14px;
-      border-radius: 16px 16px 16px 2px;
-      max-width: 95%;
-      word-break: break-word;
+      border-radius: 14px 14px 14px 2px;
+      min-width: 0;
+      overflow-wrap: anywhere;
       font-size: 14.5px;
-      line-height: 1.5;
+      line-height: 1.55;
     }
-    .msg-meta {
-      font-size: 11px;
-      color: var(--muted);
-      margin-bottom: 4px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .msg-role-tag {
-      background: rgba(99, 102, 241, 0.2);
-      color: #a5b4fc;
-      padding: 1px 6px;
-      border-radius: 4px;
-      font-weight: 500;
-    }
-    .thought-box {
-      margin-bottom: 8px;
-      background: rgba(0, 0, 0, 0.25);
-      border-left: 2px solid #6366f1;
-      padding: 6px 10px;
-      border-radius: 0 6px 6px 0;
-      font-size: 13px;
-      color: #9ca3af;
-    }
-    .thought-box summary {
-      cursor: pointer;
-      font-size: 12px;
-      color: #818cf8;
-      font-weight: 500;
-    }
-    .tool-call-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 3px 8px;
-      font-size: 12px;
-      font-family: monospace;
-      color: #d1d5db;
-      margin: 4px 0;
-    }
-    .cursor-pulse {
-      display: inline-block;
-      width: 7px;
-      height: 14px;
-      background: var(--accent);
-      vertical-align: middle;
-      animation: pulse 1s infinite;
-      margin-left: 2px;
-    }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+    .msg-event { align-self: center; font-size: 12px; color: var(--muted); background: rgba(255, 255, 255, 0.04); padding: 4px 10px; border-radius: 999px; max-width: 92%; overflow-wrap: anywhere; text-align: center; }
+    .msg-event.error { color: #fca5a5; background: rgba(239, 68, 68, 0.12); }
+    .msg-meta { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+    .msg-role-tag { background: rgba(99, 102, 241, 0.2); color: #a5b4fc; padding: 1px 6px; border-radius: 4px; font-weight: 500; }
+    .thought-box { margin-bottom: 8px; background: rgba(0, 0, 0, 0.25); border-left: 2px solid var(--accent); padding: 6px 10px; border-radius: 0 6px 6px 0; font-size: 13px; color: #9ca3af; }
+    .thought-box summary, .tools-box summary { cursor: pointer; font-size: 12px; color: #818cf8; font-weight: 500; }
+    .thought-box div { margin-top: 4px; white-space: pre-wrap; }
+    .tools-box { margin-bottom: 8px; font-size: 12px; }
+    .tool-call-pill { display: flex; gap: 6px; align-items: baseline; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-family: var(--mono); color: #d1d5db; margin-top: 4px; overflow-wrap: anywhere; }
+    .tool-status { color: var(--muted); flex-shrink: 0; }
+    .cursor-pulse { display: inline-block; width: 7px; height: 14px; background: var(--accent); vertical-align: middle; animation: pulse 1s infinite; margin-left: 2px; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 
-    /* Footer / Input Bar */
+    /* Markdown */
+    .md > :first-child { margin-top: 0; }
+    .md > :last-child { margin-bottom: 0; }
+    .md p, .md ul, .md ol, .md pre, .md blockquote, .md .table-wrap { margin: 0 0 10px; }
+    .md h1, .md h2, .md h3, .md h4 { margin: 14px 0 8px; line-height: 1.3; }
+    .md h1 { font-size: 18px; } .md h2 { font-size: 16.5px; } .md h3 { font-size: 15.5px; } .md h4 { font-size: 14.5px; }
+    .md ul, .md ol { padding-left: 20px; }
+    .md li { margin: 3px 0; }
+    .md li > ul, .md li > ol { margin: 3px 0; }
+    .md code { font-family: var(--mono); font-size: 12.5px; background: rgba(255, 255, 255, 0.07); padding: 1px 5px; border-radius: 4px; }
+    .md pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .md pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.5; white-space: pre; overflow-wrap: normal; }
+    .md blockquote { border-left: 3px solid var(--border); padding-left: 10px; color: var(--muted); }
+    .md hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+    .md a { color: #a5b4fc; }
+    .md .md-link { color: #c7d2fe; border-bottom: 1px dotted rgba(199, 210, 254, 0.5); }
+    .md .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .md table { border-collapse: collapse; font-size: 13px; min-width: 100%; }
+    .md th, .md td { border: 1px solid var(--border); padding: 5px 8px; text-align: left; vertical-align: top; overflow-wrap: normal; }
+    .md th { background: rgba(255, 255, 255, 0.04); }
+
+    /* Footer */
     footer {
       background: var(--surface);
       border-top: 1px solid var(--border);
-      padding: 10px 14px max(10px, env(safe-area-inset-bottom));
+      padding: 10px 12px max(10px, env(safe-area-inset-bottom));
       display: flex;
       align-items: flex-end;
       gap: 10px;
       flex-shrink: 0;
-      z-index: 20;
     }
     .chat-input {
       flex: 1;
+      min-width: 0;
       background: var(--bg);
       border: 1px solid var(--border);
       border-radius: 20px;
       padding: 10px 16px;
       color: var(--text);
-      font-size: 15px;
+      font-size: 16px; /* >= 16px keeps iOS Safari from zooming on focus */
       font-family: inherit;
       resize: none;
-      max-height: 120px;
+      max-height: 140px;
       min-height: 42px;
       line-height: 20px;
       outline: none;
     }
-    .chat-input:focus {
-      border-color: var(--accent);
-    }
-    .btn-send {
-      width: 42px;
-      height: 42px;
-      border-radius: 50%;
-      background: var(--accent);
-      color: #fff;
-      border: none;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      flex-shrink: 0;
-    }
-    .btn-send:disabled {
-      background: #2d3139;
-      color: #6b7280;
-    }
-    .btn-send:active:not(:disabled) {
-      background: var(--accent-hover);
-    }
+    .chat-input:focus { border-color: var(--accent); }
+    .chat-input:disabled { opacity: 0.5; }
+    .btn-round { width: 42px; height: 42px; border-radius: 50%; border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; color: #fff; }
+    .btn-send { background: var(--accent); }
+    .btn-send:disabled { background: #2d3139; color: #6b7280; }
+    .btn-stop { background: var(--danger); display: none; }
 
-    /* Modal / Auth */
-    .modal-backdrop {
+    /* Modals */
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.8); display: none; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
+    .modal-backdrop.show { display: flex; }
+    .modal-card { background: var(--surface-card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; width: 100%; max-width: 420px; max-height: 86dvh; display: flex; flex-direction: column; }
+    .modal-title { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
+    .modal-desc { font-size: 13px; color: var(--muted); margin-bottom: 14px; line-height: 1.45; }
+    .modal-input { width: 100%; padding: 11px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 16px; margin-bottom: 10px; outline: none; font-family: inherit; }
+    .modal-input:focus { border-color: var(--accent); }
+    .modal-actions { display: flex; gap: 8px; margin-top: 6px; }
+    .btn { flex: 1; padding: 11px; border-radius: 8px; font-weight: 600; font-size: 14.5px; cursor: pointer; border: 1px solid var(--border); background: transparent; color: var(--text); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn:disabled { opacity: 0.5; }
+    .modal-list { overflow-y: auto; margin: 0 -4px 10px; padding: 0 4px; flex: 1; min-height: 60px; }
+    .list-item { display: flex; gap: 10px; align-items: flex-start; padding: 10px 6px; border-bottom: 1px solid var(--border); }
+    .list-item:last-child { border-bottom: none; }
+    .list-item input[type="checkbox"] { margin-top: 3px; width: 17px; height: 17px; accent-color: var(--accent); flex-shrink: 0; }
+    .list-main { flex: 1; min-width: 0; }
+    .list-title { font-size: 13.5px; overflow-wrap: anywhere; }
+    .list-sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+    .list-item .chip { flex-shrink: 0; }
+
+    #toast {
       position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.85);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      z-index: 100;
-      padding: 20px;
-    }
-    .modal-card {
-      background: var(--surface-card);
+      left: 50%;
+      bottom: calc(80px + env(safe-area-inset-bottom));
+      transform: translateX(-50%);
+      background: #2a2e35;
       border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 24px;
-      width: 100%;
-      max-width: 360px;
-      text-align: center;
-    }
-    .modal-title { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
-    .modal-desc { font-size: 13px; color: var(--muted); margin-bottom: 18px; line-height: 1.4; }
-    .modal-input {
-      width: 100%;
-      padding: 12px;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 8px;
       color: var(--text);
-      font-size: 14px;
-      margin-bottom: 16px;
-      outline: none;
-      text-align: center;
+      padding: 9px 14px;
+      border-radius: 10px;
+      font-size: 13px;
+      z-index: 200;
+      max-width: calc(100vw - 32px);
+      display: none;
+      overflow-wrap: anywhere;
     }
-    .modal-btn {
-      width: 100%;
-      padding: 12px;
-      background: var(--accent);
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      font-weight: 600;
-      font-size: 15px;
-      cursor: pointer;
-    }
+    #toast.error { border-color: rgba(239, 68, 68, 0.5); color: #fecaca; }
   </style>
 </head>
 <body>
 
-  <!-- Header -->
-  <header>
-    <div id="status-indicator" class="status-dot connecting" title="连接中..."></div>
-    <div class="header-title">Jockey</div>
-    <select id="session-select" class="session-picker">
-      <option value="">正在加载会话...</option>
-    </select>
-    <button id="btn-refresh" class="btn-icon" title="刷新">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
-    </button>
-  </header>
+  <aside id="sidebar">
+    <div class="sidebar-head">
+      <div id="status-indicator" class="status-dot connecting" title="连接中..."></div>
+      <div class="brand">Jockey</div>
+      <button id="btn-refresh" class="btn-icon" title="刷新">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
+      </button>
+      <button id="btn-close-drawer" class="btn-icon" title="关闭">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div id="project-list"><div class="empty-hint">加载中...</div></div>
+    <div class="sidebar-foot">
+      <button id="btn-add-project" class="btn" style="width:100%">+ 添加项目</button>
+    </div>
+  </aside>
+  <div id="backdrop"></div>
 
-  <!-- Approvals Section (Populated dynamically) -->
-  <div id="approvals-section">
-    <div id="approvals-list"></div>
+  <div id="main">
+    <header>
+      <button id="btn-menu" class="btn-icon" title="项目与会话">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <div class="header-titles" id="header-titles">
+        <div class="header-session" id="header-session">未选择会话</div>
+        <div class="header-sub" id="header-sub">点击左上角选择项目和会话</div>
+      </div>
+    </header>
+
+    <div id="approvals-section"><div id="approvals-list"></div></div>
+
+    <main id="messages-container">
+      <div class="placeholder">连接到主机中...</div>
+    </main>
+
+    <footer>
+      <textarea id="chat-input" class="chat-input" rows="1" placeholder="发送指令给当前 Agent..." disabled></textarea>
+      <button id="btn-stop" class="btn-round btn-stop" title="停止">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+      </button>
+      <button id="btn-send" class="btn-round btn-send" disabled title="发送">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
+      </button>
+    </footer>
   </div>
 
-  <!-- Messages Scroll Area -->
-  <main id="messages-container">
-    <div style="text-align: center; color: var(--muted); font-size: 13px; padding: 40px 0;">
-      连接到家里主机中...
-    </div>
-  </main>
-
-  <!-- Input Footer -->
-  <footer>
-    <textarea id="chat-input" class="chat-input" rows="1" placeholder="发送指令给当前 Agent..."></textarea>
-    <button id="btn-send" class="btn-send" disabled>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
-    </button>
-  </footer>
-
-  <!-- Auth Modal -->
+  <!-- Auth -->
   <div id="auth-modal" class="modal-backdrop">
-    <div class="modal-card">
+    <div class="modal-card" style="text-align:center">
       <h3 class="modal-title">需要访问令牌</h3>
-      <p class="modal-desc">请在桌面端 Jockey 设置中复制远程访问 Token 填入此处。</p>
-      <input id="token-input" type="password" class="modal-input" placeholder="输入 Token..." />
-      <button id="btn-save-token" class="modal-btn">连接</button>
+      <p class="modal-desc">请在桌面端 Jockey 设置 → Remote Web Companion 中复制 Token 填入此处。</p>
+      <input id="token-input" type="password" class="modal-input" style="text-align:center" placeholder="输入 Token..." />
+      <button id="btn-save-token" class="btn primary">连接</button>
     </div>
   </div>
+
+  <!-- Add project -->
+  <div id="project-modal" class="modal-backdrop">
+    <div class="modal-card">
+      <h3 class="modal-title">添加项目</h3>
+      <p class="modal-desc">填写主机上的项目目录绝对路径（支持 ~/ 开头）。</p>
+      <input id="project-path" class="modal-input" placeholder="~/Documents/GitHub/my-app" autocapitalize="off" autocorrect="off" spellcheck="false" />
+      <input id="project-name" class="modal-input" placeholder="项目名称（可选，默认取目录名）" />
+      <div class="modal-actions">
+        <button class="btn" data-close="project-modal">取消</button>
+        <button id="btn-create-project" class="btn primary">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Generic list modal (closed sessions / import) -->
+  <div id="list-modal" class="modal-backdrop">
+    <div class="modal-card">
+      <h3 class="modal-title" id="list-title"></h3>
+      <p class="modal-desc" id="list-desc"></p>
+      <div class="modal-list" id="list-body"></div>
+      <div class="modal-actions">
+        <button class="btn" data-close="list-modal">关闭</button>
+        <button id="list-confirm" class="btn primary" style="display:none"></button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
 
   <script>
+    // ---------------------------------------------------------------------
     // State
+    // ---------------------------------------------------------------------
     const urlToken = new URLSearchParams(window.location.search).get('token');
     let authToken = urlToken || localStorage.getItem('jockey_token') || '';
     if (urlToken) {
@@ -426,317 +419,730 @@
       history.replaceState(null, '', window.location.pathname);
     }
 
-    let activeSessionId = '';
+    let projects = [];
     let sessions = [];
+    let activeSessionId = localStorage.getItem('jockey_active_session') || '';
+    let activeSession = null;
     let pendingPermissions = [];
     let eventSource = null;
-    let streamText = '';
-    let isStreaming = false;
+    let openProjects = new Set(JSON.parse(localStorage.getItem('jockey_open_projects') || '[]'));
+    let liveBubble = null;
+    let liveText = '';
+    let liveRenderQueued = false;
 
-    // DOM Elements
-    const statusDot = document.getElementById('status-indicator');
-    const sessionSelect = document.getElementById('session-select');
-    const messagesContainer = document.getElementById('messages-container');
-    const chatInput = document.getElementById('chat-input');
-    const btnSend = document.getElementById('btn-send');
-    const btnRefresh = document.getElementById('btn-refresh');
-    const approvalsSection = document.getElementById('approvals-section');
-    const approvalsList = document.getElementById('approvals-list');
-    const authModal = document.getElementById('auth-modal');
-    const tokenInput = document.getElementById('token-input');
-    const btnSaveToken = document.getElementById('btn-save-token');
+    const $ = (id) => document.getElementById(id);
+    const statusDot = $('status-indicator');
+    const projectList = $('project-list');
+    const messagesContainer = $('messages-container');
+    const chatInput = $('chat-input');
+    const btnSend = $('btn-send');
+    const btnStop = $('btn-stop');
+    const approvalsSection = $('approvals-section');
+    const approvalsList = $('approvals-list');
 
-    // Auth verification
-    function checkAuth() {
-      if (!authToken) {
-        authModal.style.display = 'flex';
-        return false;
-      }
-      authModal.style.display = 'none';
-      return true;
+    // ---------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
-    btnSaveToken.onclick = () => {
-      const val = tokenInput.value.trim();
-      if (val) {
-        authToken = val;
-        localStorage.setItem('jockey_token', authToken);
-        authModal.style.display = 'none';
-        initApp();
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    let toastTimer = null;
+    function toast(message, isError = false) {
+      const t = $('toast');
+      t.textContent = message;
+      t.className = isError ? 'error' : '';
+      t.style.display = 'block';
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { t.style.display = 'none'; }, 3200);
+    }
+
+    function relTime(ms) {
+      if (!ms) return '';
+      const diff = Date.now() - ms;
+      if (diff < 60e3) return '刚刚';
+      if (diff < 3600e3) return `${Math.floor(diff / 60e3)} 分钟前`;
+      if (diff < 86400e3) return `${Math.floor(diff / 3600e3)} 小时前`;
+      if (diff < 7 * 86400e3) return `${Math.floor(diff / 86400e3)} 天前`;
+      const d = new Date(ms);
+      return `${d.getMonth() + 1}/${d.getDate()}`;
+    }
+
+    function debounce(fn, ms) {
+      let t = null;
+      return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+    }
+
+    function showAuth() {
+      $('auth-modal').classList.add('show');
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        ...options,
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json',
+          ...(options.headers || {}),
+        },
+      });
+      if (res.status === 401) {
+        localStorage.removeItem('jockey_token');
+        authToken = '';
+        showAuth();
+        throw new Error('需要重新输入 Token');
+      }
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body.ok === false) {
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      return body;
+    }
+
+    // ---------------------------------------------------------------------
+    // Markdown (agent output is untrusted: raw HTML is escaped, and only
+    // http(s)/mailto links become clickable)
+    // ---------------------------------------------------------------------
+    const hasMarked = typeof window.marked !== 'undefined';
+    if (hasMarked) {
+      marked.use({
+        gfm: true,
+        breaks: true,
+        renderer: {
+          html(token) { return escapeHtml(token.raw ?? token.text ?? ''); },
+          link(token) {
+            const text = this.parser.parseInline(token.tokens);
+            const href = token.href || '';
+            if (/^(https?:|mailto:)/i.test(href)) {
+              return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+            }
+            return `<span class="md-link" title="${escapeHtml(href)}">${text}</span>`;
+          },
+          image(token) { return escapeHtml(`[图片: ${token.text || token.href || ''}]`); },
+          table(token) {
+            const cell = (c) => this.parser.parseInline(c.tokens);
+            const head = token.header.map((c) => `<th>${cell(c)}</th>`).join('');
+            const rows = token.rows.map((r) => `<tr>${r.map((c) => `<td>${cell(c)}</td>`).join('')}</tr>`).join('');
+            return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
+          },
+        },
+      });
+    }
+
+    function renderMarkdownInto(node, text) {
+      node.classList.add('md');
+      if (!hasMarked) {
+        node.style.whiteSpace = 'pre-wrap';
+        node.textContent = text;
+        return;
+      }
+      try {
+        node.innerHTML = marked.parse(text || '');
+      } catch (_) {
+        node.style.whiteSpace = 'pre-wrap';
+        node.textContent = text;
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // Drawer
+    // ---------------------------------------------------------------------
+    const openDrawer = () => document.body.classList.add('drawer-open');
+    const closeDrawer = () => document.body.classList.remove('drawer-open');
+    $('btn-menu').onclick = openDrawer;
+    $('header-titles').onclick = openDrawer;
+    $('btn-close-drawer').onclick = closeDrawer;
+    $('backdrop').onclick = closeDrawer;
+
+    function persistOpenProjects() {
+      localStorage.setItem('jockey_open_projects', JSON.stringify([...openProjects]));
+    }
+
+    // ---------------------------------------------------------------------
+    // Projects & sessions
+    // ---------------------------------------------------------------------
+    async function loadSidebar() {
+      try {
+        const [p, s] = await Promise.all([api('/api/projects'), api('/api/sessions')]);
+        projects = p;
+        sessions = s;
+        renderSidebar();
+        updateHeader();
+      } catch (err) {
+        projectList.innerHTML = '';
+        projectList.appendChild(el('div', 'empty-hint', `加载失败：${err.message}`));
+      }
+    }
+    const loadSidebarSoon = debounce(loadSidebar, 400);
+
+    function renderSessionItem(s) {
+      const item = el('div', 'session-item' + (s.id === activeSessionId ? ' active' : ''));
+      const row = el('div', 'session-title-row');
+      if (s.running || s.streaming) row.appendChild(el('span', 'run-dot'));
+      row.appendChild(el('span', 'session-title', s.title));
+      row.appendChild(el('span', 'session-time', relTime(s.lastActiveAt)));
+      item.appendChild(row);
+      if (s.preview) item.appendChild(el('div', 'session-preview', s.preview));
+      item.onclick = () => { selectSession(s.id); closeDrawer(); };
+      return item;
+    }
+
+    function renderSidebar() {
+      projectList.innerHTML = '';
+      const byProject = new Map();
+      const unassigned = [];
+      for (const s of sessions) {
+        if (s.projectId && projects.some((p) => p.id === s.projectId)) {
+          if (!byProject.has(s.projectId)) byProject.set(s.projectId, []);
+          byProject.get(s.projectId).push(s);
+        } else {
+          unassigned.push(s);
+        }
+      }
+      // Expand the active session's project by default so the current place is visible.
+      const activeProjectId = sessions.find((s) => s.id === activeSessionId)?.projectId;
+      if (activeProjectId && !openProjects.size) openProjects.add(activeProjectId);
+
+      if (projects.length === 0 && unassigned.length === 0) {
+        projectList.appendChild(el('div', 'empty-hint', '还没有项目，点击下方「添加项目」。'));
+      }
+
+      for (const p of projects) {
+        const list = byProject.get(p.id) || [];
+        const wrap = el('div', 'project' + (openProjects.has(p.id) ? ' open' : ''));
+        const row = el('div', 'project-row');
+        row.appendChild(el('span', 'chev', '▶'));
+        row.appendChild(el('span', 'project-name', p.name));
+        row.appendChild(el('span', 'project-count', list.length ? String(list.length) : ''));
+        row.onclick = () => {
+          if (openProjects.has(p.id)) openProjects.delete(p.id); else openProjects.add(p.id);
+          persistOpenProjects();
+          wrap.classList.toggle('open');
+        };
+        wrap.appendChild(row);
+
+        const body = el('div', 'project-body');
+        body.appendChild(el('div', 'project-path', p.rootPath));
+        if (list.length === 0) body.appendChild(el('div', 'empty-hint', '暂无打开的会话'));
+        list.forEach((s) => body.appendChild(renderSessionItem(s)));
+
+        const actions = el('div', 'project-actions');
+        const newBtn = el('button', 'chip primary', '+ 新会话');
+        newBtn.onclick = () => createSession(p.id);
+        const closedBtn = el('button', 'chip', '历史会话');
+        closedBtn.onclick = () => openClosedSessions(p);
+        const importBtn = el('button', 'chip', '导入 CLI 会话');
+        importBtn.onclick = () => openImport(p);
+        actions.append(newBtn, closedBtn, importBtn);
+        body.appendChild(actions);
+
+        wrap.appendChild(body);
+        projectList.appendChild(wrap);
+      }
+
+      if (unassigned.length > 0) {
+        const wrap = el('div', 'project' + (openProjects.has('__none') ? ' open' : ''));
+        const row = el('div', 'project-row');
+        row.appendChild(el('span', 'chev', '▶'));
+        row.appendChild(el('span', 'project-name', '未归属项目'));
+        row.appendChild(el('span', 'project-count', String(unassigned.length)));
+        row.onclick = () => {
+          if (openProjects.has('__none')) openProjects.delete('__none'); else openProjects.add('__none');
+          persistOpenProjects();
+          wrap.classList.toggle('open');
+        };
+        wrap.appendChild(row);
+        const body = el('div', 'project-body');
+        unassigned.forEach((s) => body.appendChild(renderSessionItem(s)));
+        wrap.appendChild(body);
+        projectList.appendChild(wrap);
+      }
+    }
+
+    function updateHeader() {
+      const s = sessions.find((x) => x.id === activeSessionId) || activeSession;
+      if (!s) {
+        $('header-session').textContent = '未选择会话';
+        $('header-sub').textContent = '点击左上角选择项目和会话';
+        return;
+      }
+      const project = projects.find((p) => p.id === s.projectId);
+      $('header-session').textContent = s.title;
+      const bits = [project ? project.name : '未归属项目', s.activeRole, s.runtimeKind].filter(Boolean);
+      $('header-sub').textContent = bits.join(' · ');
+    }
+
+    async function createSession(projectId) {
+      try {
+        const s = await api('/api/sessions', { method: 'POST', body: JSON.stringify({ projectId }) });
+        openProjects.add(projectId);
+        persistOpenProjects();
+        await loadSidebar();
+        selectSession(s.id);
+        closeDrawer();
+        chatInput.focus();
+      } catch (err) {
+        toast(`新建会话失败：${err.message}`, true);
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // List modal: closed sessions & CLI import
+    // ---------------------------------------------------------------------
+    function openListModal({ title, desc, confirmLabel, onConfirm }) {
+      $('list-title').textContent = title;
+      $('list-desc').textContent = desc || '';
+      const body = $('list-body');
+      body.innerHTML = '';
+      body.appendChild(el('div', 'empty-hint', '加载中...'));
+      const confirm = $('list-confirm');
+      confirm.style.display = confirmLabel ? '' : 'none';
+      confirm.textContent = confirmLabel || '';
+      confirm.disabled = false;
+      confirm.onclick = onConfirm || null;
+      $('list-modal').classList.add('show');
+      return body;
+    }
+
+    async function openClosedSessions(project) {
+      const body = openListModal({ title: `历史会话 · ${project.name}`, desc: '已关闭的会话，恢复后可继续对话。' });
+      try {
+        const closed = await api(`/api/sessions/closed?projectId=${encodeURIComponent(project.id)}`);
+        body.innerHTML = '';
+        if (closed.length === 0) {
+          body.appendChild(el('div', 'empty-hint', '没有已关闭的会话'));
+          return;
+        }
+        for (const s of closed) {
+          const item = el('div', 'list-item');
+          const main = el('div', 'list-main');
+          main.appendChild(el('div', 'list-title', s.title));
+          main.appendChild(el('div', 'list-sub', `${s.messageCount} 条消息 · 关闭于 ${relTime(s.closedAt)}${s.preview ? ' · ' + s.preview : ''}`));
+          const btn = el('button', 'chip primary', '恢复');
+          btn.onclick = async () => {
+            btn.disabled = true;
+            try {
+              await api(`/api/sessions/${encodeURIComponent(s.id)}/reopen`, { method: 'POST' });
+              $('list-modal').classList.remove('show');
+              openProjects.add(project.id);
+              persistOpenProjects();
+              await loadSidebar();
+              selectSession(s.id);
+              closeDrawer();
+            } catch (err) {
+              btn.disabled = false;
+              toast(`恢复失败：${err.message}`, true);
+            }
+          };
+          item.append(main, btn);
+          body.appendChild(item);
+        }
+      } catch (err) {
+        body.innerHTML = '';
+        body.appendChild(el('div', 'empty-hint', `加载失败：${err.message}`));
+      }
+    }
+
+    async function openImport(project) {
+      const selected = new Set();
+      const body = openListModal({
+        title: `导入 CLI 会话 · ${project.name}`,
+        desc: '在本机 Claude Code / Codex 等 CLI 里跑过的会话，导入后可在 Jockey 中继续。',
+        confirmLabel: '导入所选',
+        onConfirm: async () => {
+          if (selected.size === 0) { toast('请先勾选要导入的会话', true); return; }
+          const confirm = $('list-confirm');
+          confirm.disabled = true;
+          try {
+            const imported = await api(`/api/projects/${encodeURIComponent(project.id)}/import`, {
+              method: 'POST',
+              body: JSON.stringify({ externalSessionIds: [...selected] }),
+            });
+            $('list-modal').classList.remove('show');
+            toast(`已导入 ${imported.length} 个会话`);
+            openProjects.add(project.id);
+            persistOpenProjects();
+            await loadSidebar();
+            if (imported[0]) { selectSession(imported[0].id); closeDrawer(); }
+          } catch (err) {
+            confirm.disabled = false;
+            toast(`导入失败：${err.message}`, true);
+          }
+        },
+      });
+      try {
+        const list = await api(`/api/projects/${encodeURIComponent(project.id)}/importable`);
+        body.innerHTML = '';
+        if (list.length === 0) {
+          body.appendChild(el('div', 'empty-hint', '没有找到可导入的 CLI 会话'));
+          $('list-confirm').style.display = 'none';
+          return;
+        }
+        list.sort((a, b) => (b.lastActiveAt || 0) - (a.lastActiveAt || 0));
+        for (const s of list) {
+          const item = el('label', 'list-item');
+          const box = document.createElement('input');
+          box.type = 'checkbox';
+          box.onchange = () => { if (box.checked) selected.add(s.sourceId); else selected.delete(s.sourceId); };
+          const main = el('div', 'list-main');
+          main.appendChild(el('div', 'list-title', s.title || s.externalSessionId));
+          const tag = s.imported ? ' · 已导入' : '';
+          main.appendChild(el('div', 'list-sub', `${s.agent} · ${s.turnCount} 轮 · ${relTime(s.lastActiveAt)}${tag}`));
+          item.append(box, main);
+          body.appendChild(item);
+        }
+      } catch (err) {
+        body.innerHTML = '';
+        body.appendChild(el('div', 'empty-hint', `扫描失败：${err.message}`));
+        $('list-confirm').style.display = 'none';
+      }
+    }
+
+    document.querySelectorAll('[data-close]').forEach((btn) => {
+      btn.onclick = () => $(btn.dataset.close).classList.remove('show');
+    });
+
+    // ---------------------------------------------------------------------
+    // Add project
+    // ---------------------------------------------------------------------
+    $('btn-add-project').onclick = () => {
+      $('project-path').value = '';
+      $('project-name').value = '';
+      $('project-modal').classList.add('show');
+      setTimeout(() => $('project-path').focus(), 50);
+    };
+    $('btn-create-project').onclick = async () => {
+      const rootPath = $('project-path').value.trim();
+      const name = $('project-name').value.trim();
+      if (!rootPath) { toast('请填写项目路径', true); return; }
+      const btn = $('btn-create-project');
+      btn.disabled = true;
+      try {
+        const p = await api('/api/projects', { method: 'POST', body: JSON.stringify({ rootPath, name: name || null }) });
+        $('project-modal').classList.remove('show');
+        openProjects.add(p.id);
+        persistOpenProjects();
+        await loadSidebar();
+        toast(`已添加项目 ${p.name}`);
+      } catch (err) {
+        toast(err.message, true);
+      } finally {
+        btn.disabled = false;
       }
     };
 
-    function authHeaders() {
-      return {
-        'Authorization': `Bearer ${authToken}`,
-        'Content-Type': 'application/json'
-      };
+    // ---------------------------------------------------------------------
+    // Messages
+    // ---------------------------------------------------------------------
+    function isRunning() {
+      return !!(sessions.find((s) => s.id === activeSessionId)?.running || activeSession?.running);
     }
 
-    // Auto-resize textarea
+    function updateComposer() {
+      const hasSession = !!activeSessionId && !!activeSession;
+      const running = isRunning();
+      chatInput.disabled = !hasSession;
+      chatInput.placeholder = hasSession ? (running ? 'Agent 运行中，可点右侧停止' : '发送指令给当前 Agent...') : '先从左上角选择一个会话';
+      btnStop.style.display = running ? 'flex' : 'none';
+      btnSend.style.display = running ? 'none' : 'flex';
+      btnSend.disabled = !hasSession || !chatInput.value.trim();
+    }
+
+    function setRunning(sid, running) {
+      const s = sessions.find((x) => x.id === sid);
+      if (s) s.running = running;
+      if (activeSession && activeSession.id === sid) activeSession.running = running;
+      updateComposer();
+    }
+
+    async function selectSession(sid) {
+      activeSessionId = sid;
+      localStorage.setItem('jockey_active_session', sid);
+      renderSidebar();
+      await loadMessages(sid);
+    }
+
+    async function loadMessages(sid) {
+      if (!sid) { renderMessages([]); return; }
+      try {
+        const s = await api(`/api/sessions/${encodeURIComponent(sid)}`);
+        if (sid !== activeSessionId) return;
+        activeSession = s;
+        if (s.closedAt) {
+          // The remembered session was closed on the desktop; don't keep sending into it.
+          activeSession = null;
+          activeSessionId = '';
+          localStorage.removeItem('jockey_active_session');
+          renderMessages(null);
+        } else {
+          renderMessages(s.messages || []);
+        }
+      } catch (err) {
+        if (sid !== activeSessionId) return;
+        activeSession = null;
+        renderMessages(null, `会话加载失败：${err.message}`);
+      }
+      updateHeader();
+      updateComposer();
+    }
+
+    function renderToolCalls(card, toolCalls) {
+      if (!Array.isArray(toolCalls) || toolCalls.length === 0) return;
+      const box = el('details', 'tools-box');
+      box.appendChild(el('summary', null, `工具调用 (${toolCalls.length})`));
+      for (const tc of toolCalls) {
+        const pill = el('div', 'tool-call-pill');
+        pill.appendChild(el('span', null, `⚙ ${tc.title || tc.name || tc.kind || 'tool'}`));
+        if (tc.status) pill.appendChild(el('span', 'tool-status', tc.status));
+        box.appendChild(pill);
+      }
+      card.appendChild(box);
+    }
+
+    function renderMessage(msg) {
+      const role = msg.roleName || 'assistant';
+      const group = el('div', 'msg-group');
+      if (role === 'user') {
+        group.appendChild(el('div', 'msg-user', msg.text || ''));
+        return group;
+      }
+      if (role === 'event') {
+        const text = msg.text || '';
+        group.appendChild(el('div', 'msg-event' + (/^error/i.test(text) ? ' error' : ''), text));
+        return group;
+      }
+      const meta = el('div', 'msg-meta');
+      meta.appendChild(el('span', 'msg-role-tag', role));
+      if (msg.at) meta.appendChild(el('span', null, relTime(msg.at)));
+      group.appendChild(meta);
+
+      const card = el('div', 'msg-agent');
+      if (msg.thoughtText) {
+        const thought = el('details', 'thought-box');
+        thought.appendChild(el('summary', null, '思考过程'));
+        thought.appendChild(el('div', null, msg.thoughtText));
+        card.appendChild(thought);
+      }
+      renderToolCalls(card, msg.toolCalls);
+      const textDiv = el('div');
+      renderMarkdownInto(textDiv, msg.text || '');
+      card.appendChild(textDiv);
+      group.appendChild(card);
+      return group;
+    }
+
+    function renderMessages(messages, error) {
+      liveBubble = null;
+      liveText = '';
+      messagesContainer.innerHTML = '';
+      if (error) {
+        messagesContainer.appendChild(el('div', 'placeholder', error));
+        return;
+      }
+      if (messages === null) {
+        messagesContainer.appendChild(el('div', 'placeholder', '从左上角菜单选择项目里的会话，\n或在项目下新建会话。'));
+        return;
+      }
+      if (messages.length === 0) {
+        messagesContainer.appendChild(el('div', 'placeholder', '会话暂无消息，在下方输入指令开始'));
+        return;
+      }
+      const frag = document.createDocumentFragment();
+      messages.forEach((m) => frag.appendChild(renderMessage(m)));
+      messagesContainer.appendChild(frag);
+      scrollToBottom(true);
+    }
+
+    function nearBottom() {
+      return messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < 120;
+    }
+
+    function scrollToBottom(force = false) {
+      if (force || nearBottom()) messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    function appendLiveText(delta, role) {
+      if (!liveBubble) {
+        const placeholder = messagesContainer.querySelector('.placeholder');
+        if (placeholder) placeholder.remove();
+        const group = el('div', 'msg-group');
+        const meta = el('div', 'msg-meta');
+        meta.appendChild(el('span', 'msg-role-tag', role || 'assistant'));
+        group.appendChild(meta);
+        const card = el('div', 'msg-agent');
+        liveBubble = el('div');
+        card.appendChild(liveBubble);
+        card.appendChild(el('span', 'cursor-pulse'));
+        group.appendChild(card);
+        messagesContainer.appendChild(group);
+      }
+      liveText += delta;
+      // Re-parsing the whole reply per token is wasteful; batch to one parse per frame.
+      if (!liveRenderQueued) {
+        liveRenderQueued = true;
+        requestAnimationFrame(() => {
+          liveRenderQueued = false;
+          if (!liveBubble) return;
+          const stick = nearBottom();
+          renderMarkdownInto(liveBubble, liveText);
+          if (stick) scrollToBottom(true);
+        });
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // Sending & stopping
+    // ---------------------------------------------------------------------
     chatInput.addEventListener('input', () => {
       chatInput.style.height = 'auto';
-      chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
-      btnSend.disabled = !chatInput.value.trim();
+      chatInput.style.height = Math.min(chatInput.scrollHeight, 140) + 'px';
+      updateComposer();
     });
 
     chatInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      // On phones Enter inserts a newline; only hardware keyboards send on Enter.
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && window.matchMedia('(pointer: fine)').matches) {
         e.preventDefault();
         if (!btnSend.disabled) sendMessage();
       }
     });
 
     btnSend.onclick = sendMessage;
-    btnRefresh.onclick = () => {
-      loadSessions();
-      loadPermissions();
-      if (activeSessionId) loadMessages(activeSessionId);
+
+    async function sendMessage() {
+      const text = chatInput.value.trim();
+      const sid = activeSessionId;
+      if (!text || !sid || isRunning()) return;
+      chatInput.value = '';
+      chatInput.style.height = '42px';
+      const placeholder = messagesContainer.querySelector('.placeholder');
+      if (placeholder) placeholder.remove();
+      messagesContainer.appendChild(renderMessage({ roleName: 'user', text }));
+      scrollToBottom(true);
+      setRunning(sid, true);
+      try {
+        await api(`/api/sessions/${encodeURIComponent(sid)}/chat`, { method: 'POST', body: JSON.stringify({ input: text }) });
+      } catch (err) {
+        setRunning(sid, false);
+        toast(`发送失败：${err.message}`, true);
+        if (!chatInput.value) chatInput.value = text;
+        loadMessages(sid);
+      }
+    }
+
+    btnStop.onclick = async () => {
+      const sid = activeSessionId;
+      if (!sid) return;
+      btnStop.disabled = true;
+      try {
+        await api(`/api/sessions/${encodeURIComponent(sid)}/cancel`, { method: 'POST' });
+        toast('已发送停止请求');
+      } catch (err) {
+        toast(`停止失败：${err.message}`, true);
+      } finally {
+        btnStop.disabled = false;
+      }
     };
 
-    sessionSelect.onchange = () => {
-      activeSessionId = sessionSelect.value;
-      if (activeSessionId) {
-        loadMessages(activeSessionId);
-      }
-    };
-
-    // Load Sessions
-    async function loadSessions() {
-      if (!checkAuth()) return;
-      try {
-        const res = await fetch('/api/sessions', { headers: authHeaders() });
-        if (res.status === 401) {
-          authModal.style.display = 'flex';
-          return;
-        }
-        sessions = await res.json();
-        sessionSelect.innerHTML = '';
-        if (sessions.length === 0) {
-          const opt = document.createElement('option');
-          opt.value = '';
-          opt.textContent = '暂无活动会话';
-          sessionSelect.appendChild(opt);
-          return;
-        }
-        sessions.forEach(s => {
-          const opt = document.createElement('option');
-          opt.value = s.id;
-          opt.textContent = `${s.title || '会话 ' + s.id.slice(0, 6)} (${s.activeRole || 'default'})`;
-          sessionSelect.appendChild(opt);
-        });
-
-        if (!activeSessionId || !sessions.some(s => s.id === activeSessionId)) {
-          activeSessionId = sessions[0].id;
-        }
-        sessionSelect.value = activeSessionId;
-        loadMessages(activeSessionId);
-      } catch (err) {
-        console.error('Failed to load sessions:', err);
-      }
-    }
-
-    // Load Messages
-    async function loadMessages(sid) {
-      if (!sid || !checkAuth()) return;
-      try {
-        const res = await fetch(`/api/sessions/${sid}`, { headers: authHeaders() });
-        const data = await res.json();
-        renderMessages(data.messages || []);
-      } catch (err) {
-        console.error('Failed to load messages:', err);
-      }
-    }
-
-    function renderMessages(messages) {
-      messagesContainer.innerHTML = '';
-      if (messages.length === 0) {
-        messagesContainer.innerHTML = `
-          <div style="text-align: center; color: var(--muted); font-size: 13px; padding: 40px 0;">
-            会话暂无消息，在下方输入指令开始
-          </div>
-        `;
-        return;
-      }
-
-      messages.forEach(msg => {
-        const group = document.createElement('div');
-        group.className = 'msg-group';
-
-        const role = msg.roleName || (msg.isUser ? 'user' : 'assistant');
-        const isUser = role === 'user' || msg.isUser;
-
-        if (isUser) {
-          const bubble = document.createElement('div');
-          bubble.className = 'msg-user';
-          bubble.textContent = msg.text || '';
-          group.appendChild(bubble);
-        } else {
-          const meta = document.createElement('div');
-          meta.className = 'msg-meta';
-          meta.innerHTML = `<span class="msg-role-tag">${escapeHtml(role)}</span>`;
-          group.appendChild(meta);
-
-          const card = document.createElement('div');
-          card.className = 'msg-agent';
-
-          // Thought text if any
-          if (msg.thoughtText) {
-            const thought = document.createElement('details');
-            thought.className = 'thought-box';
-            thought.innerHTML = `<summary>思考过程</summary><div style="margin-top: 4px; white-space: pre-wrap;">${escapeHtml(msg.thoughtText)}</div>`;
-            card.appendChild(thought);
-          }
-
-          // Tool calls
-          if (msg.toolCalls && Array.isArray(msg.toolCalls)) {
-            msg.toolCalls.forEach(tc => {
-              const pill = document.createElement('div');
-              pill.className = 'tool-call-pill';
-              pill.textContent = `⚙ ${tc.title || tc.name || 'tool'}`;
-              card.appendChild(pill);
-            });
-          }
-
-          // Text content
-          const textDiv = document.createElement('div');
-          textDiv.style.whiteSpace = 'pre-wrap';
-          textDiv.textContent = msg.text || '';
-          card.appendChild(textDiv);
-
-          group.appendChild(card);
-        }
-
-        messagesContainer.appendChild(group);
-      });
-
-      scrollToBottom();
-    }
-
-    function scrollToBottom() {
-      messagesContainer.scrollTop = messagesContainer.scrollHeight;
-    }
-
-    function escapeHtml(str) {
-      return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
-    // Load Pending Permissions
+    // ---------------------------------------------------------------------
+    // Permissions
+    // ---------------------------------------------------------------------
     async function loadPermissions() {
-      if (!checkAuth()) return;
       try {
-        const res = await fetch('/api/permissions', { headers: authHeaders() });
-        pendingPermissions = await res.json();
+        pendingPermissions = await api('/api/permissions');
         renderPermissions();
-      } catch (err) {
-        console.error('Failed to load permissions:', err);
-      }
+      } catch (_) {}
     }
 
     function renderPermissions() {
-      if (!pendingPermissions || pendingPermissions.length === 0) {
+      approvalsList.innerHTML = '';
+      if (pendingPermissions.length === 0) {
         approvalsSection.style.display = 'none';
-        approvalsList.innerHTML = '';
         return;
       }
-
       approvalsSection.style.display = 'block';
-      approvalsList.innerHTML = '';
-
-      pendingPermissions.forEach(perm => {
-        const card = document.createElement('div');
-        card.className = 'approval-card';
-
+      for (const perm of pendingPermissions) {
         // Option ids are runtime-specific (Codex uses `accept`, the Claude
         // bridge uses `allow`, ACP agents pick their own), so resolve by kind.
         const options = perm.options || [];
-        const allowOnce = options.find(o => o.kind === 'allow_once')
-          || options.find(o => typeof o.kind === 'string' && o.kind.startsWith('allow'));
-        const allowAlways = options.find(o => o.kind === 'allow_always' && o !== allowOnce);
+        const allowOnce = options.find((o) => o.kind === 'allow_once')
+          || options.find((o) => typeof o.kind === 'string' && o.kind.startsWith('allow'));
+        const allowAlways = options.find((o) => o.kind === 'allow_always' && o !== allowOnce);
+        const session = sessions.find((s) => s.id === perm.appSessionId);
 
-        card.innerHTML = `
-          <div class="approval-header">
-            <span class="approval-badge">⚡ 待审批 (${escapeHtml(perm.roleName || 'Agent')})</span>
-          </div>
-          <div class="approval-title">${escapeHtml(perm.title || '操作审批')}</div>
-          ${perm.description ? `<div class="approval-desc">${escapeHtml(perm.description)}</div>` : ''}
-          <div class="approval-actions"></div>
-        `;
-        const actions = card.querySelector('.approval-actions');
+        const card = el('div', 'approval-card');
+        const header = el('div', 'approval-header');
+        header.appendChild(el('span', 'approval-badge', `⚡ 待审批 · ${perm.roleName || 'Agent'}`));
+        if (session) header.appendChild(el('span', 'approval-session', session.title));
+        card.appendChild(header);
+        card.appendChild(el('div', 'approval-title', perm.title || '操作审批'));
+        if (perm.description) card.appendChild(el('div', 'approval-desc', perm.description));
+        const actions = el('div', 'approval-actions');
         const addButton = (className, label, optionId, cancelled) => {
-          const btn = document.createElement('button');
-          btn.className = className;
-          btn.textContent = label;
+          const btn = el('button', className, label);
           btn.onclick = () => respondPermission(perm.requestId, optionId, cancelled);
           actions.appendChild(btn);
         };
-        if (allowOnce) addButton('btn-allow', '✓ 批准 (Allow)', allowOnce.optionId, false);
+        if (allowOnce) addButton('btn-allow', '✓ 批准', allowOnce.optionId, false);
         if (allowAlways) addButton('btn-allow-always', '本会话允许', allowAlways.optionId, false);
         addButton('btn-deny', '✕ 拒绝', '', true);
+        card.appendChild(actions);
         approvalsList.appendChild(card);
-      });
+      }
     }
 
     async function respondPermission(requestId, optionId, cancelled) {
       try {
-        const res = await fetch('/api/permissions/respond', {
+        await api('/api/permissions/respond', {
           method: 'POST',
-          headers: authHeaders(),
-          body: JSON.stringify({ requestId, optionId, cancelled })
+          body: JSON.stringify({ requestId, optionId, cancelled }),
         });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok || body.ok === false) {
-          throw new Error(body.error || `HTTP ${res.status}`);
-        }
-        pendingPermissions = pendingPermissions.filter(p => p.requestId !== requestId);
+        pendingPermissions = pendingPermissions.filter((p) => p.requestId !== requestId);
         renderPermissions();
       } catch (err) {
-        alert('审批提交失败: ' + err.message);
+        toast(`审批提交失败：${err.message}`, true);
         loadPermissions();
       }
     }
 
-    // Send Message
-    async function sendMessage() {
-      const text = chatInput.value.trim();
-      if (!text || !activeSessionId) return;
+    // ---------------------------------------------------------------------
+    // Live events
+    // ---------------------------------------------------------------------
+    const reloadActiveSoon = debounce(() => { if (activeSessionId && !liveBubble) loadMessages(activeSessionId); }, 500);
+    const settleActiveSoon = debounce(() => {
+      if (!activeSessionId || isRunning()) return;
+      liveBubble = null;
+      loadMessages(activeSessionId);
+    }, 4000);
 
-      chatInput.value = '';
-      chatInput.style.height = '42px';
-      btnSend.disabled = true;
-
-      // Add user message to UI immediately
-      const group = document.createElement('div');
-      group.className = 'msg-group';
-      const bubble = document.createElement('div');
-      bubble.className = 'msg-user';
-      bubble.textContent = text;
-      group.appendChild(bubble);
-      messagesContainer.appendChild(group);
-      scrollToBottom();
-
-      try {
-        await fetch(`/api/sessions/${activeSessionId}/chat`, {
-          method: 'POST',
-          headers: authHeaders(),
-          body: JSON.stringify({ input: text })
-        });
-      } catch (err) {
-        console.error('Send error:', err);
-      }
+    const streamingTimers = new Map();
+    function markStreaming(sid) {
+      const s = sessions.find((x) => x.id === sid);
+      if (!s) return;
+      const wasShown = s.running || s.streaming;
+      s.streaming = true;
+      clearTimeout(streamingTimers.get(sid));
+      streamingTimers.set(sid, setTimeout(() => { s.streaming = false; renderSidebar(); }, 5000));
+      if (!wasShown) renderSidebar();
     }
 
-    // SSE Real-time Events
     function setupSSE() {
       if (eventSource) eventSource.close();
       if (!authToken) return;
-
-      const url = `/api/events?token=${encodeURIComponent(authToken)}`;
-      eventSource = new EventSource(url);
+      eventSource = new EventSource(`/api/events?token=${encodeURIComponent(authToken)}`);
 
       eventSource.onopen = () => {
         statusDot.className = 'status-dot online';
-        statusDot.title = '在线 (Connected)';
+        statusDot.title = '已连接';
       };
 
       eventSource.onerror = async () => {
@@ -746,84 +1152,100 @@
         // the token was regenerated), so probe and either re-auth or retry.
         if (eventSource.readyState !== EventSource.CLOSED) return;
         try {
-          const res = await fetch('/api/status', { headers: authHeaders() });
-          if (res.status === 401) {
-            localStorage.removeItem('jockey_token');
-            authToken = '';
-            authModal.style.display = 'flex';
-            return;
-          }
-        } catch (_) {}
+          await api('/api/status');
+        } catch (_) {
+          if (!authToken) return;
+        }
         setTimeout(setupSSE, 3000);
       };
 
+      // Plain text batches: { role, appSessionId, turnId, delta: "<text>" }.
       eventSource.addEventListener('acp/delta', (ev) => {
-        try {
-          const delta = JSON.parse(ev.data);
-          // Check for permissions
-          if (delta.event && delta.event.kind === 'permissionRequest') {
-            loadPermissions();
-          }
-          if (delta.event && delta.event.kind === 'permissionExpired') {
-            loadPermissions();
-          }
-          // Refresh session messages if active
-          if (delta.appSessionId === activeSessionId) {
-            handleLiveDelta(delta);
-          }
-        } catch (_) {}
+        let payload;
+        try { payload = JSON.parse(ev.data); } catch (_) { return; }
+        const sid = payload.appSessionId;
+        if (!sid || typeof payload.delta !== 'string') return;
+        markStreaming(sid);
+        if (sid !== activeSessionId) return;
+        appendLiveText(payload.delta, payload.role);
+        // Turns started on the desktop have no completion event here; the desktop
+        // checkpoints them to SQLite, so settle by reloading once the stream goes quiet.
+        if (!isRunning()) settleActiveSoon();
       });
 
-      eventSource.addEventListener('session/update', (ev) => {
-        try {
-          const payload = JSON.parse(ev.data);
-          if (payload.appSessionId === activeSessionId) {
-            loadMessages(activeSessionId);
-          }
-        } catch (_) {}
+      // Structured events: { role, appSessionId, event: { kind, ... } }.
+      eventSource.addEventListener('acp/stream', (ev) => {
+        let payload;
+        try { payload = JSON.parse(ev.data); } catch (_) { return; }
+        const kind = payload.event && payload.event.kind;
+        if (kind === 'permissionRequest' || kind === 'permissionExpired') loadPermissions();
       });
 
-      eventSource.addEventListener('permission_update', () => {
-        loadPermissions();
-      });
-    }
-
-    let activeLiveAgentBubble = null;
-    function handleLiveDelta(delta) {
-      if (!delta.event) return;
-      if (delta.event.kind === 'textDelta' && delta.event.delta) {
-        if (!activeLiveAgentBubble) {
-          const group = document.createElement('div');
-          group.className = 'msg-group';
-          const meta = document.createElement('div');
-          meta.className = 'msg-meta';
-          const roleTag = document.createElement('span');
-          roleTag.className = 'msg-role-tag';
-          roleTag.textContent = delta.role || 'assistant';
-          meta.appendChild(roleTag);
-          group.appendChild(meta);
-
-          const card = document.createElement('div');
-          card.className = 'msg-agent';
-          card.innerHTML = `<span class="content"></span><span class="cursor-pulse"></span>`;
-          group.appendChild(card);
-          messagesContainer.appendChild(group);
-          activeLiveAgentBubble = card.querySelector('.content');
+      eventSource.addEventListener('companion/turn', (ev) => {
+        let payload;
+        try { payload = JSON.parse(ev.data); } catch (_) { return; }
+        setRunning(payload.appSessionId, false);
+        if (!payload.ok && payload.error && payload.appSessionId === activeSessionId) {
+          toast(`运行出错：${payload.error}`, true);
         }
-        activeLiveAgentBubble.textContent += delta.event.delta;
-        scrollToBottom();
-      } else if (delta.event.kind === 'turnCompleted') {
-        activeLiveAgentBubble = null;
-        loadMessages(activeSessionId);
-      }
+        if (payload.appSessionId === activeSessionId) {
+          liveBubble = null;
+          loadMessages(activeSessionId);
+        }
+        loadSidebarSoon();
+      });
+
+      eventSource.addEventListener('companion/changed', (ev) => {
+        let payload = {};
+        try { payload = JSON.parse(ev.data); } catch (_) {}
+        loadSidebarSoon();
+        if (payload.kind === 'messages' && payload.sessionId === activeSessionId && !isRunning()) reloadActiveSoon();
+      });
+
+      eventSource.addEventListener('permission_update', loadPermissions);
     }
 
-    // App Initialization
-    function initApp() {
-      if (!checkAuth()) return;
-      loadSessions();
+    // Mobile browsers suspend background tabs and silently drop the SSE stream;
+    // resync everything when the page becomes visible again.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible' || !authToken) return;
+      loadSidebar();
       loadPermissions();
+      if (activeSessionId) loadMessages(activeSessionId);
+      if (!eventSource || eventSource.readyState === EventSource.CLOSED) setupSSE();
+    });
+
+    $('btn-refresh').onclick = () => {
+      loadSidebar();
+      loadPermissions();
+      if (activeSessionId) loadMessages(activeSessionId);
+    };
+
+    // ---------------------------------------------------------------------
+    // Init
+    // ---------------------------------------------------------------------
+    $('btn-save-token').onclick = () => {
+      const val = $('token-input').value.trim();
+      if (!val) return;
+      authToken = val;
+      localStorage.setItem('jockey_token', authToken);
+      $('auth-modal').classList.remove('show');
+      initApp();
+    };
+
+    async function initApp() {
+      if (!authToken) { showAuth(); return; }
       setupSSE();
+      await loadSidebar();
+      loadPermissions();
+      if (activeSessionId && sessions.some((s) => s.id === activeSessionId)) {
+        await loadMessages(activeSessionId);
+      } else {
+        activeSessionId = '';
+        renderMessages(null);
+        updateComposer();
+        if (window.matchMedia('(max-width: 899px)').matches) openDrawer();
+      }
     }
 
     initApp();
