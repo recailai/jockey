@@ -34,6 +34,10 @@ pub(crate) fn install(app: AppHandle) {
     let _ = APP.set(app);
 }
 
+pub(crate) fn app() -> Option<AppHandle> {
+    APP.get().cloned()
+}
+
 pub(crate) fn emit<P: Serialize + Clone>(event: &str, payload: P) {
     if let Some(app) = APP.get() {
         let _ = app.emit(event, payload);

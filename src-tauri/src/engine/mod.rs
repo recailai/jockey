@@ -15,3 +15,22 @@ pub(crate) fn install(app: &tauri::AppHandle) {
     events::install(app.clone());
     turns::install(app);
 }
+
+/// Undo state a crash or force-quit left behind: inbox items claimed by a turn that never
+/// began, and agent lifecycle rows still marked live. Runs once at startup, before any drain.
+pub(crate) fn recover_after_restart(state: &crate::types::AppState) -> Result<(), String> {
+    crate::db::with_db(state, |conn| {
+        conn.execute(
+            "UPDATE session_inbox_messages SET claimed_at = NULL WHERE claimed_at IS NOT NULL",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE agent_lifecycle SET state = 'stopped'
+             WHERE state IN ('running', 'prewarming', 'stopping')",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}

@@ -102,6 +102,9 @@ pub fn run() {
 
             seed_default_dynamic_catalog(&state).map_err(std::io::Error::other)?;
             db::role::seed_default_roles(&state).map_err(std::io::Error::other)?;
+            if let Err(e) = engine::recover_after_restart(&state) {
+                eprintln!("[engine] startup recovery failed: {e}");
+            }
             {
                 let conn = state
                     .db

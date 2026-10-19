@@ -119,6 +119,11 @@ pub(crate) fn update_session(
 
 /// Close a session. Returns `false` if it was already closed.
 pub(crate) fn close_session(state: &AppState, id: &str) -> Result<bool, String> {
+    // Stop the running turn through the engine so it still records what it produced and
+    // announces turn/finished, instead of being killed by the provider-slot cleanup below.
+    if super::turns::is_busy(id) {
+        super::service::cancel_in_background(id);
+    }
     let closed = crate::db::app_session::close_app_session_internal(state, id)?;
     if closed {
         events::session_changed(state, id, SessionChange::Closed);
@@ -129,6 +134,10 @@ pub(crate) fn close_session(state: &AppState, id: &str) -> Result<bool, String> 
 pub(crate) fn reopen_session(state: &AppState, id: &str) -> Result<AppSession, String> {
     let session = crate::db::app_session::reopen_app_session_internal(state, id)?;
     events::session_changed(state, id, SessionChange::Reopened);
+    // Input queued before the session was closed resumes now.
+    if let Some(app) = events::app() {
+        super::service::kick(&app, id);
+    }
     Ok(session)
 }
 

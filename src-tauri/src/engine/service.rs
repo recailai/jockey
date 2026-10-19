@@ -134,8 +134,10 @@ pub(crate) fn kick(app: &AppHandle, session_id: &str) {
 }
 
 fn next_from_queue(app: &AppHandle, session_id: &str) -> Option<PendingTurn> {
-    let reservation = turns::reserve(session_id, None)?;
     let state = app.state::<AppState>();
+    // Queued input waits while the session is closed; reopening it resumes the drain.
+    load_head(&state, session_id).ok()?;
+    let reservation = turns::reserve(session_id, None)?;
     let batch = queue::claim_next(&state, session_id).ok().flatten()?;
     let text = match batch.role_name.as_deref() {
         // Queued for a persona other than the current one: address it explicitly, as the
@@ -164,13 +166,18 @@ fn spawn_session_loop(app: AppHandle, session_id: String, first: PendingTurn) {
     tauri::async_runtime::spawn(async move {
         let mut next = Some(first);
         while let Some(pending) = next.take() {
-            run_one(&app, &session_id, pending).await;
+            // A turn that could not start put its batch back; draining again would claim the
+            // same batch and fail the same way, spinning without ever yielding.
+            if !run_one(&app, &session_id, pending).await {
+                break;
+            }
             next = next_from_queue(&app, &session_id);
         }
     });
 }
 
-async fn run_one(app: &AppHandle, session_id: &str, pending: PendingTurn) {
+/// Returns whether a turn actually began (it may still have failed afterwards).
+async fn run_one(app: &AppHandle, session_id: &str, pending: PendingTurn) -> bool {
     let PendingTurn {
         reservation,
         text,
@@ -190,7 +197,7 @@ async fn run_one(app: &AppHandle, session_id: &str, pending: PendingTurn) {
         Err(e) => {
             eprintln!("[engine] cannot start turn in {session_id}: {e}");
             restore_batch(app);
-            return;
+            return false;
         }
     };
 
@@ -263,7 +270,7 @@ async fn run_one(app: &AppHandle, session_id: &str, pending: PendingTurn) {
         Err(e) => {
             eprintln!("[engine] could not record turn in {session_id}: {e}");
             restore_batch(app);
-            return;
+            return false;
         }
     };
     if let Some(batch) = &batch {
@@ -274,7 +281,7 @@ async fn run_one(app: &AppHandle, session_id: &str, pending: PendingTurn) {
         Ok(route) => route,
         Err(e) => {
             turn.finish(TurnOutcome::Failed, Some(&e));
-            return;
+            return true;
         }
     };
     let input = crate::types::AssistantChatInput {
@@ -309,6 +316,7 @@ async fn run_one(app: &AppHandle, session_id: &str, pending: PendingTurn) {
             turn.finish(TurnOutcome::Failed, Some(&e));
         }
     }
+    true
 }
 
 /// Personas with a live provider turn in this session — every one of them for a multi-agent
@@ -326,6 +334,17 @@ fn running_roles(state: &AppState, session_id: &str, active_role: &str) -> Vec<S
     roles.sort_unstable();
     roles.dedup();
     roles
+}
+
+/// Fire-and-forget cancel for callers without an async context (closing a session).
+pub(crate) fn cancel_in_background(session_id: &str) {
+    let Some(app) = super::events::app() else {
+        return;
+    };
+    let session_id = session_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        let _ = cancel(&app, &session_id).await;
+    });
 }
 
 /// Cancel the session's running turn. The turn still ends through `turn/finished`, with
