@@ -246,6 +246,9 @@ pub(super) async fn execute_acp_worker_prompt(
     let mut emit_seq: u32 = 0;
     // Buffer for batching TextDelta IPC events (~30ms flush interval)
     let mut delta_batch: String = String::new();
+    // Thought deltas coalesce like text; at most one of the two buffers is non-empty at a time,
+    // which keeps their relative order.
+    let mut thought_batch: String = String::new();
     // Captured from the latest AcpEvent::SessionError the worker emits during
     // streaming; used to set AcpPromptResult.error_code without re-parsing.
     let mut last_error_code: Option<String> = None;
@@ -279,6 +282,38 @@ pub(super) async fn execute_acp_worker_prompt(
         };
     }
 
+    // Flush helper: emit buffered thought deltas as a single `thoughtDelta` stream event.
+    macro_rules! flush_thought_batch {
+        () => {
+            if !thought_batch.is_empty() {
+                emit_seq += 1;
+                let event = AcpEvent::ThoughtDelta {
+                    text: std::mem::take(&mut thought_batch),
+                };
+                let _ = app.emit(
+                    "acp/stream",
+                    AcpStreamPayload {
+                        schema_version: 1,
+                        role: &role_owned,
+                        runtime_kind: runtime_key,
+                        app_session_id: &app_session_id_owned,
+                        turn_id: &turn_id,
+                        event: &event,
+                        seq: emit_seq,
+                    },
+                );
+            }
+        };
+    }
+
+    // Everything buffered, in arrival order (only one buffer can be non-empty).
+    macro_rules! flush_all {
+        () => {
+            flush_thought_batch!();
+            flush_delta_batch!();
+        };
+    }
+
     let heartbeat = tokio::time::Instant::now();
     let mut heartbeat_count = 0u32;
     let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -299,9 +334,7 @@ pub(super) async fn execute_acp_worker_prompt(
                 continue;
             }
             _ = flush_interval.tick() => {
-                if !delta_batch.is_empty() {
-                    flush_delta_batch!();
-                }
+                flush_all!();
                 continue;
             }
             evt = delta_rx.recv() => {
@@ -321,9 +354,16 @@ pub(super) async fn execute_acp_worker_prompt(
                                 "preview": clip(text, 60),
                             }));
                         }
+                        flush_thought_batch!();
                         delta_batch.push_str(text);
                     }
+                    Some(AcpEvent::ThoughtDelta { ref text }) => {
+                        delta_count += 1;
+                        flush_delta_batch!();
+                        thought_batch.push_str(text);
+                    }
                     Some(ref evt @ AcpEvent::ConfigUpdate { ref options }) => {
+                        flush_all!();
                         delta_count += 1;
                         emit_seq += 1;
                         remember_runtime_config_options(
@@ -341,6 +381,7 @@ pub(super) async fn execute_acp_worker_prompt(
                         });
                     }
                     Some(ref evt @ AcpEvent::AvailableCommands { ref commands }) => {
+                        flush_all!();
                         delta_count += 1;
                         emit_seq += 1;
                         acp_log("commands.discovered", json!({
@@ -366,6 +407,9 @@ pub(super) async fn execute_acp_worker_prompt(
                         });
                     }
                     Some(ref other) => {
+                        // Text that streamed before this event must reach the UI first, or a
+                        // tool card renders above the sentence that announced it.
+                        flush_all!();
                         delta_count += 1;
                         emit_seq += 1;
                         if let AcpEvent::SessionError { code, .. } = other {
@@ -393,15 +437,22 @@ pub(super) async fn execute_acp_worker_prompt(
             }
             res = &mut result_rx => {
                 // Flush any buffered deltas before draining the channel
-                flush_delta_batch!();
+                flush_all!();
                 while let Ok(evt) = delta_rx.try_recv() {
                     match evt {
                         AcpEvent::TextDelta { ref text } => {
                             full_output.push_str(text);
                             delta_count += 1;
+                            flush_thought_batch!();
                             delta_batch.push_str(text);
                         }
+                        AcpEvent::ThoughtDelta { ref text } => {
+                            delta_count += 1;
+                            flush_delta_batch!();
+                            thought_batch.push_str(text);
+                        }
                         ref other => {
+                            flush_all!();
                             delta_count += 1;
                             emit_seq += 1;
                             if let AcpEvent::SessionError { code, .. } = other {
@@ -419,8 +470,8 @@ pub(super) async fn execute_acp_worker_prompt(
                         }
                     }
                 }
-                // Emit any remaining buffered text from drain
-                flush_delta_batch!();
+                // Emit anything still buffered from the drain
+                flush_all!();
                 let r = res.unwrap_or_else(|_| Err("worker disconnected".to_string()));
                 acp_log("execute.result", json!({
                     "runtime": runtime_key,

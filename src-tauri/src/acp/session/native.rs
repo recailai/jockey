@@ -538,6 +538,10 @@ pub(super) struct NativeEventSink<'a> {
     sequence: u32,
     delta_batch: String,
     last_delta_flush: Instant,
+    // Thought deltas are coalesced like text (one event per batch, not per token). At most one
+    // of the two buffers is non-empty at a time, which keeps their relative order.
+    thought_batch: String,
+    last_thought_flush: Instant,
 }
 
 impl<'a> NativeEventSink<'a> {
@@ -551,11 +555,31 @@ impl<'a> NativeEventSink<'a> {
             sequence: 0,
             delta_batch: String::new(),
             last_delta_flush: Instant::now(),
+            thought_batch: String::new(),
+            last_thought_flush: Instant::now(),
         }
+    }
+
+    fn flush_thought(&mut self) {
+        if self.thought_batch.is_empty() {
+            return;
+        }
+        let text = std::mem::take(&mut self.thought_batch);
+        emit_native_event(
+            self.app,
+            self.role,
+            self.runtime,
+            self.app_session_id,
+            self.turn_id,
+            &mut self.sequence,
+            AcpEvent::ThoughtDelta { text },
+        );
+        self.last_thought_flush = Instant::now();
     }
 
     pub(super) fn push_text(&mut self, text: &str, output: &mut String) {
         output.push_str(text);
+        self.flush_thought();
         self.delta_batch.push_str(text);
         if self.delta_batch.len() >= NATIVE_DELTA_BATCH_BYTES
             || self.last_delta_flush.elapsed() >= NATIVE_DELTA_FLUSH_AFTER
@@ -565,7 +589,18 @@ impl<'a> NativeEventSink<'a> {
     }
 
     pub(super) fn emit(&mut self, event: AcpEvent) {
+        if let AcpEvent::ThoughtDelta { text } = &event {
+            self.flush_text_only();
+            self.thought_batch.push_str(text);
+            if self.thought_batch.len() >= NATIVE_DELTA_BATCH_BYTES
+                || self.last_thought_flush.elapsed() >= NATIVE_DELTA_FLUSH_AFTER
+            {
+                self.flush_thought();
+            }
+            return;
+        }
         self.flush_text();
+        self.flush_thought();
         emit_native_event(
             self.app,
             self.role,
@@ -577,7 +612,13 @@ impl<'a> NativeEventSink<'a> {
         );
     }
 
+    /// Everything buffered, thought first (only one of the two can be non-empty).
     pub(super) fn flush_text(&mut self) {
+        self.flush_thought();
+        self.flush_text_only();
+    }
+
+    fn flush_text_only(&mut self) {
         if self.delta_batch.is_empty() {
             return;
         }

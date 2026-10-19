@@ -48,17 +48,23 @@ fn is_claude_lifecycle_event(event_type: &str, nested_type: &str) -> bool {
         )
 }
 
-/// Accumulates text deltas and emits them as one `acp/delta` per batch. The payload shape is
-/// unchanged — concatenated text is what the listener would have appended anyway.
+/// Accumulates text deltas and emits them as one `acp/delta` per batch, and thought deltas as
+/// one `thoughtDelta` per batch — concatenated text is what the listeners would have appended
+/// anyway, and per-token events cost IPC, two Rust listeners and a webview store write each.
+/// It owns the turn's sequence counter so the final flush on drop still stamps the right seq.
 struct DeltaBatch<'a> {
     app: &'a tauri::AppHandle,
     role: &'a str,
     runtime: &'static str,
     app_session_id: &'a str,
     turn_id: &'a str,
+    sequence: &'a mut u32,
     buf: String,
     last_flush: Instant,
     emitted_any: bool,
+    thought: String,
+    thought_last_flush: Instant,
+    thought_emitted_any: bool,
 }
 
 impl<'a> DeltaBatch<'a> {
@@ -68,6 +74,7 @@ impl<'a> DeltaBatch<'a> {
         runtime: &'static str,
         app_session_id: &'a str,
         turn_id: &'a str,
+        sequence: &'a mut u32,
     ) -> Self {
         Self {
             app,
@@ -75,9 +82,13 @@ impl<'a> DeltaBatch<'a> {
             runtime,
             app_session_id,
             turn_id,
+            sequence,
             buf: String::new(),
             last_flush: Instant::now(),
             emitted_any: false,
+            thought: String::new(),
+            thought_last_flush: Instant::now(),
+            thought_emitted_any: false,
         }
     }
 
@@ -85,6 +96,8 @@ impl<'a> DeltaBatch<'a> {
         if text.is_empty() {
             return;
         }
+        // Thinking that streamed before this text must reach the UI first.
+        self.flush_thought();
         self.buf.push_str(text);
         if should_flush_deltas(self.buf.len(), self.last_flush.elapsed(), self.emitted_any) {
             self.flush();
@@ -111,17 +124,48 @@ impl<'a> DeltaBatch<'a> {
         self.emitted_any = true;
     }
 
-    /// Buffered text must reach the UI before the event it introduced, or a tool card renders
-    /// above the sentence that announced it.
-    fn emit(&mut self, sequence: &mut u32, event: AcpEvent) {
-        self.flush();
+    fn flush_thought(&mut self) {
+        if self.thought.is_empty() {
+            return;
+        }
+        let text = std::mem::take(&mut self.thought);
         emit_event(
             self.app,
             self.role,
             self.runtime,
             self.app_session_id,
             self.turn_id,
-            sequence,
+            self.sequence,
+            AcpEvent::ThoughtDelta { text },
+        );
+        self.thought_last_flush = Instant::now();
+        self.thought_emitted_any = true;
+    }
+
+    /// Buffered text must reach the UI before the event it introduced, or a tool card renders
+    /// above the sentence that announced it.
+    fn emit(&mut self, event: AcpEvent) {
+        if let AcpEvent::ThoughtDelta { text } = &event {
+            self.flush();
+            self.thought.push_str(text);
+            if should_flush_deltas(
+                self.thought.len(),
+                self.thought_last_flush.elapsed(),
+                self.thought_emitted_any,
+            ) {
+                self.flush_thought();
+            }
+            return;
+        }
+        self.flush();
+        self.flush_thought();
+        emit_event(
+            self.app,
+            self.role,
+            self.runtime,
+            self.app_session_id,
+            self.turn_id,
+            self.sequence,
             event,
         );
     }
@@ -132,6 +176,7 @@ impl<'a> DeltaBatch<'a> {
 impl Drop for DeltaBatch<'_> {
     fn drop(&mut self) {
         self.flush();
+        self.flush_thought();
     }
 }
 
@@ -821,7 +866,14 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
     turn_id: &str,
     sequence: &mut u32,
 ) -> HeadlessTurn {
-    let mut deltas = DeltaBatch::new(app, role_name, runtime_key, app_session_id, turn_id);
+    let mut deltas = DeltaBatch::new(
+        app,
+        role_name,
+        runtime_key,
+        app_session_id,
+        turn_id,
+        sequence,
+    );
     let mut line = String::new();
     let mut raw_output = String::new();
     let mut response = None;
@@ -947,40 +999,29 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                         .or_else(|| event.get("message"))
                         .and_then(value_text)
                     {
-                        deltas.emit(
-                            sequence,
-                            AcpEvent::Notice {
-                                level: "warning".to_string(),
-                                code: Some("rate_limit".to_string()),
-                                text,
-                            },
-                        );
+                        deltas.emit(AcpEvent::Notice {
+                            level: "warning".to_string(),
+                            code: Some("rate_limit".to_string()),
+                            text,
+                        });
                     }
                 }
                 "system" if event_subtype.as_deref() == Some("compact_boundary") => {
                     let at = event.get("compact_metadata");
-                    deltas.emit(
-                        sequence,
-                        AcpEvent::ContextCompacted {
-                            reason: at
-                                .and_then(|m| m.get("trigger"))
-                                .and_then(Value::as_str)
-                                .map(str::to_string),
-                            before_tokens: at
-                                .and_then(|m| m.get("pre_tokens"))
-                                .and_then(Value::as_u64),
-                            after_tokens: None,
-                        },
-                    );
+                    deltas.emit(AcpEvent::ContextCompacted {
+                        reason: at
+                            .and_then(|m| m.get("trigger"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        before_tokens: at.and_then(|m| m.get("pre_tokens")).and_then(Value::as_u64),
+                        after_tokens: None,
+                    });
                 }
                 "system" => {
                     if event_subtype.as_deref() == Some("init") {
-                        deltas.emit(
-                            sequence,
-                            AcpEvent::StatusUpdate {
-                                text: "Claude session ready".to_string(),
-                            },
-                        );
+                        deltas.emit(AcpEvent::StatusUpdate {
+                            text: "Claude session ready".to_string(),
+                        });
                     }
                 }
                 "stream_event" if nested_type == "message_delta" => {
@@ -988,7 +1029,7 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                         .and_then(|value| value.get("usage"))
                         .filter(|u| has_usage_counters(u))
                     {
-                        deltas.emit(sequence, usage_event(usage, None, None));
+                        deltas.emit(usage_event(usage, None, None));
                     }
                 }
                 // Claude lifecycle frames carry provider metadata only. They are not
@@ -1007,23 +1048,20 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                             {
                                 claude_tool_inputs
                                     .insert(index, (id.clone(), name.clone(), String::new()));
-                                deltas.emit(
-                                    sequence,
-                                    AcpEvent::ToolCallUpdate {
-                                        tool_call_id: id,
-                                        tool_name: Some(name.clone()),
-                                        tool_kind: Some("tool".to_string()),
-                                        status: Some("running".to_string()),
-                                        title: Some(name),
-                                        content: None,
-                                        locations: None,
-                                        raw_input: block.get("input").cloned(),
-                                        raw_output: None,
-                                        terminal_meta: None,
-                                        parent_id: parent_tool_use_id.clone(),
-                                        diff: None,
-                                    },
-                                );
+                                deltas.emit(AcpEvent::ToolCallUpdate {
+                                    tool_call_id: id,
+                                    tool_name: Some(name.clone()),
+                                    tool_kind: Some("tool".to_string()),
+                                    status: Some("running".to_string()),
+                                    title: Some(name),
+                                    content: None,
+                                    locations: None,
+                                    raw_input: block.get("input").cloned(),
+                                    raw_output: None,
+                                    terminal_meta: None,
+                                    parent_id: parent_tool_use_id.clone(),
+                                    diff: None,
+                                });
                             }
                         }
                     }
@@ -1056,23 +1094,20 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                                         .then(|| serde_json::from_str::<Value>(buffer).ok())
                                         .flatten()
                                     {
-                                        deltas.emit(
-                                            sequence,
-                                            AcpEvent::ToolCallUpdate {
-                                                tool_call_id: tool_id.clone(),
-                                                tool_name: Some(tool_name.clone()),
-                                                tool_kind: Some("tool".to_string()),
-                                                status: Some("running".to_string()),
-                                                title: Some(tool_name.clone()),
-                                                content: None,
-                                                locations: None,
-                                                raw_input: Some(input),
-                                                raw_output: None,
-                                                terminal_meta: None,
-                                                parent_id: parent_tool_use_id.clone(),
-                                                diff: None,
-                                            },
-                                        );
+                                        deltas.emit(AcpEvent::ToolCallUpdate {
+                                            tool_call_id: tool_id.clone(),
+                                            tool_name: Some(tool_name.clone()),
+                                            tool_kind: Some("tool".to_string()),
+                                            status: Some("running".to_string()),
+                                            title: Some(tool_name.clone()),
+                                            content: None,
+                                            locations: None,
+                                            raw_input: Some(input),
+                                            raw_output: None,
+                                            terminal_meta: None,
+                                            parent_id: parent_tool_use_id.clone(),
+                                            diff: None,
+                                        });
                                     }
                                 }
                             }
@@ -1083,12 +1118,9 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                                 .and_then(Value::as_str)
                                 .filter(|text| !text.is_empty())
                             {
-                                deltas.emit(
-                                    sequence,
-                                    AcpEvent::ThoughtDelta {
-                                        text: text.to_string(),
-                                    },
-                                );
+                                deltas.emit(AcpEvent::ThoughtDelta {
+                                    text: text.to_string(),
+                                });
                             }
                         }
                         _ => {
@@ -1126,25 +1158,22 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                                 .or_else(|| block.get("isError"))
                                 .and_then(Value::as_bool)
                                 .unwrap_or(false);
-                            deltas.emit(
-                                sequence,
-                                AcpEvent::ToolCallUpdate {
-                                    tool_call_id,
-                                    tool_name: None,
-                                    tool_kind: None,
-                                    status: Some(
-                                        if is_error { "failure" } else { "completed" }.to_string(),
-                                    ),
-                                    title: None,
-                                    content: None,
-                                    locations: None,
-                                    raw_input: None,
-                                    raw_output: block.get("content").cloned(),
-                                    terminal_meta: None,
-                                    parent_id: None,
-                                    diff: None,
-                                },
-                            );
+                            deltas.emit(AcpEvent::ToolCallUpdate {
+                                tool_call_id,
+                                tool_name: None,
+                                tool_kind: None,
+                                status: Some(
+                                    if is_error { "failure" } else { "completed" }.to_string(),
+                                ),
+                                title: None,
+                                content: None,
+                                locations: None,
+                                raw_input: None,
+                                raw_output: block.get("content").cloned(),
+                                terminal_meta: None,
+                                parent_id: None,
+                                diff: None,
+                            });
                         }
                     }
                 }
@@ -1162,12 +1191,9 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                                         .and_then(Value::as_str)
                                         .filter(|text| !text.is_empty())
                                     {
-                                        deltas.emit(
-                                            sequence,
-                                            AcpEvent::ThoughtDelta {
-                                                text: text.to_string(),
-                                            },
-                                        );
+                                        deltas.emit(AcpEvent::ThoughtDelta {
+                                            text: text.to_string(),
+                                        });
                                     }
                                 }
                                 Some("tool_use") => {
@@ -1181,33 +1207,27 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                                             .and_then(|input| input.get("todos"))
                                             .and_then(Value::as_array)
                                         {
-                                            deltas.emit(
-                                                sequence,
-                                                AcpEvent::Plan {
-                                                    entries: entries.clone(),
-                                                },
-                                            );
+                                            deltas.emit(AcpEvent::Plan {
+                                                entries: entries.clone(),
+                                            });
                                             continue;
                                         }
                                     }
-                                    deltas.emit(
-                                        sequence,
-                                        AcpEvent::ToolCallUpdate {
-                                            tool_call_id: first_string(block, &["id"])
-                                                .unwrap_or_else(|| "claude-tool".to_string()),
-                                            tool_name: first_string(block, &["name"]),
-                                            tool_kind: Some("tool".to_string()),
-                                            status: Some("running".to_string()),
-                                            title: first_string(block, &["name"]),
-                                            content: None,
-                                            locations: None,
-                                            raw_input: block.get("input").cloned(),
-                                            raw_output: None,
-                                            terminal_meta: None,
-                                            parent_id: parent_tool_use_id.clone(),
-                                            diff: None,
-                                        },
-                                    );
+                                    deltas.emit(AcpEvent::ToolCallUpdate {
+                                        tool_call_id: first_string(block, &["id"])
+                                            .unwrap_or_else(|| "claude-tool".to_string()),
+                                        tool_name: first_string(block, &["name"]),
+                                        tool_kind: Some("tool".to_string()),
+                                        status: Some("running".to_string()),
+                                        title: first_string(block, &["name"]),
+                                        content: None,
+                                        locations: None,
+                                        raw_input: block.get("input").cloned(),
+                                        raw_output: None,
+                                        terminal_meta: None,
+                                        parent_id: parent_tool_use_id.clone(),
+                                        diff: None,
+                                    });
                                 }
                                 _ => {}
                             }
@@ -1234,7 +1254,7 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                             .get("total_cost_usd")
                             .or_else(|| event.get("totalCostUsd"))
                             .and_then(Value::as_f64);
-                        deltas.emit(sequence, usage_event(usage, cost, None));
+                        deltas.emit(usage_event(usage, cost, None));
                     }
                     response = event.get("result").and_then(value_text);
                     status = event_subtype.or_else(|| first_string(&event, &["status"]));
@@ -1252,13 +1272,10 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                     break;
                 }
                 _ if !event_type.is_empty() => {
-                    deltas.emit(
-                        sequence,
-                        AcpEvent::Unknown {
-                            type_name: event_type.clone(),
-                            raw: event.clone(),
-                        },
-                    );
+                    deltas.emit(AcpEvent::Unknown {
+                        type_name: event_type.clone(),
+                        raw: event.clone(),
+                    });
                 }
                 _ => {}
             }
@@ -1267,12 +1284,9 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
 
         match event_type.as_str() {
             "init" | "initialized" => {
-                deltas.emit(
-                    sequence,
-                    AcpEvent::StatusUpdate {
-                        text: "Antigravity session initialized".to_string(),
-                    },
-                );
+                deltas.emit(AcpEvent::StatusUpdate {
+                    text: "Antigravity session initialized".to_string(),
+                });
             }
             "step_update" | "step-update" => {
                 if let Some(delta) = first_string(payload, &["text_delta", "textDelta"]) {
@@ -1280,7 +1294,7 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                     deltas.push(&delta);
                 }
                 if let Some(usage) = payload.get("usage").filter(|u| has_usage_counters(u)) {
-                    deltas.emit(sequence, usage_event(usage, None, None));
+                    deltas.emit(usage_event(usage, None, None));
                 }
                 let step_type =
                     first_string(payload, &["step_type", "stepType"]).unwrap_or_default();
@@ -1299,48 +1313,42 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                         .or_else(|| payload.get("stepIndex"))
                         .map(Value::to_string)
                         .unwrap_or_else(|| "0".to_string());
-                    deltas.emit(
-                        sequence,
-                        AcpEvent::ToolCallUpdate {
-                            tool_call_id: format!("agy-step-{tool_id}"),
-                            tool_name: first_string(payload, &["tool_name", "toolName"]).or_else(
-                                || {
-                                    tool_info
-                                        .and_then(|info| first_string(info, &["name", "toolName"]))
-                                },
-                            ),
-                            tool_kind: Some("tool".to_string()),
-                            status: first_string(payload, &["state", "status"]).map(|status| {
-                                match status.to_ascii_lowercase().as_str() {
-                                    "active" | "running" | "in_progress" | "inprogress" => {
-                                        "running".to_string()
-                                    }
-                                    "done" | "completed" | "success" => "completed".to_string(),
-                                    "failed" | "failure" | "error" => "failure".to_string(),
-                                    other => other.to_string(),
+                    deltas.emit(AcpEvent::ToolCallUpdate {
+                        tool_call_id: format!("agy-step-{tool_id}"),
+                        tool_name: first_string(payload, &["tool_name", "toolName"]).or_else(
+                            || tool_info.and_then(|info| first_string(info, &["name", "toolName"])),
+                        ),
+                        tool_kind: Some("tool".to_string()),
+                        status: first_string(payload, &["state", "status"]).map(|status| {
+                            match status.to_ascii_lowercase().as_str() {
+                                "active" | "running" | "in_progress" | "inprogress" => {
+                                    "running".to_string()
                                 }
-                            }),
-                            title: first_string(
-                                payload,
-                                &["tool_name", "toolName", "step_type", "stepType"],
-                            ),
-                            content: None,
-                            locations: None,
-                            raw_input: payload
-                                .get("parameters")
-                                .or_else(|| payload.get("input"))
-                                .or_else(|| tool_info.and_then(|info| info.get("parameters")))
-                                .cloned(),
-                            raw_output: payload
-                                .get("output")
-                                .or_else(|| payload.get("result"))
-                                .or_else(|| tool_info.and_then(|info| info.get("output")))
-                                .cloned(),
-                            terminal_meta: None,
-                            parent_id: None,
-                            diff: None,
-                        },
-                    );
+                                "done" | "completed" | "success" => "completed".to_string(),
+                                "failed" | "failure" | "error" => "failure".to_string(),
+                                other => other.to_string(),
+                            }
+                        }),
+                        title: first_string(
+                            payload,
+                            &["tool_name", "toolName", "step_type", "stepType"],
+                        ),
+                        content: None,
+                        locations: None,
+                        raw_input: payload
+                            .get("parameters")
+                            .or_else(|| payload.get("input"))
+                            .or_else(|| tool_info.and_then(|info| info.get("parameters")))
+                            .cloned(),
+                        raw_output: payload
+                            .get("output")
+                            .or_else(|| payload.get("result"))
+                            .or_else(|| tool_info.and_then(|info| info.get("output")))
+                            .cloned(),
+                        terminal_meta: None,
+                        parent_id: None,
+                        diff: None,
+                    });
                 }
             }
             "text_delta" | "text-delta" => {
@@ -1374,13 +1382,10 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                 break;
             }
             _ if !event_type.is_empty() => {
-                deltas.emit(
-                    sequence,
-                    AcpEvent::Unknown {
-                        type_name: event_type.clone(),
-                        raw: event.clone(),
-                    },
-                );
+                deltas.emit(AcpEvent::Unknown {
+                    type_name: event_type.clone(),
+                    raw: event.clone(),
+                });
             }
             _ => {}
         }
