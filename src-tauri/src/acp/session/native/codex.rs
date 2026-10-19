@@ -563,7 +563,12 @@ fn is_codex_lifecycle_notification(method: &str) -> bool {
             | "thread/started"
             | "thread/resumed"
             | "thread/archived"
+            | "thread/status/changed"
+            | "thread/settings/updated"
+            | "thread/readState/changed"
             | "turn/started"
+            | "turn/moderationMetadata"
+            | "mcpServer/startupStatus/updated"
     )
 }
 
@@ -953,6 +958,10 @@ mod tests {
         assert!(is_codex_lifecycle_notification("turn/diff/updated"));
         assert!(is_codex_lifecycle_notification("thread/started"));
         assert!(is_codex_lifecycle_notification("turn/started"));
+        assert!(is_codex_lifecycle_notification(
+            "mcpServer/startupStatus/updated"
+        ));
+        assert!(is_codex_lifecycle_notification("thread/status/changed"));
         assert!(!is_codex_lifecycle_notification("item/agentMessage/delta"));
     }
 
