@@ -418,9 +418,12 @@
 
   <script>
     // State
-    let authToken = new URLSearchParams(window.location.search).get('token') || localStorage.getItem('jockey_token') || '';
-    if (new URLSearchParams(window.location.search).get('token')) {
+    const urlToken = new URLSearchParams(window.location.search).get('token');
+    let authToken = urlToken || localStorage.getItem('jockey_token') || '';
+    if (urlToken) {
       localStorage.setItem('jockey_token', authToken);
+      // Keep the token out of browser history, bookmarks and screenshots.
+      history.replaceState(null, '', window.location.pathname);
     }
 
     let activeSessionId = '';
@@ -571,7 +574,7 @@
         } else {
           const meta = document.createElement('div');
           meta.className = 'msg-meta';
-          meta.innerHTML = `<span class="msg-role-tag">${role}</span>`;
+          meta.innerHTML = `<span class="msg-role-tag">${escapeHtml(role)}</span>`;
           group.appendChild(meta);
 
           const card = document.createElement('div');
@@ -644,38 +647,54 @@
         const card = document.createElement('div');
         card.className = 'approval-card';
 
-        const hasAlwaysOption = (perm.options || []).some(o => o.kind === 'allow_always' || o.optionId === 'allow_always');
-        const allowAlwaysId = (perm.options || []).find(o => o.kind === 'allow_always')?.optionId || 'allow_always';
+        // Option ids are runtime-specific (Codex uses `accept`, the Claude
+        // bridge uses `allow`, ACP agents pick their own), so resolve by kind.
+        const options = perm.options || [];
+        const allowOnce = options.find(o => o.kind === 'allow_once')
+          || options.find(o => typeof o.kind === 'string' && o.kind.startsWith('allow'));
+        const allowAlways = options.find(o => o.kind === 'allow_always' && o !== allowOnce);
 
         card.innerHTML = `
           <div class="approval-header">
-            <span class="approval-badge">⚡ 待审批 (${perm.roleName || 'Agent'})</span>
+            <span class="approval-badge">⚡ 待审批 (${escapeHtml(perm.roleName || 'Agent')})</span>
           </div>
           <div class="approval-title">${escapeHtml(perm.title || '操作审批')}</div>
           ${perm.description ? `<div class="approval-desc">${escapeHtml(perm.description)}</div>` : ''}
-          <div class="approval-actions">
-            <button class="btn-allow" onclick="respondPermission('${perm.requestId}', 'allow', false)">✓ 批准 (Allow)</button>
-            ${hasAlwaysOption ? `<button class="btn-allow-always" onclick="respondPermission('${perm.requestId}', '${allowAlwaysId}', false)">本会话允许</button>` : ''}
-            <button class="btn-deny" onclick="respondPermission('${perm.requestId}', '', true)">✕ 拒绝</button>
-          </div>
+          <div class="approval-actions"></div>
         `;
+        const actions = card.querySelector('.approval-actions');
+        const addButton = (className, label, optionId, cancelled) => {
+          const btn = document.createElement('button');
+          btn.className = className;
+          btn.textContent = label;
+          btn.onclick = () => respondPermission(perm.requestId, optionId, cancelled);
+          actions.appendChild(btn);
+        };
+        if (allowOnce) addButton('btn-allow', '✓ 批准 (Allow)', allowOnce.optionId, false);
+        if (allowAlways) addButton('btn-allow-always', '本会话允许', allowAlways.optionId, false);
+        addButton('btn-deny', '✕ 拒绝', '', true);
         approvalsList.appendChild(card);
       });
     }
 
-    window.respondPermission = async function(requestId, optionId, cancelled) {
+    async function respondPermission(requestId, optionId, cancelled) {
       try {
-        await fetch('/api/permissions/respond', {
+        const res = await fetch('/api/permissions/respond', {
           method: 'POST',
           headers: authHeaders(),
           body: JSON.stringify({ requestId, optionId, cancelled })
         });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.ok === false) {
+          throw new Error(body.error || `HTTP ${res.status}`);
+        }
         pendingPermissions = pendingPermissions.filter(p => p.requestId !== requestId);
         renderPermissions();
       } catch (err) {
         alert('审批提交失败: ' + err.message);
+        loadPermissions();
       }
-    };
+    }
 
     // Send Message
     async function sendMessage() {
@@ -720,9 +739,22 @@
         statusDot.title = '在线 (Connected)';
       };
 
-      eventSource.onerror = () => {
+      eventSource.onerror = async () => {
         statusDot.className = 'status-dot connecting';
         statusDot.title = '重连中...';
+        // EventSource gives up for good on a non-200 response (e.g. 401 after
+        // the token was regenerated), so probe and either re-auth or retry.
+        if (eventSource.readyState !== EventSource.CLOSED) return;
+        try {
+          const res = await fetch('/api/status', { headers: authHeaders() });
+          if (res.status === 401) {
+            localStorage.removeItem('jockey_token');
+            authToken = '';
+            authModal.style.display = 'flex';
+            return;
+          }
+        } catch (_) {}
+        setTimeout(setupSSE, 3000);
       };
 
       eventSource.addEventListener('acp/delta', (ev) => {
@@ -765,7 +797,10 @@
           group.className = 'msg-group';
           const meta = document.createElement('div');
           meta.className = 'msg-meta';
-          meta.innerHTML = `<span class="msg-role-tag">${delta.role || 'assistant'}</span>`;
+          const roleTag = document.createElement('span');
+          roleTag.className = 'msg-role-tag';
+          roleTag.textContent = delta.role || 'assistant';
+          meta.appendChild(roleTag);
           group.appendChild(meta);
 
           const card = document.createElement('div');

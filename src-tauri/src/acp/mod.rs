@@ -1,4 +1,5 @@
 mod adapter;
+pub(crate) use adapter::app_data_dir;
 mod client;
 mod connection;
 mod error;

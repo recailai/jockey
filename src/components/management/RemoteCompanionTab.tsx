@@ -1,6 +1,6 @@
 import { Show, createSignal, onMount } from "solid-js";
 import { Check, Copy, ExternalLink, RefreshCw, Shield, Smartphone, Wifi } from "lucide-solid";
-import { Panel, PanelBody, Switch as UiSwitch, Button } from "../ui";
+import { Alert, Badge, Button, Panel, PanelBody, StateDot, Switch as UiSwitch } from "../ui";
 import { gatewayApi, type GatewayStatus } from "../../lib/tauriApi";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -8,6 +8,7 @@ export function RemoteCompanionTab() {
   const [status, setStatus] = createSignal<GatewayStatus | null>(null);
   const [loading, setLoading] = createSignal(false);
   const [copiedKey, setCopiedKey] = createSignal<string | null>(null);
+  const [error, setError] = createSignal<string | null>(null);
 
   const loadStatus = async () => {
     try {
@@ -24,27 +25,23 @@ export function RemoteCompanionTab() {
 
   const toggleGateway = async (enable: boolean) => {
     setLoading(true);
+    setError(null);
     try {
-      if (enable) {
-        const s = await gatewayApi.start();
-        setStatus(s);
-      } else {
-        const s = await gatewayApi.stop();
-        setStatus(s);
-      }
+      setStatus(enable ? await gatewayApi.start() : await gatewayApi.stop());
     } catch (e) {
-      console.error("Toggle gateway failed:", e);
+      setError(String(e));
+      await loadStatus();
     } finally {
       setLoading(false);
     }
   };
 
   const regenerateToken = async () => {
+    setError(null);
     try {
-      const s = await gatewayApi.regenerateToken();
-      setStatus(s);
+      setStatus(await gatewayApi.regenerateToken());
     } catch (e) {
-      console.error("Regenerate token failed:", e);
+      setError(String(e));
     }
   };
 
@@ -76,10 +73,10 @@ export function RemoteCompanionTab() {
               <div class="flex items-center gap-2">
                 <span class="text-[14px] font-medium theme-text">启用远程 Web 伴侣</span>
                 <Show when={status()?.running}>
-                  <span class="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-400">
-                    <span class="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  <Badge tone="success" class="inline-flex items-center gap-1">
+                    <StateDot state="done" size={6} />
                     运行中 (Port {status()?.port})
-                  </span>
+                  </Badge>
                 </Show>
               </div>
               <p class="mt-1 text-[13px] leading-relaxed theme-muted">
@@ -95,30 +92,33 @@ export function RemoteCompanionTab() {
         </PanelBody>
       </Panel>
 
+      <Show when={error()}>
+        <Alert tone="danger" title="远程 Web 伴侣操作失败" onClose={() => setError(null)}>
+          {error()}
+        </Alert>
+      </Show>
+
       {/* Details when running */}
       <Show when={status()?.running}>
         <div class="space-y-4">
           {/* Tailscale / Connection URLs */}
           <div class="rounded-xl border border-[var(--ui-border)] bg-[var(--ui-bg-subtle)] p-4 space-y-3">
             <div class="flex items-center gap-2 text-[13px] font-medium theme-text">
-              <Wifi size={16} class="text-indigo-400" />
+              <Wifi size={16} class="theme-muted" />
               <span>连接地址 (在外通过 Tailscale 访问)</span>
             </div>
 
             <Show
               when={status()?.tailscaleUrl}
               fallback={
-                <div class="rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-[12px] text-amber-200">
-                  <div class="font-medium">未检测到 Tailscale 虚拟网卡 (100.x.y.z)</div>
-                  <div class="mt-1 text-amber-300/80 leading-relaxed">
-                    请确保当前电脑已安装并登录 Tailscale；或者在同一 Wi-Fi 下使用下方局域网地址访问。
-                  </div>
-                </div>
+                <Alert tone="warning" title="未检测到 Tailscale 虚拟网卡 (100.x.y.z)">
+                  请确保当前电脑已安装并登录 Tailscale；或者在同一 Wi-Fi 下使用下方局域网地址访问。
+                </Alert>
               }
             >
               <div class="flex flex-col gap-2 rounded-lg border border-[var(--ui-border)] bg-[var(--ui-bg)] p-3">
                 <div class="flex items-center justify-between">
-                  <span class="text-[11px] font-medium uppercase tracking-wider text-indigo-400">
+                  <span class="text-[11px] font-medium uppercase tracking-wider theme-text">
                     Tailscale 直连地址 (最佳)
                   </span>
                   <div class="flex gap-2">
@@ -134,7 +134,7 @@ export function RemoteCompanionTab() {
                         when={copiedKey() === "tailscale"}
                         fallback={<Copy size={13} class="mr-1" />}
                       >
-                        <Check size={13} class="mr-1 text-emerald-400" />
+                        <Check size={13} class="mr-1" />
                       </Show>
                       {copiedKey() === "tailscale" ? "已复制" : "复制链接"}
                     </Button>
@@ -149,7 +149,7 @@ export function RemoteCompanionTab() {
                     </Button>
                   </div>
                 </div>
-                <div class="font-mono text-[12px] text-zinc-300 break-all select-all">
+                <div class="font-mono text-[12px] theme-text break-all select-all">
                   {status()?.tailscaleUrl}
                 </div>
               </div>
@@ -159,7 +159,7 @@ export function RemoteCompanionTab() {
             <Show when={(status()?.lanUrls ?? []).length > 0}>
               <div class="flex flex-col gap-2 rounded-lg border border-[var(--ui-border)] bg-[var(--ui-bg)] p-3">
                 <div class="flex items-center justify-between">
-                  <span class="text-[11px] font-medium uppercase tracking-wider text-zinc-400">
+                  <span class="text-[11px] font-medium uppercase tracking-wider theme-muted">
                     局域网地址 (同一 Wi-Fi)
                   </span>
                   <Button
@@ -174,12 +174,12 @@ export function RemoteCompanionTab() {
                       when={copiedKey() === "lan"}
                       fallback={<Copy size={13} class="mr-1" />}
                     >
-                      <Check size={13} class="mr-1 text-emerald-400" />
+                      <Check size={13} class="mr-1" />
                     </Show>
                     {copiedKey() === "lan" ? "已复制" : "复制链接"}
                   </Button>
                 </div>
-                <div class="font-mono text-[12px] text-zinc-300 break-all select-all">
+                <div class="font-mono text-[12px] theme-text break-all select-all">
                   {status()?.lanUrls[0]}
                 </div>
               </div>
@@ -188,7 +188,7 @@ export function RemoteCompanionTab() {
             {/* Localhost URL */}
             <div class="flex flex-col gap-2 rounded-lg border border-[var(--ui-border)] bg-[var(--ui-bg)] p-3">
               <div class="flex items-center justify-between">
-                <span class="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+                <span class="text-[11px] font-medium uppercase tracking-wider theme-muted">
                   本机测试地址 (Localhost)
                 </span>
                 <div class="flex gap-2">
@@ -202,7 +202,7 @@ export function RemoteCompanionTab() {
                       when={copiedKey() === "local"}
                       fallback={<Copy size={13} class="mr-1" />}
                     >
-                      <Check size={13} class="mr-1 text-emerald-400" />
+                      <Check size={13} class="mr-1" />
                     </Show>
                     {copiedKey() === "local" ? "已复制" : "复制链接"}
                   </Button>
@@ -217,7 +217,7 @@ export function RemoteCompanionTab() {
                   </Button>
                 </div>
               </div>
-              <div class="font-mono text-[12px] text-zinc-400 break-all select-all">
+              <div class="font-mono text-[12px] theme-muted break-all select-all">
                 {status()?.localUrl}
               </div>
             </div>
@@ -227,7 +227,7 @@ export function RemoteCompanionTab() {
           <div class="rounded-xl border border-[var(--ui-border)] bg-[var(--ui-bg-subtle)] p-4 space-y-3">
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-2 text-[13px] font-medium theme-text">
-                <Shield size={16} class="text-amber-400" />
+                <Shield size={16} class="theme-muted" />
                 <span>访问安全令牌 (Access Token)</span>
               </div>
               <Button
@@ -241,10 +241,10 @@ export function RemoteCompanionTab() {
               </Button>
             </div>
             <p class="text-[12px] theme-muted">
-              所有连入的浏览器都会校验此 Token。复制上方完整链接时已自动包含免密 Token 参数。
+              所有连入的浏览器都会校验此 Token，重启 App 后保持不变。重新生成会立即让旧链接失效并断开已连接的设备。
             </p>
             <div class="flex items-center justify-between rounded-lg border border-[var(--ui-border)] bg-[var(--ui-bg)] px-3 py-2">
-              <span class="font-mono text-[13px] text-zinc-300">
+              <span class="font-mono text-[13px] theme-text">
                 {status()?.token}
               </span>
               <Button
@@ -257,7 +257,7 @@ export function RemoteCompanionTab() {
                   when={copiedKey() === "token_only"}
                   fallback={<Copy size={12} class="mr-1" />}
                 >
-                  <Check size={12} class="mr-1 text-emerald-400" />
+                  <Check size={12} class="mr-1" />
                 </Show>
                 {copiedKey() === "token_only" ? "已复制" : "复制"}
               </Button>
@@ -265,17 +265,13 @@ export function RemoteCompanionTab() {
           </div>
 
           {/* Mobile Usage Tips */}
-          <div class="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4 space-y-2 text-[13px] text-zinc-300">
-            <div class="flex items-center gap-2 font-medium text-indigo-400">
-              <Smartphone size={16} />
-              <span>手机使用小技巧</span>
-            </div>
-            <ul class="list-disc list-inside space-y-1 text-[12px] text-zinc-400 leading-relaxed pl-1">
+          <Alert tone="info" title="手机使用小技巧" icon={<Smartphone size={16} />}>
+            <ul class="list-disc list-inside space-y-1 text-[12px] leading-relaxed pl-1">
               <li>在手机 Safari 中打开连接后，点击「分享」并选择「添加到主屏幕」，即可作为独立全屏 App 使用。</li>
               <li>当 Agent 执行危险命令或修改文件时，手机顶部会即时弹出卡片，单手拇指即可点【批准】或【拒绝】。</li>
               <li>支持实时流式打字同步，在手机上可随时监控任务进度。</li>
             </ul>
-          </div>
+          </Alert>
         </div>
       </Show>
     </div>
