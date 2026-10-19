@@ -1,6 +1,7 @@
 # Session sync: late joiners and external CLI activity
 
-Status: design, not implemented. Builds on [engine-service-layer.md](engine-service-layer.md).
+Status: design, not implemented. Builds on [engine-service-layer.md](engine-service-layer.md)
+and the adapter contract in [runtime-adapters.md](runtime-adapters.md).
 
 ## Requirements
 
@@ -20,11 +21,7 @@ Status: design, not implemented. Builds on [engine-service-layer.md](engine-serv
 | Client opens a session mid-turn | Desktop: `engineEvents.ts` only accepts frames for turns it saw start (`acceptingStreams`), so a late window shows the last 1.5 s checkpoint row and nothing more until `turn/finished`. Web: loads the checkpoint, then appends raw deltas into a separate bubble. | Desktop freezes for the rest of the turn; web loses the frames between checkpoint and subscribe and shows the turn split in two. Frames carry no position, so neither side can dedupe or detect a gap. |
 | Web SSE client lags | Gets `resync`, reloads the session. | Same mid-turn gap after the reload. |
 | Provider conversation continues in a terminal | Nothing. A later re-import appends the new transcript entries (ids are deterministic). | No live view. Worse: Jockey's warm provider process still holds the *old* conversation in memory, and a Jockey turn sent now resumes in parallel with the terminal — the two diverge or interleave in one transcript file. |
-| Viewing takes ownership | Already true that it does not: only `submit` takes the `turns::reserve` slot; config discovery uses a separate probe connection (`prewarm_role_config_cmd`). | Keep it that way (rule below). |
-
-The engine already holds the one thing a late joiner needs: the running turn's transcript
-(`turns::ActiveTurn.transcript`), updated under a lock by the frame tap. What is missing is a
-**position** shared by that state and the frames.
+| Viewing takes ownership | Already true that it does not: only `submit` takes the `turns::reserve` slot; config discovery uses a separate probe connection (`prewarm_role_config_cmd`). | Keep it that way. |
 
 ## How the agent CLIs handle it (checked 2026-10-19)
 
@@ -37,134 +34,139 @@ converge on is **one owner process per conversation, other surfaces attach to it
 | Codex 0.163 | Each `codex app-server` process loads the thread on its own. | A **shared local app-server daemon** (`codex app-server daemon start`, `codex agents`, `codex queue --thread`, TUI `--remote`). Clients of the same daemon subscribe to one in-memory thread and all receive `turn/*` notifications; `thread/resume` rebuilds state for a reconnecting client. `codex app-server proxy` bridges stdio to the daemon's control socket. `codex fork` / `thread/fork` branch a thread. (Multi-client semantics come from third-party write-ups; verify before relying on them.) |
 | Pi 1.1 | Plain JSONL session files, no owner process. | `--fork <id>` into a new session; no daemon. |
 
-What this changes in Jockey's design:
+Jockey's engine already is this pattern internally (one owner per app session, views
+subscribe). The design below extends the same model one level down, to the provider
+conversation, and expresses it in the existing adapter vocabulary so the engine stays
+runtime-agnostic.
 
-- Jockey's engine already *is* this pattern internally (single owner per session, views
-  subscribe). Section 1 below makes late joining lossless — the same contract Codex
-  implements with `thread/resume`.
-- For Codex the better answer than tailing files is to **join the vendor's owner**: run
-  turns through the shared daemon (`codex app-server proxy`) instead of a private
-  `codex app-server`, and a terminal TUI on the same daemon becomes another subscriber.
-- For Claude and Pi there is no local multi-client API Jockey can use, so following an
-  external session is read-only tailing (section 2) and writing must avoid a concurrent
-  owner (section 3). Because the Claude transcript format is internal, the tailer must be
-  tolerant, and hooks are the preferred change trigger where the user opts in.
+## Model
 
-## Design
+Four terms, used the same way for every runtime:
 
-### 1. Snapshot + sequenced stream (late joiners)
+| Term | Meaning | Where it lives |
+| --- | --- | --- |
+| **Conversation** | The provider-side conversation behind an app session: runtime + provider handle (`resume_session_id`, the imported `external_session_id`) + an opaque locator (transcript file, thread id). | `ConversationRef`, built from the existing provider-handle rows |
+| **Owner** | Who is driving the conversation right now: `None`, `Jockey { turn_id }`, `External { kind, since }` with `kind` = `Daemon` (vendor owner process Jockey also talks to), `Background` (vendor owner Jockey cannot join), `Unknown` (only observed activity). | Engine, in the session summary (`owner`) |
+| **Observation** | A stream of the conversation's activity, normalised into the same frames adapters already emit (`AcpEvent` on `acp/delta` / `acp/stream`), plus a **cursor** — an opaque, per-runtime position (byte offset, last item id) that lets observation resume without re-reading. | Adapter produces it; engine consumes it |
+| **Turn origin** | `Jockey` or `External`. An external turn is recorded and announced exactly like a Jockey turn (`turn/started` → frames → `turn/finished`), only marked with its origin. | Engine turn registry |
 
-Pattern: the "list-then-watch" contract (as in Kubernetes informers, or event-sourced read
-models): a client fetches state at version *N*, subscribes, and applies only events with
-version > *N*.
+The consequence that keeps the views simple: **an external turn is just a turn.** The same
+recorder (`engine::transcript`), the same events, the same renderer on desktop and web; the
+only new UI is an origin badge and the owner state.
 
-| Option | Problem |
+## Adapter contract
+
+Extends `RuntimeAdapter` (`acp/session/adapter_runtime.rs`) the way `steer` did: optional
+methods whose default returns `AdapterError::unsupported(<capability>)`, gated by new
+`RuntimeCapabilities` fields so the engine and UI degrade on declared capability, never on
+runtime names.
+
+```rust
+// RuntimeCapabilities (runtime_profile.rs)
+observation: ObservationSupport,   // None | Tail | Live
+shared_owner: bool,                // turns run through a vendor owner other surfaces attach to
+ownership_signal: bool,            // the provider reports "another process owns this"
+fork: bool,                        // existing
+
+// RuntimeAdapter
+async fn observe(&self, conv: &ConversationRef, from: Cursor, sink: ObservationSink)
+    -> Result<ObservationHandle, AdapterError>;      // unsupported("observation")
+async fn owner(&self, conv: &ConversationRef) -> Result<Owner, AdapterError>;
+async fn fork(&self, key: &SessionKey, conv: &ConversationRef)
+    -> Result<ConversationRef, AdapterError>;        // unsupported("fork")
+```
+
+- `observe` pushes frames into an `ObservationSink` that tags them with turn boundaries
+  (`TurnBegin { origin, provider_turn_id }`, frames, `TurnEnd`) and the cursor after each
+  entry. The adapter decides *how* (daemon notifications, file tail); the engine never sees
+  files or sockets. Dropping the handle stops observing.
+- `owner` answers from whatever the provider exposes: the daemon's thread state, Claude's
+  "running in the background" refusal (cached from the last attempt), or `Unknown` from
+  recent observed activity.
+- Existing `prompt` is unchanged. A `shared_owner` runtime simply connects to the vendor
+  owner instead of spawning a private process (Codex: `codex app-server proxy` instead of
+  `codex app-server`).
+
+| Runtime | observation | shared_owner | ownership_signal | fork | Implementation |
+| --- | --- | --- | --- | --- | --- |
+| `codex-cli` | Live | yes (daemon) | yes | yes | `thread/resume` subscription on the shared daemon; cursor = last item id |
+| `claude-native` | Tail | no | yes | yes | Incremental JSONL tail, tolerant of unknown entry types; optional user-installed hook as change trigger; `--fork-session` |
+| `pi-cli` | Tail | no | no | yes | Incremental JSONL tail; `--fork` |
+| `claude-code` (ACP), `antigravity-cli`, custom ACP | None | no | no | per profile | No external surface to follow; `unsupported` |
+
+## Engine (runtime-agnostic)
+
+### Sequencer: one publish path with positions
+
+Pattern: single writer per turn, "list-then-watch" for readers (as in Kubernetes informers
+or event-sourced read models).
+
+- `engine::stream::publish(origin, frame)` replaces the ~8 direct
+  `emit("acp/delta" | "acp/stream")` sites (`headless.rs`, `native.rs`, `perm_bridge.rs`,
+  the ACP worker) and is also the `ObservationSink`'s output. Under the turn's lock it applies
+  the frame to the turn's `Transcript`, increments `rev`, and emits the frame with
+  `{ turnId, rev, origin }`. Frames outside any turn (prewarm, probes) pass through unchanged.
+- `get_live_turn(sessionId) -> { turnId, rev, origin, message } | null` (Tauri command,
+  `GET /api/sessions/:id/live`) reads the in-memory transcript under the same lock, so the
+  snapshot and `rev` are consistent by construction.
+- Client join protocol, identical on desktop and web: subscribe, buffer, fetch the snapshot,
+  apply frames with `rev > snapshot.rev`; a jump in `rev` means loss → refetch the snapshot.
+  The web's `resync` becomes this refetch instead of a full reload.
+- Side benefit: the current tap re-parses every frame's JSON (`listen_any` →
+  `serde_json::from_str`); publishing hands the engine the structured value directly.
+
+| Alternative | Why not |
 | --- | --- |
-| Clients refetch the checkpoint more often | Still lossy between polls; load grows with viewers. |
-| Replay buffer of recent frames per turn | Memory per turn grows with the turn; a long tool output replays megabytes to every joiner. |
-| Stamp frames in the existing tap, keep adapters emitting raw events | The raw frame has already left (Tauri and the gateway see it before or alongside the tap), so the stamp cannot reach the clients that need it. |
-| **Engine becomes the sequencer: adapters hand frames to the engine, which applies, stamps and publishes** | — |
+| Poll the checkpoint more often | Lossy between polls; load grows with viewers. |
+| Per-turn replay buffer of frames | Memory grows with the turn; long tool output replays megabytes to each joiner. |
+| Stamp frames in the existing tap | The raw frame has already reached Tauri and the gateway; the stamp cannot follow it. |
 
-Chosen: a single writer per turn.
+### Observer: refcounted, read-only
 
-- `engine::stream::publish(frame)` replaces the ~8 direct `emit("acp/delta" | "acp/stream")`
-  sites (`acp/session/headless.rs`, `native.rs`, `perm_bridge.rs`, the ACP worker). Under the
-  turn's lock it applies the frame to `Transcript`, increments `rev`, and emits the frame
-  with `{ turnId, rev }` added. Frames for sessions with no engine turn (prewarm, probes) are
-  emitted unchanged.
-- `get_live_turn(sessionId) -> { turnId, rev, message } | null` (Tauri command and
-  `GET /api/sessions/:id/live`) returns the in-memory transcript rendered as the same
-  `AppMessage` shape `turn/finished` persists, read under the same lock — so `rev` and the
-  snapshot are consistent by construction.
-- Client protocol: subscribe first, buffer frames, fetch the snapshot, render it, apply
-  buffered and later frames with `rev > snapshot.rev`, drop the rest. A jump in `rev`
-  (`rev > last + 1`) means frames were lost — refetch the snapshot instead of guessing.
-  The web's `resync` becomes the same refetch, not a full reload.
-- `turn/finished` is unchanged and stays authoritative: it replaces whatever the view built.
+- `watch_session(id)` / `unwatch_session(id)` (desktop on open/close; web tied to the SSE
+  `focus`, released on disconnect). While the count is > 0 and the runtime declares
+  `observation != None`, the engine holds one `ObservationHandle` from its last persisted
+  cursor. Zero cost for sessions nobody is viewing.
+- Observed `TurnBegin { origin: External }` opens an engine turn with that origin; frames go
+  through `publish`; `TurnEnd` finishes it and persists with deterministic ids derived from the
+  provider entries (the importer's `import:{runtime}:{id}` scheme), so a repeated or
+  overlapping observation is idempotent. The cursor is persisted with the turn.
+- **Own-write invariant.** Jockey's own turns also appear in the provider's log. The observer
+  never records a turn the engine started: while `Owner = Jockey`, observed frames are
+  dropped (Tail) or matched to the running Jockey turn by provider turn id (Live), and when a
+  Jockey turn finishes the cursor is advanced past its entries.
+- Observation never reserves the session, never spawns a provider process for `Tail`, and
+  for `Live` only subscribes on a daemon that is already running.
 
-Side benefit (performance): the tap today re-parses every frame's JSON string
-(`listen_any` → `serde_json::from_str`). Publishing through the engine hands it the
-structured value directly, one parse fewer per token on the hottest path.
+### Write policy: viewing is free, sending is a lease
 
-Desktop latency is unaffected: the desktop keeps rendering frames as they arrive; it only
-gains the ability to *join* a turn it did not see start (`engineEvents.ts` opens the live
-projection from the snapshot instead of ignoring frames).
+Pattern: single writer per conversation, readers never lock (CQRS). The only lock remains
+`turns::reserve`; `submit` adds one decision based on `Owner`:
 
-### 2. External activity: tail the provider transcript (read-only)
-
-Pattern: change-data-capture by tailing the provider's own log. The provider transcript file
-(`~/.claude/projects/…/<id>.jsonl`, Codex rollout, Pi session) is the source of truth for
-anything that happened outside Jockey; Jockey already knows each imported session's file
-(`import_session_catalog.file_path`) and parses it idempotently.
-
-| Option | Problem |
+| Owner at submit | Action |
 | --- | --- |
-| Periodic re-import of every session | Rescans files nobody is looking at; latency of the poll interval. |
-| Attach to the running CLI process | No supported API for any of the CLIs; would take ownership. |
-| Watch whole provider directories | Thousands of files; events for unrelated projects. |
-| **Watch only the files of sessions someone is viewing; parse appended bytes only** | — |
+| `None` | Run. If external turns were observed since the provider slot's last turn, `discard_slot` first — a warm process would answer from a conversation that no longer matches the provider's record. |
+| `Jockey` | Queue (existing behaviour). |
+| `External { kind: Daemon }` | Queue behind the owner's turn; the daemon serialises turns on a thread, and the observer's `TurnEnd` drains the queue. |
+| `External { kind: Background \| Unknown }` | Typed error `ConversationBusy { owner }`; views offer **wait** (queue until the observer sees the turn end, or a quiet period for `Unknown`), **fork** (`fork` → new conversation for this app session), or for `Background` an "attach in terminal" hint. |
 
-Chosen:
-
-- **Refcounted subscriptions.** A view opening a session calls `watch_session(id)` and
-  releases it on close (web: tied to the SSE `focus`, released on disconnect). The engine
-  watches a file only while its refcount is > 0 — one OS watch per viewed session, zero cost
-  for the rest.
-- **Incremental tail.** Keep `(file, byte_offset, last_entry_id)` per watched file; on a
-  debounced (~300 ms) change event, read from the offset, parse complete lines only, and
-  upsert through the existing importer path (deterministic `import:{runtime}:{id}` ids, so a
-  repeated or overlapping read is harmless). Emit `message/added` per new entry and
-  `session/changed` for the summary. A truncated/rotated file (size < offset) falls back to
-  a full idempotent re-import.
-- **Attribution.** While the engine runs a turn in that session, file growth is Jockey's own
-  write and is ignored by the tail (the turn's record comes from the engine). Growth with no
-  engine turn is external: the session gets `externalActivityAt` in its summary, and views
-  show "active in terminal".
-- Requires a file-watch dependency (`notify`, FSEvents on macOS); nothing in the tree
-  watches files today.
-- **Per runtime.** Codex: not needed once turns go through the shared daemon (the daemon's
-  thread notifications are the live feed). Claude: tail, optionally triggered by a
-  user-installed hook (`Stop` / `UserPromptSubmit` posting to the local gateway) instead of
-  polling the file system; the parser skips entry types it does not know rather than failing,
-  since the format is internal. Pi: tail.
-
-### 3. Ownership: viewing is free, sending is a lease
-
-Pattern: single writer per session, readers never lock (CQRS). Viewing = queries and
-subscriptions only. Sending = the existing `turns::reserve` slot, which is the only lock.
-
-External activity adds one rule at the write side, in `engine::service::submit`:
-
-- **Stale warm process.** If `externalActivityAt` is newer than the provider slot's last
-  turn, evict the slot before running (`discard_slot`): the next turn re-resumes from the
-  provider's file and sees the terminal's messages. Without this, a warm `claude` or
-  `codex app-server` process answers from a conversation that no longer matches the file.
-- **Concurrent writer.** If external activity is *recent* (within ~10 s, i.e. the terminal is
-  probably mid-turn), do not resume the same provider session. Reject with a typed error the
-  views turn into a choice: wait, or **fork** — Claude `--resume <id> --fork-session`, Codex
-  thread fork (`fork_provider_session_cmd` already exists for native Codex). Pi and agy: wait
-  only.
-- No OS-level locking of provider files: the CLIs do not honour one, and an advisory lock
-  would only block Jockey, which this rule already covers.
-- **Vendor ownership signals come first.** Claude refusing a resume of a running background
-  session (exit 1, "running in the background") maps to the same typed error, with
-  "attach in terminal" / fork as the choices. On the Codex daemon the daemon itself
-  serialises turns on a thread, so the rule reduces to queueing behind its running turn.
+No OS-level locking of provider files: the CLIs do not honour one, and it would only block
+Jockey, which this policy already covers.
 
 ## Phases
 
-1. **Sequenced stream + snapshot** (requirement 1): `engine::stream::publish`, `rev`,
-   `get_live_turn` + `/api/sessions/:id/live`, client join protocol on desktop and web, and
-   `resync` → snapshot refetch. Tests: transcript/rev consistency under interleaved frames,
-   join-mid-turn on both views, gap detection.
-2. **Codex on the shared daemon** (requirement 2 for Codex, live and lossless): spike first —
-   confirm that two clients of `codex app-server daemon` see each other's turns and that
-   `thread/resume` on a loaded thread subscribes rather than reloads; then launch through
-   `codex app-server proxy` with the private process as fallback.
-3. **Watch + tail for Claude and Pi** (read-only): refcounted watcher, incremental tail
-   through the importer, `externalActivityAt`, "active in terminal" badge; optional Claude
+1. **Sequencer + snapshot** (requirement 1): `engine::stream::publish`, `rev`, `origin`,
+   `get_live_turn` + `/api/sessions/:id/live`, the join protocol on desktop and web, `resync`
+   → snapshot. Tests: transcript/`rev` consistency under interleaved frames, mid-turn join on
+   both views, gap detection. No adapter changes beyond routing emits through `publish`.
+2. **Contract + Codex Live** (requirement 2 for Codex): capability fields and trait methods;
+   spike first — two daemon clients see each other's turns, `thread/resume` on a loaded thread
+   subscribes rather than reloads — then `shared_owner` launch through
+   `codex app-server proxy`, with the private process as fallback when no daemon runs.
+3. **Observer + Tail** for `claude-native` and `pi-cli`: refcounted watcher (`notify`),
+   incremental tail, cursor persistence, own-write invariant, origin badge; optional Claude
    hook trigger.
-4. **Write-side rules** (correctness when both sides talk): evict stale slots, reject-or-fork
-   on recent external activity, map Claude's "running in the background" refusal.
+4. **Write policy**: `Owner` in summaries, `ConversationBusy`, stale-slot discard, fork flow,
+   Claude background-session mapping.
 
-Each phase is useful alone; phase 4 depends on phase 3's attribution.
+Each phase is useful alone; phases 3–4 reuse phase 1's publish path unchanged.
