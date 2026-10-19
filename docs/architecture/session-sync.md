@@ -26,6 +26,30 @@ The engine already holds the one thing a late joiner needs: the running turn's t
 (`turns::ActiveTurn.transcript`), updated under a lock by the frame tap. What is missing is a
 **position** shared by that state and the frames.
 
+## How the agent CLIs handle it (checked 2026-10-19)
+
+None of them supports two independent processes writing one conversation. The pattern they
+converge on is **one owner process per conversation, other surfaces attach to it**.
+
+| CLI | Two processes resume one session | What the vendor offers instead |
+| --- | --- | --- |
+| Claude Code 2.1.x | Documented as unsafe: "If you resume the same session in two terminals without forking, messages from both interleave into one transcript." | **Background sessions** (`claude --bg`, `claude agents`, `claude attach <id>`), hosted by a per-user supervisor: resuming a *running* background session attaches to that process instead of loading the transcript. A `claude -p --resume <id>` that sets output/config flags (as Jockey does) is refused with exit 1 and the `claude attach` hint. `--fork-session` / `/branch` copy the conversation. Remote Control lets a phone follow a session. The transcript JSONL is documented as an internal format that "changes between versions"; hooks receive `transcript_path` and are the supported trigger. |
+| Codex 0.163 | Each `codex app-server` process loads the thread on its own. | A **shared local app-server daemon** (`codex app-server daemon start`, `codex agents`, `codex queue --thread`, TUI `--remote`). Clients of the same daemon subscribe to one in-memory thread and all receive `turn/*` notifications; `thread/resume` rebuilds state for a reconnecting client. `codex app-server proxy` bridges stdio to the daemon's control socket. `codex fork` / `thread/fork` branch a thread. (Multi-client semantics come from third-party write-ups; verify before relying on them.) |
+| Pi 1.1 | Plain JSONL session files, no owner process. | `--fork <id>` into a new session; no daemon. |
+
+What this changes in Jockey's design:
+
+- Jockey's engine already *is* this pattern internally (single owner per session, views
+  subscribe). Section 1 below makes late joining lossless — the same contract Codex
+  implements with `thread/resume`.
+- For Codex the better answer than tailing files is to **join the vendor's owner**: run
+  turns through the shared daemon (`codex app-server proxy`) instead of a private
+  `codex app-server`, and a terminal TUI on the same daemon becomes another subscriber.
+- For Claude and Pi there is no local multi-client API Jockey can use, so following an
+  external session is read-only tailing (section 2) and writing must avoid a concurrent
+  owner (section 3). Because the Claude transcript format is internal, the tailer must be
+  tolerant, and hooks are the preferred change trigger where the user opts in.
+
 ## Design
 
 ### 1. Snapshot + sequenced stream (late joiners)
@@ -98,6 +122,11 @@ Chosen:
   show "active in terminal".
 - Requires a file-watch dependency (`notify`, FSEvents on macOS); nothing in the tree
   watches files today.
+- **Per runtime.** Codex: not needed once turns go through the shared daemon (the daemon's
+  thread notifications are the live feed). Claude: tail, optionally triggered by a
+  user-installed hook (`Stop` / `UserPromptSubmit` posting to the local gateway) instead of
+  polling the file system; the parser skips entry types it does not know rather than failing,
+  since the format is internal. Pi: tail.
 
 ### 3. Ownership: viewing is free, sending is a lease
 
@@ -117,6 +146,10 @@ External activity adds one rule at the write side, in `engine::service::submit`:
   only.
 - No OS-level locking of provider files: the CLIs do not honour one, and an advisory lock
   would only block Jockey, which this rule already covers.
+- **Vendor ownership signals come first.** Claude refusing a resume of a running background
+  session (exit 1, "running in the background") maps to the same typed error, with
+  "attach in terminal" / fork as the choices. On the Codex daemon the daemon itself
+  serialises turns on a thread, so the rule reduces to queueing behind its running turn.
 
 ## Phases
 
@@ -124,9 +157,14 @@ External activity adds one rule at the write side, in `engine::service::submit`:
    `get_live_turn` + `/api/sessions/:id/live`, client join protocol on desktop and web, and
    `resync` → snapshot refetch. Tests: transcript/rev consistency under interleaved frames,
    join-mid-turn on both views, gap detection.
-2. **Watch + tail** (requirement 2, read-only): refcounted watcher, incremental tail through
-   the importer, `externalActivityAt`, "active in terminal" badge.
-3. **Write-side rules** (correctness when both sides talk): evict stale slots, reject-or-fork
-   on recent external activity.
+2. **Codex on the shared daemon** (requirement 2 for Codex, live and lossless): spike first —
+   confirm that two clients of `codex app-server daemon` see each other's turns and that
+   `thread/resume` on a loaded thread subscribes rather than reloads; then launch through
+   `codex app-server proxy` with the private process as fallback.
+3. **Watch + tail for Claude and Pi** (read-only): refcounted watcher, incremental tail
+   through the importer, `externalActivityAt`, "active in terminal" badge; optional Claude
+   hook trigger.
+4. **Write-side rules** (correctness when both sides talk): evict stale slots, reject-or-fork
+   on recent external activity, map Claude's "running in the background" refusal.
 
-Each phase is useful alone; phase 3 depends on phase 2's attribution.
+Each phase is useful alone; phase 4 depends on phase 3's attribution.
