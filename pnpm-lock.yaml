@@ -36,9 +36,6 @@ importers:
         specifier: ^1.9.15
         version: 1.9.15
     devDependencies:
-      '@tailwindcss/oxide-darwin-arm64':
-        specifier: ^4.3.3
-        version: 4.3.3
       '@tailwindcss/vite':
         specifier: ^4.3.3
         version: 4.3.3(vite@8.2.2(esbuild@0.27.4)(jiti@2.7.0))
@@ -1508,7 +1505,8 @@ snapshots:
   '@tailwindcss/oxide-android-arm64@4.3.3':
     optional: true
 
-  '@tailwindcss/oxide-darwin-arm64@4.3.3': {}
+  '@tailwindcss/oxide-darwin-arm64@4.3.3':
+    optional: true
 
   '@tailwindcss/oxide-darwin-x64@4.3.3':
     optional: true

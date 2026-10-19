@@ -422,7 +422,6 @@ pub fn run() {
             engine::service::cancel_turn,
             engine::service::send_queued_input_now,
             engine::service::remove_queued_input,
-            engine::service::session_busy,
             web_gateway::get_gateway_status_cmd,
             web_gateway::start_gateway_cmd,
             web_gateway::stop_gateway_cmd,

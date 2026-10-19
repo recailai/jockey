@@ -570,11 +570,6 @@ pub(crate) fn remove_queued_input(
     queue::remove(&app, &app.state::<AppState>(), &session_id, &id)
 }
 
-#[tauri::command]
-pub(crate) fn session_busy(session_id: String) -> bool {
-    turns::is_busy(&session_id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

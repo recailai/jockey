@@ -339,46 +339,8 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
             { name: "test", description: "Execute test suite and analyze failures", role: null, source: "skill" },
           ];
         }
-        case "list_discovered_modes_cmd": {
-          return ["code", "architect", "ask"];
-        }
-        case "list_discovered_config_options_cmd": {
-          return [];
-        }
         case "prewarm_role_config_cmd": {
           return { configOptions: [], modes: ["code", "architect", "ask"] };
-        }
-
-        case "assistant_chat": {
-          const chatInput = (args.input || {}) as Record<string, unknown>;
-          const text = String(chatInput.input || "");
-          const sessionId = String(chatInput.appSessionId || "");
-          const isSlash = text.trim().startsWith("/");
-
-          let reply = `Echo: Received "${text}". (Browser Standalone Mode)`;
-          if (isSlash) {
-            reply = `Executed mock command \`${text.trim()}\` successfully.`;
-          }
-
-          const list = getStorage<MockSession[]>(STORAGE_KEY_SESSIONS, []);
-          const s = list.find((item: { id: string }) => item.id === sessionId);
-          if (s) {
-            s.messages = s.messages || [];
-            s.messages.push({
-              id: `msg-${Date.now()}`,
-              roleName: s.activeRole || "Developer",
-              text: reply,
-              at: Date.now(),
-            });
-            setStorage(STORAGE_KEY_SESSIONS, list);
-          }
-
-          return {
-            ok: true,
-            reply,
-            runtimeKind: s?.runtimeKind ?? "claude-native",
-            sessionId,
-          };
         }
 
         case "git_status_cmd": {
