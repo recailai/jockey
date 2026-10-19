@@ -95,9 +95,16 @@ pub(crate) async fn submit(app: &AppHandle, input: SubmitInput) -> Result<Submit
     // Reject an unknown @mention up front, before it can sit in the queue.
     sessions::route(&state, head.project_id.as_deref(), &head.active_role, &text)?;
 
-    let Some(reservation) =
+    // Older queued input goes first: between one turn finishing and the drain claiming the
+    // next batch the session is briefly idle, and a fresh submit must not overtake the queue.
+    let queue_waiting =
+        !crate::db::inbox::list_inbox_internal(&state, &input.session_id, false)?.is_empty();
+    let reservation = if queue_waiting {
+        None
+    } else {
         turns::reserve(&input.session_id, input.assistant_message_id.as_deref())
-    else {
+    };
+    let Some(reservation) = reservation else {
         let item = queue::enqueue(
             app,
             &state,
@@ -187,16 +194,28 @@ async fn run_one(app: &AppHandle, session_id: &str, pending: PendingTurn) -> boo
         batch,
     } = pending;
     let state = app.state::<AppState>();
-    let restore_batch = |app: &AppHandle| {
-        if let Some(batch) = &batch {
-            queue::restore(app, &state, session_id, batch);
-        }
+    // A turn that cannot begin still has to end visibly: the sender's window is showing
+    // "sending" for a submit that was accepted, and only `turn/finished` clears that.
+    let restore_batch = |app: &AppHandle, error: &str| match &batch {
+        Some(batch) => queue::restore(app, &state, session_id, batch),
+        None => super::events::emit(
+            super::events::TURN_FINISHED,
+            json!({
+                "appSessionId": session_id,
+                "turnId": "",
+                "ok": false,
+                "cancelled": false,
+                "isCommand": false,
+                "error": error,
+                "messages": [],
+            }),
+        ),
     };
     let head = match load_head(&state, session_id) {
         Ok(head) => head,
         Err(e) => {
             eprintln!("[engine] cannot start turn in {session_id}: {e}");
-            restore_batch(app);
+            restore_batch(app, &e);
             return false;
         }
     };
@@ -269,7 +288,7 @@ async fn run_one(app: &AppHandle, session_id: &str, pending: PendingTurn) -> boo
         Ok(turn) => turn,
         Err(e) => {
             eprintln!("[engine] could not record turn in {session_id}: {e}");
-            restore_batch(app);
+            restore_batch(app, &e);
             return false;
         }
     };

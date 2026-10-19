@@ -91,12 +91,20 @@ export async function registerEngineEvents(input: EngineEventsInput): Promise<Un
       if (!known(sid)) return;
       const token = tokenByTurn.get(turnId);
       tokenByTurn.delete(turnId);
-      input.settleSessionStream(sid, messages, token);
-      input.updateSession(sid, {
-        submitting: false,
-        status: ok || cancelled ? "done" : "error",
-        turnPhase: "idle",
-      });
+      // Only the turn that owns the live stream may clear it or mark the session idle: events
+      // can be delivered late, and a finished turn A must not reset a running turn B. A turn
+      // that never began (no token) owns it only when nothing is streaming.
+      const owner = input.acceptingStreams.get(sid);
+      const ownsSession = token !== undefined ? owner === undefined || owner === token : owner === undefined;
+      if (ownsSession) input.settleSessionStream(sid, messages, token);
+      else input.adoptMessages(sid, messages);
+      if (ownsSession) {
+        input.updateSession(sid, {
+          submitting: false,
+          status: ok || cancelled ? "done" : "error",
+          turnPhase: "idle",
+        });
+      }
       if (!ok && !cancelled && error) {
         input.showToast(error);
         input.appendMessageLocal(sid, { id: `${turnId}-error`, roleName: "event", text: error, at: now() });

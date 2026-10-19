@@ -192,9 +192,12 @@ impl Transcript {
     fn append_to_last(&mut self, kind: &str, text: &str, role: Option<&str>) {
         if let Some(last) = self.segments.last_mut() {
             if last.get("kind").and_then(Value::as_str) == Some(kind) && role_of(last) == role {
-                let prev = last.get("text").and_then(Value::as_str).unwrap_or("");
-                last["text"] = json!(format!("{prev}{text}"));
-                return;
+                // In place: rebuilding the string per delta made a long reply quadratic, and
+                // this runs inside Tauri's emit.
+                if let Some(Value::String(prev)) = last.get_mut("text") {
+                    prev.push_str(text);
+                    return;
+                }
             }
         }
         let mut seg = segment(kind, role);
@@ -460,47 +463,66 @@ impl Transcript {
                 "text": normalize_newlines(reply),
                 "at": at,
             })],
-            TurnOutcome::Reply { role_replies, .. } if role_replies.len() > 1 => role_replies
-                .iter()
-                .enumerate()
-                .map(|(i, r)| {
-                    let role = r.role_name.as_str();
-                    let segments: Vec<Value> = self
-                        .segments
-                        .iter()
-                        .filter(|s| {
-                            role_of(s).or_else(|| s.pointer("/tc/roleName").and_then(Value::as_str))
-                                == Some(role)
-                        })
-                        .cloned()
-                        .collect();
-                    let tools: Vec<Value> = self
-                        .ordered_tools()
-                        .into_iter()
-                        .filter(|tc| tc.get("roleName").and_then(Value::as_str) == Some(role))
-                        .collect();
-                    // The first role reuses the turn id so the streaming checkpoint row is
-                    // overwritten instead of left behind as a duplicate.
-                    let msg_id = if i == 0 {
-                        id.to_string()
-                    } else {
-                        format!("{id}:{role}")
-                    };
-                    let mut msg = json!({
-                        "id": msg_id,
-                        "roleName": role,
-                        "text": normalize_newlines(&r.reply),
-                        "at": at,
-                    });
-                    if !segments.is_empty() {
-                        msg["segments"] = Value::Array(segments);
-                    }
-                    if !tools.is_empty() {
-                        msg["toolCalls"] = Value::Array(tools);
-                    }
-                    msg
-                })
-                .collect(),
+            TurnOutcome::Reply { role_replies, .. } if role_replies.len() > 1 => {
+                let first_role = role_replies[0].role_name.as_str();
+                // Frames some adapters send without a role belong to someone; give them to the
+                // first persona rather than dropping them from every split message.
+                let owner = |seg_role: Option<&str>| {
+                    seg_role
+                        .filter(|r| role_replies.iter().any(|reply| reply.role_name == *r))
+                        .unwrap_or(first_role)
+                        .to_string()
+                };
+                let mut seen: HashMap<&str, usize> = HashMap::new();
+                role_replies
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| {
+                        let role = r.role_name.as_str();
+                        let segments: Vec<Value> =
+                            self.segments
+                                .iter()
+                                .filter(|s| {
+                                    owner(role_of(s).or_else(|| {
+                                        s.pointer("/tc/roleName").and_then(Value::as_str)
+                                    })) == role
+                                })
+                                .cloned()
+                                .collect();
+                        let tools: Vec<Value> = self
+                            .ordered_tools()
+                            .into_iter()
+                            .filter(|tc| owner(tc.get("roleName").and_then(Value::as_str)) == role)
+                            .collect();
+                        // The first role reuses the turn id so the streaming checkpoint row is
+                        // overwritten instead of left behind as a duplicate; a persona mentioned
+                        // twice still gets distinct ids.
+                        let repeat = seen.entry(role).or_insert(0);
+                        *repeat += 1;
+                        let msg_id = match (i, *repeat) {
+                            (0, _) => id.to_string(),
+                            (_, 1) => format!("{id}:{role}"),
+                            (_, n) => format!("{id}:{role}:{n}"),
+                        };
+                        let mut msg = json!({
+                            "id": msg_id,
+                            "roleName": role,
+                            "text": normalize_newlines(&r.reply),
+                            "at": at,
+                        });
+                        if !segments.is_empty() {
+                            msg["segments"] = Value::Array(segments);
+                        }
+                        if !tools.is_empty() {
+                            msg["toolCalls"] = Value::Array(tools);
+                        }
+                        if i == 0 && !self.thought.is_empty() {
+                            msg["thoughtText"] = json!(self.thought);
+                        }
+                        msg
+                    })
+                    .collect()
+            }
             TurnOutcome::Reply {
                 ok: true, reply, ..
             } => vec![self.message(id, at, Some(reply))],
@@ -759,6 +781,57 @@ mod tests {
         assert_eq!(msgs[0]["toolCalls"].as_array().unwrap().len(), 1);
         assert_eq!(kinds(&msgs[1]), ["text"]);
         assert!(msgs[1].get("toolCalls").is_none());
+    }
+
+    #[test]
+    fn multi_agent_split_keeps_roleless_frames_and_thought_with_the_first_persona() {
+        let mut t = Transcript::new("Developer & Reviewer");
+        t.apply_text("no role", None);
+        t.apply_event(
+            &json!({"kind": "thoughtDelta", "text": "hmm"}),
+            Some("Developer"),
+        );
+        t.apply_text("rev", Some("Reviewer"));
+        let replies = vec![
+            RoleReply {
+                role_name: "Developer".into(),
+                reply: "d".into(),
+                ok: true,
+                error_code: None,
+            },
+            RoleReply {
+                role_name: "Reviewer".into(),
+                reply: "r".into(),
+                ok: true,
+                error_code: None,
+            },
+            RoleReply {
+                role_name: "Reviewer".into(),
+                reply: "r2".into(),
+                ok: true,
+                error_code: None,
+            },
+        ];
+        let msgs = t.finish(
+            "m",
+            1,
+            &TurnOutcome::Reply {
+                ok: true,
+                reply: "",
+                role_replies: &replies,
+            },
+        );
+        assert_eq!(
+            kinds(&msgs[0]),
+            ["text", "thought"],
+            "role-less text stays with the first persona"
+        );
+        assert_eq!(msgs[0]["thoughtText"], "hmm");
+        assert_eq!(msgs[1]["id"], "m:Reviewer");
+        assert_eq!(
+            msgs[2]["id"], "m:Reviewer:2",
+            "repeated persona gets a distinct id"
+        );
     }
 
     #[test]

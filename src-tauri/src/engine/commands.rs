@@ -55,7 +55,7 @@ pub(crate) fn reopen_app_session(
 
 /// Full sessions (with transcripts) by id — what a view loads when another client created
 /// a session it has only seen as a `session/changed` summary.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn get_app_sessions(
     state: State<'_, AppState>,
     ids: Vec<String>,

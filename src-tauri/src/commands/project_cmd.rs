@@ -18,8 +18,9 @@ pub(crate) fn get_project_cmd(
     get_project_internal(get_state(&state), &id)
 }
 
-/// What could be imported, without importing it. Backs the selection dialog.
-#[tauri::command]
+/// What could be imported, without importing it. Backs the selection dialog. Scans provider
+/// transcript files, so it must not run on the main thread.
+#[tauri::command(async)]
 pub(crate) fn scan_importable_sessions_cmd(
     state: State<'_, AppState>,
     project_id: String,

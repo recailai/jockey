@@ -188,6 +188,15 @@ async fn create_project(
         .or_else(|| path.file_name().map(|n| n.to_string_lossy().to_string()))
         .unwrap_or_else(|| "project".to_string());
     let state = ctx.app.state::<AppState>();
+    // Opening a folder that is already a project selects it; it must not rename it to the
+    // folder name the way an explicit "create with this name" would.
+    let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    if let Some(existing) =
+        crate::db::project::find_project_by_path_internal(&state, &canonical.to_string_lossy())
+            .map_err(internal)?
+    {
+        return Ok(Json(existing));
+    }
     let project = engine_sessions::create_project(&state, name, path.to_string_lossy().to_string())
         .map_err(bad_request)?;
     Ok(Json(project))
@@ -399,8 +408,12 @@ async fn session_detail(
     Path(id): Path<String>,
     Query(q): Query<DetailQuery>,
 ) -> ApiResult<Value> {
-    let state = ctx.app.state::<AppState>();
-    let mut session = load_session(&state, &id)?;
+    let state = ctx.app.state::<AppState>().clone_refs();
+    let sid = id.clone();
+    // Loading and decoding a transcript is blocking work; keep it off the async workers.
+    let mut session = tokio::task::spawn_blocking(move || load_session(&state, &sid))
+        .await
+        .map_err(internal)??;
     let total = session.messages.len();
     if let Some(tail) = q.tail.filter(|t| *t < total) {
         session.messages.drain(..total - tail);

@@ -177,6 +177,11 @@ pub(crate) fn create_project(
 
 pub(crate) fn delete_project(state: &AppState, id: &str) -> Result<(), String> {
     crate::db::project::delete_project_internal(state, id)?;
+    // Sessions of a deleted project would otherwise stay open and runnable, orphaned from
+    // every project list.
+    for session in crate::db::app_session::list_session_summaries(state, Some(id), false, None)? {
+        let _ = close_session(state, &session.id);
+    }
     events::project_changed(id, ProjectChange::Deleted);
     Ok(())
 }
@@ -244,11 +249,21 @@ pub(crate) fn route(
     }
     let activate = match (targets.as_slice(), resolved.as_slice()) {
         ([only], [role]) if only != active_role => {
-            let runtime = Some(role.runtime_kind.clone()).filter(|r| !r.trim().is_empty());
-            let profile = runtime
-                .as_ref()
-                .map(|_| role.runtime_profile_id.clone())
-                .filter(|p| !p.trim().is_empty());
+            // Same precedence the turn itself uses for a non-active persona: the project's
+            // pin, then the persona's default — normalised, so legacy spellings such as
+            // `native:agy` never reach the session row or the views.
+            let pin = crate::db::project_agent::load_project_agent_config(
+                state,
+                project_id,
+                &role.role_name,
+            )
+            .ok()
+            .and_then(|c| c.runtime_kind);
+            let runtime = pin
+                .or_else(|| Some(role.runtime_kind.clone()))
+                .filter(|r| !r.trim().is_empty())
+                .map(|r| runtime_key(&r));
+            let profile = runtime.as_deref().map(crate::runtime_profile::profile_id);
             Some((role.role_name.clone(), runtime, profile))
         }
         _ => None,

@@ -178,6 +178,26 @@ pub(crate) fn list_session_summaries(
     })
 }
 
+pub(crate) fn delete_messages_by_client_ids(
+    state: &AppState,
+    session_id: &str,
+    client_ids: &[String],
+) -> Result<(), String> {
+    if client_ids.is_empty() {
+        return Ok(());
+    }
+    with_db(state, |conn| {
+        let mut stmt = conn
+            .prepare("DELETE FROM app_session_messages WHERE session_id = ?1 AND client_id = ?2")
+            .map_err(|e| e.to_string())?;
+        for cid in client_ids {
+            stmt.execute(params![session_id, cid])
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
+}
+
 pub(crate) fn count_user_messages(state: &AppState, session_id: &str) -> Result<i64, String> {
     with_db(state, |conn| {
         conn.query_row(
@@ -438,7 +458,8 @@ pub(crate) fn get_app_sessions_by_ids(
     })
 }
 
-#[tauri::command]
+// Loads transcripts: keep it off the main thread, which would freeze the window.
+#[tauri::command(async)]
 pub(crate) fn list_app_sessions(
     state: State<'_, AppState>,
     project_id: Option<String>,
@@ -462,7 +483,8 @@ pub(crate) fn list_app_sessions(
     })
 }
 
-#[tauri::command]
+// Loads transcripts: keep it off the main thread, which would freeze the window.
+#[tauri::command(async)]
 pub(crate) fn list_closed_app_sessions(
     state: State<'_, AppState>,
 ) -> Result<Vec<AppSession>, String> {

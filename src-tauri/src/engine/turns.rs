@@ -268,23 +268,41 @@ fn spawn_checkpoints(
         tick.tick().await;
         loop {
             tick.tick().await;
-            let Ok(_write) = persist_lock.lock() else {
+            // Serialising the message and the SQLite write are blocking work; run the whole
+            // step on the blocking pool so a long turn never stalls an async worker.
+            let (state, session_id, entry, persist_lock) = (
+                state.clone_refs(),
+                session_id.clone(),
+                entry.clone(),
+                persist_lock.clone(),
+            );
+            let keep_going = tokio::task::spawn_blocking(move || {
+                let Ok(_write) = persist_lock.lock() else {
+                    return false;
+                };
+                let snapshot = {
+                    let Ok(mut turn) = entry.lock() else {
+                        return false;
+                    };
+                    if turn.finished {
+                        return false;
+                    }
+                    if !turn.dirty || !turn.transcript.has_content() {
+                        return true;
+                    }
+                    turn.dirty = false;
+                    turn.transcript
+                        .message(&turn.message_id, crate::now_ms(), None)
+                };
+                if let Err(e) = persist(&state, &session_id, &snapshot) {
+                    eprintln!("[engine] checkpoint failed for {session_id}: {e}");
+                }
+                true
+            })
+            .await
+            .unwrap_or(false);
+            if !keep_going {
                 return;
-            };
-            let snapshot = {
-                let Ok(mut turn) = entry.lock() else { return };
-                if turn.finished {
-                    return;
-                }
-                if !turn.dirty || !turn.transcript.has_content() {
-                    continue;
-                }
-                turn.dirty = false;
-                turn.transcript
-                    .message(&turn.message_id, crate::now_ms(), None)
-            };
-            if let Err(e) = persist(&state, &session_id, &snapshot) {
-                eprintln!("[engine] checkpoint failed for {session_id}: {e}");
             }
         }
     });
@@ -335,6 +353,20 @@ impl TurnHandle {
             }
             Err(_) => (Vec::new(), false),
         };
+        // Replace rather than update the checkpoint row: input steered into the turn was
+        // stored after the first checkpoint, and an in-place update would sort the reply
+        // above it on reload while every view showed it below.
+        let ids: Vec<String> = messages
+            .iter()
+            .filter_map(|m| m.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect();
+        if let Err(e) = crate::db::app_session::delete_messages_by_client_ids(
+            &self.state,
+            &self.session_id,
+            &ids,
+        ) {
+            eprintln!("[engine] failed to replace checkpoint rows: {e}");
+        }
         for msg in &messages {
             if let Err(e) = persist(&self.state, &self.session_id, msg) {
                 eprintln!("[engine] failed to persist turn message: {e}");
