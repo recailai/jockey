@@ -36,7 +36,7 @@ import { useAcpEventListeners } from "./hooks/useAcpEventListeners";
 import { useCompletions } from "./hooks/useCompletions";
 import { useMessageSend } from "./hooks/useMessageSend";
 import { useInputHistory } from "./hooks/useInputHistory";
-import { uniqueName, makeDefaultSession, makeDraftSession } from "./lib/sessionHelpers";
+import { uniqueName, makeDefaultSession, makeDraftSession, sessionFromRaw } from "./lib/sessionHelpers";
 import { registerEngineEvents } from "./lib/engineEvents";
 import { createSessionEventBuffer } from "./lib/sessionEventBuffer";
 import { appSessionApi, assistantApi, engineApi, projectAgentApi } from "./lib/tauriApi";
@@ -397,24 +397,17 @@ export default function App() {
   const handleSelectProject = async (proj: Project, targetSessionId?: string) => {
     selectProject(proj);
     try {
-      const raw = await appSessionApi.list();
-      let loaded = raw.map((r) => {
-        const s = makeDefaultSession(r.title);
-        s.id = r.id;
-        if (r.activeRole) s.activeRole = r.activeRole;
-        if (r.runtimeKind !== undefined) s.runtimeKind = r.runtimeKind;
-        if (r.runtimeProfileId !== undefined) s.runtimeProfileId = r.runtimeProfileId;
-        if (r.cwd !== undefined) s.cwd = r.cwd ?? null;
-        if (r.projectId !== undefined) s.projectId = r.projectId ?? null;
-        s.messages = r.messages ?? [];
-        return s;
-      });
-      const projectSessions = loaded.filter((s) => s.projectId === proj.id);
-      await Promise.all(loaded.map(async (session, index) => {
-        if (!session.persisted) return;
+      // Merge this project's sessions into the store instead of replacing it: a rebuild
+      // dropped drafts and the live state (stream, permissions, queue) of turns running in
+      // other projects. Loading per project also stops a global 100-row limit from hiding an
+      // older project's sessions behind a fresh draft.
+      const raw = await appSessionApi.list(proj.id);
+      const known = new Set(sessions.map((s) => s.id));
+      const fresh = raw.filter((r) => !known.has(r.id)).map(sessionFromRaw);
+      await Promise.all(fresh.map(async (session) => {
         try {
           const inbox = await appSessionApi.listInbox(session.id);
-          loaded[index].queuedItems = inbox.map((item) => ({
+          session.queuedItems = inbox.map((item) => ({
             id: item.id,
             text: item.text,
             attachments: item.attachments ?? [],
@@ -427,6 +420,8 @@ export default function App() {
           // Keep project switching available if restoring a legacy database inbox fails.
         }
       }));
+      if (fresh.length > 0) setSessions((prev) => [...prev, ...fresh]);
+      const projectSessions = sessions.filter((s) => s.projectId === proj.id);
       let nextActiveId: string;
       if (projectSessions.length === 0) {
         // No DB row until the user actually sends something — see `ensureSessionPersisted`.
@@ -437,19 +432,19 @@ export default function App() {
           runtimeKind: availableAssistant?.key ?? null,
           runtimeProfileId: availableAssistant?.profileId ?? null,
         });
-        loaded = [...loaded, s];
+        setSessions((prev) => [...prev, s]);
         nextActiveId = s.id;
       } else {
         const target = targetSessionId ? projectSessions.find((s) => s.id === targetSessionId) : null;
         nextActiveId = target ? target.id : projectSessions[0].id;
       }
-      setSessions(loaded);
       setActiveSessionId(nextActiveId);
       await refreshRoles(proj.id);
     } catch (e) {
       showToast(`Failed to switch project: ${String(e)}`);
     }
   };
+
 
   const openImportSessions = () => {
     const project = currentProject();
@@ -871,6 +866,7 @@ export default function App() {
       updateSession,
       mutateSession,
       appendThought,
+      flushStream: streamEngine.flushStream,
       normalizeToolLocations,
       parseAgentCommands,
       normalizeRuntimeKey,
@@ -965,16 +961,12 @@ export default function App() {
             refreshRoles={refreshRoles}
             fetchRoleConfig={fetchRoleConfig}
             pushMessage={pushMessage}
-            onRestoreSession={(id, title, activeRole, runtimeKind, runtimeProfileId, cwd) => {
-              const existing = getSessionIndex(id) !== -1;
-              if (!existing) {
-                const s = makeDefaultSession(title);
-                s.id = id;
-                s.activeRole = activeRole;
-                s.runtimeKind = runtimeKind;
-                s.runtimeProfileId = runtimeProfileId;
-                s.cwd = cwd;
-                setSessions(sessions.length, s);
+            onRestoreSession={async (id) => {
+              // Load the reopened row with its transcript and project; a hand-built entry
+              // showed an empty conversation outside its project group.
+              if (getSessionIndex(id) === -1) {
+                const [raw] = await appSessionApi.getMany([id]);
+                if (raw && getSessionIndex(id) === -1) setSessions((prev) => [...prev, sessionFromRaw(raw)]);
               }
               setActiveSessionId(id);
               setShowSettings(false);

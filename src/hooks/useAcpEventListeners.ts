@@ -25,6 +25,7 @@ type RegisterAcpEventListenersInput = {
   updateSession: (id: string, patch: Partial<AppSession>) => void;
   mutateSession: (sid: string, recipe: (s: AppSession) => void) => void;
   appendThought: (sid: string, text: string, roleName?: string) => void;
+  flushStream?: (sid: string) => void;
   normalizeToolLocations: (
     raw: unknown[] | undefined,
   ) => Array<{ path: string; line?: number }> | undefined;
@@ -58,6 +59,7 @@ export function useAcpEventListeners() {
       updateSession,
       mutateSession,
       appendThought,
+      flushStream,
       normalizeToolLocations,
       parseAgentCommands,
       normalizeRuntimeKey,
@@ -77,6 +79,7 @@ export function useAcpEventListeners() {
       updateSession,
       mutateSession,
       appendThought,
+      flushStream,
       normalizeToolLocations,
       parseAgentCommands,
       normalizeRuntimeKey,

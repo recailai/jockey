@@ -872,6 +872,11 @@ function collectToolGroups(segments: AppSegment[]): Array<
   return result;
 }
 
+/** Segment markdown is cached by content (the key includes a content hash), so a text block
+ *  that has not changed never re-parses — whether it is in history or above the growing tail
+ *  of a streaming message. */
+const renderSegmentMd = (text: string) => renderMdCached("segment", text);
+
 function SegmentList(props: {
   segments: AppSegment[];
   cwd?: string | null;
@@ -883,9 +888,9 @@ function SegmentList(props: {
   return (
     <For each={groups()}>{(g) => (
       g.kind === "text"
-        ? <AgentBlockRenderer block={{ kind: "text", text: g.text }} renderText={renderMd} cwd={props.cwd} terminals={props.terminals} />
+        ? <AgentBlockRenderer block={{ kind: "text", text: g.text }} renderText={renderSegmentMd} cwd={props.cwd} terminals={props.terminals} />
         : g.kind === "thought"
-          ? <AgentBlockRenderer block={{ kind: "thought", text: g.text }} renderText={renderMd} cwd={props.cwd} terminals={props.terminals} />
+          ? <AgentBlockRenderer block={{ kind: "thought", text: g.text }} renderText={renderSegmentMd} cwd={props.cwd} terminals={props.terminals} />
         : g.kind === "events"
           ? <ProviderEventGroup events={g.events} />
         : <ToolCallGroup
@@ -912,13 +917,16 @@ function StreamSegmentList(props: {
   onRejectHunk?: (p: string) => void;
 }) {
   const groups = createMemo(() => collectToolGroups(props.segments));
+  // Only the last block is still growing; caching every partial version of it would just
+  // evict finished entries.
+  const renderFor = (i: number) => (i === groups().length - 1 ? renderMd : renderSegmentMd);
   return (
     <Index each={groups()}>{(g, i) => (
       <Switch>
         <Match when={g().kind === "text"}>
           <AgentBlockRenderer
             block={{ kind: "text", text: (g() as { kind: "text"; text: string }).text }}
-            renderText={renderMd}
+            renderText={renderFor(i)}
             cwd={props.cwd}
             terminals={props.terminals}
             streaming
@@ -927,7 +935,7 @@ function StreamSegmentList(props: {
         <Match when={g().kind === "thought"}>
           <AgentBlockRenderer
             block={{ kind: "thought", text: (g() as { kind: "thought"; text: string }).text }}
-            renderText={renderMd}
+            renderText={renderFor(i)}
             cwd={props.cwd}
             terminals={props.terminals}
             streaming

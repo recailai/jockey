@@ -11,8 +11,8 @@ import type {
   TurnStartedEvent,
 } from "../components/types";
 import { now } from "../components/types";
-import { makeDefaultSession } from "./sessionHelpers";
-import { appSessionApi, type RawSession } from "./tauriApi";
+import { sessionFromRaw } from "./sessionHelpers";
+import { appSessionApi } from "./tauriApi";
 
 type EngineEventsInput = {
   sessions: AppSession[];
@@ -33,17 +33,6 @@ type EngineEventsInput = {
   showToast: (message: string, severity?: "error" | "info") => void;
 };
 
-const sessionFromRaw = (r: RawSession): AppSession => {
-  const s = makeDefaultSession(r.title);
-  s.id = r.id;
-  if (r.activeRole) s.activeRole = r.activeRole;
-  if (r.runtimeKind !== undefined) s.runtimeKind = r.runtimeKind;
-  if (r.runtimeProfileId !== undefined) s.runtimeProfileId = r.runtimeProfileId;
-  if (r.cwd !== undefined) s.cwd = r.cwd ?? null;
-  s.projectId = r.projectId ?? null;
-  s.messages = r.messages ?? [];
-  return s;
-};
 
 /**
  * The desktop's view of the engine. Every turn — sent from this window, the web companion,

@@ -1,5 +1,6 @@
 import { DEFAULT_ROLE_ALIAS } from "../components/types";
 import type { AppSession } from "../components/types";
+import type { RawSession } from "./tauriApi";
 
 export const MAX_MESSAGES = 500;
 export const MAX_THOUGHT_CHARS = 5000;
@@ -109,3 +110,16 @@ export const makeDraftSession = (
   cwd: opts.cwd ?? null,
   activeRole: opts.activeRole ?? DEFAULT_ROLE_ALIAS,
 });
+
+/** A stored session row as the store's `AppSession` (transcript included, live state empty). */
+export const sessionFromRaw = (r: RawSession): AppSession => {
+  const s = makeDefaultSession(r.title);
+  s.id = r.id;
+  if (r.activeRole) s.activeRole = r.activeRole;
+  if (r.runtimeKind !== undefined) s.runtimeKind = r.runtimeKind;
+  if (r.runtimeProfileId !== undefined) s.runtimeProfileId = r.runtimeProfileId;
+  if (r.cwd !== undefined) s.cwd = r.cwd ?? null;
+  s.projectId = r.projectId ?? null;
+  s.messages = r.messages ?? [];
+  return s;
+};

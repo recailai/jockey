@@ -64,7 +64,7 @@ type SettingsPageProps = {
   refreshRoles: (projectId?: string) => Promise<void>;
   fetchRoleConfig: (runtimeKey: string, roleName?: string) => Promise<{ options: AcpConfigOption[]; modes: string[] }>;
   pushMessage: (role: string, text: string) => void;
-  onRestoreSession: (id: string, title: string, activeRole: string, runtimeKind: string | null, runtimeProfileId: string | null, cwd: string | null) => void;
+  onRestoreSession: (id: string) => void | Promise<void>;
   onBack: () => void;
   showToast?: (message: string, severity?: Toast["severity"]) => void;
   currentProject?: Accessor<Project | null>;

@@ -14,7 +14,8 @@ export const renderMd = (text: string): string => {
   }
 };
 
-const MD_CACHE_MAX = 500;
+// Sized for segment-level entries across a long session, not one entry per message.
+const MD_CACHE_MAX = 2000;
 const mdCache = new Map<string, string>();
 
 /** FNV-1a: cheap enough to run on every render, and we only need change detection. */

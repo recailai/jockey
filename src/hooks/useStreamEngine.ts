@@ -38,46 +38,82 @@ export function useStreamEngine(sessionManager: SessionManager) {
     return out.length > 0 ? out : undefined;
   };
 
-  const appendStream = (sessionId: string, chunk: string, roleName?: string) => {
-    const normalized = normalizeNewlines(chunk);
-    if (!normalized) return;
+  // Deltas arrive far faster than frames. Writing each one into the store re-rendered (and
+  // re-parsed the markdown of) the whole growing message per token, so they are buffered per
+  // session and applied in one store write per flush. A timer, not rAF: rAF stops while the
+  // window is hidden, and the buffer would then grow until it was shown again.
+  type PendingChunk = { kind: "text" | "thought"; text: string; roleName?: string };
+  const FLUSH_MS = 33;
+  const pending = new Map<string, PendingChunk[]>();
+  let flushTimer: number | null = null;
+
+  const applyChunks = (sessionId: string, chunks: PendingChunk[]) => {
     const idx = getSessionIndex(sessionId);
     if (idx === -1) return;
     setSessions(idx, produce((s) => {
-      if (!s.streamingMessage) return;
-      s.streamingMessage.text = (s.streamingMessage.text ?? "") + normalized;
-      const last = s.streamSegments[s.streamSegments.length - 1];
-      if (last?.kind === "text" && last.roleName === roleName) {
-        last.text += normalized;
-      } else {
-        s.streamSegments.push({ kind: "text", text: normalized, roleName });
+      for (const chunk of chunks) {
+        if (chunk.kind === "text") {
+          if (!s.streamingMessage) continue;
+          s.streamingMessage.text = (s.streamingMessage.text ?? "") + chunk.text;
+        } else {
+          const next = `${s.thoughtText ?? ""}${chunk.text}`;
+          s.thoughtText = next.length <= MAX_THOUGHT_CHARS ? next : next.slice(next.length - MAX_THOUGHT_CHARS);
+        }
+        const last = s.streamSegments[s.streamSegments.length - 1];
+        if (last?.kind === chunk.kind && last.roleName === chunk.roleName) {
+          last.text += chunk.text;
+        } else {
+          s.streamSegments.push({ kind: chunk.kind, text: chunk.text, roleName: chunk.roleName });
+        }
       }
     }));
     scheduleScrollToBottom();
+  };
+
+  /** Apply buffered text/thought now. Called before any other stream event so a tool call
+   *  never lands ahead of text that streamed before it. */
+  const flushStream = (sessionId?: string) => {
+    const ids = sessionId ? [sessionId] : [...pending.keys()];
+    for (const sid of ids) {
+      const chunks = pending.get(sid);
+      if (!chunks) continue;
+      pending.delete(sid);
+      applyChunks(sid, chunks);
+    }
+  };
+
+  const enqueueChunk = (sessionId: string, chunk: PendingChunk) => {
+    const chunks = pending.get(sessionId) ?? [];
+    const last = chunks[chunks.length - 1];
+    if (last && last.kind === chunk.kind && last.roleName === chunk.roleName) last.text += chunk.text;
+    else chunks.push(chunk);
+    pending.set(sessionId, chunks);
+    if (flushTimer === null) {
+      flushTimer = window.setTimeout(() => {
+        flushTimer = null;
+        flushStream();
+      }, FLUSH_MS);
+    }
+  };
+
+  const appendStream = (sessionId: string, chunk: string, roleName?: string) => {
+    const normalized = normalizeNewlines(chunk);
+    if (!normalized) return;
+    enqueueChunk(sessionId, { kind: "text", text: normalized, roleName });
   };
 
   const appendThought = (sessionId: string, chunk: string, roleName?: string) => {
     const normalized = normalizeNewlines(chunk);
     if (!normalized.trim()) return;
-    const idx = getSessionIndex(sessionId);
-    if (idx === -1) return;
-    setSessions(idx, produce((s) => {
-      const next = `${s.thoughtText ?? ""}${normalized}`;
-      s.thoughtText = next.length <= MAX_THOUGHT_CHARS ? next : next.slice(next.length - MAX_THOUGHT_CHARS);
-      const last = s.streamSegments[s.streamSegments.length - 1];
-      if (last?.kind === "thought" && last.roleName === roleName) {
-        last.text += normalized;
-      } else {
-        s.streamSegments.push({ kind: "thought", text: normalized, roleName });
-      }
-    }));
-    scheduleScrollToBottom();
+    enqueueChunk(sessionId, { kind: "thought", text: normalized, roleName });
   };
 
   const resetStreamState = (sessionId?: string) => {
     if (sessionId) {
+      pending.delete(sessionId);
       acceptingStreams.delete(sessionId); // unconditional reset (e.g. session close)
     } else {
+      pending.clear();
       acceptingStreams.clear();
     }
   };
@@ -129,6 +165,7 @@ export function useStreamEngine(sessionManager: SessionManager) {
     resetStreamState,
     dropStream,
     settleSessionStream,
+    flushStream,
     normalizeToolLocations,
   };
 }

@@ -62,11 +62,32 @@ export function useGitPoller(activeSession: Accessor<AppSession | null>): {
     refetch();
   });
 
-  useGitChanged(() => activeSession()?.cwd ?? null, () => refetch());
+  // An agent editing many files fires `git/changed` in bursts; one status call per burst.
+  let changedTimer: number | null = null;
+  const refetchSoon = () => {
+    if (changedTimer !== null) window.clearTimeout(changedTimer);
+    changedTimer = window.setTimeout(() => {
+      changedTimer = null;
+      refetch();
+    }, 250);
+  };
+  useGitChanged(() => activeSession()?.cwd ?? null, refetchSoon);
 
+  // The poll only catches changes made outside Jockey; nobody sees them while the window is
+  // hidden, so it pauses then and catches up on return.
   onMount(() => {
-    const t = setInterval(() => refetch(), 5000);
-    onCleanup(() => clearInterval(t));
+    const t = setInterval(() => {
+      if (!document.hidden) refetch();
+    }, 5000);
+    const onVisible = () => {
+      if (!document.hidden) refetch();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    onCleanup(() => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
+      if (changedTimer !== null) window.clearTimeout(changedTimer);
+    });
   });
 
   const gitChangeCount = createMemo(() => {

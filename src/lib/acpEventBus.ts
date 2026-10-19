@@ -50,6 +50,8 @@ export type AcpEventBusDeps = {
   updateSession: (id: string, patch: Partial<AppSession>) => void;
   mutateSession: (sid: string, recipe: (s: AppSession) => void) => void;
   appendThought: (sid: string, text: string, roleName?: string) => void;
+  /** Apply buffered text/thought deltas for a session before an event that must follow them. */
+  flushStream?: (sid: string) => void;
   normalizeToolLocations: (
     raw: unknown[] | undefined,
   ) => Array<{ path: string; line?: number }> | undefined;
@@ -242,6 +244,7 @@ export function createAcpEventBus(deps: AcpEventBusDeps) {
         }
         lastSeqByStream.set(streamKey, seq);
       }
+      if (envelope.event.kind !== "thoughtDelta") deps.flushStream?.(sid);
       applyAgentEvent({
         sid,
         patchSession: (sessionId, patch) => deps.updateSession(sessionId, patch),

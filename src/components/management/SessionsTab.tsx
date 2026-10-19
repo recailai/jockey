@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 import type { AppSession } from "../types";
 import { RUNTIME_COLOR } from "../types";
-import { EmptyState, Badge } from "../ui";
+import { Alert, EmptyState, Badge } from "../ui";
 import { FieldRow, ActionButton } from "./primitives";
 import type { ContextEntry, StoredSession } from "./primitives";
 import { fmtDate, fmtRelative } from "./primitives";
@@ -285,11 +285,12 @@ function SessionContextSection(props: { sessionId: string }) {
 // ─── main component ───────────────────────────────────────────────────────────
 export function SessionsTab(props: {
   activeSessions: AppSession[];
-  onRestoreSession?: (id: string, title: string, activeRole: string, runtimeKind: string | null, runtimeProfileId: string | null, cwd: string | null) => void;
+  onRestoreSession?: (id: string) => void | Promise<void>;
 }) {
   const [storedSessions, setStoredSessions] = createSignal<StoredSession[]>([]);
   const [loading, setLoading] = createSignal(true);
   const [reopening, setReopening] = createSignal<string | null>(null);
+  const [reopenError, setReopenError] = createSignal<string | null>(null);
   const [search, setSearch] = createSignal("");
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
 
@@ -351,18 +352,28 @@ export function SessionsTab(props: {
   const handleReopen = async (s: StoredSession) => {
     if (reopening()) return;
     setReopening(s.id);
+    setReopenError(null);
     try {
       await appSessionApi.reopen(s.id);
-      props.onRestoreSession?.(s.id, s.title, s.activeRole, s.runtimeKind, s.runtimeProfileId ?? null, s.cwd);
+      await props.onRestoreSession?.(s.id);
       setSelectedId(s.id);
       setStoredSessions((prev) => prev.map((p) => p.id === s.id ? { ...p, closedAt: null, updatedAt: Date.now() } : p));
-    } catch { /* ignore */ } finally {
+    } catch (e) {
+      // e.g. "session name already exists" — silently doing nothing looked like a dead button.
+      setReopenError(String(e));
+    } finally {
       setReopening(null);
     }
   };
 
   return (
-    <div class="flex h-full">
+    <div class="flex h-full flex-col">
+      <Show when={reopenError()}>
+        <Alert tone="danger" title="Could not reopen session" onClose={() => setReopenError(null)}>
+          {reopenError()}
+        </Alert>
+      </Show>
+    <div class="flex min-h-0 flex-1">
       {/* List pane */}
       <div class="flex w-64 shrink-0 flex-col border-r theme-border">
         <div class="p-3">
@@ -487,6 +498,7 @@ export function SessionsTab(props: {
           )}
         </Show>
       </div>
+    </div>
     </div>
   );
 }
