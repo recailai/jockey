@@ -269,6 +269,7 @@ pub(crate) struct SessionSummary {
     pub(crate) active_role: String,
     pub(crate) runtime_kind: Option<String>,
     pub(crate) project_id: Option<String>,
+    pub(crate) cwd: Option<String>,
     pub(crate) last_active_at: i64,
     pub(crate) closed_at: Option<i64>,
     pub(crate) message_count: usize,

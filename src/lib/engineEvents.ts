@@ -94,10 +94,8 @@ export async function registerEngineEvents(input: EngineEventsInput): Promise<Un
           turnPhase: "idle",
         });
       }
-      if (!ok && !cancelled && error) {
-        input.showToast(error);
-        input.appendMessageLocal(sid, { id: `${turnId}-error`, roleName: "event", text: error, at: now() });
-      }
+      // The engine records the failure as an `event` message in `messages` (adopted above).
+      if (!ok && !cancelled && error) input.showToast(error);
       if (isCommand) input.refreshRoles();
     }),
     listen<QueueChangedEvent>("queue/changed", (ev) => {
@@ -131,6 +129,7 @@ export async function registerEngineEvents(input: EngineEventsInput): Promise<Un
             title: session.title,
             activeRole: session.activeRole,
             runtimeKind: session.runtimeKind,
+            cwd: session.cwd,
           });
         }
         return;

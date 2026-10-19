@@ -525,7 +525,10 @@ pub(crate) async fn upsert_role_cmd(
 }
 
 fn role_from_row(row: &rusqlite::Row) -> rusqlite::Result<Role> {
-    let runtime_kind = row.get::<_, String>(2)?;
+    // Normalised on read, as writes already are: rows written before that (e.g. `native:agy`)
+    // otherwise reached the UI raw, matched no assistant key, and made it fall back to the
+    // first available agent. Custom profile ids pass through unchanged.
+    let runtime_kind = runtime_profile::runtime_key(&row.get::<_, String>(2)?);
     let runtime_profile_id = row
         .get::<_, Option<String>>(3)?
         .unwrap_or_else(|| runtime_profile::profile_id(&runtime_kind));

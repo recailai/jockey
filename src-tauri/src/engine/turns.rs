@@ -342,8 +342,10 @@ impl TurnHandle {
         let ok = matches!(outcome, TurnOutcome::Command { .. })
             || matches!(outcome, TurnOutcome::Reply { ok: true, .. });
         let is_command = matches!(outcome, TurnOutcome::Command { .. });
+        let is_multi_agent =
+            matches!(&outcome, TurnOutcome::Reply { role_replies, .. } if role_replies.len() > 1);
         let _write = self.persist_lock.lock();
-        let (messages, cancelled) = match self.entry.lock() {
+        let (mut messages, cancelled) = match self.entry.lock() {
             Ok(mut turn) => {
                 turn.finished = true;
                 let messages = turn
@@ -353,6 +355,17 @@ impl TurnHandle {
             }
             Err(_) => (Vec::new(), false),
         };
+        // A failed turn is part of the history: without this, a turn that errored before
+        // producing anything left only the user's message, with no trace of why after a
+        // reload. (A multi-agent turn's per-role replies already carry each error.)
+        if let Some(error) = error.filter(|_| !ok && !cancelled && !is_multi_agent) {
+            messages.push(json!({
+                "id": format!("{}:error", self.turn_id),
+                "roleName": "event",
+                "text": crate::clip_text(error, 2000),
+                "at": crate::now_ms(),
+            }));
+        }
         // Replace rather than update the checkpoint row: input steered into the turn was
         // stored after the first checkpoint, and an in-place update would sort the reply
         // above it on reload while every view showed it below.

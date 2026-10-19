@@ -237,6 +237,7 @@ export type SessionSummary = {
   activeRole: string;
   runtimeKind: string | null;
   projectId: string | null;
+  cwd: string | null;
   lastActiveAt: number;
   closedAt: number | null;
   messageCount: number;

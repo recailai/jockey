@@ -118,7 +118,7 @@ pub(crate) fn list_session_summaries(
     ids: Option<&[String]>,
 ) -> Result<Vec<crate::types::SessionSummary>, String> {
     let mut sql = String::from(
-        "SELECT s.id, s.title, s.active_role, s.runtime_kind, s.project_id, s.last_active_at, s.closed_at,
+        "SELECT s.id, s.title, s.active_role, s.runtime_kind, s.project_id, s.last_active_at, s.closed_at, s.cwd,
                 (SELECT count(1) FROM app_session_messages m WHERE m.session_id = s.id),
                 (SELECT substr(m.content, 1, 400) FROM app_session_messages m
                   WHERE m.session_id = s.id AND m.role_name <> 'event' AND trim(m.content) <> ''
@@ -165,9 +165,10 @@ pub(crate) fn list_session_summaries(
                     project_id: row.get(4)?,
                     last_active_at: row.get(5)?,
                     closed_at: row.get(6)?,
-                    message_count: row.get::<_, i64>(7)? as usize,
+                    cwd: row.get(7)?,
+                    message_count: row.get::<_, i64>(8)? as usize,
                     preview: row
-                        .get::<_, Option<String>>(8)?
+                        .get::<_, Option<String>>(9)?
                         .map(|t| compact_preview(&t)),
                     running: false,
                 })

@@ -33,6 +33,11 @@ pub(crate) fn handle_shell_command(
             if let Some(sid) = app_session_id_ref {
                 set_app_session_cwd(state, sid, &resolved)?;
                 crate::commands::completion::invalidate_fuzzy_index(sid);
+                crate::engine::events::session_changed(
+                    state,
+                    sid,
+                    crate::engine::events::SessionChange::Updated,
+                );
             }
             result.message = format!("cwd changed: {}", resolved);
             result.payload = json!({ "cwd": resolved });

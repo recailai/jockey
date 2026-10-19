@@ -516,6 +516,27 @@ mod resolver_tests {
     }
 
     #[test]
+    fn legacy_runtime_spellings_are_normalised_when_roles_are_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(&dir);
+        role(&state, "agy", "antigravity-cli");
+        crate::db::with_db(&state, |conn| {
+            conn.execute(
+                "UPDATE roles SET runtime_kind = 'native:agy' WHERE role_name = 'agy'",
+                [],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        state.role_cache.clear();
+        let role = crate::db::role::load_role_scoped(&state, "agy", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(role.runtime_kind, "antigravity-cli");
+    }
+
+    #[test]
     fn project_pin_beats_the_persona_default_for_other_personas() {
         let dir = tempfile::tempdir().unwrap();
         let state = test_state(&dir);
