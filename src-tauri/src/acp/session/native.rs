@@ -57,6 +57,41 @@ fn native_active() -> &'static dashmap::DashSet<String> {
     NATIVE_ACTIVE.get_or_init(dashmap::DashSet::new)
 }
 
+/// Turns queued behind another turn on the same key (waiting for its lock). They are not yet
+/// `native_active`, but a cancel must still reach them.
+fn native_waiting() -> &'static dashmap::DashMap<String, usize> {
+    static WAITING: OnceLock<dashmap::DashMap<String, usize>> = OnceLock::new();
+    WAITING.get_or_init(dashmap::DashMap::new)
+}
+
+/// Keys whose cancel was a protocol-level stop (Codex `turn/interrupt`, Pi `abort`) rather than
+/// a kill: the process survives it and should be kept for the next turn.
+fn native_interrupted() -> &'static dashmap::DashSet<String> {
+    static INTERRUPTED: OnceLock<dashmap::DashSet<String>> = OnceLock::new();
+    INTERRUPTED.get_or_init(dashmap::DashSet::new)
+}
+
+/// How long an interrupted turn gets to end on its own before its process is killed.
+const NATIVE_INTERRUPT_GRACE: Duration = Duration::from_secs(3);
+
+struct WaitingTurn<'a>(&'a str);
+
+impl<'a> WaitingTurn<'a> {
+    fn enter(key: &'a str) -> Self {
+        *native_waiting().entry(key.to_string()).or_insert(0) += 1;
+        Self(key)
+    }
+}
+
+impl Drop for WaitingTurn<'_> {
+    fn drop(&mut self) {
+        if let Some(mut n) = native_waiting().get_mut(self.0) {
+            *n = n.saturating_sub(1);
+        }
+        native_waiting().remove_if(self.0, |_, n| *n == 0);
+    }
+}
+
 fn native_cancelled() -> &'static dashmap::DashSet<String> {
     NATIVE_CANCELLED.get_or_init(dashmap::DashSet::new)
 }
@@ -212,7 +247,13 @@ pub(super) async fn steer_native(
 pub(super) fn cancel_native(runtime_key: &str, role_name: &str, app_session_id: &str) -> bool {
     let key = native_key(runtime_key, role_name, app_session_id);
     if !native_active().contains(&key) {
-        return false;
+        // Only a waiting turn: flag it; it sees the flag once it gets the lock and ends as
+        // cancelled before talking to the provider.
+        let waiting = native_waiting().get(&key).is_some_and(|n| *n > 0);
+        if waiting {
+            native_cancelled().insert(key);
+        }
+        return waiting;
     }
     native_cancelled().insert(key.clone());
     let is_pi = runtime_key.starts_with("pi") || runtime_key.contains("pi-");
@@ -221,12 +262,56 @@ pub(super) fn cancel_native(runtime_key: &str, role_name: &str, app_session_id: 
             .get(&key)
             .map(|entry| entry.value().clone())
         {
+            native_interrupted().insert(key.clone());
             tokio::spawn(async move {
                 let _ = write_native_frame(writer, serde_json::json!({ "type": "abort" })).await;
             });
         }
         acp_log(
             "native.cancel.abort_sent",
+            json!({ "runtime": runtime_key, "role": role_name }),
+        );
+    } else if let Some((writer, thread_id, turn_id)) = native_turns()
+        .get(&key)
+        .and_then(|turn| Some((turn.thread_id.clone()?, turn.turn_id.clone()?)))
+        .and_then(|(thread, turn)| {
+            native_writers()
+                .get(&key)
+                .map(|w| (w.value().clone(), thread, turn))
+        })
+    {
+        // Codex: stop the turn over the protocol so the app-server process (and its loaded
+        // thread) stays warm; a kill made the next turn pay a full respawn. Kill is the fallback.
+        native_interrupted().insert(key.clone());
+        let key_for_task = key.clone();
+        let turn_id_for_task = turn_id.clone();
+        tokio::spawn(async move {
+            let frame = serde_json::json!({
+                "id": format!("jockey-interrupt-{}", uuid::Uuid::new_v4()),
+                "method": "turn/interrupt",
+                "params": { "threadId": thread_id, "turnId": turn_id },
+            });
+            let sent = write_native_frame(writer, frame).await.is_ok();
+            if sent {
+                tokio::time::sleep(NATIVE_INTERRUPT_GRACE).await;
+            }
+            // Only if the interrupted turn itself is still running: the queue may already have
+            // started the next turn on this same warm process.
+            let same_turn_still_running = native_active().contains(&key_for_task)
+                && native_turns()
+                    .get(&key_for_task)
+                    .and_then(|t| t.turn_id.clone())
+                    .as_deref()
+                    == Some(turn_id_for_task.as_str());
+            if same_turn_still_running {
+                native_interrupted().remove(&key_for_task);
+                if let Some(pid) = native_children().get(&key_for_task).map(|entry| *entry) {
+                    terminate_pid(pid);
+                }
+            }
+        });
+        acp_log(
+            "native.cancel.interrupt",
             json!({ "runtime": runtime_key, "role": role_name }),
         );
     } else if let Some(pid) = native_children().get(&key).map(|entry| *entry) {
@@ -533,9 +618,15 @@ pub(super) async fn execute_native_runtime(request: NativeRunRequest<'_>) -> Acp
         .entry(key.clone())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone();
-    let _guard = lock.lock().await;
+    let _guard = {
+        // A guard, so a turn dropped while still waiting is uncounted too.
+        let _waiting = WaitingTurn::enter(&key);
+        lock.lock().await
+    };
+    // The cancel flag is deliberately not cleared here: a cancel that arrived while this turn
+    // was waiting is meant for it (`execute_native_inner` checks it first). The previous turn
+    // cleared its own flag when it finished.
     native_active().insert(key.clone());
-    native_cancelled().remove(&key);
     let result = execute_native_inner(&request, &key).await;
     clear_active_native_turn(&key);
     native_active().remove(&key);
@@ -693,7 +784,14 @@ async fn execute_native_inner(request: &NativeRunRequest<'_>, key: &str) -> AcpP
         result
     };
     sink.flush_text();
-    if result.is_err() || native_cancelled().contains(key) {
+    let interrupted = native_interrupted().remove(key).is_some();
+    let alive = slot
+        .as_mut()
+        .is_some_and(|session| session.process.is_alive());
+    // A protocol-level stop ends the turn (Codex reports it as an error) but leaves a healthy
+    // process; keep it so the next turn starts warm.
+    let keep_after_interrupt = native_cancelled().contains(key) && interrupted && alive;
+    if (result.is_err() || native_cancelled().contains(key)) && !keep_after_interrupt {
         close_native_session(&mut slot, key).await;
         native_sessions().remove(key);
     }

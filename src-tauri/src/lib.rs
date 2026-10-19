@@ -151,15 +151,6 @@ pub fn run() {
                 }
             });
 
-            let catalog_snapshot: Vec<(String, bool)> = refresh_assistant_catalog()
-                .iter()
-                .map(|a| (a.key.clone(), a.available))
-                .collect();
-            let available_runtime_keys: HashSet<String> = catalog_snapshot
-                .iter()
-                .filter_map(|(key, available)| if *available { Some(key.clone()) } else { None })
-                .collect();
-
             // Load the most recent open session's current active role only.
             let app_state: &AppState = app.state::<AppState>().inner();
             let recent_active_session: Option<(String, String, String, Option<String>)> =
@@ -195,8 +186,18 @@ pub fn run() {
                 .unwrap_or(None);
 
             let app_handle = app.handle().clone();
-            let startup_available_runtimes = available_runtime_keys.clone();
             tauri::async_runtime::spawn(async move {
+                // Probing every CLI install (interactive-shell env, `--help` runs) takes
+                // seconds; done in setup it held the window blank. In the background it also
+                // warms the adapter cache before the first turn needs it.
+                let startup_available_runtimes: HashSet<String> =
+                    tokio::task::spawn_blocking(refresh_assistant_catalog)
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|a| a.available)
+                        .map(|a| a.key)
+                        .collect();
                 let Some((app_session_id, role_name, runtime_kind, resume_sid)) =
                     recent_active_session
                 else {
@@ -229,12 +230,21 @@ pub fn run() {
             // refreshes do not keep adapter subprocesses permanently resident.
             {
                 let app_handle = app.handle().clone();
-                let refresh_available_runtimes = available_runtime_keys.clone();
                 tauri::async_runtime::spawn(async move {
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(900));
                     interval.tick().await; // skip immediate first tick
                     loop {
                         interval.tick().await;
+                        // Current availability, not a startup snapshot (the startup probe now
+                        // runs in the background, and installs change while the app is open).
+                        let refresh_available_runtimes: HashSet<String> =
+                            tokio::task::spawn_blocking(crate::assistant::cached_assistant_catalog)
+                                .await
+                                .unwrap_or_default()
+                                .into_iter()
+                                .filter(|a| a.available)
+                                .map(|a| a.key)
+                                .collect();
                         let state_ref = app_handle.state::<AppState>();
                         let app_state: &AppState = state_ref.inner();
                         let session_roles: Vec<(String, String, String)> = with_db(app_state, |conn| {

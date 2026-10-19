@@ -1044,11 +1044,20 @@ mod tests {
             .expect("create session");
         let msg = |n: usize| ("user".to_string(), format!("m{n}"), n as i64);
         let first: Vec<_> = (0..3).map(msg).collect();
-        assert_eq!(insert_imported_messages(&state, &session.id, "import:x:1", &first).unwrap(), 3);
+        assert_eq!(
+            insert_imported_messages(&state, &session.id, "import:x:1", &first).unwrap(),
+            3
+        );
         // The CLI wrote two more entries since; a re-import adds exactly those.
         let longer: Vec<_> = (0..5).map(msg).collect();
-        assert_eq!(insert_imported_messages(&state, &session.id, "import:x:1", &longer).unwrap(), 2);
-        assert_eq!(insert_imported_messages(&state, &session.id, "import:x:1", &longer).unwrap(), 0);
+        assert_eq!(
+            insert_imported_messages(&state, &session.id, "import:x:1", &longer).unwrap(),
+            2
+        );
+        assert_eq!(
+            insert_imported_messages(&state, &session.id, "import:x:1", &longer).unwrap(),
+            0
+        );
         assert_eq!(
             imported_message_counts(&state, &session.id, "import:x:1").unwrap(),
             (5, 5)

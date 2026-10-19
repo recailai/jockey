@@ -157,6 +157,29 @@ fn headless_children() -> &'static dashmap::DashMap<String, u32> {
     HEADLESS_CHILDREN.get_or_init(dashmap::DashMap::new)
 }
 
+/// Stdin of live Claude stream-json processes, so a cancel can send `interrupt` and keep the
+/// process (and its loaded conversation) warm instead of killing it.
+type SharedStdin = Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>;
+fn headless_stdins() -> &'static dashmap::DashMap<String, SharedStdin> {
+    static STDINS: OnceLock<dashmap::DashMap<String, SharedStdin>> = OnceLock::new();
+    STDINS.get_or_init(dashmap::DashMap::new)
+}
+
+/// The turn currently holding each key's lock. The interrupt fallback only kills the process
+/// if *that same turn* is still running: by the time the grace period ends, the queue may
+/// already have started the next turn on the same warm process.
+fn headless_running_turn() -> &'static dashmap::DashMap<String, String> {
+    static RUNNING: OnceLock<dashmap::DashMap<String, String>> = OnceLock::new();
+    RUNNING.get_or_init(dashmap::DashMap::new)
+}
+
+pub(super) fn mark_headless_turn_running(key: &str, turn_id: &str) {
+    headless_running_turn().insert(key.to_string(), turn_id.to_string());
+}
+
+/// How long an interrupted Claude turn gets to end on its own before the process is killed.
+const INTERRUPT_GRACE: Duration = Duration::from_secs(3);
+
 fn headless_cancelled() -> &'static dashmap::DashSet<String> {
     HEADLESS_CANCELLED.get_or_init(dashmap::DashSet::new)
 }
@@ -199,6 +222,50 @@ pub(super) fn cancel_headless(runtime_key: &str, role_name: &str, app_session_id
     }
     headless_cancelled().insert(key.clone());
     super::perm_bridge::cancel_permissions_for_key(&key);
+    if let Some(stdin) = headless_stdins().get(&key).map(|e| e.value().clone()) {
+        // Ask Claude to stop the turn; it answers with an `error_during_execution` result and
+        // stays alive, so the next turn reuses the warm process (no respawn, no `--resume`).
+        // Killing is the fallback if the turn has not ended within the grace period.
+        let key_for_task = key.clone();
+        let runtime = runtime_key.to_string();
+        let role = role_name.to_string();
+        let interrupted_turn = headless_running_turn().get(&key).map(|t| t.clone());
+        tokio::spawn(async move {
+            let frame = json!({
+                "type": "control_request",
+                "request_id": format!("interrupt-{}", uuid::Uuid::new_v4()),
+                "request": { "subtype": "interrupt" },
+            });
+            let mut line = frame.to_string();
+            line.push('\n');
+            let sent = {
+                let mut stdin = stdin.lock().await;
+                stdin.write_all(line.as_bytes()).await.is_ok() && stdin.flush().await.is_ok()
+            };
+            acp_log(
+                "headless.cancel.interrupt",
+                json!({ "runtime": runtime, "role": role, "sent": sent }),
+            );
+            if sent {
+                tokio::time::sleep(INTERRUPT_GRACE).await;
+            }
+            let same_turn_still_running = headless_active().contains_key(&key_for_task)
+                && headless_running_turn()
+                    .get(&key_for_task)
+                    .map(|t| t.clone())
+                    == interrupted_turn;
+            if same_turn_still_running {
+                if let Some((_, pid)) = headless_children().remove(&key_for_task) {
+                    terminate_pid(pid);
+                    acp_log(
+                        "headless.cancel.kill_after_interrupt",
+                        json!({ "runtime": runtime, "pid": pid }),
+                    );
+                }
+            }
+        });
+        return true;
+    }
     if let Some((_, pid)) = headless_children().remove(&key) {
         terminate_pid(pid);
         acp_log(
@@ -872,6 +939,8 @@ pub(super) async fn read_headless_turn<R: AsyncBufRead + Unpin>(
                 .unwrap_or_default()
                 .to_ascii_lowercase();
             match event_type.as_str() {
+                // Reply to our own `interrupt` control request; not part of the turn.
+                "control_response" => {}
                 "rate_limit_event" => {
                     if let Some(text) = event
                         .get("rate_limit")

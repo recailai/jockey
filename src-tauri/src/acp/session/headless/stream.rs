@@ -12,8 +12,8 @@ use super::super::super::worker::{
 use super::{
     append_cli_config, append_stderr, cancelled_result, classify_error, compose_prompt, emit_event,
     error_result, headless_active, headless_cancelled, headless_children, headless_key,
-    headless_locks, protocol_display_name, protocol_transport_name, read_headless_turn,
-    ActivityGuard, HeadlessTurn,
+    headless_locks, headless_stdins, protocol_display_name, protocol_transport_name,
+    read_headless_turn, ActivityGuard, HeadlessTurn,
 };
 
 const STREAM_TIMEOUT: Duration = Duration::from_secs(600);
@@ -281,6 +281,7 @@ pub(super) async fn execute_stream_runtime(
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone();
     let _guard = lock.lock().await;
+    super::mark_headless_turn_running(&key, turn_id);
 
     if headless_cancelled().remove(&key).is_some() {
         return cancelled_result(
@@ -387,6 +388,9 @@ pub(super) async fn execute_stream_runtime(
         if let Some(pid) = process.pid() {
             headless_children().insert(key.clone(), pid);
             register_child_pid(pid);
+        }
+        if matches!(protocol, HeadlessProtocol::ClaudeStreamJson) {
+            headless_stdins().insert(key.clone(), process.process.stdin.clone());
         }
         *slot = Some(StreamSession {
             process,
@@ -567,7 +571,12 @@ pub(super) async fn execute_stream_runtime(
     }
 
     let cancelled = headless_cancelled().remove(&key).is_some();
-    if cancelled || turn.error.is_some() || !turn.result_seen || !process_alive {
+    // An interrupt ends the turn with an error result but leaves a healthy process; keeping it
+    // is the point (the next turn starts warm, with the conversation already loaded).
+    let interrupted_cleanly =
+        cancelled && turn.result_seen && process_alive && headless_stdins().contains_key(&key);
+    let healthy = turn.error.is_none() && turn.result_seen && process_alive;
+    if !(interrupted_cleanly || (!cancelled && healthy)) {
         close_session(&mut slot, &key).await;
         stream_sessions().remove(&key);
     }
@@ -735,6 +744,7 @@ async fn close_session(slot: &mut Option<StreamSession>, key: &str) {
         return;
     };
     let pid = session.process.pid();
+    headless_stdins().remove(key);
     session.process.close().await;
     cleanup_pid(key, pid);
     crate::acp::session::perm_bridge::cancel_permissions_for_key(key);
