@@ -41,6 +41,8 @@ pub(super) fn router(ctx: ServerContext) -> Router {
         .route("/sessions/:id/send-now", post(session_send_now))
         .route("/sessions/:id/reopen", post(session_reopen))
         .route("/sessions/:id/close", post(session_close))
+        .route("/sessions/:id/role", post(session_select_role))
+        .route("/roles", get(list_roles))
         .route("/fs/dirs", get(list_dirs))
         .route("/permissions", get(list_permissions))
         .route("/permissions/respond", post(respond_permission))
@@ -479,6 +481,52 @@ async fn session_close(
     }
     engine_sessions::close_session(&ctx.app.state::<AppState>(), &id).map_err(bad_request)?;
     Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RoleOption {
+    role_name: String,
+    runtime_kind: String,
+    project_scoped: bool,
+}
+
+/// Personas a session in `?projectId=` can switch to. Only what a picker needs; editing
+/// personas stays on the desktop.
+async fn list_roles(
+    State(ctx): State<ServerContext>,
+    Query(filter): Query<ProjectFilter>,
+) -> ApiResult<Vec<RoleOption>> {
+    let roles = engine_sessions::available_roles(
+        &ctx.app.state::<AppState>(),
+        filter.project_id.as_deref(),
+    )
+    .map_err(internal)?;
+    Ok(Json(
+        roles
+            .into_iter()
+            .map(|r| RoleOption {
+                project_scoped: r.project_id.as_deref().is_some_and(|p| !p.is_empty()),
+                runtime_kind: r.runtime_kind,
+                role_name: r.role_name,
+            })
+            .collect(),
+    ))
+}
+
+#[derive(Deserialize)]
+struct SelectRoleBody {
+    role: String,
+}
+
+async fn session_select_role(
+    State(ctx): State<ServerContext>,
+    Path(id): Path<String>,
+    Json(body): Json<SelectRoleBody>,
+) -> ApiResult<SessionSummary> {
+    let state = ctx.app.state::<AppState>();
+    engine_sessions::select_role(&state, &id, body.role.trim()).map_err(bad_request)?;
+    summary_of(&state, &id).map(Json)
 }
 
 #[derive(Deserialize)]

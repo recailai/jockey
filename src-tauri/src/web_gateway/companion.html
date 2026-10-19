@@ -139,6 +139,8 @@
     .status-dot.connecting { background: var(--warning); }
     .header-titles { flex: 1; min-width: 0; cursor: pointer; }
     .header-session { font-weight: 600; font-size: 14.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .role-chip { max-width: 34vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+    .list-item.current { background: var(--accent-soft); }
     .header-sub { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .btn-icon {
       background: transparent;
@@ -358,6 +360,7 @@
         <div class="header-session" id="header-session">未选择会话</div>
         <div class="header-sub" id="header-sub">点击左上角选择项目和会话</div>
       </div>
+      <button id="btn-role" class="chip primary role-chip" title="切换角色" style="display:none"></button>
       <button id="btn-close-session" class="btn-icon" title="关闭会话" style="display:none">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>
       </button>
@@ -714,6 +717,7 @@
     function updateHeader() {
       const s = sessions.find((x) => x.id === activeSessionId) || activeSession;
       $('btn-close-session').style.display = s ? 'flex' : 'none';
+      $('btn-role').style.display = s ? '' : 'none';
       if (!s) {
         $('header-session').textContent = '未选择会话';
         $('header-sub').textContent = '点击左上角选择项目和会话';
@@ -721,7 +725,8 @@
       }
       const project = projects.find((p) => p.id === s.projectId);
       $('header-session').textContent = s.title;
-      const bits = [project ? project.name : '未归属项目', s.activeRole, s.runtimeKind].filter(Boolean);
+      $('btn-role').textContent = `@${s.activeRole || 'Developer'}`;
+      const bits = [project ? project.name : '未归属项目', s.runtimeKind].filter(Boolean);
       $('header-sub').textContent = bits.join(' · ');
     }
 
@@ -788,6 +793,46 @@
             }
           };
           item.append(main, btn);
+          body.appendChild(item);
+        }
+      } catch (err) {
+        body.innerHTML = '';
+        body.appendChild(el('div', 'empty-hint', `加载失败：${err.message}`));
+      }
+    }
+
+    // Same outcome as a single `@role` mention: the persona becomes active with its own engine.
+    async function openRolePicker() {
+      const s = sessions.find((x) => x.id === activeSessionId) || activeSession;
+      if (!s) return;
+      const body = openListModal({ title: '切换角色', desc: '之后的消息都发给所选角色，并切换到它配置的引擎。单条消息也可以用 @角色名 临时指定。' });
+      try {
+        const roles = await api(`/api/roles${s.projectId ? `?projectId=${encodeURIComponent(s.projectId)}` : ''}`);
+        body.innerHTML = '';
+        if (roles.length === 0) {
+          body.appendChild(el('div', 'empty-hint', '没有可用角色，请在桌面端创建'));
+          return;
+        }
+        for (const r of roles) {
+          const current = r.roleName.toLowerCase() === (s.activeRole || '').toLowerCase();
+          const item = el('div', `list-item dir-item${current ? ' current' : ''}`);
+          const main = el('div', 'list-main');
+          main.appendChild(el('div', 'list-title', r.roleName));
+          main.appendChild(el('div', 'list-sub', [r.runtimeKind, r.projectScoped ? '项目角色' : '全局角色'].filter(Boolean).join(' · ')));
+          item.appendChild(main);
+          if (current) item.appendChild(el('span', 'dir-tag repo', '当前'));
+          item.onclick = async () => {
+            if (current) { $('list-modal').classList.remove('show'); return; }
+            try {
+              const summary = await api(`/api/sessions/${encodeURIComponent(s.id)}/role`, { method: 'POST', body: JSON.stringify({ role: r.roleName }) });
+              applySessionChange({ appSessionId: s.id, reason: 'updated', session: summary });
+              if (activeSession && activeSession.id === s.id) Object.assign(activeSession, summary);
+              $('list-modal').classList.remove('show');
+              toast(`已切换到 ${r.roleName}`);
+            } catch (err) {
+              toast(`切换失败：${err.message}`, true);
+            }
+          };
           body.appendChild(item);
         }
       } catch (err) {
@@ -914,6 +959,7 @@
       }
     };
 
+    $('btn-role').onclick = openRolePicker;
     $('btn-close-session').onclick = async () => {
       const sid = activeSessionId;
       if (!sid || !confirm('关闭这个会话？之后可在「历史会话」里恢复。')) return;

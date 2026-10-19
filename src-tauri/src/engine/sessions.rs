@@ -185,6 +185,55 @@ pub(crate) fn update_session(
     Ok(())
 }
 
+/// The personas a session in `project_id` can use, one per name: a project's copy shadows
+/// the global persona of the same name, as in routing.
+pub(crate) fn available_roles(
+    state: &AppState,
+    project_id: Option<&str>,
+) -> Result<Vec<crate::types::Role>, String> {
+    let mut seen = std::collections::HashSet::new();
+    Ok(crate::db::role::list_roles_by_project(state, project_id)?
+        .into_iter()
+        .filter(|r| seen.insert(r.role_name.to_ascii_lowercase()))
+        .collect())
+}
+
+/// Make `role_name` the session's active persona and switch to that persona's own engine
+/// (project pin, binding, default) — the same outcome as a single `@role` mention.
+pub(crate) fn select_role(
+    state: &AppState,
+    session_id: &str,
+    role_name: &str,
+) -> Result<(), String> {
+    let session = crate::db::app_session::list_session_summaries(
+        state,
+        None,
+        false,
+        Some(&[session_id.to_string()]),
+    )?
+    .pop()
+    .ok_or_else(|| "session not found".to_string())?;
+    let project_id = session.project_id.as_deref();
+    let role = available_roles(state, project_id)?
+        .into_iter()
+        .find(|r| r.role_name.eq_ignore_ascii_case(role_name))
+        .ok_or_else(|| format!("role not found: {role_name}"))?;
+    if role.role_name == session.active_role {
+        return Ok(());
+    }
+    let runtime = resolve_role_runtime(state, session_id, &role.role_name, None, project_id);
+    let profile = runtime.as_deref().map(crate::runtime_profile::profile_id);
+    crate::db::app_session::set_app_session_route(
+        state,
+        session_id,
+        &role.role_name,
+        runtime.as_deref(),
+        profile.as_deref(),
+    )?;
+    events::session_changed(state, session_id, SessionChange::Updated);
+    Ok(())
+}
+
 /// Close a session. Returns `false` if it was already closed.
 pub(crate) fn close_session(state: &AppState, id: &str) -> Result<bool, String> {
     // Stop the running turn through the engine so it still records what it produced and
@@ -480,6 +529,43 @@ mod resolver_tests {
             None,
         )
         .expect("role");
+    }
+
+    #[test]
+    fn selecting_a_persona_switches_to_its_own_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(&dir);
+        role(&state, "Developer", "claude-native");
+        role(&state, "agy", "native:agy");
+        let session = crate::db::app_session::create_app_session_internal(
+            &state,
+            Some("s"),
+            None,
+            Some("codex-cli"),
+            None,
+            None,
+        )
+        .unwrap();
+        let names: Vec<_> = available_roles(&state, None)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.role_name)
+            .collect();
+        assert!(names.contains(&"agy".to_string()) && names.contains(&"Developer".to_string()));
+
+        select_role(&state, &session.id, "AGY").unwrap();
+        let summary = crate::db::app_session::list_session_summaries(
+            &state,
+            None,
+            false,
+            Some(&[session.id.clone()]),
+        )
+        .unwrap()
+        .pop()
+        .unwrap();
+        assert_eq!(summary.active_role, "agy");
+        assert_eq!(summary.runtime_kind, Some(runtime_key("native:agy")));
+        assert!(select_role(&state, &session.id, "nobody").is_err());
     }
 
     #[test]
