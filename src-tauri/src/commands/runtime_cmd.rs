@@ -352,14 +352,14 @@ pub(crate) async fn reset_role_mcp_sessions_cmd(
                 "SELECT DISTINCT asr.app_session_id
                  FROM app_session_roles asr
                  JOIN app_sessions s ON s.id = asr.app_session_id
-                 JOIN roles r ON r.id = ?1 AND r.role_name = asr.role_name
+                 JOIN roles r ON r.id = ?1 AND lower(r.role_name) = lower(asr.role_name)
                    AND (
                      COALESCE(r.project_id, '') = COALESCE(s.project_id, '')
                      OR (
                        COALESCE(r.project_id, '') = ''
                        AND NOT EXISTS (
                          SELECT 1 FROM roles local
-                         WHERE local.role_name = asr.role_name
+                         WHERE lower(local.role_name) = lower(asr.role_name)
                            AND COALESCE(local.project_id, '') = COALESCE(s.project_id, '')
                        )
                      )
@@ -406,14 +406,14 @@ pub(crate) async fn sync_role_mode_cmd(
                 "SELECT r.role_name, asr.app_session_id
                  FROM app_session_roles asr
                  JOIN app_sessions s ON s.id = asr.app_session_id
-                 JOIN roles r ON r.id = ?1 AND r.role_name = asr.role_name
+                 JOIN roles r ON r.id = ?1 AND lower(r.role_name) = lower(asr.role_name)
                    AND (
                      COALESCE(r.project_id, '') = COALESCE(s.project_id, '')
                      OR (
                        COALESCE(r.project_id, '') = ''
                        AND NOT EXISTS (
                          SELECT 1 FROM roles local
-                         WHERE local.role_name = asr.role_name
+                         WHERE lower(local.role_name) = lower(asr.role_name)
                            AND COALESCE(local.project_id, '') = COALESCE(s.project_id, '')
                        )
                      )
@@ -428,18 +428,39 @@ pub(crate) async fn sync_role_mode_cmd(
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect::<Vec<_>>();
-        let role_name = conn
+        let role = conn
             .query_row(
-                "SELECT role_name FROM roles WHERE id = ?1",
+                "SELECT role_name, runtime_kind FROM roles WHERE id = ?1",
                 params![role_id],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .map_err(|e| e.to_string())?;
         Ok((
-            role_name,
-            rows.into_iter().map(|(_, session_id)| session_id).collect(),
+            role,
+            rows.into_iter()
+                .map(|(_, session_id)| session_id)
+                .collect::<Vec<_>>(),
         ))
     })?;
+    let (role_name, role_runtime) = role_name;
+    // Mode ids belong to an engine. Only sessions where this persona runs on its own engine get
+    // the new mode; a session running it elsewhere would receive an id that engine does not know.
+    let role_runtime = normalize_runtime_or_self(&role_runtime);
+    let eligible: Vec<String> = eligible
+        .into_iter()
+        .filter(|sid| {
+            crate::engine::sessions::resolve_role_runtime(
+                get_state(&state),
+                sid,
+                &role_name,
+                None,
+                None,
+            )
+            .map(|rt| normalize_runtime_or_self(&rt))
+            .as_deref()
+                == Some(role_runtime.as_str())
+        })
+        .collect();
     Ok(acp::sync_role_mode(&role_name, &mode_id, eligible).await)
 }
 

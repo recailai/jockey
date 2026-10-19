@@ -548,4 +548,105 @@ mod resolver_tests {
             Some(runtime_key("codex-cli"))
         );
     }
+
+    fn role_with(state: &AppState, name: &str, runtime: &str, project: Option<&str>) {
+        crate::db::role::upsert_role(
+            state,
+            name.into(),
+            runtime.into(),
+            String::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            project.map(str::to_string),
+        )
+        .expect("role");
+    }
+
+    fn project(state: &AppState, dir: &tempfile::TempDir, name: &str) -> String {
+        let root = dir.path().join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        crate::db::project::create_project_internal(
+            state,
+            name.into(),
+            root.to_string_lossy().to_string(),
+        )
+        .unwrap()
+        .id
+    }
+
+    #[test]
+    fn deleting_a_global_role_is_refused_while_project_sessions_use_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(&dir);
+        role_with(&state, "Reviewer", "claude-native", None);
+        let pid = project(&state, &dir, "p");
+        let session = crate::db::app_session::create_app_session_internal(
+            &state,
+            Some("s"),
+            Some(&pid),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        crate::db::app_session::update_app_session_internal(
+            &state,
+            &session.id,
+            crate::types::AppSessionUpdate {
+                title: None,
+                active_role: Some("Reviewer".into()),
+                runtime_kind: None,
+                runtime_profile_id: None,
+                cwd: None,
+            },
+        )
+        .unwrap();
+        let err =
+            crate::db::role::delete_role_internal(&state, "Reviewer", None, None).unwrap_err();
+        assert!(err.contains("active in 1 open session"), "{err}");
+    }
+
+    #[test]
+    fn saving_a_global_role_for_a_project_creates_a_project_copy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(&dir);
+        role_with(&state, "Writer", "claude-native", None);
+        let global = crate::db::role::load_role_scoped(&state, "Writer", None)
+            .unwrap()
+            .unwrap();
+        let pid = project(&state, &dir, "p");
+        crate::db::role::upsert_role_with_id(
+            &state,
+            Some(global.id.clone()),
+            "Writer".into(),
+            "codex-cli".into(),
+            String::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(pid.clone()),
+        )
+        .unwrap();
+        state.role_cache.clear();
+        let still_global = crate::db::role::load_role_scoped(&state, "Writer", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(still_global.id, global.id);
+        assert!(
+            still_global.project_id.is_none(),
+            "the global row stays global"
+        );
+        let scoped = crate::db::role::load_role_scoped(&state, "Writer", Some(&pid))
+            .unwrap()
+            .unwrap();
+        assert_ne!(scoped.id, global.id);
+        assert_eq!(scoped.project_id.as_deref(), Some(pid.as_str()));
+    }
 }

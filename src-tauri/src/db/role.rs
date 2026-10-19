@@ -189,11 +189,22 @@ pub(crate) fn upsert_role_with_id(
         Ok(None)
     })?;
 
-    let target_id = existing
-        .as_ref()
-        .map(|(rid, _, _, _, _, _)| rid.clone())
-        .or_else(|| id.filter(|s| !s.trim().is_empty()))
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    // Saving a global persona with a project scope means "customise it for this project": a new
+    // project-scoped row inheriting the global one's settings. Updating in place moved the
+    // global row into the project and removed it from every other project.
+    let forks_global = normalized_pid.is_some()
+        && existing
+            .as_ref()
+            .is_some_and(|(_, _, _, _, _, pid)| pid.as_deref().is_none_or(|p| p.trim().is_empty()));
+    let target_id = if forks_global {
+        Uuid::new_v4().to_string()
+    } else {
+        existing
+            .as_ref()
+            .map(|(rid, _, _, _, _, _)| rid.clone())
+            .or_else(|| id.filter(|s| !s.trim().is_empty()))
+            .unwrap_or_else(|| Uuid::new_v4().to_string())
+    };
     let mcp = mcp_servers_json
         .or_else(|| {
             existing
@@ -264,7 +275,8 @@ pub(crate) fn upsert_role_with_id(
             let tx = conn
                 .unchecked_transaction()
                 .map_err(|e| AppError::db(e.to_string()).to_string())?;
-            if !previous.0.eq_ignore_ascii_case(&role_name) {
+            // Any change, including case-only (`agy` → `Agy`): references are matched exactly.
+            if previous.0 != role_name {
                 rename_role_references(&tx, &previous.0, &role_name, previous.1.as_deref())?;
             }
             tx.execute(
@@ -720,13 +732,29 @@ pub(crate) fn delete_role_internal(
         };
 
         if !has_global_fallback {
-            let active_using_count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(1) FROM app_sessions WHERE closed_at IS NULL AND active_role = ?1 AND ((project_id = ?2) OR (project_id IS NULL AND ?2 IS NULL) OR (project_id = '' AND ?2 IS NULL))",
+            let is_global = target_pid.as_deref().is_none_or(|p| p.is_empty());
+            // A global persona backs every project that has no copy of its own, so its guard
+            // spans those projects' sessions too, not only project-less ones.
+            let active_using_count: i64 = if is_global {
+                conn.query_row(
+                    "SELECT COUNT(1) FROM app_sessions s
+                     WHERE s.closed_at IS NULL AND lower(s.active_role) = lower(?1)
+                       AND NOT EXISTS (
+                         SELECT 1 FROM roles r
+                         WHERE lower(r.role_name) = lower(?1)
+                           AND r.project_id IS NOT NULL AND r.project_id <> ''
+                           AND r.project_id = s.project_id)",
+                    params![&target_name],
+                    |row| row.get(0),
+                )
+            } else {
+                conn.query_row(
+                    "SELECT COUNT(1) FROM app_sessions WHERE closed_at IS NULL AND lower(active_role) = lower(?1) AND project_id = ?2",
                     params![&target_name, &target_pid],
                     |row| row.get(0),
                 )
-                .map_err(|e| AppError::db(e.to_string()).to_string())?;
+            }
+            .map_err(|e| AppError::db(e.to_string()).to_string())?;
             if active_using_count > 0 {
                 return Err(AppError::invalid_input(format!(
                     "role is active in {active_using_count} open session(s); switch role first",
@@ -744,11 +772,21 @@ pub(crate) fn delete_role_internal(
             )
             .unwrap_or(0);
         if remaining_with_name == 0 {
-            conn.execute(
-                "DELETE FROM app_session_roles WHERE role_name = ?1",
-                params![&target_name],
-            )
-            .map_err(|e| AppError::db(e.to_string()).to_string())?;
+            // Everything keyed by the persona's name goes with its last row; otherwise a role
+            // re-created later under the same name silently inherits old pins and overrides.
+            for table in [
+                "app_session_roles",
+                "app_session_role_runtime_configs",
+                "project_agent_configs",
+                "project_agent_runtime_configs",
+                "project_role_overrides",
+            ] {
+                conn.execute(
+                    &format!("DELETE FROM {table} WHERE lower(role_name) = lower(?1)"),
+                    params![&target_name],
+                )
+                .map_err(|e| AppError::db(e.to_string()).to_string())?;
+            }
         }
         Ok(())
     })?;
@@ -950,11 +988,14 @@ pub(crate) fn resolve_role_runtime(state: &AppState, role_name: &str) -> Result<
 }
 
 pub(crate) fn seed_default_roles(state: &AppState) -> Result<(), String> {
+    // Specifically a *global* Developer: a project-scoped copy does not serve other projects.
     let roles = list_all_roles(state)?;
-    if roles
-        .iter()
-        .all(|r| !r.role_name.eq_ignore_ascii_case("developer"))
-    {
+    if roles.iter().all(|r| {
+        !r.role_name.eq_ignore_ascii_case("developer")
+            || r.project_id
+                .as_deref()
+                .is_some_and(|p| !p.trim().is_empty())
+    }) {
         upsert_role(
             state,
             "Developer".to_string(),
