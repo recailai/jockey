@@ -201,21 +201,40 @@ export type QueuedItem = {
   status: "queued" | "claimed" | "failed";
 };
 export type ChatCommandResult = { ok: boolean; message: string; runtimeKind: string | null; sessionId: string | null; payload: Record<string, unknown> };
-export type AssistantChatResponse = {
-  ok: boolean;
-  reply: string;
-  runtimeKind: string | null;
-  sessionId: string | null;
-  commandResult: ChatCommandResult | null;
-  roleReplies?: Array<{ roleName: string; reply: string; ok?: boolean; errorCode?: string | null }>;
-  turnId?: string;
-  userMessage?: AppMessage;
-  /** The turn's messages exactly as the engine persisted them — the record, not a preview. */
-  messages?: AppMessage[];
+export type AssistantChatResponse = { ok: boolean; reply: string; runtimeKind: string | null; sessionId: string | null; commandResult: ChatCommandResult | null; roleReplies?: Array<{ roleName: string; reply: string; ok?: boolean; errorCode?: string | null }> };
+
+// Engine contract (docs/engine-service-layer.md). Every view renders turns from these events,
+// whichever client started the turn.
+/** Session fields the engine changed for a turn: routed persona, its engine, auto-title. */
+export type EngineSessionPatch = Partial<Pick<AppSession, "activeRole" | "runtimeKind" | "runtimeProfileId" | "title">>;
+export type TurnStartedEvent = {
+  appSessionId: string;
+  turnId: string;
+  assistantMessageId: string;
+  roleLabel: string;
+  /** `images` is a count here, not the data. */
+  userMessage: Omit<AppMessage, "images"> & { images?: number | AppMessage["images"] };
+  session: EngineSessionPatch;
 };
-/** `turn/started` / `turn/finished` engine events (see docs/engine-service-layer.md). */
-export type TurnStartedEvent = { appSessionId: string; turnId: string; roleLabel: string; userMessage: AppMessage };
-export type TurnFinishedEvent = { appSessionId: string; turnId: string; ok: boolean; error?: string | null; messages: AppMessage[] };
+export type TurnFinishedEvent = {
+  appSessionId: string;
+  turnId: string;
+  ok: boolean;
+  cancelled: boolean;
+  isCommand: boolean;
+  error?: string | null;
+  /** The turn's messages exactly as persisted — the record, replacing the live preview. */
+  messages: AppMessage[];
+};
+export type QueueChangedEvent = {
+  appSessionId: string;
+  items: Array<{ id: string; roleName: string | null; delivery: string; text: string; attachments: Array<{ data: string; mimeType: string }>; createdAt: number }>;
+};
+export type MessageAddedEvent = { appSessionId: string; message: AppMessage };
+export type SubmitResult =
+  | { status: "started" }
+  | { status: "queued"; item: { id: string } }
+  | { status: "control"; message: string };
 export type SessionUpdateEvent = { sessionId: string; roleName: string; delta: string; done: boolean };
 export type WorkflowStateEvent = { sessionId: string; status: string; activeRole: string | null; message: string };
 export type AcpDeltaEvent = {
@@ -278,9 +297,9 @@ export type AppSession = {
   projectId?: string | null;
   messages: AppMessage[];
   streamingMessage: AppMessage | null;
-  /** Run token that currently owns `streamingMessage`. Set by `startOriginStream`
-   *  and checked by `finalizeSessionStream` so that a late-arriving response from
-   *  a cancelled run cannot clobber a newer run's live stream.
+  /** Run token that currently owns `streamingMessage`. Set on `turn/started`
+   *  (engineEvents) and checked by `settleSessionStream` so that a late result from
+   *  an earlier turn cannot clobber a newer turn's live stream.
    *  Typed as number (not RunToken) to avoid circular imports; runToken.ts is the
    *  authoritative source. null = no run owns it. */
   streamingRunToken: number | null;

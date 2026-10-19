@@ -24,6 +24,7 @@ struct ActiveTurn {
     transcript: Transcript,
     dirty: bool,
     finished: bool,
+    cancel_requested: bool,
 }
 
 fn active_turns() -> &'static DashMap<String, Arc<Mutex<ActiveTurn>>> {
@@ -95,14 +96,70 @@ fn persist(state: &AppState, session_id: &str, msg: &Value) -> Result<(), String
     )
 }
 
+/// A claimed turn slot. The session counts as busy from the moment this exists — before any
+/// I/O — so two clients submitting at the same instant cannot both start a turn. Dropping it
+/// without calling [`begin`] frees the slot again.
+pub(crate) struct Reservation {
+    slot: Option<(String, Arc<Mutex<ActiveTurn>>)>,
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        if let Some((sid, entry)) = self.slot.take() {
+            release(&sid, &entry);
+        }
+    }
+}
+
+fn release(session_id: &str, entry: &Arc<Mutex<ActiveTurn>>) {
+    active_turns().remove_if(session_id, |_, current| Arc::ptr_eq(current, entry));
+}
+
+/// Claim the session for a new turn; `None` when a turn is already running.
+pub(crate) fn reserve(session_id: &str, assistant_message_id: Option<&str>) -> Option<Reservation> {
+    use dashmap::mapref::entry::Entry;
+    let turn_id = uuid::Uuid::new_v4().to_string();
+    let message_id = non_empty_id(assistant_message_id).unwrap_or_else(|| turn_id.clone());
+    match active_turns().entry(session_id.to_string()) {
+        Entry::Occupied(_) => None,
+        Entry::Vacant(slot) => {
+            let entry = Arc::new(Mutex::new(ActiveTurn {
+                turn_id,
+                message_id,
+                transcript: Transcript::new(""),
+                dirty: false,
+                finished: false,
+                cancel_requested: false,
+            }));
+            slot.insert(entry.clone());
+            Some(Reservation {
+                slot: Some((session_id.to_string(), entry)),
+            })
+        }
+    }
+}
+
+/// Mark the running turn as cancelled by a user, so its outcome is reported as a cancel
+/// rather than a failure. Returns whether a turn was running.
+pub(crate) fn mark_cancel_requested(session_id: &str) -> bool {
+    let Some(entry) = active_turns().get(session_id).map(|e| e.value().clone()) else {
+        return false;
+    };
+    if let Ok(mut turn) = entry.lock() {
+        turn.cancel_requested = true;
+    }
+    true
+}
+
 pub(crate) struct TurnStart<'a> {
-    pub(crate) app_session_id: &'a str,
     pub(crate) role_label: &'a str,
     pub(crate) user_text: &'a str,
     pub(crate) images: &'a [ImageAttachment],
-    /// Client-chosen ids let a view render optimistically and later match the engine's rows.
+    /// Client-chosen id lets a view render optimistically and later match the engine's row.
     pub(crate) user_message_id: Option<&'a str>,
-    pub(crate) assistant_message_id: Option<&'a str>,
+    /// Session fields the engine changed for this turn (routed persona, engine, auto-title),
+    /// announced with `turn/started` so every view applies the same change.
+    pub(crate) session_patch: Value,
 }
 
 pub(crate) struct TurnHandle {
@@ -110,7 +167,6 @@ pub(crate) struct TurnHandle {
     state: AppState,
     session_id: String,
     turn_id: String,
-    user_message: Value,
     entry: Arc<Mutex<ActiveTurn>>,
     persist_lock: Arc<Mutex<()>>,
 }
@@ -121,14 +177,17 @@ fn non_empty_id(id: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Persist the user's message, register the turn, and announce it.
+/// Persist the user's message, start recording, and announce the turn.
 pub(crate) fn begin(
     app: &AppHandle,
     state: &AppState,
+    mut reservation: Reservation,
     start: TurnStart<'_>,
 ) -> Result<TurnHandle, String> {
-    let turn_id = uuid::Uuid::new_v4().to_string();
-    let message_id = non_empty_id(start.assistant_message_id).unwrap_or_else(|| turn_id.clone());
+    let (session_id, entry) = reservation
+        .slot
+        .clone()
+        .ok_or_else(|| "turn reservation already used".to_string())?;
     let now = crate::now_ms();
 
     let mut user_message = json!({
@@ -144,21 +203,22 @@ pub(crate) fn begin(
             .map(|a| json!({ "data": a.data, "mimeType": a.mime_type }))
             .collect::<Vec<_>>());
     }
-    persist(state, start.app_session_id, &user_message)?;
+    // On failure the reservation drops here and frees the slot.
+    persist(state, &session_id, &user_message)?;
+    reservation.slot = None;
 
-    let entry = Arc::new(Mutex::new(ActiveTurn {
-        turn_id: turn_id.clone(),
-        message_id,
-        transcript: Transcript::new(start.role_label),
-        dirty: false,
-        finished: false,
-    }));
-    active_turns().insert(start.app_session_id.to_string(), entry.clone());
+    let (turn_id, message_id) = {
+        let mut turn = entry
+            .lock()
+            .map_err(|_| "turn state poisoned".to_string())?;
+        turn.transcript = Transcript::new(start.role_label);
+        (turn.turn_id.clone(), turn.message_id.clone())
+    };
 
     let persist_lock = Arc::new(Mutex::new(()));
     spawn_checkpoints(
         state.clone_refs(),
-        start.app_session_id.to_string(),
+        session_id.clone(),
         entry.clone(),
         persist_lock.clone(),
     );
@@ -171,19 +231,20 @@ pub(crate) fn begin(
     let _ = app.emit(
         TURN_STARTED_EVENT,
         json!({
-            "appSessionId": start.app_session_id,
+            "appSessionId": session_id,
             "turnId": turn_id,
+            "assistantMessageId": message_id,
             "roleLabel": start.role_label,
             "userMessage": announced_user,
+            "session": start.session_patch,
         }),
     );
 
     Ok(TurnHandle {
         app: app.clone(),
         state: state.clone_refs(),
-        session_id: start.app_session_id.to_string(),
+        session_id,
         turn_id,
-        user_message,
         entry,
         persist_lock,
     })
@@ -229,47 +290,65 @@ fn spawn_checkpoints(
     });
 }
 
+/// A turn task that panics or returns early must not leave the session busy forever.
+impl Drop for TurnHandle {
+    fn drop(&mut self) {
+        let abandoned = self
+            .entry
+            .lock()
+            .map(|mut t| !std::mem::replace(&mut t.finished, true))
+            .unwrap_or(true);
+        if !abandoned {
+            return;
+        }
+        release(&self.session_id, &self.entry);
+        let _ = self.app.emit(
+            TURN_FINISHED_EVENT,
+            json!({
+                "appSessionId": self.session_id,
+                "turnId": self.turn_id,
+                "ok": false,
+                "cancelled": false,
+                "isCommand": false,
+                "error": "turn aborted",
+                "messages": [],
+            }),
+        );
+    }
+}
+
 impl TurnHandle {
-    pub(crate) fn turn_id(&self) -> &str {
-        &self.turn_id
-    }
-
-    pub(crate) fn user_message(&self) -> &Value {
-        &self.user_message
-    }
-
     /// Persist the turn's final messages, release the session, and announce the outcome.
     /// Returns the messages exactly as stored, for the caller to adopt.
     pub(crate) fn finish(self, outcome: TurnOutcome<'_>, error: Option<&str>) -> Vec<Value> {
         let ok = matches!(outcome, TurnOutcome::Command { .. })
             || matches!(outcome, TurnOutcome::Reply { ok: true, .. });
+        let is_command = matches!(outcome, TurnOutcome::Command { .. });
         let _write = self.persist_lock.lock();
-        let messages = match self.entry.lock() {
+        let (messages, cancelled) = match self.entry.lock() {
             Ok(mut turn) => {
                 turn.finished = true;
-                turn.transcript
-                    .finish(&turn.message_id, crate::now_ms(), &outcome)
+                let messages = turn
+                    .transcript
+                    .finish(&turn.message_id, crate::now_ms(), &outcome);
+                (messages, turn.cancel_requested && !ok)
             }
-            Err(_) => Vec::new(),
+            Err(_) => (Vec::new(), false),
         };
         for msg in &messages {
             if let Err(e) = persist(&self.state, &self.session_id, msg) {
                 eprintln!("[engine] failed to persist turn message: {e}");
             }
         }
-        // A newer turn may already own the slot (cancel + immediate resend); only release ours.
-        active_turns().remove_if(&self.session_id, |_, current| {
-            current
-                .lock()
-                .map(|t| t.turn_id == self.turn_id)
-                .unwrap_or(true)
-        });
+        release(&self.session_id, &self.entry);
         let _ = self.app.emit(
             TURN_FINISHED_EVENT,
             json!({
                 "appSessionId": self.session_id,
                 "turnId": self.turn_id,
                 "ok": ok,
+                "cancelled": cancelled,
+                "isCommand": is_command,
                 "error": error,
                 "messages": messages,
             }),
@@ -289,9 +368,27 @@ mod tests {
             transcript: Transcript::new(role),
             dirty: false,
             finished: false,
+            cancel_requested: false,
         }));
         active_turns().insert(sid.to_string(), entry.clone());
         entry
+    }
+
+    #[test]
+    fn reservation_is_exclusive_and_freed_on_drop() {
+        let first = reserve("reserve-a", Some("m1")).expect("idle session reserves");
+        assert!(is_busy("reserve-a"));
+        assert!(
+            reserve("reserve-a", None).is_none(),
+            "second reservation must fail"
+        );
+        drop(first);
+        assert!(
+            !is_busy("reserve-a"),
+            "an unused reservation frees the slot"
+        );
+        let again = reserve("reserve-a", None).expect("slot is free again");
+        drop(again);
     }
 
     #[test]

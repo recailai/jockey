@@ -1,0 +1,136 @@
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type {
+  AppMessage,
+  AppSession,
+  MessageAddedEvent,
+  QueueChangedEvent,
+  QueuedItem,
+  TurnFinishedEvent,
+  TurnStartedEvent,
+} from "../components/types";
+import { now } from "../components/types";
+import { makeDefaultSession } from "./sessionHelpers";
+import { appSessionApi, type RawSession } from "./tauriApi";
+
+type EngineEventsInput = {
+  sessions: AppSession[];
+  getSessionIndex: (id: string) => number;
+  updateSession: (id: string, patch: Partial<AppSession>) => void;
+  setQueuedItems: (id: string, items: QueuedItem[]) => void;
+  appendSessions: (fresh: AppSession[]) => void;
+  adoptMessages: (sessionId: string, messages: readonly AppMessage[]) => void;
+  appendMessageLocal: (sessionId: string, message: AppMessage) => void;
+  settleSessionStream: (sessionId: string, messages: readonly AppMessage[], expectedRunToken?: number) => void;
+  acceptingStreams: Map<string, number>;
+  nextRunToken: () => number;
+  clearSessionStream: (sid: string) => void;
+  refreshProjects: () => Promise<void>;
+  refreshRoles: () => void;
+  showToast: (message: string, severity?: "error" | "info") => void;
+};
+
+const sessionFromRaw = (r: RawSession): AppSession => {
+  const s = makeDefaultSession(r.title);
+  s.id = r.id;
+  if (r.activeRole) s.activeRole = r.activeRole;
+  if (r.runtimeKind !== undefined) s.runtimeKind = r.runtimeKind;
+  if (r.runtimeProfileId !== undefined) s.runtimeProfileId = r.runtimeProfileId;
+  if (r.cwd !== undefined) s.cwd = r.cwd ?? null;
+  s.projectId = r.projectId ?? null;
+  s.messages = r.messages ?? [];
+  return s;
+};
+
+/**
+ * The desktop's view of the engine. Every turn — sent from this window, the web companion,
+ * or drained from the queue — is opened, streamed and settled from the same `turn/*` events,
+ * so this window never needs to know who started a turn. The live projection is opened under
+ * the engine's message id, and `turn/finished` replaces it with the persisted record.
+ */
+export async function registerEngineEvents(input: EngineEventsInput): Promise<UnlistenFn> {
+  const known = (sid: string) => input.getSessionIndex(sid) !== -1;
+  const tokenByTurn = new Map<string, number>();
+
+  const unlisteners = await Promise.all([
+    listen<TurnStartedEvent>("turn/started", (ev) => {
+      const { appSessionId: sid, turnId, assistantMessageId, roleLabel, userMessage, session } = ev.payload;
+      if (!known(sid)) return;
+      const idx = input.getSessionIndex(sid);
+      // The sender already shows its own optimistic bubble (with image data); everyone else
+      // gets the announced copy, whose `images` is only a count.
+      if (!input.sessions[idx].messages.some((m) => m.id === userMessage.id)) {
+        const { images, ...rest } = userMessage;
+        input.adoptMessages(sid, [Array.isArray(images) ? { ...rest, images } : rest]);
+      }
+      input.clearSessionStream(sid);
+      const token = input.nextRunToken();
+      tokenByTurn.set(turnId, token);
+      input.acceptingStreams.set(sid, token);
+      input.updateSession(sid, {
+        ...session,
+        streamingMessage: { id: assistantMessageId, roleName: roleLabel, text: "", at: now() },
+        streamingRunToken: token,
+        toolCalls: {},
+        streamSegments: [],
+        currentPlan: null,
+        pendingPermissions: [],
+        thoughtText: "",
+        agentState: undefined,
+        lastError: null,
+        submitting: true,
+        status: "running",
+        turnPhase: "running",
+      });
+    }),
+    listen<TurnFinishedEvent>("turn/finished", (ev) => {
+      const { appSessionId: sid, turnId, ok, cancelled, isCommand, error, messages } = ev.payload;
+      if (!known(sid)) return;
+      const token = tokenByTurn.get(turnId);
+      tokenByTurn.delete(turnId);
+      input.settleSessionStream(sid, messages, token);
+      input.updateSession(sid, {
+        submitting: false,
+        status: ok || cancelled ? "done" : "error",
+        turnPhase: "idle",
+      });
+      if (!ok && !cancelled && error) {
+        input.showToast(error);
+        input.appendMessageLocal(sid, { id: `${turnId}-error`, roleName: "event", text: error, at: now() });
+      }
+      if (isCommand) input.refreshRoles();
+    }),
+    listen<QueueChangedEvent>("queue/changed", (ev) => {
+      const { appSessionId: sid, items } = ev.payload;
+      if (!known(sid)) return;
+      input.setQueuedItems(sid, items.map((item) => ({
+        id: item.id,
+        clientId: item.id,
+        text: item.text,
+        attachments: item.attachments ?? [],
+        roleName: item.roleName,
+        delivery: item.delivery === "nextStep" ? "nextStep" : "nextTurn",
+        createdAt: item.createdAt,
+        status: "queued",
+      })));
+    }),
+    listen<MessageAddedEvent>("message/added", (ev) => {
+      if (known(ev.payload.appSessionId)) input.adoptMessages(ev.payload.appSessionId, [ev.payload.message]);
+    }),
+    // Projects and sessions created by another client (web companion).
+    listen<{ kind: "projects" | "sessions" }>("companion/changed", async (ev) => {
+      if (ev.payload.kind === "projects") {
+        await input.refreshProjects();
+        return;
+      }
+      let raw: RawSession[];
+      try {
+        raw = await appSessionApi.list();
+      } catch {
+        return;
+      }
+      const fresh = raw.filter((r) => !known(r.id)).map(sessionFromRaw);
+      if (fresh.length > 0) input.appendSessions(fresh);
+    }),
+  ]);
+  return () => unlisteners.forEach((u) => u());
+}

@@ -17,6 +17,8 @@ const FORWARDED_EVENTS: &[&str] = &[
     "acp/stream",
     crate::engine::turns::TURN_STARTED_EVENT,
     crate::engine::turns::TURN_FINISHED_EVENT,
+    crate::engine::queue::QUEUE_CHANGED_EVENT,
+    crate::engine::service::MESSAGE_ADDED_EVENT,
     api::CHANGED_EVENT,
 ];
 

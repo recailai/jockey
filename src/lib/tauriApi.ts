@@ -4,10 +4,10 @@ import type {
   AppMentionItem,
   AppMessage,
   AppSkill,
-  AssistantChatResponse,
   AssistantRuntime,
   Role,
   RoleUpsertInput,
+  SubmitResult,
 } from "../components/types";
 
 type SessionUpdate = {
@@ -338,17 +338,23 @@ export type ChatContextOptions = {
   includeCurrentRole?: boolean;
 };
 
-export const assistantApi = {
-  chat: (input: {
-    input: string;
-    runtimeKind: string | null;
-    appSessionId: string | null;
+/** The engine's front door — the same calls the web companion makes over HTTP. Results of a
+ *  turn arrive as `turn/started` / `turn/finished` events, not as the return value. */
+export const engineApi = {
+  submit: (input: {
+    sessionId: string;
+    text: string;
     attachments?: ImageAttachment[];
-    context?: ChatContextOptions;
     userMessageId?: string;
     assistantMessageId?: string;
-  }) =>
-    call<AssistantChatResponse>("assistant_chat", { input }),
+    runtimeKind?: string | null;
+  }) => call<SubmitResult>("submit_input", { input }),
+  cancel: (sessionId: string) => call<boolean>("cancel_turn", { sessionId }),
+  sendQueuedNow: (sessionId: string) => call<void>("send_queued_input_now", { sessionId }),
+  removeQueued: (sessionId: string, id: string) => call<void>("remove_queued_input", { sessionId, id }),
+};
+
+export const assistantApi = {
   detect: () => call<AssistantRuntime[]>("detect_assistants"),
   cancelSession: (roleName: string, appSessionId: string) =>
     call<void>("cancel_acp_session", { roleName, appSessionId }),

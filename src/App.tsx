@@ -37,9 +37,9 @@ import { useCompletions } from "./hooks/useCompletions";
 import { useMessageSend } from "./hooks/useMessageSend";
 import { useInputHistory } from "./hooks/useInputHistory";
 import { uniqueName, makeDefaultSession, makeDraftSession } from "./lib/sessionHelpers";
-import { registerCompanionSync } from "./lib/companionSync";
+import { registerEngineEvents } from "./lib/engineEvents";
 import { createSessionEventBuffer } from "./lib/sessionEventBuffer";
-import { appSessionApi, assistantApi, projectAgentApi } from "./lib/tauriApi";
+import { appSessionApi, assistantApi, engineApi, projectAgentApi } from "./lib/tauriApi";
 import { createCommandUiRegistry } from "./lib/commandUi/registry";
 import type { PopupSelectSpec } from "./lib/commandUi/contract";
 import type { RichNode } from "./components/RichInput";
@@ -245,7 +245,7 @@ export default function App() {
     pushMessage: sessionManager.pushMessage,
   });
 
-  const agentContext = useAgentContext(sessionManager, streamEngine, showToast);
+  const agentContext = useAgentContext(sessionManager, showToast);
   const {
     roles, assistants, skills,
     normalizeRuntimeKey, commandCacheKey,
@@ -491,13 +491,9 @@ export default function App() {
 
   const { sendRaw, cancelCurrentRun, sendQueuedNow } = useMessageSend({
     sessionManager,
-    streamEngine,
-    agentContext,
     closeMentionMenu,
     closeSlashMenu,
     showToast,
-    clearSessionStream,
-    inputDelivery: activeInputDelivery,
   });
   sendRawFn = sendRaw;
 
@@ -570,90 +566,11 @@ export default function App() {
       }
     }
 
-    if (activeSession()?.submitting || activeSession()?.turnPhase === "cancelling" || activeSession()?.turnPhase === "sending") {
-      setRichNodes([]);
-      setRichCaretOffset(0);
-      const sid = activeSessionId();
-      if (sid) {
-        const qidx = getSessionIndex(sid);
-        const queuedText = text;
-        const queuedAttachments = imageNodes.map((n) => n.img);
-        const optimisticId = `pending-${now()}-${Math.random().toString(36).slice(2)}`;
-        if (qidx !== -1) {
-          setSessions(qidx, "queuedItems", (prev) => [...prev, {
-            id: optimisticId,
-            clientId: optimisticId,
-            text: queuedText,
-            attachments: queuedAttachments,
-            roleName: activeSession()?.activeRole ?? null,
-            delivery: "nextTurn" as const,
-            createdAt: now(),
-            status: "queued" as const,
-          }]);
-        }
-        void appSessionApi.enqueueInbox(
-          sid,
-          queuedText,
-          activeSession()?.activeRole ?? null,
-          "nextTurn",
-          queuedAttachments,
-        ).then((saved) => {
-          const current = getSessionIndex(sid);
-          if (current === -1) {
-            void appSessionApi.removeInbox(saved.id).catch(() => {});
-            return;
-          }
-          const stillQueued = sessions[current]?.queuedItems.some(
-            (item) => item.clientId === optimisticId || item.id === optimisticId,
-          );
-          if (!stillQueued) {
-            void appSessionApi.removeInbox(saved.id).catch(() => {});
-            return;
-          }
-          setSessions(current, "queuedItems", (prev) => prev.map((item) => item.clientId === optimisticId || item.id === optimisticId
-            ? { ...item, id: saved.id, clientId: optimisticId, createdAt: saved.createdAt }
-            : item));
-        }).catch((error) => {
-          const current = getSessionIndex(sid);
-          if (current !== -1) {
-          setSessions(current, "queuedItems", (prev) => prev.filter(
-            (item) => item.id !== optimisticId && item.clientId !== optimisticId,
-          ));
-          }
-          showToast(`Could not persist queued message: ${String(error)}`, "error");
-        });
-        scheduleScrollToBottom();
-      }
-      return;
-    }
-    const currentRole = roles().find((r) => r.roleName === (activeSession()?.activeRole ?? DEFAULT_ROLE_ALIAS));
-    let effectiveRuntimeKind = activeSession()?.runtimeKind ?? currentRole?.runtimeKind ?? null;
-    if (!effectiveRuntimeKind) {
-      const availableAssistant = assistants().find((a) => a.available);
-      if (availableAssistant) {
-        effectiveRuntimeKind = availableAssistant.key;
-        patchActiveSession({
-          runtimeKind: availableAssistant.key,
-          runtimeProfileId: availableAssistant.profileId,
-        });
-        const sid = activeSessionId();
-        if (sid) {
-          void appSessionApi.update(sid, {
-            runtimeKind: availableAssistant.key,
-            runtimeProfileId: availableAssistant.profileId,
-          }).catch(() => {});
-        }
-      }
-    }
-    if (!effectiveRuntimeKind && !text.startsWith("/app_")) {
-      pushMessage("system", "Select an assistant or a role first.");
-      return;
-    }
     inputHistory.push(text);
     setRichNodes([]);
     setRichCaretOffset(0);
     const attachments = imageNodes.map((n) => n.img);
-    await sendRaw(text, false, null, attachments.length > 0 ? attachments : undefined, attachments.length > 0 ? attachments : undefined);
+    await sendRaw(text, false, null, attachments.length > 0 ? attachments : undefined);
   };
 
   const handleInputKeyDownFinal = (e: KeyboardEvent) => {
@@ -945,12 +862,24 @@ export default function App() {
       scheduleScrollToBottom,
     }).then((hs) => handlers.push(...hs));
 
-    void registerCompanionSync({
+    void registerEngineEvents({
       sessions,
+      getSessionIndex,
+      updateSession,
+      setQueuedItems: (sid, items) => {
+        const idx = getSessionIndex(sid);
+        if (idx !== -1) setSessions(idx, "queuedItems", items);
+      },
       appendSessions: (fresh) => setSessions((prev) => [...prev, ...fresh]),
       adoptMessages: sessionManager.adoptMessages,
+      appendMessageLocal: sessionManager.appendMessageLocal,
+      settleSessionStream: streamEngine.settleSessionStream,
       acceptingStreams,
+      nextRunToken: agentContext.bumpRunToken,
+      clearSessionStream,
       refreshProjects,
+      refreshRoles: () => void refreshRoles(currentProject()?.id),
+      showToast,
     }).then((h) => handlers.push(h));
 
     onCleanup(() => {
@@ -1139,11 +1068,7 @@ export default function App() {
               onRemoveQueuedMessage={(itemId) => {
                 const sid = activeSessionId();
                 if (!sid) return;
-                const idx = getSessionIndex(sid);
-                if (idx === -1) return;
-                const item = activeSession()?.queuedItems.find((queued) => queued.id === itemId || queued.clientId === itemId);
-                setSessions(idx, "queuedItems", (prev) => prev.filter((queued) => queued.id !== itemId && queued.clientId !== itemId));
-                if (item && !item.id.startsWith("pending-")) void appSessionApi.removeInbox(item.id).catch(() => {});
+                void engineApi.removeQueued(sid, itemId).catch((e: unknown) => showToast(`Could not remove queued message: ${String(e)}`));
               }}
               onSendQueuedNow={() => { void sendQueuedNow(); }}
               onResetAgentContext={resetActiveAgentContext}

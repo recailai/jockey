@@ -1,5 +1,4 @@
 import { produce } from "solid-js/store";
-import { now } from "../components/types";
 import type { AppMessage } from "../components/types";
 import { MAX_THOUGHT_CHARS } from "../lib/sessionHelpers";
 import type { SessionManager } from "./useSessionManager";
@@ -10,24 +9,16 @@ export function useStreamEngine(sessionManager: SessionManager) {
     setSessions,
     activeSessionId,
     patchActiveSession,
-    appendMessageLocal,
     adoptMessages,
     updateSession,
     scheduleScrollToBottom,
     getSessionIndex,
   } = sessionManager;
 
-  // Map<sessionId, runToken> — tracks which run currently owns a session's stream.
-  // Use acceptingStreams.set(sid, runToken) to open, and releaseStream(sid, runToken)
-  // to close only if the token still matches (prevents a finishing run from evicting
-  // a newer run that already re-opened the same session's stream).
+  // Map<sessionId, runToken> — which turn currently owns a session's live stream. Opened by
+  // `turn/started` (engineEvents) and cleared by `settleSessionStream`.
   const acceptingStreams = new Map<string, number>();
 
-  const releaseStream = (sid: string, runToken: number) => {
-    if (acceptingStreams.get(sid) === runToken) {
-      acceptingStreams.delete(sid);
-    }
-  };
   const normalizeNewlines = (input: string): string => input.replace(/\r\n?/g, "\n");
 
   const normalizeToolLocations = (
@@ -131,84 +122,12 @@ export function useStreamEngine(sessionManager: SessionManager) {
     clearLiveTurn(sessionId);
   };
 
-  /**
-   * Freeze the live stream into a displayed message (cancel, or a failed IPC call). Display
-   * only: the engine records the same turn under the same message id.
-   *
-   * @param expectedRunToken — if provided, the call is a no-op when the session's
-   *   streamingRunToken no longer matches. Guards against a late-arriving response
-   *   from a cancelled run overwriting a newer run's live stream (the exact bug
-   *   that caused "UI doesn't update after cancel + queued send").
-   */
-  const finalizeSessionStream = (sessionId: string, fallbackRoleName: string, finalReply?: string, expectedRunToken?: number) => {
-    const idx = getSessionIndex(sessionId);
-    const sess = idx !== -1 ? sessions[idx] : undefined;
-    if (
-      expectedRunToken !== undefined &&
-      sess?.streamingRunToken !== null &&
-      sess?.streamingRunToken !== undefined &&
-      sess.streamingRunToken !== expectedRunToken
-    ) {
-      return; // a newer run owns the stream — don't clobber it
-    }
-    const row = sess?.streamingMessage ?? null;
-    const snapshotToolCalls = sess && Object.keys(sess.toolCalls).length > 0 ? Object.values(sess.toolCalls) : undefined;
-    let snapshotSegments = sess && sess.streamSegments.length > 0 ? [...sess.streamSegments] : undefined;
-    if (!snapshotSegments && snapshotToolCalls && snapshotToolCalls.length > 0) {
-      snapshotSegments = snapshotToolCalls.map((tc) => ({ kind: "tool" as const, tc, roleName: tc.roleName || fallbackRoleName }));
-    }
-    if (snapshotSegments && finalReply) {
-      const last = snapshotSegments[snapshotSegments.length - 1];
-      if (last && last.kind === "text") {
-        snapshotSegments[snapshotSegments.length - 1] = { kind: "text", text: normalizeNewlines(finalReply), roleName: last.roleName };
-      } else {
-        snapshotSegments.push({ kind: "text", text: normalizeNewlines(finalReply) });
-      }
-    }
-    if (row) {
-      const text = normalizeNewlines(finalReply ?? row.text);
-      const snapshotThought = sess?.thoughtText || undefined;
-      // Always append if there was an active streamingMessage — dropping it
-      // silently causes the response to disappear (e.g. after cancel + queued
-      // send when the agent returns empty text for the interrupted turn).
-      appendMessageLocal(sessionId, {
-        ...row,
-        text,
-        at: now(),
-        toolCalls: snapshotToolCalls,
-        segments: snapshotSegments,
-        thoughtText: snapshotThought,
-      });
-      updateSession(sessionId, { streamingMessage: null, streamingRunToken: null, thoughtText: "" });
-    } else if ((finalReply && finalReply.trim()) || (snapshotToolCalls && snapshotToolCalls.length > 0)) {
-      appendMessageLocal(sessionId, {
-        id: `${now()}-${Math.random().toString(36).slice(2)}`,
-        roleName: fallbackRoleName,
-        text: normalizeNewlines(finalReply ?? ""),
-        at: now(),
-        toolCalls: snapshotToolCalls,
-        segments: snapshotSegments,
-      });
-    }
-    resetStreamState(sessionId);
-    updateSession(sessionId, {
-      toolCalls: {},
-      streamSegments: [],
-      currentPlan: null,
-      pendingPermissions: [],
-      agentState: undefined,
-      thoughtText: "",
-    });
-  };
-
   return {
     acceptingStreams,
-    releaseStream,
     appendStream,
     appendThought,
     resetStreamState,
     dropStream,
-    finalizeSessionStream,
     settleSessionStream,
     normalizeToolLocations,
   };

@@ -1,17 +1,14 @@
 import { now, type AcpConfigOption } from "../components/types";
 import type { SessionManager } from "./useSessionManager";
-import type { StreamEngine } from "./useStreamEngine";
 import { assistantApi } from "../lib/tauriApi";
 import { useAgentData } from "./useAgentData";
 import { useRunTokens } from "./useRunTokens";
 
 export function useAgentContext(
   sessionManager: SessionManager,
-  streamEngine: StreamEngine,
   showToast: (message: string, severity?: "error" | "info") => void,
 ) {
   const {
-    sessions,
     setSessions,
     activeSessionId,
     activeSession,
@@ -21,8 +18,6 @@ export function useAgentContext(
     pushMessage,
     getSessionIndex,
   } = sessionManager;
-
-  const { acceptingStreams, finalizeSessionStream } = streamEngine;
 
   const agentData = useAgentData(sessionManager, showToast);
   const {
@@ -250,55 +245,6 @@ export function useAgentContext(
     }
   };
 
-  const cancelCurrentRun = async (
-    runNextQueued: () => void | Promise<void>,
-    clearSessionStream?: (sid: string) => void,
-    reason: "cancel" | "sendQueued" = "cancel",
-  ) => {
-    const sid = activeSessionId();
-    const cidx = sid ? getSessionIndex(sid) : -1;
-    const sess = cidx !== -1 ? sessions[cidx] : null;
-    if (!sess?.submitting || !sid) return;
-
-    const role = sess.activeRole || activeBackendRole();
-
-    if (sess.streamingRunToken !== null && sess.streamingMessage) {
-      finalizeSessionStream(sid, role, undefined, sess.streamingRunToken);
-    }
-
-    runTokens.markCancelled();
-    acceptingStreams.delete(sid);
-    clearSessionStream?.(sid);
-    updateSession(sid, {
-      currentPlan: null,
-      usage: null,
-      notices: [],
-      pendingUserInput: [],
-      pendingPermissions: [],
-      submitting: false,
-      status: "running",
-      turnPhase: "cancelling",
-      agentState: reason === "sendQueued" ? "Waiting for current turn to stop…" : undefined,
-    });
-    if (reason === "cancel") {
-      pushSessionEvent(sid, "Cancellation requested.");
-    }
-
-    let drained = false;
-    try {
-      await assistantApi.cancelSession(role, sid);
-      drained = true;
-    } catch (error) {
-      pushSessionEvent(sid, `Cancellation did not drain cleanly: ${String(error)}`);
-      updateSession(sid, {
-        status: "error",
-        turnPhase: "cancelling",
-        agentState: "Cancellation did not complete; reconnect before sending.",
-      });
-    }
-    if (drained) await runNextQueued();
-  };
-
   return {
     roles,
     setRoles,
@@ -327,7 +273,6 @@ export function useAgentContext(
     refreshAssistants,
     resetActiveAgentContext,
     reconnectActiveAgent,
-    cancelCurrentRun,
     slashCliCacheRef,
   };
 }

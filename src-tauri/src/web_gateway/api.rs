@@ -22,7 +22,6 @@ const MARKED_JS: &str = include_str!("vendor/marked.umd.js");
 /// Tauri event the desktop listens to so sessions/projects created from the
 /// companion appear without a manual reload. Also forwarded to SSE clients.
 pub(super) const CHANGED_EVENT: &str = "companion/changed";
-const DEFAULT_ROLE: &str = "Developer";
 const PREVIEW_CHARS: usize = 120;
 
 pub(super) fn router(ctx: ServerContext) -> Router {
@@ -36,6 +35,12 @@ pub(super) fn router(ctx: ServerContext) -> Router {
         .route("/sessions/:id", get(session_detail))
         .route("/sessions/:id/chat", post(session_chat))
         .route("/sessions/:id/cancel", post(session_cancel))
+        .route("/sessions/:id/queue", get(session_queue))
+        .route(
+            "/sessions/:id/queue/:item/remove",
+            post(session_queue_remove),
+        )
+        .route("/sessions/:id/send-now", post(session_send_now))
         .route("/sessions/:id/reopen", post(session_reopen))
         .route("/permissions", get(list_permissions))
         .route("/permissions/respond", post(respond_permission))
@@ -356,39 +361,6 @@ async fn session_detail(
     Ok(Json(value))
 }
 
-fn runtime_key(raw: &str) -> String {
-    crate::assistant::normalize_runtime_key(raw)
-        .map(str::to_string)
-        .unwrap_or_else(|| raw.to_string())
-}
-
-/// Mirrors the desktop's `preferredAssistantForProject`: the project's pinned
-/// engine for the persona, then the persona's own default, then any installed
-/// agent — each only if it is actually available on this machine.
-async fn preferred_runtime(
-    state: &AppState,
-    project_id: Option<&str>,
-    role: &str,
-) -> Option<(String, String)> {
-    let catalog = tokio::task::spawn_blocking(crate::assistant::cached_assistant_catalog)
-        .await
-        .ok()?;
-    let available: Vec<_> = catalog.into_iter().filter(|a| a.available).collect();
-    let find = |want: &str| {
-        let want = runtime_key(want);
-        available.iter().find(|a| runtime_key(&a.key) == want)
-    };
-    let pin = crate::db::project_agent::load_project_agent_config(state, project_id, role)
-        .ok()
-        .and_then(|c| c.runtime_kind);
-    let persona = crate::db::role::load_role_runtime_kind_scoped(state, role, project_id).ok();
-    pin.as_deref()
-        .and_then(find)
-        .or_else(|| persona.as_deref().and_then(find))
-        .or(available.first())
-        .map(|a| (a.key.clone(), a.profile_id.clone()))
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateSessionBody {
@@ -402,7 +374,12 @@ async fn create_session(
 ) -> ApiResult<SessionSummary> {
     let state = ctx.app.state::<AppState>();
     let project_id = body.project_id.filter(|p| !p.trim().is_empty());
-    let runtime = preferred_runtime(&state, project_id.as_deref(), DEFAULT_ROLE).await;
+    let runtime = crate::engine::sessions::preferred_runtime(
+        &state,
+        project_id.as_deref(),
+        crate::engine::sessions::DEFAULT_ROLE,
+    )
+    .await;
     let session = crate::db::app_session::create_app_session_internal(
         &state,
         body.title.as_deref().filter(|t| !t.trim().is_empty()),
@@ -432,70 +409,59 @@ struct ChatBody {
     input: String,
 }
 
+/// Same front door as the desktop: idle sessions start a turn, busy ones queue the input.
 async fn session_chat(
     State(ctx): State<ServerContext>,
     Path(id): Path<String>,
     Json(body): Json<ChatBody>,
-) -> ApiResult<Value> {
-    let text = body.input.trim().to_string();
-    if text.is_empty() {
-        return Err(bad_request("消息不能为空"));
-    }
-    let state = ctx.app.state::<AppState>();
-    let session = load_session(&state, &id)?;
-    if session.closed_at.is_some() {
-        return Err(ApiError(
-            StatusCode::CONFLICT,
-            "会话已关闭，请先恢复".into(),
-        ));
-    }
-    // assistant_chat refuses a turn without an explicit runtime; the desktop
-    // passes the session's selected agent, so do the same and fall back to the
-    // preferred one for sessions that never picked any.
-    let runtime = match session
-        .runtime_kind
-        .clone()
-        .filter(|r| !r.trim().is_empty())
-    {
-        Some(rt) => rt,
-        None => preferred_runtime(&state, session.project_id.as_deref(), &session.active_role)
-            .await
-            .map(|(key, _)| key)
-            .ok_or_else(|| bad_request("没有可用的 Agent，请先在桌面端安装或配置"))?,
-    };
-    if crate::engine::turns::is_busy(&id) {
-        return Err(ApiError(StatusCode::CONFLICT, "该会话正在运行中".into()));
-    }
-
-    // Detached from the request: a phone browser drops long requests when backgrounded.
-    // The engine records the turn and announces it via turn/started and turn/finished.
-    let app = ctx.app.clone();
-    tokio::spawn(async move {
-        let input = crate::types::AssistantChatInput {
-            input: text,
-            runtime_kind: Some(runtime),
-            app_session_id: Some(id),
-            attachments: Vec::new(),
-            context: crate::types::ChatContextOptions::default(),
-            user_message_id: None,
-            assistant_message_id: None,
-        };
-        if let Err(e) =
-            crate::chat::assistant_chat(app.clone(), app.state::<AppState>(), input).await
-        {
-            eprintln!("[web_gateway] turn rejected: {e}");
-        }
-    });
-    Ok(Json(json!({ "ok": true, "accepted": true })))
+) -> ApiResult<crate::engine::service::SubmitResult> {
+    crate::engine::service::submit(
+        &ctx.app,
+        crate::engine::service::SubmitInput {
+            session_id: id,
+            text: body.input,
+            ..Default::default()
+        },
+    )
+    .await
+    .map(Json)
+    .map_err(bad_request)
 }
 
 async fn session_cancel(
     State(ctx): State<ServerContext>,
     Path(id): Path<String>,
 ) -> ApiResult<Value> {
+    let cancelled = crate::engine::service::cancel(&ctx.app, &id)
+        .await
+        .map_err(bad_request)?;
+    Ok(Json(json!({ "ok": true, "cancelled": cancelled })))
+}
+
+async fn session_queue(
+    State(ctx): State<ServerContext>,
+    Path(id): Path<String>,
+) -> ApiResult<Vec<crate::types::InboxMessage>> {
     let state = ctx.app.state::<AppState>();
-    let session = load_session(&state, &id)?;
-    crate::commands::runtime_cmd::cancel_acp_session(state, session.active_role, id)
+    crate::db::inbox::list_inbox_internal(&state, &id, false)
+        .map(Json)
+        .map_err(internal)
+}
+
+async fn session_queue_remove(
+    State(ctx): State<ServerContext>,
+    Path((id, item)): Path<(String, String)>,
+) -> ApiResult<Value> {
+    let state = ctx.app.state::<AppState>();
+    crate::engine::queue::remove(&ctx.app, &state, &id, &item).map_err(bad_request)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn session_send_now(
+    State(ctx): State<ServerContext>,
+    Path(id): Path<String>,
+) -> ApiResult<Value> {
+    crate::engine::service::send_queued_now(&ctx.app, &id)
         .await
         .map_err(bad_request)?;
     Ok(Json(json!({ "ok": true })))

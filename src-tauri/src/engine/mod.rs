@@ -2,5 +2,8 @@
 //! shares. Adapters call into it; views only render what it records and announces.
 //! See `docs/engine-service-layer.md`.
 
+pub(crate) mod queue;
+pub(crate) mod service;
+pub(crate) mod sessions;
 pub(crate) mod transcript;
 pub(crate) mod turns;

@@ -1,6 +1,6 @@
 # Engine service layer
 
-Status: P1 implemented (`src-tauri/src/engine/`); P2–P3 pending. Supersedes the ad-hoc persistence in `useMessageSend` / `useSessionManager`
+Status: P1 and P2 implemented (`src-tauri/src/engine/`); P3 pending. Supersedes the ad-hoc persistence in `useMessageSend` / `useSessionManager`
 and the duplicate logic in `web_gateway/api.rs`.
 
 ## Problem
@@ -85,16 +85,22 @@ Each phase leaves the desktop fully working and is committed separately.
   and returns the persisted messages.
 - Desktop stops persisting turn messages and adopts the returned ones; the web drops its own
   persistence and the "4 s of silence" heuristic.
-- Known gap until P2: the busy check is not a reservation — two clients submitting to the same
-  idle session within the same instant can both start. Each view disables send while its own
-  request is in flight.
 
-**P2 — turn service**
+**P2 — turn service** — done
 - Busy registry and cancel live in the engine (`cancel_turn`); queued input drains from the
   inbox in the engine after `turn/finished`; `@role` routing has one implementation (Rust)
   that also returns the role/runtime the session switched to; auto-title moves to the engine.
 - `useMessageSend` shrinks to: optimistic user bubble → `submit_turn` → render events.
 - Web gains queueing and cancel with no extra code.
+- As built: `engine::service::{submit, cancel, send_queued_now}` behind `submit_input`,
+  `cancel_turn`, `send_queued_input_now`, `remove_queued_input` (Tauri) and the gateway's
+  `/chat`, `/cancel`, `/queue`, `/send-now`. `turns::reserve` makes the busy check atomic.
+  Every view opens/settles live turns from `turn/started` / `turn/finished` (desktop:
+  `src/lib/engineEvents.ts`), syncs queues from `queue/changed`, and steered/control input
+  from `message/added`. Multi-agent turns no longer run every mentioned persona on the
+  session's selected engine.
+- Known adapter issue (not engine): after cancelling a `claude-native` turn, the next prompt
+  on the same provider session can return an empty result immediately.
 
 **P3 — session service and change events**
 - Runtime preference, draft-session persistence and reopen/close go through

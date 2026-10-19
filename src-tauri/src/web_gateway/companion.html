@@ -847,14 +847,29 @@
       return !!(sessions.find((s) => s.id === activeSessionId)?.running || activeSession?.running);
     }
 
+    let queuedCount = 0;
+
+    // While a turn runs, typing queues the message (the engine drains it afterwards); the stop
+    // button shows only while the box is empty, so one tap target never means two things.
     function updateComposer() {
       const hasSession = !!activeSessionId && !!activeSession;
       const running = isRunning();
+      const hasText = !!chatInput.value.trim();
       chatInput.disabled = !hasSession;
-      chatInput.placeholder = hasSession ? (running ? 'Agent 运行中，可点右侧停止' : '发送指令给当前 Agent...') : '先从左上角选择一个会话';
-      btnStop.style.display = running ? 'flex' : 'none';
-      btnSend.style.display = running ? 'none' : 'flex';
-      btnSend.disabled = !hasSession || !chatInput.value.trim();
+      const queueNote = queuedCount ? `（已排队 ${queuedCount} 条）` : '';
+      chatInput.placeholder = hasSession
+        ? (running ? `运行中，发送会排队${queueNote}` : `发送指令给当前 Agent...${queueNote}`)
+        : '先从左上角选择一个会话';
+      btnStop.style.display = running && !hasText ? 'flex' : 'none';
+      btnSend.style.display = running && !hasText ? 'none' : 'flex';
+      btnSend.disabled = !hasSession || !hasText;
+    }
+
+    async function loadQueue(sid) {
+      try {
+        const items = await api(`/api/sessions/${encodeURIComponent(sid)}/queue`);
+        if (sid === activeSessionId) { queuedCount = items.length; updateComposer(); }
+      } catch (_) {}
     }
 
     function setRunning(sid, running) {
@@ -866,8 +881,10 @@
 
     async function selectSession(sid) {
       activeSessionId = sid;
+      queuedCount = 0;
       localStorage.setItem('jockey_active_session', sid);
       renderSidebar();
+      loadQueue(sid);
       await loadMessages(sid);
     }
 
@@ -1054,21 +1071,30 @@
     async function sendMessage() {
       const text = chatInput.value.trim();
       const sid = activeSessionId;
-      if (!text || !sid || isRunning()) return;
+      if (!text || !sid) return;
       chatInput.value = '';
       chatInput.style.height = '42px';
-      const placeholder = messagesContainer.querySelector('.placeholder');
-      if (placeholder) placeholder.remove();
-      messagesContainer.appendChild(renderMessage({ roleName: 'user', text }));
-      scrollToBottom(true);
-      // The optimistic bubble stands in for the user message turn/started announces.
-      ownPendingSend = sid;
-      setRunning(sid, true);
+      const busy = isRunning();
+      if (!busy) {
+        const placeholder = messagesContainer.querySelector('.placeholder');
+        if (placeholder) placeholder.remove();
+        messagesContainer.appendChild(renderMessage({ roleName: 'user', text }));
+        scrollToBottom(true);
+        // The optimistic bubble stands in for the user message turn/started announces.
+        ownPendingSend = sid;
+      }
+      updateComposer();
       try {
-        await api(`/api/sessions/${encodeURIComponent(sid)}/chat`, { method: 'POST', body: JSON.stringify({ input: text }) });
+        const res = await api(`/api/sessions/${encodeURIComponent(sid)}/chat`, { method: 'POST', body: JSON.stringify({ input: text }) });
+        if (res.status === 'queued') {
+          if (!busy) { ownPendingSend = null; loadMessages(sid); }
+          toast('已加入队列，当前这轮结束后自动发送');
+        } else if (res.status === 'control') {
+          toast(res.message);
+          loadMessages(sid);
+        }
       } catch (err) {
         ownPendingSend = null;
-        setRunning(sid, false);
         toast(`发送失败：${err.message}`, true);
         if (!chatInput.value) chatInput.value = text;
         loadMessages(sid);
@@ -1229,6 +1255,24 @@
         loadSidebarSoon();
       });
 
+      eventSource.addEventListener('queue/changed', (ev) => {
+        let payload;
+        try { payload = JSON.parse(ev.data); } catch (_) { return; }
+        if (payload.appSessionId !== activeSessionId) return;
+        queuedCount = (payload.items || []).length;
+        updateComposer();
+      });
+
+      // Input steered into a running turn, or a control command, from any client.
+      eventSource.addEventListener('message/added', (ev) => {
+        let payload;
+        try { payload = JSON.parse(ev.data); } catch (_) { return; }
+        if (payload.appSessionId !== activeSessionId || !payload.message) return;
+        if (messagesContainer.querySelector(`[data-id="${CSS.escape(payload.message.id)}"]`)) return;
+        messagesContainer.appendChild(renderMessage(payload.message));
+        scrollToBottom();
+      });
+
       eventSource.addEventListener('companion/changed', loadSidebarSoon);
 
       eventSource.addEventListener('permission_update', loadPermissions);
@@ -1268,6 +1312,7 @@
       await loadSidebar();
       loadPermissions();
       if (activeSessionId && sessions.some((s) => s.id === activeSessionId)) {
+        loadQueue(activeSessionId);
         await loadMessages(activeSessionId);
       } else {
         activeSessionId = '';

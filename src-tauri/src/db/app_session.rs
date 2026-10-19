@@ -66,6 +66,116 @@ fn active_session_title_exists(
     Ok(exists)
 }
 
+/// The columns the engine needs to route a turn, without loading the transcript.
+pub(crate) struct SessionHead {
+    pub(crate) title: String,
+    pub(crate) active_role: String,
+    pub(crate) runtime_kind: Option<String>,
+    pub(crate) project_id: Option<String>,
+    pub(crate) closed: bool,
+}
+
+pub(crate) fn load_session_head(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Option<SessionHead>, String> {
+    with_db(state, |conn| {
+        conn.query_row(
+            "SELECT title, active_role, runtime_kind, project_id, closed_at
+             FROM app_sessions WHERE id = ?1",
+            params![session_id],
+            |row| {
+                Ok(SessionHead {
+                    title: row.get(0)?,
+                    active_role: row.get(1)?,
+                    runtime_kind: row.get(2)?,
+                    project_id: row.get(3)?,
+                    closed: row.get::<_, Option<i64>>(4)?.is_some(),
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    })
+}
+
+pub(crate) fn count_user_messages(state: &AppState, session_id: &str) -> Result<i64, String> {
+    with_db(state, |conn| {
+        conn.query_row(
+            "SELECT count(1) FROM app_session_messages WHERE session_id = ?1 AND role_name = 'user'",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())
+    })
+}
+
+/// Rename to `desired`, or `desired_copy`, `desired_copy2`, … when an open session in the same
+/// project already has that name — the rule the desktop's `uniqueName` applied.
+pub(crate) fn rename_app_session_unique(
+    state: &AppState,
+    session_id: &str,
+    desired: &str,
+) -> Result<String, String> {
+    let desired = validate_session_title(desired)?;
+    with_db(state, |conn| {
+        let project_id: Option<String> = conn
+            .query_row(
+                "SELECT project_id FROM app_sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let taken = |title: &str| {
+            active_session_title_exists(conn, title, project_id.as_deref(), Some(session_id))
+        };
+        let mut title = desired.clone();
+        if taken(&title)? {
+            let base = desired
+                .rsplit_once("_copy")
+                .filter(|(_, n)| n.chars().all(|c| c.is_ascii_digit()))
+                .map(|(b, _)| b.to_string())
+                .unwrap_or_else(|| desired.clone());
+            title = format!("{base}_copy");
+            let mut n = 2;
+            while taken(&title)? {
+                title = format!("{base}_copy{n}");
+                n += 1;
+            }
+        }
+        conn.execute(
+            "UPDATE app_sessions SET title = ?1 WHERE id = ?2",
+            params![&title, session_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(title)
+    })
+}
+
+/// Persist the persona (and its engine) a turn was routed to, so every client sees the switch.
+pub(crate) fn set_app_session_route(
+    state: &AppState,
+    session_id: &str,
+    active_role: &str,
+    runtime_kind: Option<&str>,
+    runtime_profile_id: Option<&str>,
+) -> Result<(), String> {
+    with_db(state, |conn| {
+        match runtime_kind {
+            Some(rt) => conn.execute(
+                "UPDATE app_sessions SET active_role = ?1, runtime_kind = ?2, runtime_profile_id = ?3 WHERE id = ?4",
+                params![active_role, rt, runtime_profile_id, session_id],
+            ),
+            None => conn.execute(
+                "UPDATE app_sessions SET active_role = ?1 WHERE id = ?2",
+                params![active_role, session_id],
+            ),
+        }
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    })
+}
+
 pub(crate) fn get_app_session_cwd(state: &AppState, session_id: &str) -> Option<String> {
     with_db(state, |conn| {
         conn.query_row(
