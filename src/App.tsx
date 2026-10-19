@@ -37,6 +37,7 @@ import { useCompletions } from "./hooks/useCompletions";
 import { useMessageSend } from "./hooks/useMessageSend";
 import { useInputHistory } from "./hooks/useInputHistory";
 import { uniqueName, makeDefaultSession, makeDraftSession } from "./lib/sessionHelpers";
+import { registerCompanionSync } from "./lib/companionSync";
 import { createSessionEventBuffer } from "./lib/sessionEventBuffer";
 import { appSessionApi, assistantApi, projectAgentApi } from "./lib/tauriApi";
 import { createCommandUiRegistry } from "./lib/commandUi/registry";
@@ -945,6 +946,15 @@ export default function App() {
       scheduleScrollToBottom,
       scheduleCheckpoint,
     }).then((hs) => handlers.push(...hs));
+
+    void registerCompanionSync({
+      sessions,
+      appendSessions: (fresh) => setSessions((prev) => [...prev, ...fresh]),
+      getSessionIndex,
+      mutateSession,
+      acceptingStreams,
+      refreshProjects,
+    }).then((h) => handlers.push(h));
 
     onCleanup(() => {
       if (startupRaf !== null) {
