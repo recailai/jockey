@@ -1,5 +1,6 @@
 import { produce } from "solid-js/store";
 import { now } from "../components/types";
+import type { AppMessage } from "../components/types";
 import { MAX_THOUGHT_CHARS } from "../lib/sessionHelpers";
 import type { SessionManager } from "./useSessionManager";
 
@@ -9,7 +10,8 @@ export function useStreamEngine(sessionManager: SessionManager) {
     setSessions,
     activeSessionId,
     patchActiveSession,
-    appendMessageToSession,
+    appendMessageLocal,
+    adoptMessages,
     updateSession,
     scheduleScrollToBottom,
     getSessionIndex,
@@ -45,25 +47,6 @@ export function useStreamEngine(sessionManager: SessionManager) {
     return out.length > 0 ? out : undefined;
   };
 
-  const checkpointTimers = new Map<string, number>();
-
-  const scheduleCheckpoint = (sessionId: string, delayMs = 1500) => {
-    if (checkpointTimers.has(sessionId)) return;
-    const timer = window.setTimeout(() => {
-      checkpointTimers.delete(sessionId);
-      sessionManager.checkpointStreamingMessage(sessionId);
-    }, delayMs);
-    checkpointTimers.set(sessionId, timer);
-  };
-
-  const cancelCheckpoint = (sessionId: string) => {
-    const t = checkpointTimers.get(sessionId);
-    if (t !== undefined) {
-      window.clearTimeout(t);
-      checkpointTimers.delete(sessionId);
-    }
-  };
-
   const appendStream = (sessionId: string, chunk: string, roleName?: string) => {
     const normalized = normalizeNewlines(chunk);
     if (!normalized) return;
@@ -80,7 +63,6 @@ export function useStreamEngine(sessionManager: SessionManager) {
       }
     }));
     scheduleScrollToBottom();
-    scheduleCheckpoint(sessionId);
   };
 
   const appendThought = (sessionId: string, chunk: string, roleName?: string) => {
@@ -99,30 +81,59 @@ export function useStreamEngine(sessionManager: SessionManager) {
       }
     }));
     scheduleScrollToBottom();
-    scheduleCheckpoint(sessionId);
   };
 
   const resetStreamState = (sessionId?: string) => {
     if (sessionId) {
-      cancelCheckpoint(sessionId);
       acceptingStreams.delete(sessionId); // unconditional reset (e.g. session close)
     } else {
-      for (const sid of checkpointTimers.keys()) {
-        cancelCheckpoint(sid);
-      }
       acceptingStreams.clear();
     }
   };
 
   const dropStream = () => {
     const sid = activeSessionId();
-    if (sid) cancelCheckpoint(sid);
     patchActiveSession({ streamingMessage: null });
     resetStreamState(sid ?? undefined);
   };
 
+  const clearLiveTurn = (sessionId: string) => {
+    resetStreamState(sessionId);
+    updateSession(sessionId, {
+      streamingMessage: null,
+      streamingRunToken: null,
+      toolCalls: {},
+      streamSegments: [],
+      currentPlan: null,
+      pendingPermissions: [],
+      agentState: undefined,
+      thoughtText: "",
+    });
+  };
+
   /**
-   * Finalize the live stream into a persistent message.
+   * Replace the live projection with the turn's persisted messages from the engine.
+   * Messages are adopted regardless; the live state is only cleared if this run still owns
+   * it, so a late response from a cancelled run never wipes a newer run's stream.
+   */
+  const settleSessionStream = (sessionId: string, messages: readonly AppMessage[], expectedRunToken?: number) => {
+    adoptMessages(sessionId, messages);
+    const idx = getSessionIndex(sessionId);
+    const sess = idx !== -1 ? sessions[idx] : undefined;
+    if (
+      expectedRunToken !== undefined &&
+      sess?.streamingRunToken !== null &&
+      sess?.streamingRunToken !== undefined &&
+      sess.streamingRunToken !== expectedRunToken
+    ) {
+      return;
+    }
+    clearLiveTurn(sessionId);
+  };
+
+  /**
+   * Freeze the live stream into a displayed message (cancel, or a failed IPC call). Display
+   * only: the engine records the same turn under the same message id.
    *
    * @param expectedRunToken — if provided, the call is a no-op when the session's
    *   streamingRunToken no longer matches. Guards against a late-arriving response
@@ -130,7 +141,6 @@ export function useStreamEngine(sessionManager: SessionManager) {
    *   that caused "UI doesn't update after cancel + queued send").
    */
   const finalizeSessionStream = (sessionId: string, fallbackRoleName: string, finalReply?: string, expectedRunToken?: number) => {
-    cancelCheckpoint(sessionId);
     const idx = getSessionIndex(sessionId);
     const sess = idx !== -1 ? sessions[idx] : undefined;
     if (
@@ -161,7 +171,7 @@ export function useStreamEngine(sessionManager: SessionManager) {
       // Always append if there was an active streamingMessage — dropping it
       // silently causes the response to disappear (e.g. after cancel + queued
       // send when the agent returns empty text for the interrupted turn).
-      appendMessageToSession(sessionId, {
+      appendMessageLocal(sessionId, {
         ...row,
         text,
         at: now(),
@@ -171,7 +181,7 @@ export function useStreamEngine(sessionManager: SessionManager) {
       });
       updateSession(sessionId, { streamingMessage: null, streamingRunToken: null, thoughtText: "" });
     } else if ((finalReply && finalReply.trim()) || (snapshotToolCalls && snapshotToolCalls.length > 0)) {
-      appendMessageToSession(sessionId, {
+      appendMessageLocal(sessionId, {
         id: `${now()}-${Math.random().toString(36).slice(2)}`,
         roleName: fallbackRoleName,
         text: normalizeNewlines(finalReply ?? ""),
@@ -199,8 +209,8 @@ export function useStreamEngine(sessionManager: SessionManager) {
     resetStreamState,
     dropStream,
     finalizeSessionStream,
+    settleSessionStream,
     normalizeToolLocations,
-    scheduleCheckpoint,
   };
 }
 

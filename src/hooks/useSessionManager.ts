@@ -201,25 +201,6 @@ export function useSessionManager(
     }
   };
 
-  const checkpointStreamingMessage = (sessionId: string) => {
-    const idx = getSessionIndex(sessionId);
-    if (idx === -1) return;
-    const s = sessions[idx];
-    if (!s?.persisted || !s.streamingMessage) return;
-    const row = s.streamingMessage;
-    const snapshotToolCalls = Object.keys(s.toolCalls).length > 0 ? Object.values(s.toolCalls) : undefined;
-    const snapshotSegments = s.streamSegments.length > 0 ? [...s.streamSegments] : undefined;
-    const snapshotThought = s.thoughtText || undefined;
-    const msg: AppMessage = {
-      ...row,
-      at: now(),
-      toolCalls: snapshotToolCalls,
-      segments: snapshotSegments,
-      thoughtText: snapshotThought,
-    };
-    persistMessage(sessionId, msg);
-  };
-
   // In-flight creates for draft sessions, so a fast double-send (or a queued send racing a
   // fresh one) awaits the same create instead of issuing two and risking a duplicate row.
   const persistInFlight = new Map<string, Promise<void>>();
@@ -248,7 +229,9 @@ export function useSessionManager(
     return promise;
   };
 
-  const appendMessageToSession = (sessionId: string, message: AppMessage) => {
+  /** Show a message without writing it. Used for a turn's live projection: the engine
+   *  persists turns itself and hands back the stored rows (see `adoptMessages`). */
+  const appendMessageLocal = (sessionId: string, message: AppMessage) => {
     const idx = getSessionIndex(sessionId);
     if (idx === -1) return;
     setSessions(idx, "messages", produce((msgs: AppMessage[]) => {
@@ -256,7 +239,29 @@ export function useSessionManager(
       msgs.push(message);
     }));
     scheduleScrollToBottom();
+  };
+
+  /** Show and persist a message that is not part of an engine turn (local notices, steer
+   *  input, agent control commands). */
+  const appendMessageToSession = (sessionId: string, message: AppMessage) => {
+    appendMessageLocal(sessionId, message);
     persistMessage(sessionId, message);
+  };
+
+  /** Replace optimistic copies with the engine's persisted messages, matched by id. */
+  const adoptMessages = (sessionId: string, messages: readonly AppMessage[]) => {
+    if (messages.length === 0) return;
+    const idx = getSessionIndex(sessionId);
+    if (idx === -1) return;
+    setSessions(idx, "messages", produce((msgs: AppMessage[]) => {
+      for (const message of messages) {
+        const at = msgs.findIndex((m) => m.id === message.id);
+        if (at >= 0) msgs[at] = message;
+        else msgs.push(message);
+      }
+      if (msgs.length > MAX_MESSAGES) msgs.splice(0, msgs.length - MAX_MESSAGES);
+    }));
+    scheduleScrollToBottom();
   };
 
   const appendMessage = (message: AppMessage) => {
@@ -280,9 +285,10 @@ export function useSessionManager(
     patchActiveSession,
     persistSessionPatch,
     persistMessage,
-    checkpointStreamingMessage,
     ensureSessionPersisted,
+    appendMessageLocal,
     appendMessageToSession,
+    adoptMessages,
     appendMessage,
     pushMessage,
     scheduleScrollToBottom,

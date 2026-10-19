@@ -1,5 +1,5 @@
 import type { Accessor } from "solid-js";
-import type { AppSession, AppSegment, AppToolCall, QueuedItem } from "../components/types";
+import type { AppMessage, AppSession, QueuedItem } from "../components/types";
 import type { InputDeliveryCapabilities } from "../components/types";
 import { now, DEFAULT_BACKEND_ROLE, DEFAULT_ROLE_ALIAS } from "../components/types";
 import { appSessionApi, assistantApi } from "../lib/tauriApi";
@@ -38,7 +38,7 @@ export function useMessageSend({
     sessions, setSessions,
     activeSessionId, activeSession,
     updateSession, patchActiveSession,
-    appendMessageToSession, pushMessage,
+    appendMessageLocal, appendMessageToSession, adoptMessages, persistMessage, pushMessage,
     scheduleScrollToBottom,
     getSessionIndex,
     ensureSessionPersisted,
@@ -47,7 +47,7 @@ export function useMessageSend({
   const {
     acceptingStreams,
     releaseStream,
-    resetStreamState, finalizeSessionStream,
+    resetStreamState, finalizeSessionStream, settleSessionStream,
   } = streamEngine;
 
   const {
@@ -120,6 +120,7 @@ export function useMessageSend({
       appendMessageToSession,
       patchSession: patchSessionById as (sid: string, patch: Partial<AppSession>) => void,
       finalizeSessionStream,
+      settleSessionStream,
       resetStreamState,
       scheduleScrollToBottom,
       getSession: (sid) => {
@@ -360,13 +361,21 @@ export function useMessageSend({
 
     const { sendRoleLabel, isCommand, inRoleContext, isAppCommand, routedText } = route;
 
+    // The engine persists turn messages itself under these ids; the bubbles shown here are
+    // optimistic copies that get replaced by the stored rows when the turn returns.
+    const userMessageId = crypto.randomUUID();
+    const assistantMessageId = crypto.randomUUID();
+    const isControlCommand = parseAgentControlCommand(text, isCommand, inRoleContext) !== null;
     if (!silent) {
       if (originSessionId) {
-        appendMessageToSession(originSessionId, {
-          id: `${now()}-${Math.random().toString(36).slice(2)}`,
+        const userMessage: AppMessage = {
+          id: userMessageId,
           roleName: "user", text, at: now(),
           images: (sourceImages ?? attachments)?.length ? (sourceImages ?? attachments)!.map((a) => ({ data: a.data, mimeType: a.mimeType })) : undefined,
-        });
+        };
+        appendMessageLocal(originSessionId, userMessage);
+        // Agent control commands never reach the engine's turn path, so nothing else records them.
+        if (isControlCommand) persistMessage(originSessionId, userMessage);
         maybeAutoTitleSession(originSessionId, text);
       } else {
         pushMessage("user", text);
@@ -379,7 +388,7 @@ export function useMessageSend({
     const stream = openStreamSession(originSessionId, sendRoleLabel, runToken);
 
     let finalStatus: "done" | "error" = "done";
-    if (!isAppCommand && originSessionId) stream.start();
+    if (!isAppCommand && originSessionId) stream.start(assistantMessageId);
 
     try {
       const res = await assistantApi.chat({
@@ -387,24 +396,24 @@ export function useMessageSend({
         runtimeKind: s?.runtimeKind ?? null,
         appSessionId: originSessionId ?? null,
         attachments: attachments && attachments.length > 0 ? attachments : undefined,
+        userMessageId,
+        assistantMessageId,
       });
+      const engineMessages = res.messages ?? [];
+      if (originSessionId && res.userMessage) adoptMessages(originSessionId, [res.userMessage]);
+      if (isAppCommand) {
+        if (originSessionId) adoptMessages(originSessionId, engineMessages);
+      } else {
+        // Also for a cancelled run: the engine kept the partial reply under the same id the
+        // cancel path already froze on screen, so this just swaps in the stored version.
+        stream.settle(engineMessages);
+      }
       if (isRunCancelled(runToken)) { return false; }
       if (res.runtimeKind && originSessionId === activeSessionId()) setPreferredAssistant(res.runtimeKind);
       if (text.startsWith("/app_role")) void refreshRoles(s?.projectId ?? undefined);
 
       const hasPerRoleReplies = (res.roleReplies?.length ?? 0) > 1;
       if (!res.ok && !hasPerRoleReplies) {
-        const liveSession = originSessionId ? sessions[getSessionIndex(originSessionId)] : null;
-        const hasStreamContent = Boolean(
-          liveSession?.streamingMessage?.text?.trim() ||
-          (liveSession?.toolCalls && Object.keys(liveSession.toolCalls).length > 0) ||
-          (liveSession?.streamSegments && liveSession.streamSegments.length > 0)
-        );
-        if (hasStreamContent) {
-          stream.complete();
-        } else {
-          stream.drop();
-        }
         const isCancel = res.reply.toLowerCase().includes("cancel") || isRunCancelled(runToken);
         if (!isCancel) {
           showToast(res.reply);
@@ -413,45 +422,8 @@ export function useMessageSend({
         finalStatus = "error";
         return false;
       }
-      if (!isAppCommand) {
-        if (res.roleReplies && res.roleReplies.length > 1 && originSessionId) {
-          const liveSession = sessions[getSessionIndex(originSessionId)];
-          const segmentsByRole = new Map<string, AppSegment[]>();
-          const toolsByRole = new Map<string, AppToolCall[]>();
-          for (const segment of liveSession?.streamSegments ?? []) {
-            const roleName = segment.roleName ?? (segment.kind === "tool" ? segment.tc.roleName : undefined);
-            if (!roleName) continue;
-            const segments = segmentsByRole.get(roleName) ?? [];
-            segments.push(segment);
-            segmentsByRole.set(roleName, segments);
-          }
-          for (const tool of Object.values(liveSession?.toolCalls ?? {})) {
-            if (!tool.roleName) continue;
-            const tools = toolsByRole.get(tool.roleName) ?? [];
-            tools.push(tool);
-            toolsByRole.set(tool.roleName, tools);
-          }
-          stream.drop();
-          for (const r of res.roleReplies) {
-            const roleSegments = segmentsByRole.get(r.roleName);
-            appendMessageToSession(originSessionId, {
-              id: `${now()}-${Math.random().toString(36).slice(2)}`,
-              roleName: r.roleName,
-              text: r.reply,
-              at: now(),
-              segments: roleSegments && roleSegments.length > 0 ? roleSegments : undefined,
-              toolCalls: toolsByRole.get(r.roleName),
-            });
-          }
-          if (!res.ok) showToast("One or more agents failed; successful agent replies were preserved.", "error");
-        } else {
-          stream.complete(res.reply);
-        }
-      } else {
-        stream.appendMessage({
-          id: `${now()}-${Math.random().toString(36).slice(2)}`,
-          roleName: sendRoleLabel, text: res.reply, at: now(),
-        });
+      if (hasPerRoleReplies && !res.ok) {
+        showToast("One or more agents failed; successful agent replies were preserved.", "error");
       }
     } catch (e) {
       if (isRunCancelled(runToken)) { return false; }

@@ -236,7 +236,6 @@ export default function App() {
     appendStream, appendThought,
     dropStream,
     normalizeToolLocations,
-    scheduleCheckpoint,
   } = streamEngine;
 
   const sessionEventBuffer = createSessionEventBuffer({
@@ -944,14 +943,12 @@ export default function App() {
       roles,
       commandCacheKey,
       scheduleScrollToBottom,
-      scheduleCheckpoint,
     }).then((hs) => handlers.push(...hs));
 
     void registerCompanionSync({
       sessions,
       appendSessions: (fresh) => setSessions((prev) => [...prev, ...fresh]),
-      getSessionIndex,
-      mutateSession,
+      adoptMessages: sessionManager.adoptMessages,
       acceptingStreams,
       refreshProjects,
     }).then((h) => handlers.push(h));

@@ -185,6 +185,12 @@ pub(crate) struct AssistantChatInput {
     pub(crate) attachments: Vec<ImageAttachment>,
     #[serde(default)]
     pub(crate) context: ChatContextOptions,
+    /// Ids the caller already uses for its optimistic copies of this turn's user message and
+    /// reply, so the engine's persisted rows line up with them.
+    #[serde(default)]
+    pub(crate) user_message_id: Option<String>,
+    #[serde(default)]
+    pub(crate) assistant_message_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -207,6 +213,13 @@ pub(crate) struct AssistantChatResponse {
     pub(crate) command_result: Option<ChatCommandResult>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) role_replies: Vec<RoleReply>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) user_message: Option<serde_json::Value>,
+    /// The turn's messages exactly as the engine persisted them.
+    #[serde(default)]
+    pub(crate) messages: Vec<serde_json::Value>,
 }
 
 #[derive(Deserialize)]

@@ -110,7 +110,6 @@ export type BridgeDeps = {
   roles: () => Role[];
   commandCacheKey: (runtimeKey: string, roleName: string) => string;
   scheduleScrollToBottom: () => void;
-  scheduleCheckpoint?: (sid: string) => void;
 };
 
 export function toConnectionLostMessage(payload: {
@@ -223,7 +222,6 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
           agentState: `${event.toolName ?? event.toolKind ?? "tool"}: ${event.title ?? event.toolCallId}`,
         });
         scheduleScrollToBottom();
-        deps.scheduleCheckpoint?.(sid);
       }
       break;
     case "toolCallUpdate":
@@ -301,7 +299,6 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
           });
         }
         scheduleScrollToBottom();
-        deps.scheduleCheckpoint?.(sid);
       }
       break;
     case "toolOutputDelta":

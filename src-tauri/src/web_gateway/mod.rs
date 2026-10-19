@@ -12,7 +12,13 @@ const TOKEN_FILE: &str = "companion_token";
 /// Upper bound on how long stop waits for in-flight requests (e.g. a long
 /// `assistant_chat`) before the server future is dropped outright.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
-const FORWARDED_EVENTS: &[&str] = &["acp/delta", "acp/stream", api::CHANGED_EVENT];
+const FORWARDED_EVENTS: &[&str] = &[
+    "acp/delta",
+    "acp/stream",
+    crate::engine::turns::TURN_STARTED_EVENT,
+    crate::engine::turns::TURN_FINISHED_EVENT,
+    api::CHANGED_EVENT,
+];
 
 #[derive(Clone, Debug)]
 pub struct GatewayEvent {

@@ -201,7 +201,21 @@ export type QueuedItem = {
   status: "queued" | "claimed" | "failed";
 };
 export type ChatCommandResult = { ok: boolean; message: string; runtimeKind: string | null; sessionId: string | null; payload: Record<string, unknown> };
-export type AssistantChatResponse = { ok: boolean; reply: string; runtimeKind: string | null; sessionId: string | null; commandResult: ChatCommandResult | null; roleReplies?: Array<{ roleName: string; reply: string; ok?: boolean; errorCode?: string | null }> };
+export type AssistantChatResponse = {
+  ok: boolean;
+  reply: string;
+  runtimeKind: string | null;
+  sessionId: string | null;
+  commandResult: ChatCommandResult | null;
+  roleReplies?: Array<{ roleName: string; reply: string; ok?: boolean; errorCode?: string | null }>;
+  turnId?: string;
+  userMessage?: AppMessage;
+  /** The turn's messages exactly as the engine persisted them — the record, not a preview. */
+  messages?: AppMessage[];
+};
+/** `turn/started` / `turn/finished` engine events (see docs/engine-service-layer.md). */
+export type TurnStartedEvent = { appSessionId: string; turnId: string; roleLabel: string; userMessage: AppMessage };
+export type TurnFinishedEvent = { appSessionId: string; turnId: string; ok: boolean; error?: string | null; messages: AppMessage[] };
 export type SessionUpdateEvent = { sessionId: string; roleName: string; delta: string; done: boolean };
 export type WorkflowStateEvent = { sessionId: string; status: string; activeRole: string | null; message: string };
 export type AcpDeltaEvent = {

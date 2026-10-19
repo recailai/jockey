@@ -9,11 +9,9 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use dashmap::DashMap;
 use futures::stream::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::OnceLock;
 use tauri::{Emitter, Manager};
 
 use super::{GatewayEvent, ServerContext};
@@ -26,14 +24,6 @@ const MARKED_JS: &str = include_str!("vendor/marked.umd.js");
 pub(super) const CHANGED_EVENT: &str = "companion/changed";
 const DEFAULT_ROLE: &str = "Developer";
 const PREVIEW_CHARS: usize = 120;
-
-/// Sessions with a companion-initiated turn in flight. Turns run detached from
-/// the HTTP request (a phone browser drops long requests when backgrounded),
-/// so this is the only guard against double-sending into one session.
-fn running_sessions() -> &'static DashMap<String, ()> {
-    static RUNNING: OnceLock<DashMap<String, ()>> = OnceLock::new();
-    RUNNING.get_or_init(DashMap::new)
-}
 
 pub(super) fn router(ctx: ServerContext) -> Router {
     let api = Router::new()
@@ -301,7 +291,7 @@ fn summarize(session: AppSession) -> SessionSummary {
         .filter(|t| !t.trim().is_empty())
         .map(|t| clip_chars(t, PREVIEW_CHARS));
     SessionSummary {
-        running: running_sessions().contains_key(&session.id),
+        running: crate::engine::turns::is_busy(&session.id),
         message_count: session.messages.len(),
         preview,
         id: session.id,
@@ -362,7 +352,7 @@ async fn session_detail(
     let state = ctx.app.state::<AppState>();
     let session = load_session(&state, &id)?;
     let mut value = serde_json::to_value(session).map_err(internal)?;
-    value["running"] = json!(running_sessions().contains_key(&id));
+    value["running"] = json!(crate::engine::turns::is_busy(&id));
     Ok(Json(value))
 }
 
@@ -473,87 +463,30 @@ async fn session_chat(
             .map(|(key, _)| key)
             .ok_or_else(|| bad_request("没有可用的 Agent，请先在桌面端安装或配置"))?,
     };
-    if running_sessions().insert(id.clone(), ()).is_some() {
+    if crate::engine::turns::is_busy(&id) {
         return Err(ApiError(StatusCode::CONFLICT, "该会话正在运行中".into()));
     }
 
-    // Persistence is normally done by the desktop UI as it renders the turn;
-    // companion turns have no desktop renderer, so the gateway writes both sides.
-    if let Err(e) =
-        crate::db::app_session::append_app_message_internal(&state, &id, "user", &text, None, None)
-    {
-        running_sessions().remove(&id);
-        return Err(internal(e));
-    }
-    emit_changed(&ctx, "messages", Some(&id));
-
-    tokio::spawn(run_chat_turn(
-        ctx.clone(),
-        id,
-        text,
-        runtime,
-        session.active_role,
-    ));
-    Ok(Json(json!({ "ok": true, "accepted": true })))
-}
-
-async fn run_chat_turn(
-    ctx: ServerContext,
-    session_id: String,
-    text: String,
-    runtime: String,
-    active_role: String,
-) {
-    let input = crate::types::AssistantChatInput {
-        input: text,
-        runtime_kind: Some(runtime),
-        app_session_id: Some(session_id.clone()),
-        attachments: Vec::new(),
-        context: crate::types::ChatContextOptions::default(),
-    };
-    let result =
-        crate::chat::assistant_chat(ctx.app.clone(), ctx.app.state::<AppState>(), input).await;
-
-    let state = ctx.app.state::<AppState>();
-    let append = |role: &str, content: &str| {
-        if content.trim().is_empty() {
-            return;
+    // Detached from the request: a phone browser drops long requests when backgrounded.
+    // The engine records the turn and announces it via turn/started and turn/finished.
+    let app = ctx.app.clone();
+    tokio::spawn(async move {
+        let input = crate::types::AssistantChatInput {
+            input: text,
+            runtime_kind: Some(runtime),
+            app_session_id: Some(id),
+            attachments: Vec::new(),
+            context: crate::types::ChatContextOptions::default(),
+            user_message_id: None,
+            assistant_message_id: None,
+        };
+        if let Err(e) =
+            crate::chat::assistant_chat(app.clone(), app.state::<AppState>(), input).await
+        {
+            eprintln!("[web_gateway] turn rejected: {e}");
         }
-        if let Err(e) = crate::db::app_session::append_app_message_internal(
-            &state,
-            &session_id,
-            role,
-            content,
-            None,
-            None,
-        ) {
-            eprintln!("[web_gateway] failed to persist reply: {e}");
-        }
-    };
-    let error = match &result {
-        Ok(res) if !res.role_replies.is_empty() => {
-            for r in &res.role_replies {
-                append(&r.role_name, &r.reply);
-            }
-            None
-        }
-        Ok(res) => {
-            append(&active_role, &res.reply);
-            None
-        }
-        Err(e) => {
-            append("event", &format!("Error: {e}"));
-            Some(e.clone())
-        }
-    };
-
-    running_sessions().remove(&session_id);
-    emit_changed(&ctx, "messages", Some(&session_id));
-    let _ = ctx.broadcaster.send(GatewayEvent {
-        event_name: "companion/turn".to_string(),
-        payload: json!({ "appSessionId": session_id, "ok": error.is_none(), "error": error })
-            .to_string(),
     });
+    Ok(Json(json!({ "ok": true, "accepted": true })))
 }
 
 async fn session_cancel(

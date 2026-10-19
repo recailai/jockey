@@ -587,7 +587,7 @@
     function renderSessionItem(s) {
       const item = el('div', 'session-item' + (s.id === activeSessionId ? ' active' : ''));
       const row = el('div', 'session-title-row');
-      if (s.running || s.streaming) row.appendChild(el('span', 'run-dot'));
+      if (s.running) row.appendChild(el('span', 'run-dot'));
       row.appendChild(el('span', 'session-title', s.title));
       row.appendChild(el('span', 'session-time', relTime(s.lastActiveAt)));
       item.appendChild(row);
@@ -895,22 +895,64 @@
       updateComposer();
     }
 
-    function renderToolCalls(card, toolCalls) {
-      if (!Array.isArray(toolCalls) || toolCalls.length === 0) return;
+    function toolPill(tc) {
+      const pill = el('div', 'tool-call-pill');
+      pill.appendChild(el('span', null, `⚙ ${tc.title || tc.toolName || tc.kind || 'tool'}`));
+      if (tc.status) pill.appendChild(el('span', 'tool-status', tc.status));
+      return pill;
+    }
+
+    // Consecutive tool calls collapse into one expandable group; a phone does not need every
+    // file read spelled out between two paragraphs.
+    function appendToolGroup(card, tools) {
+      if (tools.length === 0) return;
       const box = el('details', 'tools-box');
-      box.appendChild(el('summary', null, `工具调用 (${toolCalls.length})`));
-      for (const tc of toolCalls) {
-        const pill = el('div', 'tool-call-pill');
-        pill.appendChild(el('span', null, `⚙ ${tc.title || tc.name || tc.kind || 'tool'}`));
-        if (tc.status) pill.appendChild(el('span', 'tool-status', tc.status));
-        box.appendChild(pill);
-      }
+      const running = tools.filter((tc) => tc.status === 'running' || tc.status === 'pending').length;
+      box.appendChild(el('summary', null, `工具调用 (${tools.length})${running ? ` · ${running} 进行中` : ''}`));
+      tools.forEach((tc) => box.appendChild(toolPill(tc)));
       card.appendChild(box);
+    }
+
+    function appendThought(card, text) {
+      if (!text || !text.trim()) return;
+      const thought = el('details', 'thought-box');
+      thought.appendChild(el('summary', null, '思考过程'));
+      thought.appendChild(el('div', null, text));
+      card.appendChild(thought);
+    }
+
+    function appendText(card, text) {
+      if (!text) return;
+      const div = el('div');
+      renderMarkdownInto(div, text);
+      card.appendChild(div);
+    }
+
+    // Same record the desktop renders: `segments` is the ordered timeline (text / thought /
+    // tool / other); messages without it (plain rows, older data) fall back to `text`.
+    function renderAgentBody(card, msg) {
+      const segments = Array.isArray(msg.segments) ? msg.segments : null;
+      if (!segments || segments.length === 0) {
+        appendThought(card, msg.thoughtText);
+        appendToolGroup(card, Array.isArray(msg.toolCalls) ? msg.toolCalls : []);
+        appendText(card, msg.text || '');
+        return;
+      }
+      let tools = [];
+      for (const seg of segments) {
+        if (seg.kind === 'tool' && seg.tc) { tools.push(seg.tc); continue; }
+        appendToolGroup(card, tools);
+        tools = [];
+        if (seg.kind === 'text') appendText(card, seg.text);
+        else if (seg.kind === 'thought') appendThought(card, seg.text);
+      }
+      appendToolGroup(card, tools);
     }
 
     function renderMessage(msg) {
       const role = msg.roleName || 'assistant';
       const group = el('div', 'msg-group');
+      group.dataset.id = msg.id || '';
       if (role === 'user') {
         group.appendChild(el('div', 'msg-user', msg.text || ''));
         return group;
@@ -926,16 +968,7 @@
       group.appendChild(meta);
 
       const card = el('div', 'msg-agent');
-      if (msg.thoughtText) {
-        const thought = el('details', 'thought-box');
-        thought.appendChild(el('summary', null, '思考过程'));
-        thought.appendChild(el('div', null, msg.thoughtText));
-        card.appendChild(thought);
-      }
-      renderToolCalls(card, msg.toolCalls);
-      const textDiv = el('div');
-      renderMarkdownInto(textDiv, msg.text || '');
-      card.appendChild(textDiv);
+      renderAgentBody(card, msg);
       group.appendChild(card);
       return group;
     }
@@ -1028,10 +1061,13 @@
       if (placeholder) placeholder.remove();
       messagesContainer.appendChild(renderMessage({ roleName: 'user', text }));
       scrollToBottom(true);
+      // The optimistic bubble stands in for the user message turn/started announces.
+      ownPendingSend = sid;
       setRunning(sid, true);
       try {
         await api(`/api/sessions/${encodeURIComponent(sid)}/chat`, { method: 'POST', body: JSON.stringify({ input: text }) });
       } catch (err) {
+        ownPendingSend = null;
         setRunning(sid, false);
         toast(`发送失败：${err.message}`, true);
         if (!chatInput.value) chatInput.value = text;
@@ -1117,22 +1153,12 @@
     // ---------------------------------------------------------------------
     // Live events
     // ---------------------------------------------------------------------
-    const reloadActiveSoon = debounce(() => { if (activeSessionId && !liveBubble) loadMessages(activeSessionId); }, 500);
-    const settleActiveSoon = debounce(() => {
-      if (!activeSessionId || isRunning()) return;
-      liveBubble = null;
-      loadMessages(activeSessionId);
-    }, 4000);
+    let ownPendingSend = null;
 
-    const streamingTimers = new Map();
-    function markStreaming(sid) {
+    function markSessionRunning(sid, running) {
       const s = sessions.find((x) => x.id === sid);
-      if (!s) return;
-      const wasShown = s.running || s.streaming;
-      s.streaming = true;
-      clearTimeout(streamingTimers.get(sid));
-      streamingTimers.set(sid, setTimeout(() => { s.streaming = false; renderSidebar(); }, 5000));
-      if (!wasShown) renderSidebar();
+      if (s && s.running !== running) { s.running = running; renderSidebar(); }
+      setRunning(sid, running);
     }
 
     function setupSSE() {
@@ -1159,18 +1185,13 @@
         setTimeout(setupSSE, 3000);
       };
 
-      // Plain text batches: { role, appSessionId, turnId, delta: "<text>" }.
+      // Live preview only: { role, appSessionId, delta: "<text>" }. The record arrives with
+      // turn/finished, so nothing here has to be kept.
       eventSource.addEventListener('acp/delta', (ev) => {
         let payload;
         try { payload = JSON.parse(ev.data); } catch (_) { return; }
-        const sid = payload.appSessionId;
-        if (!sid || typeof payload.delta !== 'string') return;
-        markStreaming(sid);
-        if (sid !== activeSessionId) return;
+        if (payload.appSessionId !== activeSessionId || typeof payload.delta !== 'string') return;
         appendLiveText(payload.delta, payload.role);
-        // Turns started on the desktop have no completion event here; the desktop
-        // checkpoints them to SQLite, so settle by reloading once the stream goes quiet.
-        if (!isRunning()) settleActiveSoon();
       });
 
       // Structured events: { role, appSessionId, event: { kind, ... } }.
@@ -1181,26 +1202,34 @@
         if (kind === 'permissionRequest' || kind === 'permissionExpired') loadPermissions();
       });
 
-      eventSource.addEventListener('companion/turn', (ev) => {
+      // Engine turn lifecycle — same events the desktop consumes, whoever started the turn.
+      eventSource.addEventListener('turn/started', (ev) => {
         let payload;
         try { payload = JSON.parse(ev.data); } catch (_) { return; }
-        setRunning(payload.appSessionId, false);
-        if (!payload.ok && payload.error && payload.appSessionId === activeSessionId) {
-          toast(`运行出错：${payload.error}`, true);
-        }
-        if (payload.appSessionId === activeSessionId) {
+        const sid = payload.appSessionId;
+        markSessionRunning(sid, true);
+        if (sid !== activeSessionId) return;
+        if (ownPendingSend === sid) { ownPendingSend = null; return; }
+        const placeholder = messagesContainer.querySelector('.placeholder');
+        if (placeholder) placeholder.remove();
+        if (payload.userMessage) messagesContainer.appendChild(renderMessage(payload.userMessage));
+        scrollToBottom(true);
+      });
+
+      eventSource.addEventListener('turn/finished', (ev) => {
+        let payload;
+        try { payload = JSON.parse(ev.data); } catch (_) { return; }
+        const sid = payload.appSessionId;
+        markSessionRunning(sid, false);
+        if (sid === activeSessionId) {
+          if (!payload.ok && payload.error && !/cancel/i.test(payload.error)) toast(`运行出错：${payload.error}`, true);
           liveBubble = null;
-          loadMessages(activeSessionId);
+          loadMessages(sid);
         }
         loadSidebarSoon();
       });
 
-      eventSource.addEventListener('companion/changed', (ev) => {
-        let payload = {};
-        try { payload = JSON.parse(ev.data); } catch (_) {}
-        loadSidebarSoon();
-        if (payload.kind === 'messages' && payload.sessionId === activeSessionId && !isRunning()) reloadActiveSoon();
-      });
+      eventSource.addEventListener('companion/changed', loadSidebarSoon);
 
       eventSource.addEventListener('permission_update', loadPermissions);
     }

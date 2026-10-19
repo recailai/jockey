@@ -22,6 +22,7 @@ export type StreamSessionDeps = {
     finalReply?: string,
     expectedRunToken?: number,
   ) => void;
+  settleSessionStream: (sid: string, messages: readonly AppMessage[], expectedRunToken?: number) => void;
   resetStreamState: (sid?: string) => void;
   scheduleScrollToBottom: () => void;
   getSession: (sid: string) => AppSession | null;
@@ -34,10 +35,14 @@ export type StreamSession = {
   readonly roleLabel: string;
   /** Append an out-of-band message (event, error, non-command result) to the session. */
   appendMessage: (msg: AppMessage) => void;
-  /** Open the live stream: register token in acceptingStreams + create empty streamingMessage. */
-  start: () => void;
-  /** Finalize streamingMessage into a persistent message, token-guarded. */
+  /** Open the live stream: register token in acceptingStreams + create empty streamingMessage.
+   *  `messageId` is the id the engine will persist the reply under, so the live row and
+   *  the stored row are the same message. */
+  start: (messageId: string) => void;
+  /** Freeze streamingMessage into a displayed message, token-guarded (cancel / IPC failure). */
   complete: (finalReply?: string) => void;
+  /** Replace the live projection with the engine's persisted messages, token-guarded. */
+  settle: (messages: readonly AppMessage[]) => void;
   /** Drop streamingMessage if still owned by this run (no-op if newer run took over). */
   drop: () => void;
 };
@@ -53,11 +58,11 @@ export function createStreamSession(
     deps.appendMessageToSession(originSessionId, msg);
   };
 
-  const start = () => {
+  const start = (messageId: string) => {
     if (!originSessionId) return;
     deps.acceptingStreams.set(originSessionId, runToken);
     const row: AppMessage = {
-      id: `stream-${now()}`,
+      id: messageId,
       roleName: roleLabel,
       text: "",
       at: now(),
@@ -77,6 +82,11 @@ export function createStreamSession(
   const complete = (finalReply?: string) => {
     if (!originSessionId) return;
     deps.finalizeSessionStream(originSessionId, roleLabel, finalReply, runToken);
+  };
+
+  const settle = (messages: readonly AppMessage[]) => {
+    if (!originSessionId) return;
+    deps.settleSessionStream(originSessionId, messages, runToken);
   };
 
   const drop = () => {
@@ -99,6 +109,7 @@ export function createStreamSession(
     appendMessage,
     start,
     complete,
+    settle,
     drop,
   };
 }

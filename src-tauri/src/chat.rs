@@ -249,8 +249,108 @@ pub(crate) fn detect_reply_signals(reply: &str) -> Vec<String> {
     signals
 }
 
+async fn load_active_role(state: &AppState, app_session_id: &str) -> Result<String, String> {
+    let sid = app_session_id.to_string();
+    let tmp_state = state.clone_refs();
+    Ok(tokio::task::spawn_blocking(move || {
+        crate::db::with_db(&tmp_state, |conn| {
+            conn.query_row(
+                "SELECT active_role FROM app_sessions WHERE id = ?1",
+                rusqlite::params![&sid],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())??
+    .unwrap_or_else(|| "Developer".to_string()))
+}
+
+/// Entry point for every client's turn. The engine records the turn here — user message,
+/// streamed transcript, final reply — so no caller has to (see `engine::turns`).
 #[tauri::command]
 pub(crate) async fn assistant_chat(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input: AssistantChatInput,
+) -> Result<AssistantChatResponse, String> {
+    let text = input.input.trim().to_string();
+    let session = input
+        .app_session_id
+        .clone()
+        .filter(|sid| !sid.trim().is_empty());
+    // Rejected before a turn exists (nothing to record): no session, or nothing typed.
+    let Some(app_session_id) = session.filter(|_| !text.is_empty()) else {
+        return run_turn(app, state, input).await;
+    };
+
+    let active_role = load_active_role(get_state(&state), &app_session_id).await?;
+    let mentioned = if text.starts_with("/app_") {
+        Vec::new()
+    } else {
+        parse_route_input(&text).role_names
+    };
+    let role_label = if mentioned.is_empty() {
+        active_role
+    } else {
+        mentioned.join(" & ")
+    };
+    let turn = crate::engine::turns::begin(
+        &app,
+        get_state(&state),
+        crate::engine::turns::TurnStart {
+            app_session_id: &app_session_id,
+            role_label: &role_label,
+            user_text: &text,
+            images: &input.attachments,
+            user_message_id: input.user_message_id.as_deref(),
+            assistant_message_id: input.assistant_message_id.as_deref(),
+        },
+    )?;
+    let turn_id = turn.turn_id().to_string();
+    let user_message = turn.user_message().clone();
+    let runtime_kind = input.runtime_kind.clone();
+
+    match run_turn(app.clone(), state, input).await {
+        Ok(mut res) => {
+            let messages = {
+                let outcome = if res.command_result.is_some() {
+                    crate::engine::transcript::TurnOutcome::Command { reply: &res.reply }
+                } else {
+                    crate::engine::transcript::TurnOutcome::Reply {
+                        ok: res.ok,
+                        reply: &res.reply,
+                        role_replies: &res.role_replies,
+                    }
+                };
+                turn.finish(outcome, (!res.ok).then_some(res.reply.as_str()))
+            };
+            res.turn_id = Some(turn_id);
+            res.user_message = Some(user_message);
+            res.messages = messages;
+            Ok(res)
+        }
+        Err(error) => {
+            let messages =
+                turn.finish(crate::engine::transcript::TurnOutcome::Failed, Some(&error));
+            Ok(AssistantChatResponse {
+                ok: false,
+                reply: error,
+                runtime_kind,
+                session_id: None,
+                command_result: None,
+                role_replies: Vec::new(),
+                turn_id: Some(turn_id),
+                user_message: Some(user_message),
+                messages,
+            })
+        }
+    }
+}
+
+async fn run_turn(
     app: AppHandle,
     state: State<'_, AppState>,
     input: AssistantChatInput,
@@ -284,6 +384,9 @@ pub(crate) async fn assistant_chat(
             session_id: None,
             command_result: None,
             role_replies: Vec::new(),
+            turn_id: None,
+            user_message: None,
+            messages: Vec::new(),
         });
     }
 
@@ -313,6 +416,9 @@ pub(crate) async fn assistant_chat(
             session_id: command_result.session_id.clone(),
             command_result: Some(command_result),
             role_replies: Vec::new(),
+            turn_id: None,
+            user_message: None,
+            messages: Vec::new(),
         });
     }
 
@@ -544,6 +650,9 @@ pub(crate) async fn assistant_chat(
         session_id: None,
         command_result: None,
         role_replies,
+        turn_id: None,
+        user_message: None,
+        messages: Vec::new(),
     })
 }
 

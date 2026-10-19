@@ -60,7 +60,6 @@ export type AcpEventBusDeps = {
   roles: Accessor<Role[]>;
   commandCacheKey: (runtimeKey: string, roleName: string) => string;
   scheduleScrollToBottom: () => void;
-  scheduleCheckpoint?: (sid: string) => void;
 };
 
 export function createAcpEventBus(deps: AcpEventBusDeps) {
@@ -254,7 +253,6 @@ export function createAcpEventBus(deps: AcpEventBusDeps) {
         roles: deps.roles,
         commandCacheKey: deps.commandCacheKey,
         scheduleScrollToBottom: deps.scheduleScrollToBottom,
-        scheduleCheckpoint: deps.scheduleCheckpoint,
       }, envelope);
     },
     clearSession(sid: string) {

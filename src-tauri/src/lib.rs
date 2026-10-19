@@ -3,6 +3,7 @@ mod assistant;
 mod chat;
 mod commands;
 mod db;
+mod engine;
 mod error;
 mod fs_context;
 mod git;
@@ -81,6 +82,7 @@ pub fn run() {
             fs::create_dir_all(&app_dir)?;
             acp::set_app_data_dir(app_dir.clone());
             acp::start_permission_bridge(app.handle().clone());
+            engine::turns::install(app.handle());
             git::set_app_handle(app.handle().clone());
 
             let db_path = app_dir.join("jockey.sqlite3");

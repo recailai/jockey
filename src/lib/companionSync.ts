@@ -1,18 +1,17 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSession } from "../components/types";
+import type { AppMessage, AppSession, TurnFinishedEvent, TurnStartedEvent } from "../components/types";
 import { makeDefaultSession } from "./sessionHelpers";
 import { appSessionApi, type RawSession } from "./tauriApi";
 
 type CompanionChange = {
-  kind: "projects" | "sessions" | "messages";
+  kind: "projects" | "sessions";
   sessionId?: string | null;
 };
 
 type CompanionSyncInput = {
   sessions: AppSession[];
   appendSessions: (fresh: AppSession[]) => void;
-  getSessionIndex: (id: string) => number;
-  mutateSession: (id: string, recipe: (s: AppSession) => void) => void;
+  adoptMessages: (sessionId: string, messages: readonly AppMessage[]) => void;
   acceptingStreams: Map<string, number>;
   refreshProjects: () => Promise<void>;
 };
@@ -30,37 +29,42 @@ const sessionFromRaw = (r: RawSession): AppSession => {
 };
 
 /**
- * Keeps the desktop store in step with the remote web companion. The companion writes
- * projects, sessions and whole turns straight to SQLite, and the desktop never renders
- * those turns' streams (they are not in `acceptingStreams`), so the rows are pulled back in
- * whenever the gateway reports a change.
+ * Keeps the desktop store in step with turns and sessions it did not start itself (the web
+ * companion, the Jockey MCP bridge). Turns are recorded by the engine; this only mirrors the
+ * engine's `turn/started` / `turn/finished` announcements. Turns this window started are
+ * skipped — `sendRaw` adopts their messages from the command result.
  */
 export async function registerCompanionSync(input: CompanionSyncInput): Promise<UnlistenFn> {
-  return listen<CompanionChange>("companion/changed", async (ev) => {
-    const { kind, sessionId } = ev.payload;
-    if (kind === "projects") {
-      await input.refreshProjects();
-      return;
-    }
-    let raw: RawSession[];
-    try {
-      raw = await appSessionApi.list();
-    } catch {
-      return;
-    }
-    const known = new Set(input.sessions.map((s) => s.id));
-    const fresh = raw.filter((r) => !known.has(r.id)).map(sessionFromRaw);
-    if (fresh.length > 0) input.appendSessions(fresh);
+  const ownTurn = (sid: string) => input.acceptingStreams.has(sid);
+  const known = (sid: string) => input.sessions.some((s) => s.id === sid);
 
-    if (kind !== "messages" || !sessionId) return;
-    const row = raw.find((r) => r.id === sessionId);
-    const idx = input.getSessionIndex(sessionId);
-    // A desktop-initiated turn owns this session's messages until it finalizes; replacing
-    // them mid-stream would drop the in-flight checkpoint.
-    if (!row || idx === -1 || input.acceptingStreams.has(sessionId)) return;
-    if (input.sessions[idx].submitting) return;
-    input.mutateSession(sessionId, (s) => {
-      s.messages = row.messages ?? [];
-    });
-  });
+  const unlisteners = await Promise.all([
+    listen<CompanionChange>("companion/changed", async (ev) => {
+      if (ev.payload.kind === "projects") {
+        await input.refreshProjects();
+        return;
+      }
+      let raw: RawSession[];
+      try {
+        raw = await appSessionApi.list();
+      } catch {
+        return;
+      }
+      const fresh = raw.filter((r) => !known(r.id)).map(sessionFromRaw);
+      if (fresh.length > 0) input.appendSessions(fresh);
+    }),
+    listen<TurnStartedEvent>("turn/started", (ev) => {
+      const { appSessionId, userMessage } = ev.payload;
+      if (!known(appSessionId) || ownTurn(appSessionId)) return;
+      // The announcement carries an image count, not the image data.
+      const { images, ...rest } = userMessage as AppMessage & { images?: unknown };
+      input.adoptMessages(appSessionId, [Array.isArray(images) ? userMessage : rest]);
+    }),
+    listen<TurnFinishedEvent>("turn/finished", (ev) => {
+      const { appSessionId, messages } = ev.payload;
+      if (!known(appSessionId) || ownTurn(appSessionId)) return;
+      input.adoptMessages(appSessionId, messages);
+    }),
+  ]);
+  return () => unlisteners.forEach((u) => u());
 }

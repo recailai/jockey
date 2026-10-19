@@ -345,6 +345,8 @@ export const assistantApi = {
     appSessionId: string | null;
     attachments?: ImageAttachment[];
     context?: ChatContextOptions;
+    userMessageId?: string;
+    assistantMessageId?: string;
   }) =>
     call<AssistantChatResponse>("assistant_chat", { input }),
   detect: () => call<AssistantRuntime[]>("detect_assistants"),

@@ -35,7 +35,6 @@ type RegisterAcpEventListenersInput = {
   roles: Accessor<Role[]>;
   commandCacheKey: (runtimeKey: string, roleName: string) => string;
   scheduleScrollToBottom: () => void;
-  scheduleCheckpoint?: (sid: string) => void;
 };
 
 export function useAcpEventListeners() {
@@ -65,7 +64,6 @@ export function useAcpEventListeners() {
       roles,
       commandCacheKey,
       scheduleScrollToBottom,
-      scheduleCheckpoint,
     } = input;
 
     const bus = createAcpEventBus({
@@ -85,7 +83,6 @@ export function useAcpEventListeners() {
       roles,
       commandCacheKey,
       scheduleScrollToBottom,
-      scheduleCheckpoint,
     });
     busRef = bus;
 
