@@ -5,6 +5,7 @@
 Current design of the running system.
 
 - [engine-service-layer.md](architecture/engine-service-layer.md): engine that owns turns, queue, and persistence.
+- [session-sync.md](architecture/session-sync.md): design for joining a running turn and following terminal-driven provider sessions (not implemented).
 - [runtime-adapters.md](architecture/runtime-adapters.md): ACP as the product envelope and the per-CLI adapters.
 - [agent-protocol-and-rendering.md](architecture/agent-protocol-and-rendering.md): normalized agent event contract and how it is rendered.
 - [ui-design-and-components.md](architecture/ui-design-and-components.md): UI design system and component specification.
