@@ -1,6 +1,6 @@
 use crate::acp;
 use crate::db::app_session_role::clear_app_session_role_cli_id;
-use crate::db::{get_state, with_db};
+use crate::db::{get_state, in_tx, with_db};
 use crate::runtime_profile;
 use crate::types::*;
 use crate::{default_chat_cwd, now_ms};
@@ -218,36 +218,38 @@ pub(crate) fn rename_app_session_unique(
 ) -> Result<String, String> {
     let desired = validate_session_title(desired)?;
     with_db(state, |conn| {
-        let project_id: Option<String> = conn
-            .query_row(
-                "SELECT project_id FROM app_sessions WHERE id = ?1",
-                params![session_id],
-                |row| row.get(0),
+        in_tx(conn, |conn| {
+            let project_id: Option<String> = conn
+                .query_row(
+                    "SELECT project_id FROM app_sessions WHERE id = ?1",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let taken = |title: &str| {
+                active_session_title_exists(conn, title, project_id.as_deref(), Some(session_id))
+            };
+            let mut title = desired.clone();
+            if taken(&title)? {
+                let base = desired
+                    .rsplit_once("_copy")
+                    .filter(|(_, n)| n.chars().all(|c| c.is_ascii_digit()))
+                    .map(|(b, _)| b.to_string())
+                    .unwrap_or_else(|| desired.clone());
+                title = format!("{base}_copy");
+                let mut n = 2;
+                while taken(&title)? {
+                    title = format!("{base}_copy{n}");
+                    n += 1;
+                }
+            }
+            conn.execute(
+                "UPDATE app_sessions SET title = ?1 WHERE id = ?2",
+                params![&title, session_id],
             )
             .map_err(|e| e.to_string())?;
-        let taken = |title: &str| {
-            active_session_title_exists(conn, title, project_id.as_deref(), Some(session_id))
-        };
-        let mut title = desired.clone();
-        if taken(&title)? {
-            let base = desired
-                .rsplit_once("_copy")
-                .filter(|(_, n)| n.chars().all(|c| c.is_ascii_digit()))
-                .map(|(b, _)| b.to_string())
-                .unwrap_or_else(|| desired.clone());
-            title = format!("{base}_copy");
-            let mut n = 2;
-            while taken(&title)? {
-                title = format!("{base}_copy{n}");
-                n += 1;
-            }
-        }
-        conn.execute(
-            "UPDATE app_sessions SET title = ?1 WHERE id = ?2",
-            params![&title, session_id],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(title)
+            Ok(title)
+        })
     })
 }
 
@@ -513,34 +515,19 @@ pub(crate) fn save_app_message_internal(
         .unwrap_or("text");
     let client_id = client_id.map(str::trim).filter(|s| !s.is_empty());
     with_db(state, |conn| {
-        let mut updated = false;
-        if let Some(cid) = client_id {
-            let count: i64 = conn
-                .query_row(
-                    "SELECT count(1) FROM app_session_messages WHERE session_id = ?1 AND client_id = ?2",
-                    params![session_id, cid],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
-            if count > 0 {
-                conn.execute(
-                    "UPDATE app_session_messages
-                     SET role_name = ?1, content = ?2, content_type = ?3, payload = ?4
-                     WHERE session_id = ?5 AND client_id = ?6",
-                    params![role_name, content, content_type, payload, session_id, cid],
-                )
-                .map_err(|e| e.to_string())?;
-                updated = true;
-            }
-        }
-        if !updated {
-            conn.execute(
-                "INSERT INTO app_session_messages (session_id, client_id, role_name, content, content_type, payload, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![session_id, client_id, role_name, content, content_type, payload, now],
-            )
-            .map_err(|e| e.to_string())?;
-        }
+        // One statement, so two writers for the same client id cannot both insert
+        // (uq_app_session_messages_session_client_id). Rows without a client id always append.
+        conn.execute(
+            "INSERT INTO app_session_messages (session_id, client_id, role_name, content, content_type, payload, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(session_id, client_id) WHERE client_id IS NOT NULL DO UPDATE SET
+               role_name = excluded.role_name,
+               content = excluded.content,
+               content_type = excluded.content_type,
+               payload = excluded.payload",
+            params![session_id, client_id, role_name, content, content_type, payload, now],
+        )
+        .map_err(|e| e.to_string())?;
         conn.execute(
             "UPDATE app_sessions SET last_active_at = ?1 WHERE id = ?2",
             params![now, session_id],
@@ -653,31 +640,32 @@ pub(crate) fn create_app_session_internal(
     };
 
     with_db(state, |conn| {
-        let mut final_title = base_title.clone();
-        let mut counter = 1;
-        while active_session_title_exists(conn, &final_title, project_id, None)? {
-            counter += 1;
-            final_title = format!("{}_{}", base_title, counter);
-        }
+        in_tx(conn, |conn| {
+            let mut final_title = base_title.clone();
+            let mut counter = 1;
+            while active_session_title_exists(conn, &final_title, project_id, None)? {
+                counter += 1;
+                final_title = format!("{}_{}", base_title, counter);
+            }
 
-        let session = AppSession {
-            id: id
-                .map(str::to_string)
-                .unwrap_or_else(|| Uuid::new_v4().to_string()),
-            title: final_title,
-            active_role: "Developer".to_string(),
-            runtime_kind: runtime_kind.map(|s| s.to_string()),
-            runtime_profile_id: runtime_profile_id.map(|s| s.to_string()),
-            cwd,
-            project_id: project_id.map(|s| s.to_string()),
-            external_session_id: None,
-            messages: Vec::new(),
-            created_at: now,
-            last_active_at: now,
-            closed_at: None,
-        };
+            let session = AppSession {
+                id: id
+                    .map(str::to_string)
+                    .unwrap_or_else(|| Uuid::new_v4().to_string()),
+                title: final_title,
+                active_role: "Developer".to_string(),
+                runtime_kind: runtime_kind.map(|s| s.to_string()),
+                runtime_profile_id: runtime_profile_id.map(|s| s.to_string()),
+                cwd,
+                project_id: project_id.map(|s| s.to_string()),
+                external_session_id: None,
+                messages: Vec::new(),
+                created_at: now,
+                last_active_at: now,
+                closed_at: None,
+            };
 
-        conn.execute(
+            conn.execute(
             "INSERT INTO app_sessions (id, title, active_role, runtime_kind, runtime_profile_id, cwd, project_id, external_session_id, created_at, last_active_at, closed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL)",
             params![
@@ -694,7 +682,8 @@ pub(crate) fn create_app_session_internal(
             ],
         )
         .map_err(|e| e.to_string())?;
-        Ok(session)
+            Ok(session)
+        })
     })
 }
 
@@ -865,37 +854,42 @@ pub(crate) fn update_app_session_internal(
     let id = id.to_string();
     let role_changed = update.active_role.is_some();
     with_db(state, |conn| {
-        let current_project_id: Option<String> = conn
-            .query_row(
-                "SELECT project_id FROM app_sessions WHERE id = ?1",
-                params![&id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?
-            .flatten();
+        in_tx(conn, |conn| {
+            let current_project_id: Option<String> = conn
+                .query_row(
+                    "SELECT project_id FROM app_sessions WHERE id = ?1",
+                    params![&id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("session not found: {id}"))?;
 
-        if let Some(ref title) = update.title {
-            let title = validate_session_title(title)?;
-            if active_session_title_exists(conn, &title, current_project_id.as_deref(), Some(&id))?
-            {
-                return Err(format!("session name already exists: {}", title));
+            if let Some(ref title) = update.title {
+                let title = validate_session_title(title)?;
+                if active_session_title_exists(
+                    conn,
+                    &title,
+                    current_project_id.as_deref(),
+                    Some(&id),
+                )? {
+                    return Err(format!("session name already exists: {}", title));
+                }
+                conn.execute(
+                    "UPDATE app_sessions SET title = ?1 WHERE id = ?2",
+                    params![title, &id],
+                )
+                .map_err(|e| e.to_string())?;
             }
-            conn.execute(
-                "UPDATE app_sessions SET title = ?1 WHERE id = ?2",
-                params![title, &id],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-        if let Some(ref role) = update.active_role {
-            conn.execute(
-                "UPDATE app_sessions SET active_role = ?1 WHERE id = ?2",
-                params![role, &id],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-        if let Some(runtime) = update.runtime_kind {
-            conn.execute(
+            if let Some(ref role) = update.active_role {
+                conn.execute(
+                    "UPDATE app_sessions SET active_role = ?1 WHERE id = ?2",
+                    params![role, &id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            if let Some(runtime) = update.runtime_kind {
+                conn.execute(
                 "UPDATE app_sessions SET runtime_kind = ?1, runtime_profile_id = ?2 WHERE id = ?3",
                 params![
                     runtime,
@@ -904,22 +898,23 @@ pub(crate) fn update_app_session_internal(
                 ],
             )
             .map_err(|e| e.to_string())?;
-        }
-        if let Some(profile) = update.runtime_profile_id {
-            conn.execute(
-                "UPDATE app_sessions SET runtime_profile_id = ?1 WHERE id = ?2",
-                params![profile, &id],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-        if let Some(cwd) = update.cwd {
-            conn.execute(
-                "UPDATE app_sessions SET cwd = ?1 WHERE id = ?2",
-                params![cwd, &id],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-        Ok(())
+            }
+            if let Some(profile) = update.runtime_profile_id {
+                conn.execute(
+                    "UPDATE app_sessions SET runtime_profile_id = ?1 WHERE id = ?2",
+                    params![profile, &id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            if let Some(cwd) = update.cwd {
+                conn.execute(
+                    "UPDATE app_sessions SET cwd = ?1 WHERE id = ?2",
+                    params![cwd, &id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })
     })?;
     if role_changed {
         schedule_session_role_cleanup(state.clone_refs(), id, true);

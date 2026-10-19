@@ -88,7 +88,7 @@ pub fn run() {
             let db_path = app_dir.join("jockey.sqlite3");
             // Per-connection PRAGMAs run by the pool on every new connection.
             const CONN_INIT_SQL: &str =
-                "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;";
+                "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;";
             let db_pool = DbPool::new(db_path, 8, CONN_INIT_SQL)
                 .map_err(std::io::Error::other)?;
             {

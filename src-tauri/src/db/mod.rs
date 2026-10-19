@@ -402,6 +402,23 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
 
+    // A message's client id is its identity within a session; make that a constraint so
+    // concurrent writers (checkpoint vs. final write, desktop vs. web) cannot insert twice.
+    // Existing duplicates — possible before — collapse onto their newest row first.
+    conn.execute_batch(
+        "
+        DELETE FROM app_session_messages
+         WHERE client_id IS NOT NULL
+           AND id NOT IN (
+             SELECT max(id) FROM app_session_messages
+              WHERE client_id IS NOT NULL
+              GROUP BY session_id, client_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_app_session_messages_session_client_id
+          ON app_session_messages(session_id, client_id) WHERE client_id IS NOT NULL;
+        ",
+    )
+    .map_err(|e| e.to_string())?;
+
     // Model catalog entries used to be keyed by (kind, name) only, so a model picked in a
     // Codex role became visible to every runtime. Re-key by runtime and attribute the
     // existing rows by model family; anything unattributable stays runtime-less and is
@@ -846,6 +863,18 @@ pub(crate) fn with_db<T>(
 ) -> Result<T, String> {
     let conn = state.db.get().map_err(|e| e.to_string())?;
     f(&conn)
+}
+
+/// Run `f` in one transaction: committed on `Ok`, rolled back on `Err` (and on panic, when the
+/// transaction drops). For check-then-write sequences such as title uniqueness.
+pub(crate) fn in_tx<T>(
+    conn: &Connection,
+    f: impl FnOnce(&Connection) -> Result<T, String>,
+) -> Result<T, String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let out = f(&tx)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 pub(crate) fn parse_payload(payload: String) -> Value {
