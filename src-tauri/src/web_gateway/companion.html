@@ -300,6 +300,15 @@
     .list-title { font-size: 13.5px; overflow-wrap: anywhere; }
     .list-sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
     .list-item .chip { flex-shrink: 0; }
+    .dir-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .dir-path { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; flex: 1; min-width: 0; }
+    .dir-item { cursor: pointer; align-items: center; }
+    .dir-item:active { background: var(--surface-hover); }
+    .dir-tag { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; flex-shrink: 0; }
+    .dir-tag.repo { color: #a5b4fc; border-color: rgba(99, 102, 241, 0.45); }
+    .dir-manual { margin-bottom: 8px; font-size: 13px; color: var(--muted); }
+    .dir-manual summary { cursor: pointer; margin-bottom: 8px; }
+    .history-note { text-align: center; font-size: 12px; color: var(--muted); padding: 4px 0 8px; }
 
     #toast {
       position: fixed;
@@ -349,6 +358,9 @@
         <div class="header-session" id="header-session">未选择会话</div>
         <div class="header-sub" id="header-sub">点击左上角选择项目和会话</div>
       </div>
+      <button id="btn-close-session" class="btn-icon" title="关闭会话" style="display:none">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>
+      </button>
     </header>
 
     <div id="approvals-section"><div id="approvals-list"></div></div>
@@ -381,13 +393,19 @@
   <!-- Add project -->
   <div id="project-modal" class="modal-backdrop">
     <div class="modal-card">
-      <h3 class="modal-title">添加项目</h3>
-      <p class="modal-desc">填写主机上的项目目录绝对路径（支持 ~/ 开头）。</p>
-      <input id="project-path" class="modal-input" placeholder="~/Documents/GitHub/my-app" autocapitalize="off" autocorrect="off" spellcheck="false" />
-      <input id="project-name" class="modal-input" placeholder="项目名称（可选，默认取目录名）" />
+      <h3 class="modal-title">打开项目</h3>
+      <div class="dir-bar">
+        <button id="dir-up" class="chip" title="上一级">↑</button>
+        <div id="dir-path" class="dir-path"></div>
+      </div>
+      <div class="modal-list" id="dir-list"></div>
+      <details class="dir-manual">
+        <summary>手动输入路径</summary>
+        <input id="project-path" class="modal-input" placeholder="~/Documents/GitHub/my-app" autocapitalize="off" autocorrect="off" spellcheck="false" />
+      </details>
       <div class="modal-actions">
         <button class="btn" data-close="project-modal">取消</button>
-        <button id="btn-create-project" class="btn primary">添加</button>
+        <button id="btn-create-project" class="btn primary">打开此目录</button>
       </div>
     </div>
   </div>
@@ -477,10 +495,6 @@
       return `${d.getMonth() + 1}/${d.getDate()}`;
     }
 
-    function debounce(fn, ms) {
-      let t = null;
-      return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
-    }
 
     function showAuth() {
       $('auth-modal').classList.add('show');
@@ -570,6 +584,36 @@
     // ---------------------------------------------------------------------
     // Projects & sessions
     // ---------------------------------------------------------------------
+    async function loadProjects() {
+      try {
+        projects = await api('/api/projects');
+        renderSidebar();
+        updateHeader();
+      } catch (_) {}
+    }
+
+    // Apply a `session/changed` summary in place — no list refetch (see engine design §2).
+    function applySessionChange(payload) {
+      const { appSessionId: sid, reason, session } = payload;
+      const idx = sessions.findIndex((s) => s.id === sid);
+      if (reason === 'closed') {
+        if (idx !== -1) sessions.splice(idx, 1);
+        if (sid === activeSessionId) {
+          activeSessionId = '';
+          activeSession = null;
+          localStorage.removeItem('jockey_active_session');
+          renderMessages(null);
+          updateHeader();
+          updateComposer();
+        }
+      } else if (session) {
+        if (idx !== -1) sessions[idx] = { ...sessions[idx], ...session };
+        else sessions.unshift(session);
+        if (sid === activeSessionId) updateHeader();
+      }
+      renderSidebar();
+    }
+
     async function loadSidebar() {
       try {
         const [p, s] = await Promise.all([api('/api/projects'), api('/api/sessions')]);
@@ -582,7 +626,6 @@
         projectList.appendChild(el('div', 'empty-hint', `加载失败：${err.message}`));
       }
     }
-    const loadSidebarSoon = debounce(loadSidebar, 400);
 
     function renderSessionItem(s) {
       const item = el('div', 'session-item' + (s.id === activeSessionId ? ' active' : ''));
@@ -670,6 +713,7 @@
 
     function updateHeader() {
       const s = sessions.find((x) => x.id === activeSessionId) || activeSession;
+      $('btn-close-session').style.display = s ? 'flex' : 'none';
       if (!s) {
         $('header-session').textContent = '未选择会话';
         $('header-sub').textContent = '点击左上角选择项目和会话';
@@ -814,29 +858,69 @@
     // ---------------------------------------------------------------------
     // Add project
     // ---------------------------------------------------------------------
+    let browsePath = null;
+
+    async function browse(path) {
+      const list = $('dir-list');
+      list.innerHTML = '';
+      list.appendChild(el('div', 'empty-hint', '加载中...'));
+      try {
+        const q = path ? `?path=${encodeURIComponent(path)}` : '';
+        const listing = await api(`/api/fs/dirs${q}`);
+        browsePath = listing.path;
+        $('dir-path').textContent = listing.path;
+        $('dir-up').disabled = !listing.parent;
+        $('dir-up').onclick = () => listing.parent && browse(listing.parent);
+        list.innerHTML = '';
+        if (listing.entries.length === 0) list.appendChild(el('div', 'empty-hint', '没有子目录，可直接打开当前目录'));
+        for (const entry of listing.entries) {
+          const item = el('div', 'list-item dir-item');
+          const main = el('div', 'list-main');
+          main.appendChild(el('div', 'list-title', `📁 ${entry.name}`));
+          item.appendChild(main);
+          if (entry.projectId) item.appendChild(el('span', 'dir-tag', '已添加'));
+          else if (entry.isGitRepo) item.appendChild(el('span', 'dir-tag repo', 'git'));
+          item.onclick = () => browse(entry.path);
+          list.appendChild(item);
+        }
+      } catch (err) {
+        list.innerHTML = '';
+        list.appendChild(el('div', 'empty-hint', `无法读取：${err.message}`));
+      }
+    }
+
     $('btn-add-project').onclick = () => {
       $('project-path').value = '';
-      $('project-name').value = '';
       $('project-modal').classList.add('show');
-      setTimeout(() => $('project-path').focus(), 50);
+      browse(null);
     };
     $('btn-create-project').onclick = async () => {
-      const rootPath = $('project-path').value.trim();
-      const name = $('project-name').value.trim();
-      if (!rootPath) { toast('请填写项目路径', true); return; }
+      // A typed path wins over the browsed folder.
+      const rootPath = $('project-path').value.trim() || browsePath;
+      if (!rootPath) { toast('请选择一个目录', true); return; }
       const btn = $('btn-create-project');
       btn.disabled = true;
       try {
-        const p = await api('/api/projects', { method: 'POST', body: JSON.stringify({ rootPath, name: name || null }) });
+        const p = await api('/api/projects', { method: 'POST', body: JSON.stringify({ rootPath }) });
         $('project-modal').classList.remove('show');
         openProjects.add(p.id);
         persistOpenProjects();
-        await loadSidebar();
-        toast(`已添加项目 ${p.name}`);
+        await loadProjects();
+        toast(`已打开项目 ${p.name}`);
       } catch (err) {
         toast(err.message, true);
       } finally {
         btn.disabled = false;
+      }
+    };
+
+    $('btn-close-session').onclick = async () => {
+      const sid = activeSessionId;
+      if (!sid || !confirm('关闭这个会话？之后可在「历史会话」里恢复。')) return;
+      try {
+        await api(`/api/sessions/${encodeURIComponent(sid)}/close`, { method: 'POST' });
+      } catch (err) {
+        toast(`关闭失败：${err.message}`, true);
       }
     };
 
@@ -884,6 +968,8 @@
       queuedCount = 0;
       localStorage.setItem('jockey_active_session', sid);
       renderSidebar();
+      // Re-subscribe so this connection carries the new session's stream frames.
+      setupSSE();
       loadQueue(sid);
       await loadMessages(sid);
     }
@@ -891,7 +977,7 @@
     async function loadMessages(sid) {
       if (!sid) { renderMessages([]); return; }
       try {
-        const s = await api(`/api/sessions/${encodeURIComponent(sid)}`);
+        const s = await api(`/api/sessions/${encodeURIComponent(sid)}?tail=${HISTORY_TAIL}`);
         if (sid !== activeSessionId) return;
         activeSession = s;
         if (s.closedAt) {
@@ -902,6 +988,9 @@
           renderMessages(null);
         } else {
           renderMessages(s.messages || []);
+          if (s.totalMessages > (s.messages || []).length) {
+            messagesContainer.prepend(el('div', 'history-note', `仅显示最近 ${s.messages.length} 条（共 ${s.totalMessages} 条），完整记录请在桌面端查看`));
+          }
         }
       } catch (err) {
         if (sid !== activeSessionId) return;
@@ -1180,6 +1269,23 @@
     // Live events
     // ---------------------------------------------------------------------
     let ownPendingSend = null;
+    const HISTORY_TAIL = 200;
+
+    // Swap the live preview for the turn's persisted messages, matched by id.
+    function adoptTurnMessages(messages) {
+      if (liveBubble) {
+        const group = liveBubble.closest('.msg-group');
+        if (group) group.remove();
+        liveBubble = null;
+      }
+      for (const msg of messages) {
+        const node = renderMessage(msg);
+        const existing = msg.id && messagesContainer.querySelector(`[data-id="${CSS.escape(msg.id)}"]`);
+        if (existing) existing.replaceWith(node);
+        else messagesContainer.appendChild(node);
+      }
+      scrollToBottom();
+    }
 
     function markSessionRunning(sid, running) {
       const s = sessions.find((x) => x.id === sid);
@@ -1190,7 +1296,8 @@
     function setupSSE() {
       if (eventSource) eventSource.close();
       if (!authToken) return;
-      eventSource = new EventSource(`/api/events?token=${encodeURIComponent(authToken)}`);
+      const focus = activeSessionId ? `&focus=${encodeURIComponent(activeSessionId)}` : '';
+      eventSource = new EventSource(`/api/events?token=${encodeURIComponent(authToken)}${focus}`);
 
       eventSource.onopen = () => {
         statusDot.className = 'status-dot online';
@@ -1247,12 +1354,19 @@
         try { payload = JSON.parse(ev.data); } catch (_) { return; }
         const sid = payload.appSessionId;
         markSessionRunning(sid, false);
+        const messages = payload.messages || [];
         if (sid === activeSessionId) {
-          if (!payload.ok && payload.error && !/cancel/i.test(payload.error)) toast(`运行出错：${payload.error}`, true);
-          liveBubble = null;
-          loadMessages(sid);
+          if (!payload.ok && !payload.cancelled && payload.error) toast(`运行出错：${payload.error}`, true);
+          adoptTurnMessages(messages);
         }
-        loadSidebarSoon();
+        const s = sessions.find((x) => x.id === sid);
+        const last = messages[messages.length - 1];
+        if (s) {
+          s.lastActiveAt = Date.now();
+          if (last && last.text) s.preview = last.text.replace(/\s+/g, ' ').slice(0, 120);
+          s.messageCount = (s.messageCount || 0) + messages.length + 1;
+          renderSidebar();
+        }
       });
 
       eventSource.addEventListener('queue/changed', (ev) => {
@@ -1273,7 +1387,16 @@
         scrollToBottom();
       });
 
-      eventSource.addEventListener('companion/changed', loadSidebarSoon);
+      eventSource.addEventListener('session/changed', (ev) => {
+        try { applySessionChange(JSON.parse(ev.data)); } catch (_) {}
+      });
+      eventSource.addEventListener('project/changed', loadProjects);
+      // The server dropped frames for this client; reload rather than show a gap.
+      eventSource.addEventListener('resync', () => {
+        loadSidebar();
+        loadPermissions();
+        if (activeSessionId) { loadQueue(activeSessionId); loadMessages(activeSessionId); }
+      });
 
       eventSource.addEventListener('permission_update', loadPermissions);
     }

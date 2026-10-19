@@ -99,6 +99,85 @@ pub(crate) fn load_session_head(
     })
 }
 
+const PREVIEW_CHARS: usize = 120;
+
+fn compact_preview(text: &str) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    match compact.char_indices().nth(PREVIEW_CHARS) {
+        Some((idx, _)) => format!("{}…", &compact[..idx]),
+        None => compact,
+    }
+}
+
+/// Sidebar rows: message count and last non-event preview come from indexed subqueries on
+/// `app_session_messages(session_id, id)`, so listing never loads transcripts.
+pub(crate) fn list_session_summaries(
+    state: &AppState,
+    project_id: Option<&str>,
+    closed: bool,
+    ids: Option<&[String]>,
+) -> Result<Vec<crate::types::SessionSummary>, String> {
+    let mut sql = String::from(
+        "SELECT s.id, s.title, s.active_role, s.runtime_kind, s.project_id, s.last_active_at, s.closed_at,
+                (SELECT count(1) FROM app_session_messages m WHERE m.session_id = s.id),
+                (SELECT substr(m.content, 1, 400) FROM app_session_messages m
+                  WHERE m.session_id = s.id AND m.role_name <> 'event' AND trim(m.content) <> ''
+                  ORDER BY m.id DESC LIMIT 1)
+         FROM app_sessions s WHERE 1 = 1",
+    );
+    let mut args: Vec<rusqlite::types::Value> = Vec::new();
+    if let Some(ids) = ids {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sql.push_str(&format!(
+            " AND s.id IN ({})",
+            std::iter::repeat_n("?", ids.len())
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        args.extend(ids.iter().map(|id| id.clone().into()));
+    } else {
+        sql.push_str(if closed {
+            " AND s.closed_at IS NOT NULL"
+        } else {
+            " AND s.closed_at IS NULL"
+        });
+        if let Some(pid) = project_id.filter(|p| !p.trim().is_empty()) {
+            sql.push_str(" AND s.project_id = ?");
+            args.push(pid.to_string().into());
+        }
+    }
+    sql.push_str(if closed {
+        " ORDER BY s.closed_at DESC LIMIT 200"
+    } else {
+        " ORDER BY s.last_active_at DESC LIMIT 200"
+    });
+    with_db(state, |conn| {
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(args.iter()), |row| {
+                Ok(crate::types::SessionSummary {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    active_role: row.get(2)?,
+                    runtime_kind: row.get(3)?,
+                    project_id: row.get(4)?,
+                    last_active_at: row.get(5)?,
+                    closed_at: row.get(6)?,
+                    message_count: row.get::<_, i64>(7)? as usize,
+                    preview: row
+                        .get::<_, Option<String>>(8)?
+                        .map(|t| compact_preview(&t)),
+                    running: false,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    })
+}
+
 pub(crate) fn count_user_messages(state: &AppState, session_id: &str) -> Result<i64, String> {
     with_db(state, |conn| {
         conn.query_row(
@@ -692,22 +771,21 @@ pub(crate) fn upsert_imported_session(
     })
 }
 
-pub(crate) fn close_app_session_internal(state: &AppState, id: &str) -> Result<(), String> {
+/// Close a session. Returns `false` when it was already closed (or never existed), so a
+/// caller can decide whether that is an error; the desktop treats it as a no-op.
+pub(crate) fn close_app_session_internal(state: &AppState, id: &str) -> Result<bool, String> {
     let now = now_ms();
-    with_db(state, |conn| {
-        let changed = conn
-            .execute(
-                "UPDATE app_sessions SET closed_at = ?1 WHERE id = ?2 AND closed_at IS NULL",
-                params![now, id],
-            )
-            .map_err(|e| e.to_string())?;
-        if changed == 0 {
-            return Err(format!("session not found or already closed: {id}"));
-        }
-        Ok(())
+    let changed = with_db(state, |conn| {
+        conn.execute(
+            "UPDATE app_sessions SET closed_at = ?1 WHERE id = ?2 AND closed_at IS NULL",
+            params![now, id],
+        )
+        .map_err(|e| e.to_string())
     })?;
-    schedule_session_role_cleanup(state.clone_refs(), id.to_string(), false);
-    Ok(())
+    if changed > 0 {
+        schedule_session_role_cleanup(state.clone_refs(), id.to_string(), false);
+    }
+    Ok(changed > 0)
 }
 
 fn schedule_session_role_cleanup(state: AppState, session_id: String, keep_active_role: bool) {
@@ -757,33 +835,14 @@ fn schedule_session_role_cleanup(state: AppState, session_id: String, keep_activ
     });
 }
 
-#[tauri::command]
-pub(crate) fn create_app_session(
-    state: State<'_, AppState>,
-    title: Option<String>,
-    project_id: Option<String>,
-    runtime_kind: Option<String>,
-    runtime_profile_id: Option<String>,
-    id: Option<String>,
-) -> Result<AppSession, String> {
-    create_app_session_internal(
-        get_state(&state),
-        title.as_deref(),
-        project_id.as_deref(),
-        runtime_kind.as_deref(),
-        runtime_profile_id.as_deref(),
-        id.as_deref(),
-    )
-}
-
-#[tauri::command]
-pub(crate) async fn update_app_session(
-    state: State<'_, AppState>,
-    id: String,
+pub(crate) fn update_app_session_internal(
+    state: &AppState,
+    id: &str,
     update: AppSessionUpdate,
 ) -> Result<(), String> {
+    let id = id.to_string();
     let role_changed = update.active_role.is_some();
-    with_db(get_state(&state), |conn| {
+    with_db(state, |conn| {
         let current_project_id: Option<String> = conn
             .query_row(
                 "SELECT project_id FROM app_sessions WHERE id = ?1",
@@ -841,36 +900,18 @@ pub(crate) async fn update_app_session(
         Ok(())
     })?;
     if role_changed {
-        schedule_session_role_cleanup(get_state(&state).clone_refs(), id, true);
+        schedule_session_role_cleanup(state.clone_refs(), id, true);
     }
     Ok(())
 }
 
-#[tauri::command]
-pub(crate) async fn delete_app_session(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), String> {
-    let now = now_ms();
-    with_db(get_state(&state), |conn| {
-        conn.execute(
-            "UPDATE app_sessions SET closed_at = ?1 WHERE id = ?2",
-            params![now, &id],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    })?;
-    schedule_session_role_cleanup(get_state(&state).clone_refs(), id, false);
-    Ok(())
-}
-
-#[tauri::command]
-pub(crate) fn reopen_app_session(
-    state: State<'_, AppState>,
-    id: String,
+pub(crate) fn reopen_app_session_internal(
+    state: &AppState,
+    id: &str,
 ) -> Result<AppSession, String> {
+    let id = id.to_string();
     let now = now_ms();
-    with_db(get_state(&state), |conn| {
+    with_db(state, |conn| {
         let (title, project_id): (String, Option<String>) = conn
             .query_row(
                 "SELECT title, project_id FROM app_sessions WHERE id = ?1",

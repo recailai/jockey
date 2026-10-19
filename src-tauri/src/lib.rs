@@ -82,7 +82,7 @@ pub fn run() {
             fs::create_dir_all(&app_dir)?;
             acp::set_app_data_dir(app_dir.clone());
             acp::start_permission_bridge(app.handle().clone());
-            engine::turns::install(app.handle());
+            engine::install(app.handle());
             git::set_app_handle(app.handle().clone());
 
             let db_path = app_dir.join("jockey.sqlite3");
@@ -361,10 +361,11 @@ pub fn run() {
             commands::fs_cmd::read_file_base64_cmd,
             db::app_session::list_app_sessions,
             db::app_session::list_closed_app_sessions,
-            db::app_session::create_app_session,
-            db::app_session::update_app_session,
-            db::app_session::delete_app_session,
-            db::app_session::reopen_app_session,
+            engine::commands::create_app_session,
+            engine::commands::update_app_session,
+            engine::commands::delete_app_session,
+            engine::commands::reopen_app_session,
+            engine::commands::get_app_sessions,
             db::app_session::append_app_message,
             db::app_session::save_app_message,
             db::inbox::list_session_inbox_cmd,
@@ -395,9 +396,9 @@ pub fn run() {
             commands::workspace_cmd::get_workspace_app_icon_cmd,
             commands::project_cmd::list_projects_cmd,
             commands::project_cmd::get_project_cmd,
-            commands::project_cmd::create_project_cmd,
-            commands::project_cmd::delete_project_cmd,
-            commands::project_cmd::import_project_sessions_cmd,
+            engine::commands::create_project_cmd,
+            engine::commands::delete_project_cmd,
+            engine::commands::import_project_sessions_cmd,
             commands::project_cmd::scan_importable_sessions_cmd,
             db::rule::list_rules_cmd,
             db::rule::upsert_rule_cmd,

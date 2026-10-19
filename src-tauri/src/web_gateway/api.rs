@@ -12,17 +12,15 @@ use axum::{
 use futures::stream::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 use super::{GatewayEvent, ServerContext};
-use crate::types::{AppSession, AppState};
+use crate::engine::sessions as engine_sessions;
+use crate::types::{AppSession, AppState, SessionSummary};
 
 const COMPANION_HTML: &str = include_str!("companion.html");
 const MARKED_JS: &str = include_str!("vendor/marked.umd.js");
-/// Tauri event the desktop listens to so sessions/projects created from the
-/// companion appear without a manual reload. Also forwarded to SSE clients.
-pub(super) const CHANGED_EVENT: &str = "companion/changed";
-const PREVIEW_CHARS: usize = 120;
+const MAX_DIR_ENTRIES: usize = 500;
 
 pub(super) fn router(ctx: ServerContext) -> Router {
     let api = Router::new()
@@ -42,6 +40,8 @@ pub(super) fn router(ctx: ServerContext) -> Router {
         )
         .route("/sessions/:id/send-now", post(session_send_now))
         .route("/sessions/:id/reopen", post(session_reopen))
+        .route("/sessions/:id/close", post(session_close))
+        .route("/fs/dirs", get(list_dirs))
         .route("/permissions", get(list_permissions))
         .route("/permissions/respond", post(respond_permission))
         .route("/events", get(events))
@@ -118,13 +118,6 @@ fn internal(msg: impl ToString) -> ApiError {
 
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
-fn emit_changed(ctx: &ServerContext, kind: &str, session_id: Option<&str>) {
-    let _ = ctx.app.emit(
-        CHANGED_EVENT,
-        json!({ "kind": kind, "sessionId": session_id }),
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Static
 // ---------------------------------------------------------------------------
@@ -195,14 +188,110 @@ async fn create_project(
         .or_else(|| path.file_name().map(|n| n.to_string_lossy().to_string()))
         .unwrap_or_else(|| "project".to_string());
     let state = ctx.app.state::<AppState>();
-    let project = crate::db::project::create_project_internal(
-        &state,
-        name,
-        path.to_string_lossy().to_string(),
-    )
-    .map_err(bad_request)?;
-    emit_changed(&ctx, "projects", None);
+    let project = engine_sessions::create_project(&state, name, path.to_string_lossy().to_string())
+        .map_err(bad_request)?;
     Ok(Json(project))
+}
+
+#[derive(Deserialize)]
+struct DirQuery {
+    path: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirEntry {
+    name: String,
+    path: String,
+    is_git_repo: bool,
+    project_id: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirListing {
+    path: String,
+    parent: Option<String>,
+    home: Option<String>,
+    entries: Vec<DirEntry>,
+}
+
+/// Where a folder picker should open: the directory most existing projects live in
+/// (typically `~/Documents/GitHub`), else the home directory.
+fn default_browse_root(projects: &[crate::types::Project]) -> Option<std::path::PathBuf> {
+    let mut counts: std::collections::HashMap<std::path::PathBuf, usize> = Default::default();
+    for p in projects {
+        if let Some(parent) = std::path::Path::new(&p.root_path).parent() {
+            *counts.entry(parent.to_path_buf()).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|(dir, _)| dir.is_dir())
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+        .map(|(dir, _)| dir)
+        .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
+}
+
+fn read_dir_listing(
+    requested: Option<String>,
+    projects: Vec<crate::types::Project>,
+) -> Result<DirListing, String> {
+    let dir = match requested
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        Some(raw) => expand_home(raw),
+        None => default_browse_root(&projects).ok_or("no starting folder")?,
+    };
+    let dir = std::fs::canonicalize(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let by_root: std::collections::HashMap<&str, &str> = projects
+        .iter()
+        .map(|p| (p.root_path.as_str(), p.id.as_str()))
+        .collect();
+    let mut entries: Vec<DirEntry> = std::fs::read_dir(&dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                return None;
+            }
+            let path = e.path();
+            let path_str = path.to_string_lossy().to_string();
+            Some(DirEntry {
+                is_git_repo: path.join(".git").exists(),
+                project_id: by_root.get(path_str.as_str()).map(|id| id.to_string()),
+                name,
+                path: path_str,
+            })
+        })
+        .collect();
+    entries.sort_by_key(|e| e.name.to_lowercase());
+    entries.truncate(MAX_DIR_ENTRIES);
+    Ok(DirListing {
+        parent: dir.parent().map(|p| p.to_string_lossy().to_string()),
+        home: std::env::var("HOME").ok(),
+        path: dir.to_string_lossy().to_string(),
+        entries,
+    })
+}
+
+/// Folder picker for "open project" on a phone, where typing an absolute path is the hard
+/// part. Directories only, dot-folders hidden; see docs/engine-service-layer.md §6.
+async fn list_dirs(
+    State(ctx): State<ServerContext>,
+    Query(q): Query<DirQuery>,
+) -> ApiResult<DirListing> {
+    let projects = crate::db::project::list_projects_internal(&ctx.app.state::<AppState>())
+        .map_err(internal)?;
+    tokio::task::spawn_blocking(move || read_dir_listing(q.path, projects))
+        .await
+        .map_err(internal)?
+        .map(Json)
+        .map_err(bad_request)
 }
 
 #[derive(Deserialize)]
@@ -244,70 +333,20 @@ async fn import_sessions(
     if body.external_session_ids.is_empty() {
         return Err(bad_request("请选择要导入的会话"));
     }
-    let state = ctx.app.state::<AppState>().clone_refs();
-    let imported = tokio::task::spawn_blocking(move || {
-        crate::importer::import_project_sessions_internal(
-            &state,
-            &project_id,
-            Some(&body.external_session_ids),
-        )
-    })
-    .await
-    .map_err(internal)?
-    .map_err(bad_request)?;
-    emit_changed(&ctx, "sessions", None);
-    Ok(Json(imported.into_iter().map(summarize).collect()))
+    let state = ctx.app.state::<AppState>();
+    let imported =
+        engine_sessions::import_sessions(&state, &project_id, Some(body.external_session_ids))
+            .await
+            .map_err(bad_request)?;
+    let ids: Vec<String> = imported.into_iter().map(|s| s.id).collect();
+    crate::db::app_session::list_session_summaries(&state, None, false, Some(&ids))
+        .map(Json)
+        .map_err(internal)
 }
 
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SessionSummary {
-    id: String,
-    title: String,
-    active_role: String,
-    runtime_kind: Option<String>,
-    project_id: Option<String>,
-    last_active_at: i64,
-    closed_at: Option<i64>,
-    message_count: usize,
-    preview: Option<String>,
-    running: bool,
-}
-
-fn clip_chars(text: &str, max: usize) -> String {
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    match compact.char_indices().nth(max) {
-        Some((idx, _)) => format!("{}…", &compact[..idx]),
-        None => compact,
-    }
-}
-
-fn summarize(session: AppSession) -> SessionSummary {
-    let preview = session
-        .messages
-        .iter()
-        .rev()
-        .filter(|m| m.get("roleName").and_then(Value::as_str) != Some("event"))
-        .find_map(|m| m.get("text").and_then(Value::as_str))
-        .filter(|t| !t.trim().is_empty())
-        .map(|t| clip_chars(t, PREVIEW_CHARS));
-    SessionSummary {
-        running: crate::engine::turns::is_busy(&session.id),
-        message_count: session.messages.len(),
-        preview,
-        id: session.id,
-        title: session.title,
-        active_role: session.active_role,
-        runtime_kind: session.runtime_kind,
-        project_id: session.project_id,
-        last_active_at: session.last_active_at,
-        closed_at: session.closed_at,
-    }
-}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -319,28 +358,26 @@ async fn list_sessions(
     State(ctx): State<ServerContext>,
     Query(filter): Query<ProjectFilter>,
 ) -> ApiResult<Vec<SessionSummary>> {
-    let state = ctx.app.state::<AppState>();
-    crate::db::app_session::list_app_sessions(state, filter.project_id)
-        .map(|list| Json(list.into_iter().map(summarize).collect()))
-        .map_err(internal)
+    engine_sessions::summaries(
+        &ctx.app.state::<AppState>(),
+        filter.project_id.as_deref(),
+        false,
+    )
+    .map(Json)
+    .map_err(internal)
 }
 
 async fn list_closed_sessions(
     State(ctx): State<ServerContext>,
     Query(filter): Query<ProjectFilter>,
 ) -> ApiResult<Vec<SessionSummary>> {
-    let state = ctx.app.state::<AppState>();
-    let pid = filter.project_id.filter(|p| !p.trim().is_empty());
-    crate::db::app_session::list_closed_app_sessions(state)
-        .map(|list| {
-            Json(
-                list.into_iter()
-                    .filter(|s| pid.is_none() || s.project_id == pid)
-                    .map(summarize)
-                    .collect(),
-            )
-        })
-        .map_err(internal)
+    engine_sessions::summaries(
+        &ctx.app.state::<AppState>(),
+        filter.project_id.as_deref(),
+        true,
+    )
+    .map(Json)
+    .map_err(internal)
 }
 
 fn load_session(state: &AppState, id: &str) -> Result<AppSession, ApiError> {
@@ -350,15 +387,35 @@ fn load_session(state: &AppState, id: &str) -> Result<AppSession, ApiError> {
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "session not found".into()))
 }
 
+#[derive(Deserialize)]
+struct DetailQuery {
+    tail: Option<usize>,
+}
+
+/// One session with its transcript; `?tail=N` keeps only the last N messages so opening a
+/// long session on a phone does not ship its whole history.
 async fn session_detail(
     State(ctx): State<ServerContext>,
     Path(id): Path<String>,
+    Query(q): Query<DetailQuery>,
 ) -> ApiResult<Value> {
     let state = ctx.app.state::<AppState>();
-    let session = load_session(&state, &id)?;
+    let mut session = load_session(&state, &id)?;
+    let total = session.messages.len();
+    if let Some(tail) = q.tail.filter(|t| *t < total) {
+        session.messages.drain(..total - tail);
+    }
     let mut value = serde_json::to_value(session).map_err(internal)?;
     value["running"] = json!(crate::engine::turns::is_busy(&id));
+    value["totalMessages"] = json!(total);
     Ok(Json(value))
+}
+
+fn summary_of(state: &AppState, id: &str) -> Result<SessionSummary, ApiError> {
+    crate::db::app_session::list_session_summaries(state, None, false, Some(&[id.to_string()]))
+        .map_err(internal)?
+        .pop()
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "session not found".into()))
 }
 
 #[derive(Deserialize)]
@@ -373,24 +430,19 @@ async fn create_session(
     Json(body): Json<CreateSessionBody>,
 ) -> ApiResult<SessionSummary> {
     let state = ctx.app.state::<AppState>();
-    let project_id = body.project_id.filter(|p| !p.trim().is_empty());
-    let runtime = crate::engine::sessions::preferred_runtime(
+    let session = engine_sessions::create_session(
         &state,
-        project_id.as_deref(),
-        crate::engine::sessions::DEFAULT_ROLE,
+        engine_sessions::NewSession {
+            title: body.title.as_deref(),
+            project_id: body.project_id.as_deref(),
+            runtime_kind: None,
+            runtime_profile_id: None,
+            id: None,
+        },
     )
-    .await;
-    let session = crate::db::app_session::create_app_session_internal(
-        &state,
-        body.title.as_deref().filter(|t| !t.trim().is_empty()),
-        project_id.as_deref(),
-        runtime.as_ref().map(|(key, _)| key.as_str()),
-        runtime.as_ref().map(|(_, profile)| profile.as_str()),
-        None,
-    )
+    .await
     .map_err(bad_request)?;
-    emit_changed(&ctx, "sessions", Some(&session.id));
-    Ok(Json(summarize(session)))
+    summary_of(&state, &session.id).map(Json)
 }
 
 async fn session_reopen(
@@ -398,10 +450,22 @@ async fn session_reopen(
     Path(id): Path<String>,
 ) -> ApiResult<SessionSummary> {
     let state = ctx.app.state::<AppState>();
-    let session =
-        crate::db::app_session::reopen_app_session(state, id.clone()).map_err(bad_request)?;
-    emit_changed(&ctx, "sessions", Some(&id));
-    Ok(Json(summarize(session)))
+    engine_sessions::reopen_session(&state, &id).map_err(bad_request)?;
+    summary_of(&state, &id).map(Json)
+}
+
+async fn session_close(
+    State(ctx): State<ServerContext>,
+    Path(id): Path<String>,
+) -> ApiResult<Value> {
+    if crate::engine::turns::is_busy(&id) {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "会话正在运行，请先停止".into(),
+        ));
+    }
+    engine_sessions::close_session(&ctx.app.state::<AppState>(), &id).map_err(bad_request)?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 #[derive(Deserialize)]
@@ -497,8 +561,9 @@ async fn respond_permission(
     .await
     .map_err(bad_request)?;
     let _ = ctx.broadcaster.send(GatewayEvent {
-        event_name: "permission_update".to_string(),
-        payload: json!({ "status": "resolved" }).to_string(),
+        event_name: "permission_update",
+        payload: std::sync::Arc::from(json!({ "status": "resolved" }).to_string()),
+        focus: None,
     });
     Ok(Json(json!({ "ok": true })))
 }
@@ -507,10 +572,20 @@ async fn respond_permission(
 // SSE
 // ---------------------------------------------------------------------------
 
+#[derive(Deserialize)]
+struct EventsQuery {
+    /// The session this client is showing; only its stream frames are delivered.
+    focus: Option<String>,
+}
+
+/// SSE: lifecycle events to everyone, stream frames only to the focused client
+/// (docs/engine-service-layer.md §4). A client that lags past the buffer gets `resync`.
 async fn events(
     State(ctx): State<ServerContext>,
+    Query(q): Query<EventsQuery>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
     let rx = ctx.broadcaster.subscribe();
+    let focus: Option<std::sync::Arc<str>> = q.focus.filter(|f| !f.is_empty()).map(Into::into);
     let mut shutdown = ctx.shutdown.clone();
     let mut token = ctx.token.clone();
     token.mark_unchanged();
@@ -522,14 +597,20 @@ async fn events(
             _ = token.changed() => {}
         }
     };
-    let stream = futures::stream::unfold(rx, |mut rx| async move {
+    let stream = futures::stream::unfold((rx, focus), |(mut rx, focus)| async move {
         loop {
             match rx.recv().await {
                 Ok(ev) => {
-                    let sse_event = SseEvent::default().event(ev.event_name).data(ev.payload);
-                    return Some((Ok::<_, std::convert::Infallible>(sse_event), rx));
+                    if ev.focus.is_some() && ev.focus != focus {
+                        continue;
+                    }
+                    let sse_event = SseEvent::default().event(ev.event_name).data(&*ev.payload);
+                    return Some((Ok::<_, std::convert::Infallible>(sse_event), (rx, focus)));
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    let resync = SseEvent::default().event("resync").data("{}");
+                    return Some((Ok(resync), (rx, focus)));
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
             }
         }
@@ -567,9 +648,33 @@ mod tests {
     }
 
     #[test]
-    fn clip_chars_is_char_safe_and_collapses_whitespace() {
-        assert_eq!(clip_chars("a  b\n c", 10), "a b c");
-        assert_eq!(clip_chars("多 Agent 协同", 3), "多 A…");
+    fn dir_listing_hides_dotfiles_and_marks_repos_and_projects() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(root.path().join("repo/.git")).unwrap();
+        std::fs::create_dir_all(root.path().join("plain")).unwrap();
+        std::fs::create_dir_all(root.path().join(".hidden")).unwrap();
+        std::fs::write(root.path().join("file.txt"), "x").unwrap();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        let project = crate::types::Project {
+            id: "p1".into(),
+            name: "plain".into(),
+            root_path: root_path.join("plain").to_string_lossy().to_string(),
+            created_at: 0,
+            updated_at: 0,
+            deleted_at: None,
+        };
+        let listing = read_dir_listing(
+            Some(root_path.to_string_lossy().to_string()),
+            vec![project.clone()],
+        )
+        .unwrap();
+        let names: Vec<_> = listing.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["plain", "repo"]);
+        assert!(listing.entries[1].is_git_repo);
+        assert_eq!(listing.entries[0].project_id.as_deref(), Some("p1"));
+        // With no path, open where the existing projects live.
+        let default = read_dir_listing(None, vec![project]).unwrap();
+        assert_eq!(default.path, root_path.to_string_lossy());
     }
 
     #[test]

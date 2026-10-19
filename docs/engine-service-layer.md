@@ -1,6 +1,6 @@
 # Engine service layer
 
-Status: P1 and P2 implemented (`src-tauri/src/engine/`); P3 pending. Supersedes the ad-hoc persistence in `useMessageSend` / `useSessionManager`
+Status: P1–P3 implemented (`src-tauri/src/engine/`). Supersedes the ad-hoc persistence in `useMessageSend` / `useSessionManager`
 and the duplicate logic in `web_gateway/api.rs`.
 
 ## Problem
@@ -102,11 +102,93 @@ Each phase leaves the desktop fully working and is committed separately.
 - Known adapter issue (not engine): after cancelling a `claude-native` turn, the next prompt
   on the same provider session can return an empty result immediately.
 
-**P3 — session service and change events**
+**P3 — session service, change events, web read models** — done
 - Runtime preference, draft-session persistence and reopen/close go through
   `engine::sessions`; `session/changed` / `project/changed` replace `companion/changed`.
 - `web_gateway/api.rs` loses `preferred_runtime`, its running map and its own persistence;
   `src/lib/companionSync.ts` becomes a generic `session/changed` listener.
+- Web: open a project by browsing host folders (not typing paths), close sessions, import
+  CLI transcripts. Deliberately left out of the web: deleting projects, persona/role editing,
+  MCP/skills/settings — destructive or desktop-shaped, rarely needed from a phone.
+
+## P3 design decisions
+
+Each decision lists the options considered and why the chosen one won.
+
+### 1. Who emits change events (observer placement)
+
+| Option | Problem |
+| --- | --- |
+| Each adapter emits after calling the DB (Tauri cmd, gateway, MCP handler) | Three copies; the MCP handlers have no `AppHandle`, so their changes would stay invisible. |
+| The DB layer emits | Repositories would depend on Tauri, and every DB unit test would need an app. |
+| **Engine ops wrap the repository and emit through one hub** (`engine::events`) | — |
+
+Chosen: domain operations in `engine::sessions` (create / close / reopen / update / import,
+project create / delete) are the only writers; adapters call them. `engine::events` holds the
+`AppHandle` installed at startup, so callers without one (MCP handlers) still notify, and it
+is a no-op in unit tests. This is a Facade (`engine::service`, `engine::sessions`) in front of
+the repositories (`db::*`), with Observer-style fan-out through a single emitter.
+
+### 2. Event payload shape
+
+| Option | Cost |
+| --- | --- |
+| Thin (`{ id }`), clients refetch | Every connected client refetches; the session list endpoint loaded every message of 100 sessions just to build previews. |
+| Fat (full session with messages) | Sends whole transcripts to every client on every rename. |
+| **Delta with a summary row** | — |
+
+Chosen: `session/changed { appSessionId, projectId, reason, session: SessionSummary }`. Views
+patch their list in place and fetch a transcript only when opening it. Turn content is the
+one deliberate exception — `turn/finished` carries the turn's messages, because every view
+needs exactly those to replace its live preview, and refetching would double the traffic.
+
+### 3. Read models (CQRS-lite)
+
+Commands mutate through the engine; queries read purpose-built projections:
+`engine::sessions::summaries` computes message count and last preview with indexed
+subqueries (`app_session_messages(session_id, id)`) instead of materialising every message,
+and the web's transcript endpoint takes `?tail=N` so opening a long session on a phone does
+not ship the whole history.
+
+### 4. Subscription and fan-out to web clients
+
+| Option | Trade-off |
+| --- | --- |
+| Broadcast everything to every SSE client | Simple, but `acp/delta` / `acp/stream` for every running session reach phones that show one. |
+| Client-driven topic subscribe (connection id + POST) | Precise, but server-side connection state and an extra round trip. |
+| **Per-connection focus filter (`/api/events?focus=<sid>`)** | Reconnect on session switch (cheap); the reload that a switch does anyway covers the gap. |
+
+Chosen: lifecycle events (`turn/*`, `queue/changed`, `session/changed`, `project/changed`,
+permissions) go to every client; high-frequency stream frames only to clients focused on that
+session. The broadcast buffer is sized for bursts, and a client that still lags receives a
+`resync` event and reloads instead of silently missing frames.
+
+### 5. Concurrency
+
+- **Per session: serial.** One reservation per session; a session loop runs a turn, then
+  drains the queue in order. This is the actor pattern without a mailbox type — the inbox
+  table is the mailbox, so queued input survives restarts.
+- **Across sessions: parallel.** Each session loop is its own task; nothing global serialises
+  turns.
+- **Within a multi-agent turn: serial (kept).** Running `@A @B` in parallel would be faster,
+  but later personas receive earlier personas' replies as context and they share one working
+  tree; parallel runs would race on files and lose the hand-off.
+- **Blocking work off the async runtime.** SQLite, transcript scans, folder listing and the
+  agent catalog run in `spawn_blocking`; the event tap holds its lock only for an in-memory
+  update (see `turns::route`).
+
+### 6. Opening a project from the web
+
+| Option | Verdict |
+| --- | --- |
+| Type an absolute path | Kept as a fallback; painful on a phone. |
+| Discover project folders from CLI transcript history | Needs a full transcript scan across every provider; slow and lossy (Claude encodes paths in directory names). |
+| **Browse host folders, starting from where existing projects live** | Directories only, dotfiles hidden, git repos and already-added projects marked. |
+
+Chosen: `GET /api/fs/dirs?path=` lists sub-directories (bounded, blocking pool). It opens at
+the most common parent of existing projects (e.g. `~/Documents/GitHub`), so the usual case is
+one tap. It exposes no more than the token already grants — the same token lets agents run
+shell commands on the host.
 
 ## Testing
 

@@ -14,8 +14,8 @@ use tauri::{AppHandle, Emitter, Listener};
 use super::transcript::{storage_columns, Transcript, TurnOutcome};
 use crate::types::{AppState, ImageAttachment};
 
-pub(crate) const TURN_STARTED_EVENT: &str = "turn/started";
-pub(crate) const TURN_FINISHED_EVENT: &str = "turn/finished";
+pub(crate) const TURN_STARTED_EVENT: &str = super::events::TURN_STARTED;
+pub(crate) const TURN_FINISHED_EVENT: &str = super::events::TURN_FINISHED;
 const CHECKPOINT_INTERVAL: Duration = Duration::from_millis(1500);
 
 struct ActiveTurn {

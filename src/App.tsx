@@ -677,16 +677,33 @@ export default function App() {
     );
   };
 
-  const closeSession = (id: string) => {
+  /** Drop a session from this window. Closing the last one leaves a fresh draft behind:
+   *  keeping the closed row on screen would make the next send fail (the engine refuses
+   *  closed sessions). */
+  const dropSessionLocally = (id: string) => {
     acceptingStreams.delete(id);
     void destroySessionTerminal(id);
-    const remaining = sessions.filter((s) => s.id !== id);
-    if (remaining.length === 0) { void appSessionApi.remove(id).catch(() => {}); return; }
+    const closing = sessions.find((s) => s.id === id);
+    let remaining = sessions.filter((s) => s.id !== id);
+    if (remaining.length === 0) {
+      const project = currentProject();
+      remaining = [makeDraftSession("Session_1", {
+        projectId: closing?.projectId ?? project?.id ?? null,
+        cwd: project?.rootPath ?? null,
+        runtimeKind: closing?.runtimeKind ?? null,
+        runtimeProfileId: closing?.runtimeProfileId ?? null,
+      })];
+    }
     if (activeSessionId() === id) {
       setActiveSessionId(remaining[remaining.length - 1].id);
     }
     setSessions(remaining);
-    void appSessionApi.remove(id).catch(() => {});
+  };
+
+  const closeSession = (id: string) => {
+    const persisted = sessions.find((s) => s.id === id)?.persisted;
+    dropSessionLocally(id);
+    if (persisted) void appSessionApi.remove(id).catch(() => {});
   };
 
   const composerToolPanel = createMemo<LeftDockPanel | null>(() => rightDockPanel());
@@ -871,6 +888,7 @@ export default function App() {
         if (idx !== -1) setSessions(idx, "queuedItems", items);
       },
       appendSessions: (fresh) => setSessions((prev) => [...prev, ...fresh]),
+      removeSession: dropSessionLocally,
       adoptMessages: sessionManager.adoptMessages,
       appendMessageLocal: sessionManager.appendMessageLocal,
       settleSessionStream: streamEngine.settleSessionStream,

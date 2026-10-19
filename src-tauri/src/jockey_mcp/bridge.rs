@@ -277,7 +277,7 @@ async fn dispatch(
         "list_sessions" => sessions::list_sessions(state, params),
         "get_session" => sessions::get_session(state, params),
         "update_session" => sessions::update_session(state, params),
-        "create_session" => sessions::create_session(state, params),
+        "create_session" => sessions::create_session(state, params).await,
         "close_session" => sessions::close_session(state, params),
         "get_session_context" => sessions::get_session_context(state, params),
         "get_session_history" => sessions::get_session_history(state, params),

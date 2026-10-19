@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::types::{AppState, ImageAttachment, InboxMessage};
 
-pub(crate) const QUEUE_CHANGED_EVENT: &str = "queue/changed";
+pub(crate) const QUEUE_CHANGED_EVENT: &str = super::events::QUEUE_CHANGED;
 
 /// Announce the session's current queue. Views replace their copy with this list.
 pub(crate) fn announce(app: &AppHandle, state: &AppState, session_id: &str) {

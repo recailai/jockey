@@ -12,7 +12,7 @@ use super::transcript::TurnOutcome;
 use super::turns::{self, Reservation, TurnStart};
 use crate::types::{AppState, ImageAttachment, InboxMessage};
 
-pub(crate) const MESSAGE_ADDED_EVENT: &str = "message/added";
+pub(crate) const MESSAGE_ADDED_EVENT: &str = super::events::MESSAGE_ADDED;
 
 #[derive(Clone, Default)]
 pub(crate) struct SubmitInput {

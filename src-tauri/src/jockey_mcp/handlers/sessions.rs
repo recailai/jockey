@@ -2,7 +2,6 @@ use std::collections::HashSet;
 
 use serde_json::{json, Map, Value};
 
-use crate::db::app_session::{close_app_session_internal, create_app_session_internal};
 use crate::db::with_db;
 use crate::types::AppState;
 
@@ -69,28 +68,23 @@ pub(crate) fn update_session(state: &AppState, params: Value) -> Result<Value, S
         .get("id")
         .and_then(|v| v.as_str())
         .ok_or("id is required")?;
-    let now = crate::now_ms();
-    with_db(state, |conn| {
-        if let Some(title) = params.get("title").and_then(|v| v.as_str()) {
-            conn.execute(
-                "UPDATE app_sessions SET title = ?1, last_active_at = ?2 WHERE id = ?3",
-                rusqlite::params![title, now, id],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-        if let Some(role) = params.get("activeRole").and_then(|v| v.as_str()) {
-            conn.execute(
-                "UPDATE app_sessions SET active_role = ?1, last_active_at = ?2 WHERE id = ?3",
-                rusqlite::params![role, now, id],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-        Ok(())
-    })?;
+    let field = |k: &str| params.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    // Same validated path as every other client (title rules, role cleanup, change event).
+    crate::engine::sessions::update_session(
+        state,
+        id,
+        crate::types::AppSessionUpdate {
+            title: field("title"),
+            active_role: field("activeRole"),
+            runtime_kind: None,
+            runtime_profile_id: None,
+            cwd: None,
+        },
+    )?;
     Ok(json!(format!("Session '{id}' updated")))
 }
 
-pub(crate) fn create_session(state: &AppState, params: Value) -> Result<Value, String> {
+pub(crate) async fn create_session(state: &AppState, params: Value) -> Result<Value, String> {
     let title = params.get("title").and_then(|v| v.as_str());
     let project_id = params
         .get("projectId")
@@ -100,7 +94,17 @@ pub(crate) fn create_session(state: &AppState, params: Value) -> Result<Value, S
         .get("runtimeKind")
         .or_else(|| params.get("runtime_kind"))
         .and_then(|v| v.as_str());
-    let session = create_app_session_internal(state, title, project_id, runtime_kind, None, None)?;
+    let session = crate::engine::sessions::create_session(
+        state,
+        crate::engine::sessions::NewSession {
+            title,
+            project_id,
+            runtime_kind,
+            runtime_profile_id: None,
+            id: None,
+        },
+    )
+    .await?;
     Ok(json!({
         "id": session.id,
         "title": session.title,
@@ -113,7 +117,9 @@ pub(crate) fn close_session(state: &AppState, params: Value) -> Result<Value, St
         .get("id")
         .and_then(|v| v.as_str())
         .ok_or("id is required")?;
-    close_app_session_internal(state, id)?;
+    if !crate::engine::sessions::close_session(state, id)? {
+        return Err(format!("session not found or already closed: {id}"));
+    }
     Ok(json!(format!("Session '{id}' closed")))
 }
 

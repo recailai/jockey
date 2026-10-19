@@ -12,20 +12,20 @@ const TOKEN_FILE: &str = "companion_token";
 /// Upper bound on how long stop waits for in-flight requests (e.g. a long
 /// `assistant_chat`) before the server future is dropped outright.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
-const FORWARDED_EVENTS: &[&str] = &[
-    "acp/delta",
-    "acp/stream",
-    crate::engine::turns::TURN_STARTED_EVENT,
-    crate::engine::turns::TURN_FINISHED_EVENT,
-    crate::engine::queue::QUEUE_CHANGED_EVENT,
-    crate::engine::service::MESSAGE_ADDED_EVENT,
-    api::CHANGED_EVENT,
-];
+/// High-frequency stream frames, delivered only to clients focused on that session.
+const STREAM_EVENTS: &[&str] = &["acp/delta", "acp/stream"];
+/// Sized for a burst of stream frames across several running sessions; a client that still
+/// falls behind gets `resync` rather than a silent gap.
+const BROADCAST_CAPACITY: usize = 1024;
 
+/// One event as fanned out to SSE clients. `Arc` payloads because the broadcast channel
+/// clones the event once per subscriber.
 #[derive(Clone, Debug)]
 pub struct GatewayEvent {
-    pub event_name: String,
-    pub payload: String,
+    pub event_name: &'static str,
+    pub payload: std::sync::Arc<str>,
+    /// `Some(session)` for stream frames scoped to one session; `None` reaches every client.
+    pub focus: Option<std::sync::Arc<str>>,
 }
 
 #[derive(Clone)]
@@ -85,7 +85,7 @@ static MANAGER: OnceLock<Mutex<GatewayManager>> = OnceLock::new();
 
 fn get_manager() -> &'static Mutex<GatewayManager> {
     MANAGER.get_or_init(|| {
-        let (tx, _) = tokio::sync::broadcast::channel(256);
+        let (tx, _) = tokio::sync::broadcast::channel(BROADCAST_CAPACITY);
         Mutex::new(GatewayManager {
             port: DEFAULT_PORT,
             token: None,
@@ -238,16 +238,56 @@ pub fn regenerate_gateway_token_cmd() -> Result<GatewayStatus, String> {
     Ok(mgr.status())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StreamEnvelope {
+    app_session_id: Option<String>,
+    event: Option<StreamEventKind>,
+}
+
+#[derive(serde::Deserialize)]
+struct StreamEventKind {
+    kind: Option<String>,
+}
+
+/// Which client a stream frame is for. Permission prompts stay global: a phone must see an
+/// approval request from any session, not only the one on screen.
+fn stream_focus(payload: &str) -> Option<std::sync::Arc<str>> {
+    let envelope: StreamEnvelope = serde_json::from_str(payload).ok()?;
+    let kind = envelope.event.and_then(|e| e.kind);
+    if matches!(
+        kind.as_deref(),
+        Some("permissionRequest" | "permissionExpired" | "userInputRequest")
+    ) {
+        return None;
+    }
+    envelope.app_session_id.map(std::sync::Arc::from)
+}
+
 fn install_event_forwarders(app: &AppHandle, mgr: &mut GatewayManager) {
     if mgr.listeners_installed {
         return;
     }
-    for &name in FORWARDED_EVENTS {
+    let forwarded = STREAM_EVENTS
+        .iter()
+        .chain(crate::engine::events::ALL.iter());
+    for &name in forwarded {
         let tx = mgr.broadcaster.clone();
+        let is_stream = STREAM_EVENTS.contains(&name);
+        // Runs inside Tauri's emit: with no web client connected this must cost nothing.
         app.listen_any(name, move |ev| {
+            if tx.receiver_count() == 0 {
+                return;
+            }
+            let payload = ev.payload();
             let _ = tx.send(GatewayEvent {
-                event_name: name.to_string(),
-                payload: ev.payload().to_string(),
+                event_name: name,
+                focus: if is_stream {
+                    stream_focus(payload)
+                } else {
+                    None
+                },
+                payload: std::sync::Arc::from(payload),
             });
         });
     }
@@ -343,6 +383,16 @@ pub async fn stop_gateway_cmd() -> Result<GatewayStatus, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_frames_are_focused_except_approvals() {
+        let delta = r#"{"appSessionId":"s1","role":"Developer","delta":"hi"}"#;
+        assert_eq!(stream_focus(delta).as_deref(), Some("s1"));
+        let tool = r#"{"appSessionId":"s1","event":{"kind":"toolCall","toolCallId":"t"}}"#;
+        assert_eq!(stream_focus(tool).as_deref(), Some("s1"));
+        let approval = r#"{"appSessionId":"s1","event":{"kind":"permissionRequest"}}"#;
+        assert_eq!(stream_focus(approval), None);
+    }
 
     #[test]
     fn private_lan_ip_covers_only_rfc1918() {

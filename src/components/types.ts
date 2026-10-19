@@ -231,6 +231,25 @@ export type QueueChangedEvent = {
   items: Array<{ id: string; roleName: string | null; delivery: string; text: string; attachments: Array<{ data: string; mimeType: string }>; createdAt: number }>;
 };
 export type MessageAddedEvent = { appSessionId: string; message: AppMessage };
+export type SessionSummary = {
+  id: string;
+  title: string;
+  activeRole: string;
+  runtimeKind: string | null;
+  projectId: string | null;
+  lastActiveAt: number;
+  closedAt: number | null;
+  messageCount: number;
+  preview: string | null;
+  running: boolean;
+};
+export type SessionChangedEvent = {
+  appSessionId: string;
+  projectId: string | null;
+  reason: "created" | "updated" | "closed" | "reopened" | "imported";
+  session: SessionSummary | null;
+};
+export type ProjectChangedEvent = { projectId: string; reason: "created" | "deleted" };
 export type SubmitResult =
   | { status: "started" }
   | { status: "queued"; item: { id: string } }

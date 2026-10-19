@@ -3,7 +3,8 @@
 //! first message. Each of these used to live in the desktop UI (and was copied into the web
 //! gateway), so other clients either re-implemented them or went without.
 
-use crate::types::AppState;
+use super::events::{self, ProjectChange, SessionChange};
+use crate::types::{AppSession, AppSessionUpdate, AppState, Project, SessionSummary};
 
 pub(crate) const DEFAULT_ROLE: &str = "Developer";
 
@@ -52,6 +53,123 @@ pub(crate) async fn supports_steer(runtime: &str) -> bool {
             })
         })
         .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// Session and project operations — the only writers; each one announces itself
+// ---------------------------------------------------------------------------
+
+pub(crate) fn summaries(
+    state: &AppState,
+    project_id: Option<&str>,
+    closed: bool,
+) -> Result<Vec<SessionSummary>, String> {
+    let mut rows = crate::db::app_session::list_session_summaries(state, project_id, closed, None)?;
+    for row in &mut rows {
+        row.running = super::turns::is_busy(&row.id);
+    }
+    Ok(rows)
+}
+
+pub(crate) struct NewSession<'a> {
+    pub(crate) title: Option<&'a str>,
+    pub(crate) project_id: Option<&'a str>,
+    pub(crate) runtime_kind: Option<&'a str>,
+    pub(crate) runtime_profile_id: Option<&'a str>,
+    /// Client-chosen id, so a draft session keeps its identity once it becomes real.
+    pub(crate) id: Option<&'a str>,
+}
+
+/// Create a session. One that names no engine gets the preferred one for its project, so
+/// every client sees the same engine instead of each picking its own default.
+pub(crate) async fn create_session(
+    state: &AppState,
+    new: NewSession<'_>,
+) -> Result<AppSession, String> {
+    let project_id = new.project_id.map(str::trim).filter(|p| !p.is_empty());
+    let preferred = match new.runtime_kind.filter(|r| !r.trim().is_empty()) {
+        Some(_) => None,
+        None => preferred_runtime(state, project_id, DEFAULT_ROLE).await,
+    };
+    let (runtime, profile) = match &preferred {
+        Some((key, profile)) => (Some(key.as_str()), Some(profile.as_str())),
+        None => (new.runtime_kind, new.runtime_profile_id),
+    };
+    let session = crate::db::app_session::create_app_session_internal(
+        state,
+        new.title.filter(|t| !t.trim().is_empty()),
+        project_id,
+        runtime,
+        profile,
+        new.id,
+    )?;
+    events::session_changed(state, &session.id, SessionChange::Created);
+    Ok(session)
+}
+
+pub(crate) fn update_session(
+    state: &AppState,
+    id: &str,
+    update: AppSessionUpdate,
+) -> Result<(), String> {
+    crate::db::app_session::update_app_session_internal(state, id, update)?;
+    events::session_changed(state, id, SessionChange::Updated);
+    Ok(())
+}
+
+/// Close a session. Returns `false` if it was already closed.
+pub(crate) fn close_session(state: &AppState, id: &str) -> Result<bool, String> {
+    let closed = crate::db::app_session::close_app_session_internal(state, id)?;
+    if closed {
+        events::session_changed(state, id, SessionChange::Closed);
+    }
+    Ok(closed)
+}
+
+pub(crate) fn reopen_session(state: &AppState, id: &str) -> Result<AppSession, String> {
+    let session = crate::db::app_session::reopen_app_session_internal(state, id)?;
+    events::session_changed(state, id, SessionChange::Reopened);
+    Ok(session)
+}
+
+/// Import CLI transcripts into a project. Scanning reads provider files, so run it on the
+/// blocking pool.
+pub(crate) async fn import_sessions(
+    state: &AppState,
+    project_id: &str,
+    external_session_ids: Option<Vec<String>>,
+) -> Result<Vec<AppSession>, String> {
+    let worker_state = state.clone_refs();
+    let pid = project_id.to_string();
+    let imported = tokio::task::spawn_blocking(move || {
+        crate::importer::import_project_sessions_internal(
+            &worker_state,
+            &pid,
+            external_session_ids.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    for session in &imported {
+        events::session_changed(state, &session.id, SessionChange::Imported);
+    }
+    Ok(imported)
+}
+
+pub(crate) fn create_project(
+    state: &AppState,
+    name: String,
+    root_path: String,
+) -> Result<Project, String> {
+    let project = crate::db::project::create_project_internal(state, name, root_path)?;
+    events::project_changed(&project.id, ProjectChange::Created);
+    Ok(project)
+}
+
+pub(crate) fn delete_project(state: &AppState, id: &str) -> Result<(), String> {
+    crate::db::project::delete_project_internal(state, id)?;
+    events::project_changed(id, ProjectChange::Deleted);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

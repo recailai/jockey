@@ -260,6 +260,22 @@ pub(crate) struct AppSessionUpdate {
     pub(crate) cwd: Option<Option<String>>,
 }
 
+/// A session as lists and change events carry it: no transcript, just enough to render a row.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SessionSummary {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) active_role: String,
+    pub(crate) runtime_kind: Option<String>,
+    pub(crate) project_id: Option<String>,
+    pub(crate) last_active_at: i64,
+    pub(crate) closed_at: Option<i64>,
+    pub(crate) message_count: usize,
+    pub(crate) preview: Option<String>,
+    pub(crate) running: bool,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct InboxMessage {

@@ -146,6 +146,8 @@ export const appSessionApi = {
   remove: (id: string) => call<void>("delete_app_session", { id }),
   list: (projectId?: string) => call<RawSession[]>("list_app_sessions", { projectId }),
   listClosed: () => call<RawSession[]>("list_closed_app_sessions"),
+  /** Full sessions by id, for one another client created (seen only as a summary). */
+  getMany: (ids: string[]) => call<RawSession[]>("get_app_sessions", { ids }),
   reopen: (id: string) => call<RawSession>("reopen_app_session", { id }),
   appendMessage: (
     sessionId: string,

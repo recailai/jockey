@@ -3,7 +3,9 @@ import type {
   AppMessage,
   AppSession,
   MessageAddedEvent,
+  ProjectChangedEvent,
   QueueChangedEvent,
+  SessionChangedEvent,
   QueuedItem,
   TurnFinishedEvent,
   TurnStartedEvent,
@@ -18,6 +20,8 @@ type EngineEventsInput = {
   updateSession: (id: string, patch: Partial<AppSession>) => void;
   setQueuedItems: (id: string, items: QueuedItem[]) => void;
   appendSessions: (fresh: AppSession[]) => void;
+  /** Drop a session another client closed; picks a new active session if needed. */
+  removeSession: (id: string) => void;
   adoptMessages: (sessionId: string, messages: readonly AppMessage[]) => void;
   appendMessageLocal: (sessionId: string, message: AppMessage) => void;
   settleSessionStream: (sessionId: string, messages: readonly AppMessage[], expectedRunToken?: number) => void;
@@ -116,20 +120,34 @@ export async function registerEngineEvents(input: EngineEventsInput): Promise<Un
     listen<MessageAddedEvent>("message/added", (ev) => {
       if (known(ev.payload.appSessionId)) input.adoptMessages(ev.payload.appSessionId, [ev.payload.message]);
     }),
-    // Projects and sessions created by another client (web companion).
-    listen<{ kind: "projects" | "sessions" }>("companion/changed", async (ev) => {
-      if (ev.payload.kind === "projects") {
-        await input.refreshProjects();
+    // Sessions changed by any client. Own changes arrive here too and are no-ops: the
+    // summary matches what this window already shows.
+    listen<SessionChangedEvent>("session/changed", async (ev) => {
+      const { appSessionId: sid, reason, session } = ev.payload;
+      if (reason === "closed") {
+        if (known(sid)) input.removeSession(sid);
         return;
       }
-      let raw: RawSession[];
+      if (known(sid)) {
+        if (session) {
+          input.updateSession(sid, {
+            title: session.title,
+            activeRole: session.activeRole,
+            runtimeKind: session.runtimeKind,
+          });
+        }
+        return;
+      }
+      // New to this window: load it once, with its transcript.
       try {
-        raw = await appSessionApi.list();
+        const [raw] = await appSessionApi.getMany([sid]);
+        if (raw && !raw.closedAt && !known(sid)) input.appendSessions([sessionFromRaw(raw)]);
       } catch {
-        return;
+        // A failed load only means the session shows up on the next project switch.
       }
-      const fresh = raw.filter((r) => !known(r.id)).map(sessionFromRaw);
-      if (fresh.length > 0) input.appendSessions(fresh);
+    }),
+    listen<ProjectChangedEvent>("project/changed", () => {
+      void input.refreshProjects();
     }),
   ]);
   return () => unlisteners.forEach((u) => u());
