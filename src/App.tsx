@@ -1,4 +1,4 @@
-import { For, Show, Suspense, createEffect, createMemo, createSignal, lazy, onCleanup, onMount } from "solid-js";
+import { For, Show, Suspense, createEffect, createMemo, createSignal, lazy, on, onCleanup, onMount } from "solid-js";
 
 import MessageWindow from "./components/MessageWindow";
 import ChatInput from "./components/ChatInput";
@@ -37,7 +37,7 @@ import { useCompletions } from "./hooks/useCompletions";
 import { useMessageSend } from "./hooks/useMessageSend";
 import { useInputHistory } from "./hooks/useInputHistory";
 import { uniqueName, makeDefaultSession, makeDraftSession, sessionFromRaw } from "./lib/sessionHelpers";
-import { registerEngineEvents } from "./lib/engineEvents";
+import { adoptLiveTurn, registerEngineEvents } from "./lib/engineEvents";
 import { createSessionEventBuffer } from "./lib/sessionEventBuffer";
 import { appSessionApi, assistantApi, engineApi, projectAgentApi, workspaceApi } from "./lib/tauriApi";
 import { createCommandUiRegistry } from "./lib/commandUi/registry";
@@ -239,6 +239,7 @@ export default function App() {
 
   const { gitChangeCount, gitStatus, refetch: refetchGitStatus } = useGitPoller(activeSession);
 
+
   const streamEngine = useStreamEngine(sessionManager);
   const {
     acceptingStreams,
@@ -246,6 +247,28 @@ export default function App() {
     dropStream,
     normalizeToolLocations,
   } = streamEngine;
+
+  // Follow the shown session in the engine: a turn already running (started elsewhere or
+  // before this window loaded) and activity outside Jockey reach this view. Drafts have no
+  // engine row to follow.
+  createEffect(on(
+    () => {
+      const s = activeSession();
+      return s?.persisted ? s.id : null;
+    },
+    (sid) => {
+      if (!sid) return;
+      void appSessionApi.watch(sid)
+        .then((live) => adoptLiveTurn({
+          getSessionIndex: sessionManager.getSessionIndex,
+          adoptMessages: sessionManager.adoptMessages,
+          updateSession: sessionManager.updateSession,
+          acceptingStreams,
+        }, sid, live))
+        .catch(() => {});
+      onCleanup(() => void appSessionApi.unwatch(sid).catch(() => {}));
+    },
+  ));
 
   const sessionEventBuffer = createSessionEventBuffer({
     sessions,

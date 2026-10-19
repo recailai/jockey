@@ -5,6 +5,7 @@ import type {
   AppMessage,
   AppSkill,
   AssistantRuntime,
+  LiveTurn,
   Role,
   RoleUpsertInput,
   SubmitResult,
@@ -141,6 +142,10 @@ export const appSessionApi = {
   listClosed: () => call<RawSession[]>("list_closed_app_sessions"),
   /** Full sessions by id, for one another client created (seen only as a summary). */
   getMany: (ids: string[]) => call<RawSession[]>("get_app_sessions", { ids }),
+  /** Follow a session while it is shown; returns the running turn's snapshot, if any. */
+  watch: (id: string) => call<LiveTurn | null>("watch_session", { id }),
+  unwatch: (id: string) => call<void>("unwatch_session", { id }),
+  liveTurn: (id: string) => call<LiveTurn | null>("get_live_turn", { id }),
   reopen: (id: string) => call<RawSession>("reopen_app_session", { id }),
   appendMessage: (
     sessionId: string,

@@ -99,7 +99,6 @@ pub(crate) fn scan_claude_sessions(project_path: &str) -> Vec<DiscoveredSession>
                 created_at: mtime,
                 last_active_at: mtime,
                 turn_count,
-                parse_messages: parse_claude_session_messages,
             });
         }
     }

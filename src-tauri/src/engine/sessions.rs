@@ -135,6 +135,7 @@ pub(crate) fn summaries(
     let mut rows = crate::db::app_session::list_session_summaries(state, project_id, closed, None)?;
     for row in &mut rows {
         row.running = super::turns::is_busy(&row.id);
+        row.external_active = super::watch::is_external_active(&row.id);
     }
     Ok(rows)
 }

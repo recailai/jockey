@@ -53,10 +53,11 @@ function sessionStatusClass(session: AppSession): string {
 }
 
 function sessionIsRunning(session: AppSession): boolean {
-  return session.submitting || session.status === "running";
+  return session.submitting || session.status === "running" || !!session.externalActive;
 }
 
 function sessionStatusTitle(session: AppSession): string {
+  if (session.externalActive) return "Running outside Jockey";
   if (sessionIsRunning(session)) return "Running";
   if (session.status === "error") return "Error";
   return "Idle";

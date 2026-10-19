@@ -264,6 +264,8 @@ pub(crate) struct SessionSummary {
     pub(crate) message_count: usize,
     pub(crate) preview: Option<String>,
     pub(crate) running: bool,
+    /// The provider conversation is being driven outside Jockey (engine::watch).
+    pub(crate) external_active: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

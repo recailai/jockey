@@ -63,6 +63,44 @@ pub(crate) fn get_app_sessions(
     crate::db::app_session::get_app_sessions_by_ids(get_state(&state), &ids)
 }
 
+/// A view started showing a session: follow it (late-joined turns, provider activity outside
+/// Jockey) until the matching `unwatch_session`. Returns the running turn's snapshot, if any.
+///
+/// The desktop shows one session at a time, so it holds a single watch that a new call
+/// replaces. A window reload that never sent `unwatch_session` then cannot leak a watcher.
+#[tauri::command]
+pub(crate) fn watch_session(app: tauri::AppHandle, id: String) -> Option<serde_json::Value> {
+    let mut current = desktop_watch().lock().unwrap_or_else(|e| e.into_inner());
+    if current.as_deref() != Some(id.as_str()) {
+        if let Some(previous) = current.replace(id.clone()) {
+            super::watch::unwatch(&previous);
+        }
+        return super::watch::watch(&app, &id);
+    }
+    super::turns::live_turn(&id)
+}
+
+#[tauri::command]
+pub(crate) fn unwatch_session(id: String) {
+    let mut current = desktop_watch().lock().unwrap_or_else(|e| e.into_inner());
+    if current.as_deref() == Some(id.as_str()) {
+        current.take();
+        super::watch::unwatch(&id);
+    }
+}
+
+fn desktop_watch() -> &'static std::sync::Mutex<Option<String>> {
+    static CURRENT: std::sync::OnceLock<std::sync::Mutex<Option<String>>> =
+        std::sync::OnceLock::new();
+    CURRENT.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// The running turn as it would be persisted now: `{ turnId, rev, message }`.
+#[tauri::command]
+pub(crate) fn get_live_turn(id: String) -> Option<serde_json::Value> {
+    super::turns::live_turn(&id)
+}
+
 #[tauri::command]
 pub(crate) fn create_project_cmd(
     state: State<'_, AppState>,

@@ -241,7 +241,13 @@ export type SessionSummary = {
   messageCount: number;
   preview: string | null;
   running: boolean;
+  /** The provider conversation is being driven outside Jockey (e.g. a terminal). */
+  externalActive: boolean;
 };
+/** The running turn moved; views that are not following its live frames pull `LiveTurn`. */
+export type TurnProgressEvent = { appSessionId: string; turnId: string; rev: number };
+/** A running turn as it would be persisted now. */
+export type LiveTurn = { turnId: string; rev: number; message: AppMessage };
 export type SessionChangedEvent = {
   appSessionId: string;
   projectId: string | null;
@@ -352,6 +358,8 @@ export type AppSession = {
   pendingTerminalOutput: Record<string, string[]>;
   /** Latest structured ACP-layer error for this session, for UI banner. */
   lastError: SessionErrorInfo | null;
+  /** Driven outside Jockey right now; sending waits until it settles (engine::watch). */
+  externalActive?: boolean;
 };
 
 export const RUNTIMES = ["claude-native", "codex-cli", "pi-cli", "antigravity-cli", "claude-code", "mock"];

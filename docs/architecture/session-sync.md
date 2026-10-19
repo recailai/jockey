@@ -1,7 +1,59 @@
 # Session sync: late joiners and external CLI activity
 
-Status: design, not implemented. Builds on [engine-service-layer.md](engine-service-layer.md)
-and the adapter contract in [runtime-adapters.md](runtime-adapters.md).
+Status: read-side sync implemented (see [As built](#as-built)); the adapter-contract
+extensions below (Codex shared daemon, sequenced frames) remain design. Builds on
+[engine-service-layer.md](engine-service-layer.md) and the adapter contract in
+[runtime-adapters.md](runtime-adapters.md).
+
+## As built
+
+The requirement is read-only following with eventual consistency, plus a running state. That
+admits a much smaller mechanism than the full model below, so the implementation picks the
+cheapest option that is exact at the end of every turn:
+
+| Concern | Options weighed | Chosen |
+| --- | --- | --- |
+| View joins a running Jockey turn | (a) sequence every frame (`rev`) through an engine publisher, clients dedupe; (b) clients poll the checkpoint; (c) **notify, then pull**: a tiny `turn/progress { turnId, rev }` while someone watches, late joiners fetch the in-memory snapshot | (c): no change to the ~8 adapter emit sites or to the desktop's live path, ≤ 1 s staleness, and `turn/finished` already makes the record exact. (a) stays the upgrade path if sub-second fidelity for late joiners is ever needed. |
+| Provider conversation driven elsewhere | (a) join the vendor owner (Codex daemon); (b) OS file watcher (`notify`); (c) **stat the transcripts of watched sessions once a second** and import appended entries through the importer | (c): no new dependency, works for Claude, Codex and Pi alike, costs one `stat` per watched conversation per second. (a) gives live frames for Codex but changes how turns run; (b) saves a second of latency at the cost of a dependency. |
+| Running state | (a) per-adapter process detection; (b) **transcript growth with no Jockey turn running** | (b): `externalActive` in session summaries, true for 8 s after the transcript last grew. |
+
+Pieces:
+
+- `engine::watch` — refcounted `watch` / `unwatch` per session (desktop: the shown session;
+  web: the SSE `focus`, released when the connection drops). One loop per watched session,
+  stopped when the count reaches zero; nothing runs for unwatched sessions.
+- `turns::{live_rev, live_turn}` — the running turn's revision and snapshot, read under the
+  turn lock; `get_live_turn` (Tauri) and `GET /api/sessions/:id/live` (web) expose it, and
+  `watch_session` returns it so a view opened mid-turn renders immediately.
+- Transcript cursor — `app_session_role_runtime_configs.transcript_cursor` counts the
+  provider transcript entries already reflected in the session. `importer::sync_transcript`
+  adds only entries past it, under the importer's deterministic ids, so importing and
+  watching share one idempotent path. A conversation without a cursor starts after its
+  imported rows if its newest message is one of them, otherwise at the transcript's end. A new
+  provider id resets the cursor.
+- Own-write invariant — `turns::begin` marks the session as being written by Jockey (the
+  watcher skips it); 2 s after the turn ends `importer::mark_transcript_read` moves the cursor
+  to the transcript's end, so neither the watcher nor a re-import records Jockey's own turn
+  twice. This also fixes re-import duplicating turns Jockey ran on an imported session.
+- After importing external entries the provider slot is discarded, so the next Jockey turn
+  resumes from the provider's record instead of a warm process that missed those turns.
+- `submit` refuses input while `externalActive` (resuming a conversation another process is
+  mid-turn in interleaves both, per the Claude Code docs).
+- Views: desktop `engineEvents.ts` (`turn/progress` → `adoptLiveTurn`, ignoring turns it saw
+  finish) and a spinner titled "Running outside Jockey" on the session chip; web
+  `companion.html` renders snapshots instead of raw frames when it did not see the turn start,
+  and shows 终端运行中.
+
+Verified end to end through the gateway (claude-native): a client subscribing 4 s into a
+turn received `turn/progress` and the snapshot, then the persisted record; a terminal
+`claude -p --resume <id>` run while watched produced `externalActive` within a second, both
+of its messages as `message/added`, a refused submit, and `externalActive` false 8 s after
+it ended; the next Jockey turn answered from the terminal's turn (slot discarded), and its
+own entries were not re-imported.
+
+Not covered: imported messages are text-only (the importer's projection: no tool cards or
+thoughts); a conversation driven elsewhere *before* Jockey first watched it is only picked up
+if its newest stored message came from the transcript.
 
 ## Requirements
 
@@ -153,7 +205,10 @@ Pattern: single writer per conversation, readers never lock (CQRS). The only loc
 No OS-level locking of provider files: the CLIs do not honour one, and it would only block
 Jockey, which this policy already covers.
 
-## Phases
+## Phases (full model)
+
+The as-built mechanism covers the read side for every runtime. The phases below are what the
+full model would add on top.
 
 1. **Sequencer + snapshot** (requirement 1): `engine::stream::publish`, `rev`, `origin`,
    `get_live_turn` + `/api/sessions/:id/live`, the join protocol on desktop and web, `resync`

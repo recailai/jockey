@@ -92,6 +92,15 @@ pub(crate) async fn submit(app: &AppHandle, input: SubmitInput) -> Result<Submit
         )
         .await;
     }
+    // Resuming a provider conversation another process is mid-turn in interleaves both into
+    // one transcript (documented for Claude Code); wait until it settles.
+    if super::watch::is_external_active(&input.session_id) {
+        return Err(
+            "this session is running outside Jockey (e.g. in a terminal); \
+                    wait for it to finish before sending"
+                .to_string(),
+        );
+    }
     // Reject an unknown @mention up front, before it can sit in the queue.
     sessions::route(
         &state,

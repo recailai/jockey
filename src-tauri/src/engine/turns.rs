@@ -23,6 +23,9 @@ struct ActiveTurn {
     message_id: String,
     transcript: Transcript,
     dirty: bool,
+    /// Bumped on every frame that changed the transcript, so a view that joined late can tell
+    /// whether its snapshot is stale (engine::watch).
+    rev: u64,
     finished: bool,
     cancel_requested: bool,
 }
@@ -78,7 +81,30 @@ fn route(raw: &str, is_delta: bool) {
     };
     if changed {
         turn.dirty = true;
+        turn.rev += 1;
     }
+}
+
+/// The running turn's `(turn_id, rev)`, cheap enough to poll.
+pub(crate) fn live_rev(session_id: &str) -> Option<(String, u64)> {
+    let entry = active_turns().get(session_id)?.value().clone();
+    let turn = entry.lock().ok()?;
+    (!turn.finished).then(|| (turn.turn_id.clone(), turn.rev))
+}
+
+/// The running turn as the message it will be persisted as, for a view that joined after it
+/// started and so missed its live frames.
+pub(crate) fn live_turn(session_id: &str) -> Option<Value> {
+    let entry = active_turns().get(session_id)?.value().clone();
+    let turn = entry.lock().ok()?;
+    if turn.finished {
+        return None;
+    }
+    Some(json!({
+        "turnId": turn.turn_id,
+        "rev": turn.rev,
+        "message": turn.transcript.message(&turn.message_id, crate::now_ms(), None),
+    }))
 }
 
 fn persist(state: &AppState, session_id: &str, msg: &Value) -> Result<(), String> {
@@ -128,6 +154,7 @@ pub(crate) fn reserve(session_id: &str, assistant_message_id: Option<&str>) -> O
                 message_id,
                 transcript: Transcript::new(""),
                 dirty: false,
+                rev: 0,
                 finished: false,
                 cancel_requested: false,
             }));
@@ -205,6 +232,7 @@ pub(crate) fn begin(
     }
     // On failure the reservation drops here and frees the slot.
     persist(state, &session_id, &user_message)?;
+    super::watch::own_turn_started(&session_id);
     reservation.slot = None;
 
     let (turn_id, message_id) = {
@@ -320,6 +348,7 @@ impl Drop for TurnHandle {
             return;
         }
         release(&self.session_id, &self.entry);
+        super::watch::own_turn_finished(&self.state, &self.session_id);
         let _ = self.app.emit(
             TURN_FINISHED_EVENT,
             json!({
@@ -383,6 +412,7 @@ impl TurnHandle {
             }
         }
         release(&self.session_id, &self.entry);
+        super::watch::own_turn_finished(&self.state, &self.session_id);
         let _ = self.app.emit(
             TURN_FINISHED_EVENT,
             json!({
@@ -408,6 +438,7 @@ mod tests {
             message_id: format!("msg-{sid}"),
             transcript: Transcript::new(role),
             dirty: false,
+            rev: 0,
             finished: false,
             cancel_requested: false,
         }));
@@ -430,6 +461,34 @@ mod tests {
         );
         let again = reserve("reserve-a", None).expect("slot is free again");
         drop(again);
+    }
+
+    #[test]
+    fn live_snapshot_reports_progress_for_late_joiners() {
+        let entry = register("live-a", "Developer");
+        assert_eq!(live_rev("live-a"), Some(("turn-live-a".to_string(), 0)));
+        route(
+            &json!({"appSessionId": "live-a", "role": "Developer", "delta": "part one"})
+                .to_string(),
+            true,
+        );
+        let (_, rev) = live_rev("live-a").expect("running");
+        assert_eq!(rev, 1, "a frame that changed the transcript bumps rev");
+        let live = live_turn("live-a").expect("snapshot");
+        assert_eq!(live["rev"], 1);
+        assert_eq!(live["message"]["id"], "msg-live-a");
+        assert!(live["message"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("part one"));
+
+        entry.lock().unwrap().finished = true;
+        assert!(
+            live_turn("live-a").is_none(),
+            "a finished turn has no live snapshot"
+        );
+        active_turns().remove("live-a");
+        assert!(live_rev("live-a").is_none());
     }
 
     #[test]

@@ -171,6 +171,7 @@ pub(crate) fn list_session_summaries(
                         .get::<_, Option<String>>(9)?
                         .map(|t| compact_preview(&t)),
                     running: false,
+                    external_active: false,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -584,14 +585,17 @@ pub(crate) fn save_app_message(
 /// Insert transcript messages under deterministic ids (`{id_prefix}:{index}`). Re-importing the
 /// same transcript only adds entries it has not seen, and two concurrent imports cannot double
 /// it (uq_app_session_messages_session_client_id). One transaction, not one fsync per row.
+/// Insert transcript entries `start_index..` under deterministic ids `{id_prefix}:{index}`.
+/// Returns the positions (within `messages`) that were new; already-present ids are skipped.
 pub(crate) fn insert_imported_messages(
     state: &AppState,
     session_id: &str,
     id_prefix: &str,
+    start_index: usize,
     messages: &[(String, String, i64)],
-) -> Result<usize, String> {
+) -> Result<Vec<usize>, String> {
     if messages.is_empty() {
-        return Ok(0);
+        return Ok(Vec::new());
     }
     with_db(state, |conn| {
         in_tx(conn, |conn| {
@@ -602,20 +606,41 @@ pub(crate) fn insert_imported_messages(
                      ON CONFLICT(session_id, client_id) WHERE client_id IS NOT NULL DO NOTHING",
                 )
                 .map_err(|e| e.to_string())?;
-            let mut added = 0;
-            for (index, (role_name, content, created_at)) in messages.iter().enumerate() {
-                added += stmt
+            let mut added = Vec::new();
+            for (pos, (role_name, content, created_at)) in messages.iter().enumerate() {
+                let inserted = stmt
                     .execute(params![
                         session_id,
-                        format!("{id_prefix}:{index}"),
+                        format!("{id_prefix}:{}", start_index + pos),
                         role_name,
                         content,
                         created_at
                     ])
                     .map_err(|e| e.to_string())?;
+                if inserted > 0 {
+                    added.push(pos);
+                }
             }
             Ok(added)
         })
+    })
+}
+
+/// Client id of the session's newest message, if it has one.
+pub(crate) fn last_message_client_id(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Option<String>, String> {
+    with_db(state, |conn| {
+        conn.query_row(
+            "SELECT client_id FROM app_session_messages WHERE session_id = ?1
+             ORDER BY id DESC LIMIT 1",
+            params![session_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(Option::flatten)
+        .map_err(|e| e.to_string())
     })
 }
 
@@ -1030,22 +1055,30 @@ mod tests {
         let msg = |n: usize| ("user".to_string(), format!("m{n}"), n as i64);
         let first: Vec<_> = (0..3).map(msg).collect();
         assert_eq!(
-            insert_imported_messages(&state, &session.id, "import:x:1", &first).unwrap(),
+            insert_imported_messages(&state, &session.id, "import:x:1", 0, &first)
+                .unwrap()
+                .len(),
             3
         );
         // The CLI wrote two more entries since; a re-import adds exactly those.
         let longer: Vec<_> = (0..5).map(msg).collect();
         assert_eq!(
-            insert_imported_messages(&state, &session.id, "import:x:1", &longer).unwrap(),
-            2
+            insert_imported_messages(&state, &session.id, "import:x:1", 0, &longer).unwrap(),
+            vec![3, 4]
         );
+        assert!(
+            insert_imported_messages(&state, &session.id, "import:x:1", 0, &longer)
+                .unwrap()
+                .is_empty()
+        );
+        // Continuing from a cursor keeps the transcript positions as ids.
         assert_eq!(
-            insert_imported_messages(&state, &session.id, "import:x:1", &longer).unwrap(),
-            0
+            insert_imported_messages(&state, &session.id, "import:x:1", 5, &[msg(5)]).unwrap(),
+            vec![0]
         );
         assert_eq!(
             imported_message_counts(&state, &session.id, "import:x:1").unwrap(),
-            (5, 5)
+            (6, 6)
         );
     }
 

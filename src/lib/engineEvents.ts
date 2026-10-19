@@ -7,6 +7,8 @@ import type {
   QueueChangedEvent,
   SessionChangedEvent,
   QueuedItem,
+  LiveTurn,
+  TurnProgressEvent,
   TurnFinishedEvent,
   TurnStartedEvent,
 } from "../components/types";
@@ -32,6 +34,27 @@ type EngineEventsInput = {
   showToast: (message: string, severity?: "error" | "info") => void;
 };
 
+
+type LiveTurnInput = Pick<
+  EngineEventsInput,
+  "getSessionIndex" | "adoptMessages" | "updateSession" | "acceptingStreams"
+>;
+
+/**
+ * Show a turn this window did not see start (opened mid-turn, reloaded, switched in): its
+ * snapshot replaces the checkpoint row under the same message id, and `turn/finished` settles
+ * it like any other turn. Windows following the live frames ignore it.
+ */
+// A snapshot requested before its turn ended can arrive after `turn/finished`; it must not
+// overwrite the persisted record or mark the session running again.
+const finishedTurns = new Set<string>();
+
+export function adoptLiveTurn(input: LiveTurnInput, sid: string, live: LiveTurn | null) {
+  if (!live || finishedTurns.has(live.turnId)) return;
+  if (input.getSessionIndex(sid) === -1 || input.acceptingStreams.has(sid)) return;
+  input.adoptMessages(sid, [live.message]);
+  input.updateSession(sid, { submitting: true, status: "running", turnPhase: "running" });
+}
 
 /**
  * The desktop's view of the engine. Every turn — sent from this window, the web companion,
@@ -76,6 +99,8 @@ export async function registerEngineEvents(input: EngineEventsInput): Promise<Un
     }),
     listen<TurnFinishedEvent>("turn/finished", (ev) => {
       const { appSessionId: sid, turnId, ok, cancelled, error, messages } = ev.payload;
+      finishedTurns.add(turnId);
+      if (finishedTurns.size > 200) finishedTurns.delete(finishedTurns.values().next().value as string);
       if (!known(sid)) return;
       const token = tokenByTurn.get(turnId);
       tokenByTurn.delete(turnId);
@@ -110,6 +135,15 @@ export async function registerEngineEvents(input: EngineEventsInput): Promise<Un
         status: "queued",
       })));
     }),
+    listen<TurnProgressEvent>("turn/progress", async (ev) => {
+      const sid = ev.payload.appSessionId;
+      if (!known(sid) || input.acceptingStreams.has(sid)) return;
+      try {
+        adoptLiveTurn(input, sid, await appSessionApi.liveTurn(sid));
+      } catch {
+        // The next progress event or turn/finished catches up.
+      }
+    }),
     listen<MessageAddedEvent>("message/added", (ev) => {
       if (known(ev.payload.appSessionId)) input.adoptMessages(ev.payload.appSessionId, [ev.payload.message]);
     }),
@@ -128,6 +162,7 @@ export async function registerEngineEvents(input: EngineEventsInput): Promise<Un
             activeRole: session.activeRole,
             runtimeKind: session.runtimeKind,
             cwd: session.cwd,
+            externalActive: session.externalActive,
           });
         }
         return;

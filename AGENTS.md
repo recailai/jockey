@@ -92,8 +92,10 @@ Desktop UI / web companion / Jockey MCP
             → spawns CLI subprocess (ACP / native JSON-RPC / stream-json)
   live preview: "acp/delta", "acp/stream" → UI
   engine taps the same stream into TurnRecorder (engine/transcript.rs, checkpoint every 1.5 s) and persists
-  engine events (engine/events.rs): turn/started, turn/finished, queue/changed,
+  engine events (engine/events.rs): turn/started, turn/finished, turn/progress, queue/changed,
     message/added, session/changed, project/changed
+  engine::watch follows the shown session: late joiners pull the live turn on turn/progress;
+    a provider transcript growing outside Jockey is imported (docs/architecture/session-sync.md)
     → Tauri listeners (src/lib/engineEvents.ts) and SSE (web gateway)
 ```
 

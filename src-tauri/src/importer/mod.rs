@@ -30,7 +30,6 @@ pub(crate) struct DiscoveredSession {
     pub(crate) created_at: i64,
     pub(crate) last_active_at: i64,
     pub(crate) turn_count: usize,
-    pub(crate) parse_messages: fn(&Path) -> Vec<ParsedImportedMessage>,
 }
 
 /// A CLI transcript found on disk that the user may choose to pull in. Distinct from an
@@ -103,7 +102,7 @@ fn deduplicate_sessions(sessions: Vec<DiscoveredSession>) -> Vec<DiscoveredSessi
     unique.into_values().collect()
 }
 
-fn parser_for(runtime_kind: &str) -> Option<fn(&Path) -> Vec<ParsedImportedMessage>> {
+pub(crate) fn parser_for(runtime_kind: &str) -> Option<fn(&Path) -> Vec<ParsedImportedMessage>> {
     match runtime_kind {
         "claude-native" => Some(claude::parse_claude_session_messages),
         "codex-cli" => Some(codex::parse_codex_session_messages),
@@ -215,7 +214,6 @@ fn cached_sessions(state: &AppState, project_id: &str) -> Result<Vec<DiscoveredS
                     last_active_at,
                     turn_count,
                 )| {
-                    let parse_messages = parser_for(&runtime_kind)?;
                     Some(DiscoveredSession {
                         runtime_kind: match runtime_kind.as_str() {
                             "claude-native" => "claude-native",
@@ -236,7 +234,6 @@ fn cached_sessions(state: &AppState, project_id: &str) -> Result<Vec<DiscoveredS
                         created_at,
                         last_active_at,
                         turn_count: turn_count.max(0) as usize,
-                        parse_messages,
                     })
                 },
             )
@@ -280,6 +277,128 @@ pub(crate) fn scan_importable_sessions_internal(
 
 /// Import the selected transcripts. `only` is the set of external session ids the user picked;
 /// `None` means every transcript found, which is what the old sync-everything button did.
+/// Where a provider keeps the transcript of conversation `provider_id`, if it is on disk.
+pub(crate) fn locate_transcript(runtime_kind: &str, provider_id: &str) -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let file_named = |root: PathBuf| {
+        let mut files = Vec::new();
+        codex::collect_jsonl_files(&root, &mut files);
+        files.into_iter().find(|f| {
+            f.file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.contains(provider_id))
+        })
+    };
+    match runtime_kind {
+        "claude-native" => {
+            let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".claude"));
+            // One directory per working directory; the file is named after the session id.
+            std::fs::read_dir(config_dir.join("projects"))
+                .ok()?
+                .flatten()
+                .map(|dir| dir.path().join(format!("{provider_id}.jsonl")))
+                .find(|path| path.is_file())
+        }
+        "codex-cli" => file_named(home.join(".codex").join("sessions")),
+        "pi-cli" => file_named(home.join(".pi").join("agent").join("sessions")),
+        _ => None,
+    }
+}
+
+pub(crate) fn transcript_id_prefix(runtime_kind: &str, provider_id: &str) -> String {
+    format!("import:{runtime_kind}:{provider_id}")
+}
+
+/// Where to start reading a transcript the session has no cursor for yet. A session whose
+/// newest message came from this transcript (a fresh or untouched import) continues after its
+/// imported rows. Otherwise Jockey itself has been writing to the conversation and its own
+/// record already covers the transcript, so reading starts at the end.
+fn baseline_cursor(
+    state: &AppState,
+    session_id: &str,
+    id_prefix: &str,
+    transcript_len: usize,
+) -> Result<usize, String> {
+    let (all, imported) =
+        crate::db::app_session::imported_message_counts(state, session_id, id_prefix)?;
+    if all == 0 {
+        return Ok(0);
+    }
+    let last = crate::db::app_session::last_message_client_id(state, session_id)?;
+    if imported > 0 && last.is_some_and(|id| id.starts_with(&format!("{id_prefix}:"))) {
+        return Ok(imported as usize);
+    }
+    Ok(transcript_len)
+}
+
+/// Add the transcript entries past the conversation's cursor to the session and advance the
+/// cursor. Returns the messages that were added, shaped like engine messages.
+pub(crate) fn sync_transcript(
+    state: &AppState,
+    session_id: &str,
+    conversation: &crate::db::app_session_role::ProviderConversation,
+    path: &Path,
+) -> Result<Vec<serde_json::Value>, String> {
+    let Some(parse) = parser_for(&conversation.runtime_kind) else {
+        return Ok(Vec::new());
+    };
+    let parsed = parse(path);
+    let prefix = transcript_id_prefix(&conversation.runtime_kind, &conversation.provider_id);
+    let cursor = match conversation.cursor {
+        Some(cursor) => cursor,
+        None => baseline_cursor(state, session_id, &prefix, parsed.len())?,
+    };
+    // A transcript shorter than the cursor was rewritten (compaction, manual edit); start
+    // following it from its new end rather than re-importing it.
+    let start = cursor.min(parsed.len());
+    let new: Vec<(String, String, i64)> = parsed[start..]
+        .iter()
+        .map(|m| (m.role_name.clone(), m.content.clone(), m.created_at))
+        .collect();
+    let added =
+        crate::db::app_session::insert_imported_messages(state, session_id, &prefix, start, &new)?;
+    if conversation.cursor != Some(parsed.len()) {
+        crate::db::app_session_role::set_transcript_cursor(
+            state,
+            session_id,
+            conversation,
+            parsed.len(),
+        )?;
+    }
+    Ok(added
+        .into_iter()
+        .map(|pos| {
+            let (role_name, text, at) = &new[pos];
+            serde_json::json!({
+                "id": format!("{prefix}:{}", start + pos),
+                "roleName": role_name,
+                "text": text,
+                "at": at,
+            })
+        })
+        .collect())
+}
+
+/// Record that everything now in the transcript is already in the session — called after a
+/// turn Jockey ran, whose entries the engine recorded itself.
+pub(crate) fn mark_transcript_read(
+    state: &AppState,
+    session_id: &str,
+    conversation: &crate::db::app_session_role::ProviderConversation,
+    path: &Path,
+) -> Result<(), String> {
+    let Some(parse) = parser_for(&conversation.runtime_kind) else {
+        return Ok(());
+    };
+    let len = parse(path).len();
+    if conversation.cursor == Some(len) {
+        return Ok(());
+    }
+    crate::db::app_session_role::set_transcript_cursor(state, session_id, conversation, len)
+}
+
 pub(crate) fn import_project_sessions_internal(
     state: &AppState,
     project_id: &str,
@@ -323,30 +442,18 @@ pub(crate) fn import_project_sessions_internal(
             &session.session_id,
         );
 
-        // Transcript rows carry deterministic ids, so importing again appends only what the CLI
-        // wrote since. A session imported before those ids existed is left as it was —
-        // re-inserting by index would duplicate its whole history.
-        let id_prefix = format!("import:{}:{}", session.runtime_kind, session.session_id);
-        let (all_messages, imported_with_ids) =
-            crate::db::app_session::imported_message_counts(state, &app_sess.id, &id_prefix)
-                .unwrap_or((0, 0));
-
-        if all_messages == 0 || imported_with_ids > 0 {
-            let parsed_msgs = (session.parse_messages)(&session.file_path);
-            if !parsed_msgs.is_empty() {
-                let msgs_tuple: Vec<(String, String, i64)> = parsed_msgs
-                    .into_iter()
-                    .map(|m| (m.role_name, m.content, m.created_at))
-                    .collect();
-                // Propagate rather than swallow: a silent failure here would return the
-                // session as if fully imported while it actually has zero messages.
-                crate::db::app_session::insert_imported_messages(
-                    state,
-                    &app_sess.id,
-                    &id_prefix,
-                    &msgs_tuple,
-                )?;
-            }
+        // Same path the session watcher uses: only transcript entries past the conversation's
+        // cursor are added, so turns Jockey itself ran are never imported a second time.
+        // Propagate rather than swallow: a silent failure here would return the session as if
+        // fully imported while it actually has zero messages.
+        let conversation =
+            crate::db::app_session_role::list_provider_conversations(state, &app_sess.id)?
+                .into_iter()
+                .find(|c| {
+                    c.runtime_kind == session.runtime_kind && c.provider_id == session.session_id
+                });
+        if let Some(conversation) = conversation {
+            sync_transcript(state, &app_sess.id, &conversation, &session.file_path)?;
         }
 
         imported.push(app_sess.id);
@@ -360,10 +467,6 @@ pub(crate) fn import_project_sessions_internal(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn no_messages(_: &Path) -> Vec<ParsedImportedMessage> {
-        Vec::new()
-    }
 
     fn session(
         runtime_kind: &'static str,
@@ -381,7 +484,6 @@ mod tests {
             created_at: last_active_at,
             last_active_at,
             turn_count,
-            parse_messages: no_messages,
         }
     }
 

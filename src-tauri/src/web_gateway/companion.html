@@ -449,6 +449,11 @@
     let openProjects = new Set(JSON.parse(localStorage.getItem('jockey_open_projects') || '[]'));
     let liveBubble = null;
     let liveText = '';
+    // Whether this page saw the running turn start. If not (opened mid-turn), it renders the
+    // engine's snapshot on each turn/progress instead of raw frames, which would start mid-reply.
+    let followingLive = false;
+    // A snapshot fetched before its turn ended may arrive after turn/finished.
+    const finishedTurns = new Set();
     let liveRenderQueued = false;
 
     const $ = (id) => document.getElementById(id);
@@ -633,7 +638,7 @@
     function renderSessionItem(s) {
       const item = el('div', 'session-item' + (s.id === activeSessionId ? ' active' : ''));
       const row = el('div', 'session-title-row');
-      if (s.running) row.appendChild(el('span', 'run-dot'));
+      if (s.running || s.externalActive) row.appendChild(el('span', 'run-dot'));
       row.appendChild(el('span', 'session-title', s.title));
       row.appendChild(el('span', 'session-time', relTime(s.lastActiveAt)));
       item.appendChild(row);
@@ -726,7 +731,7 @@
       const project = projects.find((p) => p.id === s.projectId);
       $('header-session').textContent = s.title;
       $('btn-role').textContent = `@${s.activeRole || 'Developer'}`;
-      const bits = [project ? project.name : '未归属项目', s.runtimeKind].filter(Boolean);
+      const bits = [project ? project.name : '未归属项目', s.runtimeKind, s.externalActive ? '终端运行中' : null].filter(Boolean);
       $('header-sub').textContent = bits.join(' · ');
     }
 
@@ -1011,6 +1016,7 @@
 
     async function selectSession(sid) {
       activeSessionId = sid;
+      followingLive = false;
       queuedCount = 0;
       localStorage.setItem('jockey_active_session', sid);
       renderSidebar();
@@ -1034,6 +1040,7 @@
           renderMessages(null);
         } else {
           renderMessages(s.messages || []);
+          if (s.running && !followingLive) pullLiveTurn(sid);
           if (s.totalMessages > (s.messages || []).length) {
             messagesContainer.prepend(el('div', 'history-note', `仅显示最近 ${s.messages.length} 条（共 ${s.totalMessages} 条），完整记录请在桌面端查看`));
           }
@@ -1317,6 +1324,26 @@
     let ownPendingSend = null;
     const HISTORY_TAIL = 200;
 
+    function upsertMessage(msg) {
+      const node = renderMessage(msg);
+      const existing = msg.id && messagesContainer.querySelector(`[data-id="${CSS.escape(msg.id)}"]`);
+      if (existing) existing.replaceWith(node);
+      else messagesContainer.appendChild(node);
+    }
+
+    async function pullLiveTurn(sid) {
+      try {
+        const live = await api(`/api/sessions/${encodeURIComponent(sid)}/live`);
+        if (!live || sid !== activeSessionId || followingLive || finishedTurns.has(live.turnId)) return;
+        const placeholder = messagesContainer.querySelector('.placeholder');
+        if (placeholder) placeholder.remove();
+        const stick = nearBottom();
+        upsertMessage(live.message);
+        if (stick) scrollToBottom(true);
+        markSessionRunning(sid, true);
+      } catch (_) {}
+    }
+
     // Swap the live preview for the turn's persisted messages, matched by id.
     function adoptTurnMessages(messages) {
       if (liveBubble) {
@@ -1324,12 +1351,7 @@
         if (group) group.remove();
         liveBubble = null;
       }
-      for (const msg of messages) {
-        const node = renderMessage(msg);
-        const existing = msg.id && messagesContainer.querySelector(`[data-id="${CSS.escape(msg.id)}"]`);
-        if (existing) existing.replaceWith(node);
-        else messagesContainer.appendChild(node);
-      }
+      for (const msg of messages) upsertMessage(msg);
       scrollToBottom();
     }
 
@@ -1370,6 +1392,7 @@
         let payload;
         try { payload = JSON.parse(ev.data); } catch (_) { return; }
         if (payload.appSessionId !== activeSessionId || typeof payload.delta !== 'string') return;
+        if (!followingLive) return;
         appendLiveText(payload.delta, payload.role);
       });
 
@@ -1388,6 +1411,7 @@
         const sid = payload.appSessionId;
         markSessionRunning(sid, true);
         if (sid !== activeSessionId) return;
+        followingLive = true;
         if (ownPendingSend === sid) { ownPendingSend = null; return; }
         const placeholder = messagesContainer.querySelector('.placeholder');
         if (placeholder) placeholder.remove();
@@ -1399,7 +1423,9 @@
         let payload;
         try { payload = JSON.parse(ev.data); } catch (_) { return; }
         const sid = payload.appSessionId;
+        finishedTurns.add(payload.turnId);
         markSessionRunning(sid, false);
+        if (sid === activeSessionId) followingLive = false;
         const messages = payload.messages || [];
         if (sid === activeSessionId) {
           if (!payload.ok && !payload.cancelled && payload.error) toast(`运行出错：${payload.error}`, true);
@@ -1413,6 +1439,14 @@
           s.messageCount = (s.messageCount || 0) + messages.length + 1;
           renderSidebar();
         }
+      });
+
+      // The running turn moved. Pages following its frames already show it; a page that
+      // joined mid-turn pulls the snapshot (notify, then pull).
+      eventSource.addEventListener('turn/progress', (ev) => {
+        let payload;
+        try { payload = JSON.parse(ev.data); } catch (_) { return; }
+        if (payload.appSessionId === activeSessionId && !followingLive) pullLiveTurn(payload.appSessionId);
       });
 
       eventSource.addEventListener('queue/changed', (ev) => {

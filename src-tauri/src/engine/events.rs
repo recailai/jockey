@@ -13,6 +13,8 @@ use crate::types::{AppState, SessionSummary};
 
 pub(crate) const TURN_STARTED: &str = "turn/started";
 pub(crate) const TURN_FINISHED: &str = "turn/finished";
+/// The running turn moved; carries only `{ appSessionId, turnId, rev }` (engine::watch).
+pub(crate) const TURN_PROGRESS: &str = "turn/progress";
 pub(crate) const QUEUE_CHANGED: &str = "queue/changed";
 pub(crate) const MESSAGE_ADDED: &str = "message/added";
 pub(crate) const SESSION_CHANGED: &str = "session/changed";
@@ -22,6 +24,7 @@ pub(crate) const PROJECT_CHANGED: &str = "project/changed";
 pub(crate) const ALL: &[&str] = &[
     TURN_STARTED,
     TURN_FINISHED,
+    TURN_PROGRESS,
     QUEUE_CHANGED,
     MESSAGE_ADDED,
     SESSION_CHANGED,
@@ -67,6 +70,7 @@ pub(crate) fn session_changed(state: &AppState, session_id: &str, reason: Sessio
     .and_then(|mut rows| rows.pop())
     .map(|mut row| {
         row.running = super::turns::is_busy(&row.id);
+        row.external_active = super::watch::is_external_active(&row.id);
         row
     });
     emit(

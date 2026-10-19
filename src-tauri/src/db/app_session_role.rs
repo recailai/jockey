@@ -366,6 +366,9 @@ pub(crate) fn save_app_session_role_cli_id(
                 app_session_id, role_name, runtime_kind, runtime_profile_id, acp_session_id, updated_at
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(app_session_id, role_name, runtime_kind) DO UPDATE SET
+               -- A different provider conversation starts from its own beginning.
+               transcript_cursor = CASE WHEN acp_session_id IS excluded.acp_session_id
+                                        THEN transcript_cursor ELSE NULL END,
                acp_session_id = excluded.acp_session_id,
                runtime_profile_id = excluded.runtime_profile_id,
                updated_at = excluded.updated_at",
@@ -394,6 +397,69 @@ pub(crate) fn save_app_session_role_cli_id(
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    })
+}
+
+/// A provider conversation behind an app session: one per (persona, engine) that has a
+/// provider handle.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ProviderConversation {
+    pub(crate) role_name: String,
+    pub(crate) runtime_kind: String,
+    pub(crate) provider_id: String,
+    pub(crate) cursor: Option<usize>,
+}
+
+pub(crate) fn list_provider_conversations(
+    state: &AppState,
+    app_session_id: &str,
+) -> Result<Vec<ProviderConversation>, String> {
+    with_db(state, |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT role_name, runtime_kind, acp_session_id, transcript_cursor
+                 FROM app_session_role_runtime_configs
+                 WHERE app_session_id = ?1 AND acp_session_id IS NOT NULL AND acp_session_id != ''",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![app_session_id], |row| {
+                Ok(ProviderConversation {
+                    role_name: row.get(0)?,
+                    runtime_kind: row.get(1)?,
+                    provider_id: row.get(2)?,
+                    cursor: row.get::<_, Option<i64>>(3)?.map(|c| c.max(0) as usize),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    })
+}
+
+/// Only advances the cursor of the conversation it was read for: if the persona has moved to a
+/// different provider conversation since, the stale write is dropped.
+pub(crate) fn set_transcript_cursor(
+    state: &AppState,
+    app_session_id: &str,
+    conversation: &ProviderConversation,
+    cursor: usize,
+) -> Result<(), String> {
+    with_db(state, |conn| {
+        conn.execute(
+            "UPDATE app_session_role_runtime_configs SET transcript_cursor = ?1
+             WHERE app_session_id = ?2 AND role_name = ?3 AND runtime_kind = ?4
+               AND acp_session_id = ?5",
+            params![
+                cursor as i64,
+                app_session_id,
+                conversation.role_name,
+                conversation.runtime_kind,
+                conversation.provider_id
+            ],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     })
 }
 

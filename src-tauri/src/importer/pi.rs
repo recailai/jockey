@@ -93,7 +93,6 @@ fn scan_file(path: &Path, project_cwd: &str) -> Option<DiscoveredSession> {
         created_at: last_active_at,
         last_active_at,
         turn_count: turns,
-        parse_messages: parse_pi_session_messages,
     })
 }
 
@@ -181,7 +180,7 @@ fn content_text(value: &Value) -> String {
     }
 }
 
-fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
+pub(super) fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };

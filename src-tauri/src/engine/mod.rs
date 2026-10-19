@@ -9,6 +9,7 @@ pub(crate) mod service;
 pub(crate) mod sessions;
 pub(crate) mod transcript;
 pub(crate) mod turns;
+pub(crate) mod watch;
 
 /// Wire the engine into the app: the event hub and the transcript taps. Called once at setup.
 pub(crate) fn install(app: &tauri::AppHandle) {

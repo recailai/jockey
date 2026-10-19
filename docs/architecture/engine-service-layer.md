@@ -68,7 +68,8 @@ Rules:
 | `turn/started` | `{ appSessionId, turnId, roleLabel, userMessage }` | A turn is accepted and its user message persisted. |
 | `turn/finished` | `{ appSessionId, turnId, ok, cancelled, error?, messages: AppMessage[] }` | The turn ended (success, failure, or cancel) and its transcript is persisted. |
 | `queue/changed` | `{ appSessionId, items: InboxMessage[] }` | The session's queued input changed; views replace their copy with `items`. |
-| `message/added` | `{ appSessionId, message: AppMessage }` | A message was persisted outside a turn transcript (steered input, control-command echo). |
+| `message/added` | `{ appSessionId, message: AppMessage }` | A message was persisted outside a turn transcript (steered input, control-command echo, entries imported from a provider transcript by `engine::watch`). |
+| `turn/progress` | `{ appSessionId, turnId, rev }` | The running turn moved, once a second at most, only for watched sessions; late joiners pull `get_live_turn` (see session-sync.md). |
 | `session/changed` | `{ appSessionId, projectId, reason, session: SessionSummary }` | Created, updated, closed, reopened, imported. |
 | `project/changed` | `{ projectId, reason }` | Created, deleted. |
 

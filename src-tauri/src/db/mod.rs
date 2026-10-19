@@ -361,6 +361,14 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
     ensure_column(conn, "app_sessions", "project_id", "TEXT")?;
     ensure_column(conn, "projects", "deleted_at", "INTEGER")?;
     ensure_column(conn, "app_sessions", "external_session_id", "TEXT")?;
+    // How many entries of the provider's transcript are already reflected in this session
+    // (engine::watch). NULL = not established yet.
+    ensure_column(
+        conn,
+        "app_session_role_runtime_configs",
+        "transcript_cursor",
+        "INTEGER",
+    )?;
     ensure_column(conn, "app_session_roles", "runtime_profile_id", "TEXT")?;
     ensure_column(conn, "app_session_roles", "model_override", "TEXT")?;
     ensure_column(conn, "app_session_roles", "mode_override", "TEXT")?;

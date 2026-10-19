@@ -42,6 +42,7 @@ pub(super) fn router(ctx: ServerContext) -> Router {
         .route("/sessions/:id/reopen", post(session_reopen))
         .route("/sessions/:id/close", post(session_close))
         .route("/sessions/:id/role", post(session_select_role))
+        .route("/sessions/:id/live", get(session_live))
         .route("/roles", get(list_roles))
         .route("/fs/dirs", get(list_dirs))
         .route("/permissions", get(list_permissions))
@@ -529,6 +530,11 @@ async fn session_select_role(
     summary_of(&state, &id).map(Json)
 }
 
+/// The running turn as it would be persisted now, for a client that opened mid-turn.
+async fn session_live(Path(id): Path<String>) -> Json<Value> {
+    Json(crate::engine::turns::live_turn(&id).unwrap_or(Value::Null))
+}
+
 #[derive(Deserialize)]
 struct ChatBody {
     input: String,
@@ -641,12 +647,29 @@ struct EventsQuery {
 
 /// SSE: lifecycle events to everyone, stream frames only to the focused client
 /// (docs/architecture/engine-service-layer.md §4). A client that lags past the buffer gets `resync`.
+struct WatchGuard(String);
+
+impl WatchGuard {
+    fn new(app: &tauri::AppHandle, session_id: &str) -> Self {
+        crate::engine::watch::watch(app, session_id);
+        Self(session_id.to_string())
+    }
+}
+
+impl Drop for WatchGuard {
+    fn drop(&mut self) {
+        crate::engine::watch::unwatch(&self.0);
+    }
+}
+
 async fn events(
     State(ctx): State<ServerContext>,
     Query(q): Query<EventsQuery>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
     let rx = ctx.broadcaster.subscribe();
     let focus: Option<std::sync::Arc<str>> = q.focus.filter(|f| !f.is_empty()).map(Into::into);
+    // The focused session is followed for as long as this connection lives.
+    let watching = focus.as_deref().map(|sid| WatchGuard::new(&ctx.app, sid));
     let mut shutdown = ctx.shutdown.clone();
     let mut token = ctx.token.clone();
     token.mark_unchanged();
@@ -658,24 +681,30 @@ async fn events(
             _ = token.changed() => {}
         }
     };
-    let stream = futures::stream::unfold((rx, focus), |(mut rx, focus)| async move {
-        loop {
-            match rx.recv().await {
-                Ok(ev) => {
-                    if ev.focus.is_some() && ev.focus != focus {
-                        continue;
+    let stream = futures::stream::unfold(
+        (rx, focus, watching),
+        |(mut rx, focus, watching)| async move {
+            loop {
+                match rx.recv().await {
+                    Ok(ev) => {
+                        if ev.focus.is_some() && ev.focus != focus {
+                            continue;
+                        }
+                        let sse_event = SseEvent::default().event(ev.event_name).data(&*ev.payload);
+                        return Some((
+                            Ok::<_, std::convert::Infallible>(sse_event),
+                            (rx, focus, watching),
+                        ));
                     }
-                    let sse_event = SseEvent::default().event(ev.event_name).data(&*ev.payload);
-                    return Some((Ok::<_, std::convert::Infallible>(sse_event), (rx, focus)));
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        let resync = SseEvent::default().event("resync").data("{}");
+                        return Some((Ok(resync), (rx, focus, watching)));
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    let resync = SseEvent::default().event("resync").data("{}");
-                    return Some((Ok(resync), (rx, focus)));
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
             }
-        }
-    })
+        },
+    )
     .take_until(Box::pin(stopped));
 
     Sse::new(stream).keep_alive(KeepAlive::default())
