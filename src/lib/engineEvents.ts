@@ -29,7 +29,6 @@ type EngineEventsInput = {
   nextRunToken: () => number;
   clearSessionStream: (sid: string) => void;
   refreshProjects: () => Promise<void>;
-  refreshRoles: () => void;
   showToast: (message: string, severity?: "error" | "info") => void;
 };
 
@@ -76,7 +75,7 @@ export async function registerEngineEvents(input: EngineEventsInput): Promise<Un
       });
     }),
     listen<TurnFinishedEvent>("turn/finished", (ev) => {
-      const { appSessionId: sid, turnId, ok, cancelled, isCommand, error, messages } = ev.payload;
+      const { appSessionId: sid, turnId, ok, cancelled, error, messages } = ev.payload;
       if (!known(sid)) return;
       const token = tokenByTurn.get(turnId);
       tokenByTurn.delete(turnId);
@@ -96,7 +95,6 @@ export async function registerEngineEvents(input: EngineEventsInput): Promise<Un
       }
       // The engine records the failure as an `event` message in `messages` (adopted above).
       if (!ok && !cancelled && error) input.showToast(error);
-      if (isCommand) input.refreshRoles();
     }),
     listen<QueueChangedEvent>("queue/changed", (ev) => {
       const { appSessionId: sid, items } = ev.payload;

@@ -332,14 +332,10 @@ async fn run_one(app: &AppHandle, session_id: &str, pending: PendingTurn) -> boo
     .await
     {
         Ok(res) => {
-            let outcome = if res.command_result.is_some() {
-                TurnOutcome::Command { reply: &res.reply }
-            } else {
-                TurnOutcome::Reply {
-                    ok: res.ok,
-                    reply: &res.reply,
-                    role_replies: &res.role_replies,
-                }
+            let outcome = TurnOutcome::Reply {
+                ok: res.ok,
+                reply: &res.reply,
+                role_replies: &res.role_replies,
             };
             turn.finish(outcome, (!res.ok).then_some(res.reply.as_str()));
         }
@@ -588,7 +584,6 @@ mod tests {
         assert_eq!(control_command("/plan"), Some("plan"));
         assert_eq!(control_command("/cancel now"), Some("cancel"));
         assert_eq!(control_command("/planner"), None);
-        assert_eq!(control_command("/app_role x"), None);
         assert_eq!(control_command("plan"), None);
     }
 }

@@ -901,7 +901,6 @@ export default function App() {
       nextRunToken: agentContext.bumpRunToken,
       clearSessionStream,
       refreshProjects,
-      refreshRoles: () => void refreshRoles(currentProject()?.id),
       showToast,
     }).then((h) => handlers.push(h));
 

@@ -121,16 +121,6 @@ pub(crate) struct WorkflowStateEvent {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ChatCommandResult {
-    pub(crate) ok: bool,
-    pub(crate) message: String,
-    pub(crate) runtime_kind: Option<String>,
-    pub(crate) session_id: Option<String>,
-    pub(crate) payload: Value,
-}
-
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct AssistantRuntime {
     pub(crate) key: String,
     pub(crate) profile_id: String,
@@ -204,7 +194,6 @@ pub(crate) struct AssistantChatResponse {
     pub(crate) reply: String,
     pub(crate) runtime_kind: Option<String>,
     pub(crate) session_id: Option<String>,
-    pub(crate) command_result: Option<ChatCommandResult>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) role_replies: Vec<RoleReply>,
 }

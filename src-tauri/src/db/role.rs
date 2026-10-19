@@ -986,10 +986,6 @@ pub(crate) fn load_role_runtime_kind_scoped(
     Ok("mock".to_string())
 }
 
-pub(crate) fn resolve_role_runtime(state: &AppState, role_name: &str) -> Result<String, String> {
-    load_role_runtime_kind(state, role_name)
-}
-
 pub(crate) fn seed_default_roles(state: &AppState) -> Result<(), String> {
     // Specifically a *global* Developer: a project-scoped copy does not serve other projects.
     let roles = list_all_roles(state)?;

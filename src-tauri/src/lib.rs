@@ -323,8 +323,6 @@ pub fn run() {
             db::session::list_session_events,
             db::session::start_workflow,
             commands::completion::complete_mentions,
-            commands::completion::complete_cli,
-            commands::apply_chat_command,
             assistant::detect_assistants,
             commands::runtime_cmd::cancel_acp_session,
             commands::runtime_cmd::steer_acp_session,

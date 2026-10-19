@@ -47,9 +47,9 @@ Key command groups exposed to the frontend via `invoke()`:
 - **CRUD**: `upsert_role_cmd`, `list_roles`, `create_workflow`, `list_workflows`, `list_sessions`, `list_session_events`
 - **Context**: `set_shared_context`, `get_shared_context`, `list_shared_context`
 - **Execution**: `start_workflow`, `assistant_chat`, `detect_assistants`
-- **UI helpers**: `complete_mentions`, `complete_cli`, `apply_chat_command`
+- **UI helpers**: `complete_mentions`
 
-`apply_chat_command` is the main entry point for the chat command system — it parses `/team`, `/role`, `/workflow`, `/run`, `/context`, `/assistant`, `/help` commands and dispatches to the appropriate handler.
+Chat input goes through the engine (`engine::service::submit`): `@role` mentions route the turn, `/plan` `/act` `/auto` `/cancel` are engine control commands, and every other `/command` is passed to the agent CLI. Composer commands such as `/model` or `/usage` are desktop UI actions (`src/lib/commandUi/registry.ts`).
 
 `start_workflow` runs a workflow's steps sequentially, calling `acp::execute_runtime` for each role, emitting `session-update` and `workflow-state` Tauri events for streaming UI updates.
 
@@ -69,7 +69,7 @@ Key command groups exposed to the frontend via `invoke()`:
 
 ```text
 User types in App.tsx input
-  → invoke("assistant_chat" | "apply_chat_command")
+  → invoke("submit_input") → engine::service
     → lib.rs command handler
       → SQLite for state mutations
       → acp::execute_runtime → WorkerMsg → ACP worker thread

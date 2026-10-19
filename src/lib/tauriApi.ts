@@ -18,13 +18,6 @@ type SessionUpdate = {
   cwd?: string | null;
 };
 
-type ApplyChatCommandResult = {
-  ok: boolean;
-  message: string;
-  runtimeKind: string | null;
-  sessionId: string | null;
-  payload: Record<string, unknown>;
-};
 
 export type Project = {
   id: string;
@@ -441,10 +434,6 @@ export const projectAgentApi = {
     call<string>("bind_session_agent_cmd", { appSessionId, roleName, runtimeKind }),
 };
 
-export const commandApi = {
-  apply: <P extends Record<string, unknown> = Record<string, unknown>>(input: string, appSessionId?: string) =>
-    call<Omit<ApplyChatCommandResult, "payload"> & { payload: P }>("apply_chat_command", { input, appSessionId }),
-};
 
 export type TerminalStartResponse = {
   terminalId: string;
@@ -516,8 +505,6 @@ export const contextApi = {
 export const completionApi = {
   mentions: (query: string, limit: number, appSessionId?: string | null) =>
     call<AppMentionItem[]>("complete_mentions", { query, limit, appSessionId: appSessionId ?? null }),
-  cli: (query: string, limit: number) =>
-    call<AppMentionItem[]>("complete_cli", { query, limit }),
 };
 
 export const configApi = {

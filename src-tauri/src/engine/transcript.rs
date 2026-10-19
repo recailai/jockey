@@ -133,8 +133,6 @@ fn ceil_char_boundary(s: &str, mut idx: usize) -> usize {
 
 /// How a turn ended, as far as the transcript cares.
 pub(crate) enum TurnOutcome<'a> {
-    /// `/app_*` chat command: no agent stream, just the command's reply.
-    Command { reply: &'a str },
     Reply {
         ok: bool,
         reply: &'a str,
@@ -457,12 +455,6 @@ impl Transcript {
     /// successful single-role turn is always recorded (even with an empty reply).
     pub(crate) fn finish(&self, id: &str, at: i64, outcome: &TurnOutcome<'_>) -> Vec<Value> {
         match outcome {
-            TurnOutcome::Command { reply } => vec![json!({
-                "id": id,
-                "roleName": self.fallback_role,
-                "text": normalize_newlines(reply),
-                "at": at,
-            })],
             TurnOutcome::Reply { role_replies, .. } if role_replies.len() > 1 => {
                 let first_role = role_replies[0].role_name.as_str();
                 // Frames some adapters send without a role belong to someone; give them to the

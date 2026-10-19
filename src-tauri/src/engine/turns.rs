@@ -327,7 +327,6 @@ impl Drop for TurnHandle {
                 "turnId": self.turn_id,
                 "ok": false,
                 "cancelled": false,
-                "isCommand": false,
                 "error": "turn aborted",
                 "messages": [],
             }),
@@ -339,9 +338,7 @@ impl TurnHandle {
     /// Persist the turn's final messages, release the session, and announce the outcome.
     /// Returns the messages exactly as stored, for the caller to adopt.
     pub(crate) fn finish(self, outcome: TurnOutcome<'_>, error: Option<&str>) -> Vec<Value> {
-        let ok = matches!(outcome, TurnOutcome::Command { .. })
-            || matches!(outcome, TurnOutcome::Reply { ok: true, .. });
-        let is_command = matches!(outcome, TurnOutcome::Command { .. });
+        let ok = matches!(outcome, TurnOutcome::Reply { ok: true, .. });
         let is_multi_agent =
             matches!(&outcome, TurnOutcome::Reply { role_replies, .. } if role_replies.len() > 1);
         let _write = self.persist_lock.lock();
@@ -393,7 +390,6 @@ impl TurnHandle {
                 "turnId": self.turn_id,
                 "ok": ok,
                 "cancelled": cancelled,
-                "isCommand": is_command,
                 "error": error,
                 "messages": messages,
             }),

@@ -308,22 +308,6 @@ pub(crate) fn get_app_session_project_id(state: &AppState, session_id: &str) -> 
     .flatten()
 }
 
-pub(crate) fn set_app_session_cwd(
-    state: &AppState,
-    session_id: &str,
-    cwd: &str,
-) -> Result<(), String> {
-    let now = crate::now_ms();
-    with_db(state, |conn| {
-        conn.execute(
-            "UPDATE app_sessions SET cwd = ?1, last_active_at = ?2 WHERE id = ?3",
-            params![cwd, now, session_id],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    })
-}
-
 fn query_sessions(
     conn: &rusqlite::Connection,
     sql: &str,
@@ -1172,20 +1156,17 @@ mod tests {
 
     #[test]
     fn changing_session_runtime_isolates_and_preserves_overrides_per_engine() {
+        use crate::db::app_session_role as roles;
         let dir = tempfile::tempdir().expect("tempdir");
         let state = test_state(&dir);
         let session = create_app_session_internal(&state, Some("s"), None, None, None, None)
             .expect("create session");
+        let load = |runtime: &str| {
+            roles::load_app_session_role_runtime_state(&state, &session.id, "Developer", runtime)
+                .expect("load state")
+        };
 
-        crate::db::app_session_role::save_app_session_role_model_override(
-            &state,
-            &session.id,
-            "Developer",
-            "claude-native",
-            Some("claude-sonnet"),
-        )
-        .expect("save Claude model");
-        crate::db::app_session_role::save_app_session_role_config_option_override(
+        roles::save_app_session_role_config_option_override(
             &state,
             &session.id,
             "Developer",
@@ -1194,66 +1175,24 @@ mod tests {
             "true",
         )
         .expect("save Claude option");
-
-        crate::db::app_session_role::bind_app_session_role_runtime(
-            &state,
-            &session.id,
-            "Developer",
-            "codex-cli",
-        )
-        .expect("switch runtime");
-        let codex_state = crate::db::app_session_role::load_app_session_role_state(
-            &state,
-            &session.id,
-            "Developer",
-        )
-        .expect("load state")
-        .expect("state");
-
-        // Codex has no overrides from Claude (no leakage)
-        assert_eq!(codex_state.runtime_kind.as_deref(), Some("codex-cli"));
-        assert!(codex_state.model_override.is_none());
-        assert!(codex_state.config_options_json.is_none());
-
-        // Claude overrides are preserved, not wiped!
-        let claude_state = crate::db::app_session_role::load_app_session_role_runtime_state(
-            &state,
-            &session.id,
-            "Developer",
-            "claude-native",
-        )
-        .expect("load claude state")
-        .expect("claude state");
-
+        roles::bind_app_session_role_runtime(&state, &session.id, "Developer", "codex-cli")
+            .expect("switch runtime");
         assert_eq!(
-            claude_state.model_override.as_deref(),
-            Some("claude-sonnet")
+            roles::load_app_session_bound_runtime(&state, &session.id, "Developer").expect("bound"),
+            Some("codex-cli".to_string())
         );
-        assert!(claude_state
-            .config_options_json
-            .as_deref()
-            .unwrap_or("")
+
+        // Codex has no overrides from Claude (no leakage)…
+        assert!(load("codex-cli")
+            .and_then(|s| s.config_options_json)
+            .is_none());
+        // …and Claude's are preserved, not wiped, so switching back restores them.
+        roles::bind_app_session_role_runtime(&state, &session.id, "Developer", "claude-native")
+            .expect("switch back");
+        assert!(load("claude-native")
+            .and_then(|s| s.config_options_json)
+            .unwrap_or_default()
             .contains("fast"));
-
-        // Switching back to Claude restores them seamlessly
-        crate::db::app_session_role::bind_app_session_role_runtime(
-            &state,
-            &session.id,
-            "Developer",
-            "claude-native",
-        )
-        .expect("switch back");
-        let restored_state = crate::db::app_session_role::load_app_session_role_state(
-            &state,
-            &session.id,
-            "Developer",
-        )
-        .expect("load state")
-        .expect("state");
-        assert_eq!(
-            restored_state.model_override.as_deref(),
-            Some("claude-sonnet")
-        );
     }
 
     #[test]

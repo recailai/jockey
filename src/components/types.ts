@@ -200,8 +200,7 @@ export type QueuedItem = {
   createdAt: number;
   status: "queued" | "claimed" | "failed";
 };
-export type ChatCommandResult = { ok: boolean; message: string; runtimeKind: string | null; sessionId: string | null; payload: Record<string, unknown> };
-export type AssistantChatResponse = { ok: boolean; reply: string; runtimeKind: string | null; sessionId: string | null; commandResult: ChatCommandResult | null; roleReplies?: Array<{ roleName: string; reply: string; ok?: boolean; errorCode?: string | null }> };
+export type AssistantChatResponse = { ok: boolean; reply: string; runtimeKind: string | null; sessionId: string | null; roleReplies?: Array<{ roleName: string; reply: string; ok?: boolean; errorCode?: string | null }> };
 
 // Engine contract (docs/engine-service-layer.md). Every view renders turns from these events,
 // whichever client started the turn.
@@ -221,7 +220,6 @@ export type TurnFinishedEvent = {
   turnId: string;
   ok: boolean;
   cancelled: boolean;
-  isCommand: boolean;
   error?: string | null;
   /** The turn's messages exactly as persisted — the record, replacing the live preview. */
   messages: AppMessage[];

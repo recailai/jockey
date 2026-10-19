@@ -3,7 +3,6 @@ pub(crate) mod prompt_builder;
 pub(crate) mod session_runtime;
 
 use crate::chat::session_runtime::load_role_runtime_data;
-use crate::commands::apply_chat_command;
 use crate::db::context::{list_shared_context_internal, set_shared_context_internal};
 use crate::db::get_state;
 use crate::db::session_context::app_session_scope;
@@ -284,36 +283,6 @@ pub(crate) async fn run_turn(
             reply: "empty input".to_string(),
             runtime_kind: input.runtime_kind,
             session_id: None,
-            command_result: None,
-            role_replies: Vec::new(),
-        });
-    }
-
-    if text.starts_with("/app_") {
-        let route_started = Instant::now();
-        let command_result = apply_chat_command(
-            app,
-            state,
-            text,
-            input.runtime_kind.clone(),
-            Some(app_session_id.clone()),
-        )
-        .await?;
-        chat_log(
-            "route.command",
-            json!({
-                "latencyMs": route_started.elapsed().as_millis(),
-                "totalLatencyMs": started.elapsed().as_millis(),
-                "ok": command_result.ok,
-                "message": clip_text(&command_result.message, 120)
-            }),
-        );
-        return Ok(AssistantChatResponse {
-            ok: command_result.ok,
-            reply: command_result.message.clone(),
-            runtime_kind: command_result.runtime_kind.clone(),
-            session_id: command_result.session_id.clone(),
-            command_result: Some(command_result),
             role_replies: Vec::new(),
         });
     }
@@ -529,7 +498,6 @@ pub(crate) async fn run_turn(
         reply,
         runtime_kind: Some(assistant),
         session_id: None,
-        command_result: None,
         role_replies,
     })
 }

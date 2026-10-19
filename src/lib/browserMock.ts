@@ -378,17 +378,6 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
             reply,
             runtimeKind: s?.runtimeKind ?? "claude-native",
             sessionId,
-            commandResult: null,
-          };
-        }
-        case "apply_chat_command": {
-          const cmdText = String(args.input || "");
-          return {
-            ok: true,
-            message: `Mock applied command: ${cmdText}`,
-            runtimeKind: null,
-            sessionId: args.appSessionId ?? null,
-            payload: {},
           };
         }
 

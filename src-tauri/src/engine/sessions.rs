@@ -308,7 +308,7 @@ pub(crate) fn delete_project(state: &AppState, id: &str) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct Route {
-    /// Roles the turn runs, in order. Empty only for `/app_*` commands.
+    /// Roles the turn runs, in order.
     pub(crate) targets: Vec<String>,
     pub(crate) label: String,
     /// A single explicit mention makes that persona (and its engine) the session's active one,
@@ -325,13 +325,6 @@ pub(crate) fn route(
     active_role: &str,
     text: &str,
 ) -> Result<Route, String> {
-    if text.starts_with("/app_") {
-        return Ok(Route {
-            targets: Vec::new(),
-            label: active_role.to_string(),
-            activate: None,
-        });
-    }
     let mentioned = crate::parser::parse_route_input(text).role_names;
     if mentioned.is_empty() {
         return Ok(Route {

@@ -28,10 +28,6 @@ fn fuzzy_index_map() -> &'static DashMap<String, Arc<Mutex<CwdIndex>>> {
     MAP.get_or_init(DashMap::new)
 }
 
-pub(crate) fn invalidate_fuzzy_index(session_id: &str) {
-    fuzzy_index_map().remove(session_id);
-}
-
 fn build_cwd_index(cwd: &str) -> Vec<String> {
     let root = std::path::PathBuf::from(cwd);
     if !root.is_dir() {
@@ -321,13 +317,4 @@ pub(crate) async fn complete_mentions(
     })
     .await
     .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub(crate) fn complete_cli(
-    _state: State<'_, AppState>,
-    _query: String,
-    _limit: Option<usize>,
-) -> Result<Vec<MentionCandidate>, String> {
-    Ok(Vec::new())
 }

@@ -1,7 +1,7 @@
 use crate::db::with_db;
+use crate::now_ms;
 use crate::types::*;
-use crate::{acp, now_ms};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 
 pub(crate) fn set_shared_context_internal(
     state: &AppState,
@@ -112,115 +112,4 @@ pub(crate) fn upsert_dynamic_catalog_item(
         Ok(())
     })?;
     Ok(normalized)
-}
-
-pub(crate) fn remove_dynamic_catalog_item(
-    state: &AppState,
-    kind: &str,
-    runtime_key: &str,
-    name: &str,
-) -> Result<bool, String> {
-    let normalized = sanitize_dynamic_item_name(name)
-        .ok_or_else(|| format!("invalid {} name: {}", kind, name))?;
-    with_db(state, |conn| {
-        let affected = conn
-            .execute(
-                "DELETE FROM dynamic_catalog_entries
-                 WHERE kind = ?1 AND name = ?2 AND (?3 = '' OR runtime_key IN ('', ?3))",
-                params![kind, &normalized, runtime_key],
-            )
-            .map_err(|e| e.to_string())?;
-        Ok(affected > 0)
-    })
-}
-
-/// `runtime_key` empty means "every scope" (used by global kinds and by admin listings);
-/// otherwise the runtime's own rows plus the unattributed legacy rows.
-pub(crate) fn list_dynamic_catalog(
-    state: &AppState,
-    kind: &str,
-    runtime_key: &str,
-) -> Result<Vec<String>, String> {
-    with_db(state, |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT name
-                 FROM dynamic_catalog_entries
-                 WHERE kind = ?1 AND (?2 = '' OR runtime_key IN ('', ?2))
-                 ORDER BY updated_at DESC, name ASC",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(params![kind, runtime_key], |row| row.get::<_, String>(0))
-            .map_err(|e| e.to_string())?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(|e| e.to_string())?);
-        }
-        Ok(out)
-    })
-}
-
-pub(crate) fn dynamic_catalog_contains(
-    state: &AppState,
-    kind: &str,
-    runtime_key: &str,
-    name: &str,
-) -> Result<bool, String> {
-    let normalized = sanitize_dynamic_item_name(name)
-        .ok_or_else(|| format!("invalid {} name: {}", kind, name))?;
-    with_db(state, |conn| {
-        conn.query_row(
-            "SELECT 1 FROM dynamic_catalog_entries
-             WHERE kind = ?1 AND name = ?2 AND (?3 = '' OR runtime_key IN ('', ?3)) LIMIT 1",
-            params![kind, &normalized, runtime_key],
-            |_row| Ok(()),
-        )
-        .optional()
-        .map_err(|e| e.to_string())
-        .map(|v| v.is_some())
-    })
-}
-
-pub(crate) fn list_enabled_feature_flags(
-    state: &AppState,
-    scope: &str,
-    prefix: &str,
-) -> Vec<String> {
-    list_shared_context_internal(state, scope)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|entry| {
-            if !entry.key.starts_with(prefix) || !entry.value.eq_ignore_ascii_case("enabled") {
-                return None;
-            }
-            Some(entry.key.trim_start_matches(prefix).to_string())
-        })
-        .collect()
-}
-
-pub(crate) fn resolve_model_runtime(runtime_kind: Option<&str>) -> String {
-    runtime_kind
-        .and_then(crate::assistant::normalize_runtime_key)
-        .unwrap_or("mock")
-        .to_string()
-}
-
-pub(crate) fn merge_model_lists(
-    mut discovered: Vec<String>,
-    configured: Vec<String>,
-) -> Vec<String> {
-    discovered.extend(configured);
-    discovered.sort_unstable();
-    discovered.dedup();
-    discovered
-}
-
-pub(crate) fn list_models_for_runtime(
-    state: &AppState,
-    runtime: &str,
-) -> Result<Vec<String>, String> {
-    let configured = list_dynamic_catalog(state, "model", runtime)?;
-    let discovered = acp::list_discovered_models(runtime);
-    Ok(merge_model_lists(discovered, configured))
 }
