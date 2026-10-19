@@ -596,25 +596,59 @@ pub(crate) fn save_app_message(
     )
 }
 
+/// Insert transcript messages under deterministic ids (`{id_prefix}:{index}`). Re-importing the
+/// same transcript only adds entries it has not seen, and two concurrent imports cannot double
+/// it (uq_app_session_messages_session_client_id). One transaction, not one fsync per row.
 pub(crate) fn insert_imported_messages(
     state: &AppState,
     session_id: &str,
+    id_prefix: &str,
     messages: &[(String, String, i64)],
-) -> Result<(), String> {
+) -> Result<usize, String> {
     if messages.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
     with_db(state, |conn| {
-        let mut stmt = conn
-            .prepare(
-                "INSERT INTO app_session_messages (session_id, role_name, content, created_at) VALUES (?1, ?2, ?3, ?4)",
-            )
-            .map_err(|e| e.to_string())?;
-        for (role_name, content, created_at) in messages {
-            stmt.execute(params![session_id, role_name, content, created_at])
+        in_tx(conn, |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "INSERT INTO app_session_messages (session_id, client_id, role_name, content, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(session_id, client_id) WHERE client_id IS NOT NULL DO NOTHING",
+                )
                 .map_err(|e| e.to_string())?;
-        }
-        Ok(())
+            let mut added = 0;
+            for (index, (role_name, content, created_at)) in messages.iter().enumerate() {
+                added += stmt
+                    .execute(params![
+                        session_id,
+                        format!("{id_prefix}:{index}"),
+                        role_name,
+                        content,
+                        created_at
+                    ])
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(added)
+        })
+    })
+}
+
+/// Messages a session holds: `(all, imported-with-ids)`. A session imported before transcript
+/// rows carried ids has messages but none with the import prefix.
+pub(crate) fn imported_message_counts(
+    state: &AppState,
+    session_id: &str,
+    id_prefix: &str,
+) -> Result<(i64, i64), String> {
+    with_db(state, |conn| {
+        conn.query_row(
+            "SELECT count(1), coalesce(sum(client_id LIKE ?2 || ':%'), 0)
+             FROM app_session_messages WHERE session_id = ?1",
+            params![session_id, id_prefix],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| e.to_string())
     })
 }
 
@@ -698,57 +732,62 @@ pub(crate) fn upsert_imported_session(
     last_active_at: i64,
 ) -> Result<AppSession, String> {
     with_db(state, |conn| {
-        crate::db::project::ensure_project_exists(conn, project_id)?;
-        let existing_id: Option<String> = conn
-            .query_row(
-                "SELECT id FROM app_sessions
+        in_tx(conn, |conn| {
+            crate::db::project::ensure_project_exists(conn, project_id)?;
+            let existing_id: Option<String> = conn
+                .query_row(
+                    "SELECT id FROM app_sessions
                  WHERE external_session_id = ?1 AND runtime_kind = ?2
                  LIMIT 1",
-                params![external_session_id, runtime_kind],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
+                    params![external_session_id, runtime_kind],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
 
-        if let Some(id) = existing_id {
-            conn.execute(
-                "UPDATE app_sessions SET last_active_at = ?1, project_id = coalesce(project_id, ?2), cwd = ?3 WHERE id = ?4",
+            if let Some(id) = existing_id {
+                // Keep the later of the two: the session may have been used in Jockey after the
+                // transcript was last written, and must not drop down the list on a re-import.
+                conn.execute(
+                "UPDATE app_sessions SET last_active_at = max(last_active_at, ?1), project_id = coalesce(project_id, ?2), cwd = ?3 WHERE id = ?4",
                 params![last_active_at, project_id, cwd, id],
             )
             .map_err(|e| e.to_string())?;
 
-            return Ok(AppSession {
-                id,
-                title: title.to_string(),
-                active_role: "Developer".to_string(),
-                runtime_kind: Some(runtime_kind.to_string()),
-                runtime_profile_id: Some(runtime_profile::profile_id(runtime_kind)),
-                cwd: Some(cwd.to_string()),
-                project_id: project_id.map(|s| s.to_string()),
-                external_session_id: Some(external_session_id.to_string()),
-                messages: Vec::new(),
-                created_at,
-                last_active_at,
-                closed_at: None,
-            });
-        }
+                return Ok(AppSession {
+                    id,
+                    title: title.to_string(),
+                    active_role: "Developer".to_string(),
+                    runtime_kind: Some(runtime_kind.to_string()),
+                    runtime_profile_id: Some(runtime_profile::profile_id(runtime_kind)),
+                    cwd: Some(cwd.to_string()),
+                    project_id: project_id.map(|s| s.to_string()),
+                    external_session_id: Some(external_session_id.to_string()),
+                    messages: Vec::new(),
+                    created_at,
+                    last_active_at,
+                    closed_at: None,
+                });
+            }
 
-        let id = Uuid::new_v4().to_string();
-        let mut session_title = title.replace(' ', "_");
-        if session_title.is_empty() {
-            session_title = format!(
-                "Claude_{}",
-                &external_session_id[..8.min(external_session_id.len())]
-            );
-        }
-        let mut final_title = session_title.clone();
-        let mut counter = 1;
-        while active_session_title_exists(conn, &final_title, project_id, None)? {
-            counter += 1;
-            final_title = format!("{}_{}", session_title, counter);
-        }
+            let id = Uuid::new_v4().to_string();
+            // Any whitespace, not just spaces: a tab or newline would fail title validation the
+            // first time the user renames the session.
+            let mut session_title = title.split_whitespace().collect::<Vec<_>>().join("_");
+            if session_title.is_empty() {
+                session_title = format!(
+                    "Claude_{}",
+                    &external_session_id[..8.min(external_session_id.len())]
+                );
+            }
+            let mut final_title = session_title.clone();
+            let mut counter = 1;
+            while active_session_title_exists(conn, &final_title, project_id, None)? {
+                counter += 1;
+                final_title = format!("{}_{}", session_title, counter);
+            }
 
-        conn.execute(
+            conn.execute(
             "INSERT INTO app_sessions (id, title, active_role, runtime_kind, runtime_profile_id, cwd, project_id, external_session_id, created_at, last_active_at, closed_at)
              VALUES (?1, ?2, 'Developer', ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL)",
             params![
@@ -765,19 +804,20 @@ pub(crate) fn upsert_imported_session(
         )
         .map_err(|e| e.to_string())?;
 
-        Ok(AppSession {
-            id,
-            title: final_title,
-            active_role: "Developer".to_string(),
-            runtime_kind: Some(runtime_kind.to_string()),
-            runtime_profile_id: Some(runtime_profile::profile_id(runtime_kind)),
-            cwd: Some(cwd.to_string()),
-            project_id: project_id.map(|s| s.to_string()),
-            external_session_id: Some(external_session_id.to_string()),
-            messages: Vec::new(),
-            created_at,
-            last_active_at,
-            closed_at: None,
+            Ok(AppSession {
+                id,
+                title: final_title,
+                active_role: "Developer".to_string(),
+                runtime_kind: Some(runtime_kind.to_string()),
+                runtime_profile_id: Some(runtime_profile::profile_id(runtime_kind)),
+                cwd: Some(cwd.to_string()),
+                project_id: project_id.map(|s| s.to_string()),
+                external_session_id: Some(external_session_id.to_string()),
+                messages: Vec::new(),
+                created_at,
+                last_active_at,
+                closed_at: None,
+            })
         })
     })
 }
@@ -994,6 +1034,25 @@ mod tests {
             db: pool,
             role_cache: Arc::new(DashMap::new()),
         }
+    }
+
+    #[test]
+    fn reimport_appends_only_new_transcript_entries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(&dir);
+        let session = create_app_session_internal(&state, Some("s"), None, None, None, None)
+            .expect("create session");
+        let msg = |n: usize| ("user".to_string(), format!("m{n}"), n as i64);
+        let first: Vec<_> = (0..3).map(msg).collect();
+        assert_eq!(insert_imported_messages(&state, &session.id, "import:x:1", &first).unwrap(), 3);
+        // The CLI wrote two more entries since; a re-import adds exactly those.
+        let longer: Vec<_> = (0..5).map(msg).collect();
+        assert_eq!(insert_imported_messages(&state, &session.id, "import:x:1", &longer).unwrap(), 2);
+        assert_eq!(insert_imported_messages(&state, &session.id, "import:x:1", &longer).unwrap(), 0);
+        assert_eq!(
+            imported_message_counts(&state, &session.id, "import:x:1").unwrap(),
+            (5, 5)
+        );
     }
 
     #[test]

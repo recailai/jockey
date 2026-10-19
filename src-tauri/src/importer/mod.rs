@@ -323,18 +323,15 @@ pub(crate) fn import_project_sessions_internal(
             &session.session_id,
         );
 
-        // Populate messages if session messages are currently empty
-        let existing_message_count: i64 = crate::db::with_db(state, |conn| {
-            conn.query_row(
-                "SELECT count(1) FROM app_session_messages WHERE session_id = ?1",
-                rusqlite::params![&app_sess.id],
-                |row| row.get(0),
-            )
-            .map_err(|e| e.to_string())
-        })
-        .unwrap_or(0);
+        // Transcript rows carry deterministic ids, so importing again appends only what the CLI
+        // wrote since. A session imported before those ids existed is left as it was —
+        // re-inserting by index would duplicate its whole history.
+        let id_prefix = format!("import:{}:{}", session.runtime_kind, session.session_id);
+        let (all_messages, imported_with_ids) =
+            crate::db::app_session::imported_message_counts(state, &app_sess.id, &id_prefix)
+                .unwrap_or((0, 0));
 
-        if existing_message_count == 0 {
+        if all_messages == 0 || imported_with_ids > 0 {
             let parsed_msgs = (session.parse_messages)(&session.file_path);
             if !parsed_msgs.is_empty() {
                 let msgs_tuple: Vec<(String, String, i64)> = parsed_msgs
@@ -343,7 +340,12 @@ pub(crate) fn import_project_sessions_internal(
                     .collect();
                 // Propagate rather than swallow: a silent failure here would return the
                 // session as if fully imported while it actually has zero messages.
-                crate::db::app_session::insert_imported_messages(state, &app_sess.id, &msgs_tuple)?;
+                crate::db::app_session::insert_imported_messages(
+                    state,
+                    &app_sess.id,
+                    &id_prefix,
+                    &msgs_tuple,
+                )?;
             }
         }
 

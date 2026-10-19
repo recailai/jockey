@@ -73,7 +73,8 @@ fn scan_file(path: &Path, project_cwd: &str) -> Option<DiscoveredSession> {
     }
 
     let cwd = cwd?;
-    if cwd != project_cwd {
+    // Sessions started in a sub-directory of the project belong to it too.
+    if !std::path::Path::new(&cwd).starts_with(project_cwd) {
         return None;
     }
     let turns = count_pi_session_turns(path).max(turn_count);

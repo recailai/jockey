@@ -418,6 +418,26 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         ",
     )
     .map_err(|e| e.to_string())?;
+    // One Jockey session per provider session, so concurrent imports cannot create two.
+    // Sessions are user data and are never merged automatically: an existing duplicate pair
+    // just leaves the index absent (and the importer's transaction narrows the race).
+    let duplicate_imports: i64 = conn
+        .query_row(
+            "SELECT count(1) FROM (
+               SELECT 1 FROM app_sessions WHERE external_session_id IS NOT NULL
+               GROUP BY runtime_kind, external_session_id HAVING count(1) > 1)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if duplicate_imports == 0 {
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_app_sessions_runtime_external_session_id
+               ON app_sessions(runtime_kind, external_session_id)
+               WHERE external_session_id IS NOT NULL;",
+        )
+        .map_err(|e| e.to_string())?;
+    }
 
     // Model catalog entries used to be keyed by (kind, name) only, so a model picked in a
     // Codex role became visible to every runtime. Re-key by runtime and attribute the

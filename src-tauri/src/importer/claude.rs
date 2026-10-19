@@ -34,47 +34,94 @@ pub(crate) fn scan_claude_sessions(project_path: &str) -> Vec<DiscoveredSession>
     let config_dir =
         std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| format!("{}/.claude", home));
     let encoded = encode_claude_project_dir(project_path);
-    let project_dir = Path::new(&config_dir).join("projects").join(&encoded);
-    if !project_dir.exists() {
-        return Vec::new();
+    let project_root = canonical_project_path(project_path);
+    let projects_dir = Path::new(&config_dir).join("projects");
+
+    // Claude keeps one directory per working directory, so sessions started in a
+    // sub-directory of the project live under `<encoded>-<sub>`. Encoding is lossy (`/` and
+    // `-` both become `-`), so such a directory only counts once the transcript's own `cwd`
+    // confirms it is inside the project — `proj-other` must not match `proj`.
+    let mut dirs: Vec<(PathBuf, bool)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&projects_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == encoded {
+                dirs.push((entry.path(), false));
+            } else if name.starts_with(&format!("{encoded}-")) {
+                dirs.push((entry.path(), true));
+            }
+        }
     }
 
     let mut sessions = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(project_dir) {
+    for (dir, verify_cwd) in dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    let session_id = file_stem.to_string();
-                    let Some((title, turn_count)) = inspect_claude_session(&path, &session_id)
-                    else {
-                        continue;
-                    };
-                    let metadata = entry.metadata().ok();
-                    let mtime = metadata
-                        .and_then(|m| m.modified().ok())
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_millis() as i64)
-                        .unwrap_or_else(crate::now_ms);
-
-                    sessions.push(DiscoveredSession {
-                        runtime_kind: "claude-native",
-                        agent: "Claude Code",
-                        session_id,
-                        file_path: path,
-                        cwd: canonical_project_path(project_path),
-                        title,
-                        created_at: mtime,
-                        last_active_at: mtime,
-                        turn_count,
-                        parse_messages: parse_claude_session_messages,
-                    });
-                }
+            if !path.is_file() || path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+                continue;
             }
+            let Some(session_id) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let cwd = if verify_cwd {
+                match transcript_cwd(&path) {
+                    Some(cwd) if Path::new(&cwd).starts_with(&project_root) => cwd,
+                    _ => continue,
+                }
+            } else {
+                project_root.clone()
+            };
+            let Some((title, turn_count)) = inspect_claude_session(&path, &session_id) else {
+                continue;
+            };
+            let mtime = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or_else(crate::now_ms);
+            sessions.push(DiscoveredSession {
+                runtime_kind: "claude-native",
+                agent: "Claude Code",
+                session_id,
+                file_path: path,
+                // Resuming needs the directory the session ran in, not the project root.
+                cwd,
+                title,
+                created_at: mtime,
+                last_active_at: mtime,
+                turn_count,
+                parse_messages: parse_claude_session_messages,
+            });
         }
     }
     sessions.sort_by_key(|b| std::cmp::Reverse(b.last_active_at));
     sessions
+}
+
+/// The working directory a Claude transcript recorded (every entry carries `cwd`).
+fn transcript_cwd(path: &Path) -> Option<String> {
+    let reader = BufReader::new(File::open(path).ok()?);
+    reader
+        .lines()
+        .take(50)
+        .map_while(Result::ok)
+        .filter(|line| line.contains("\"cwd\""))
+        .find_map(|line| {
+            serde_json::from_str::<serde_json::Value>(&line)
+                .ok()?
+                .get("cwd")?
+                .as_str()
+                .map(str::to_string)
+        })
 }
 
 fn canonical_project_path(path: &str) -> String {
@@ -416,5 +463,67 @@ mod tests {
         let (title, turns) = summary.unwrap();
         assert_eq!(title, "persona-session-lazy-lifecycle");
         assert_eq!(turns, 101);
+    }
+}
+
+#[cfg(test)]
+mod subdir_tests {
+    use super::*;
+
+    fn transcript(dir: &Path, id: &str, cwd: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        let lines = [
+            format!(
+                r#"{{"type":"user","cwd":"{cwd}","sessionId":"{id}","message":{{"role":"user","content":"hello"}}}}"#
+            ),
+            format!(
+                r#"{{"type":"assistant","cwd":"{cwd}","sessionId":"{id}","message":{{"role":"assistant","content":[{{"type":"text","text":"hi"}}]}}}}"#
+            ),
+        ];
+        std::fs::write(dir.join(format!("{id}.jsonl")), lines.join("\n")).unwrap();
+    }
+
+    #[test]
+    fn sub_directory_sessions_are_found_and_siblings_are_not() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("proj");
+        std::fs::create_dir_all(project.join("sub")).unwrap();
+        std::fs::create_dir_all(root.path().join("proj-other")).unwrap();
+        let project = std::fs::canonicalize(&project).unwrap();
+        let project_str = project.to_string_lossy().to_string();
+        let sibling = std::fs::canonicalize(root.path().join("proj-other")).unwrap();
+
+        let config = tempfile::tempdir().unwrap();
+        let projects = config.path().join("projects");
+        let enc = encode_claude_project_dir(&project_str);
+        transcript(&projects.join(&enc), "root-session", &project_str);
+        let sub = project.join("sub").to_string_lossy().to_string();
+        transcript(
+            &projects.join(encode_claude_project_dir(&sub)),
+            "sub-session",
+            &sub,
+        );
+        let other = sibling.to_string_lossy().to_string();
+        transcript(
+            &projects.join(encode_claude_project_dir(&other)),
+            "other-session",
+            &other,
+        );
+
+        std::env::set_var("CLAUDE_CONFIG_DIR", config.path());
+        let found = scan_claude_sessions(&project_str);
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+
+        let mut ids: Vec<_> = found.iter().map(|s| s.session_id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, ["root-session", "sub-session"]);
+        let sub_session = found
+            .iter()
+            .find(|s| s.session_id == "sub-session")
+            .unwrap();
+        assert_eq!(
+            sub_session.cwd, sub,
+            "resume needs the directory the session ran in"
+        );
     }
 }
