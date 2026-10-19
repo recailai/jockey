@@ -6,7 +6,7 @@ use crate::db::app_session_role::{
 use crate::db::{get_state, with_db};
 use crate::resolve_chat_cwd;
 use crate::types::{AppState, ImageAttachment};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 use tauri::State;
 
 const RUNTIME_PROBE_PREFIX: &str = "runtime:";
@@ -71,44 +71,13 @@ fn resolve_runtime_for_session_role(
         return Ok(probe_runtime);
     }
 
-    let project_id = project_id_override
-        .map(|s| s.to_string())
-        .or_else(|| crate::db::app_session::get_app_session_project_id(state, sid));
-    let project_pin = crate::db::project_agent::load_project_agent_config(
+    if let Some(rt) = crate::engine::sessions::resolve_role_runtime(
         state,
-        project_id.as_deref(),
+        sid,
         role_name,
-    )
-    .ok()
-    .and_then(|cfg| cfg.runtime_kind);
-    if let Some(rt) = project_pin {
-        return Ok(normalize_runtime_or_self(&rt));
-    }
-
-    if let Some(row) =
-        crate::db::app_session_role::load_app_session_role_state(state, sid, role_name)?
-    {
-        if let Some(rt) = row.runtime_kind {
-            return Ok(normalize_runtime_or_self(&rt));
-        }
-    }
-    if let Ok(rt) =
-        crate::db::role::load_role_runtime_kind_scoped(state, role_name, project_id.as_deref())
-    {
-        return Ok(normalize_runtime_or_self(&rt));
-    }
-
-    let session_runtime = with_db(state, |conn| {
-        conn.query_row(
-            "SELECT runtime_kind FROM app_sessions WHERE id = ?1",
-            params![sid],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())
-        .map(|v| v.flatten())
-    })?;
-    if let Some(rt) = session_runtime {
+        None,
+        project_id_override,
+    ) {
         return Ok(normalize_runtime_or_self(&rt));
     }
 

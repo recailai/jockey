@@ -7,6 +7,8 @@ use serde_json::{Map, Value};
 
 #[derive(Clone, Default, Debug)]
 pub(crate) struct AppSessionRoleState {
+    // Runtime resolution reads the binding through `load_app_session_bound_runtime`.
+    #[allow(dead_code)]
     pub(crate) runtime_kind: Option<String>,
     #[allow(dead_code)]
     pub(crate) acp_session_id: Option<String>,

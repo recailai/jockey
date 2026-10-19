@@ -41,6 +41,74 @@ pub(crate) async fn preferred_runtime(
         .map(|a| (a.key.clone(), a.profile_id.clone()))
 }
 
+/// The engine a persona runs on in a session — the one rule every caller uses (the turn,
+/// cancel / steer / mode / config, persona activation), so a mode change can never target a
+/// different process than the turn ran on.
+///
+/// - The session's **active** persona runs on the session's selected engine (`requested`, the
+///   composer's current pick, else the session row).
+/// - Any **other** persona resolves its own: project pin, then the session-role binding, then
+///   the persona's default, then the role name itself when it names a runtime. The session's
+///   engine is only a last resort — passing it to every persona ran e.g. `@agy` on Claude.
+///
+/// `project_id_override` serves draft sessions, which have no row to read the project from.
+pub(crate) fn resolve_role_runtime(
+    state: &AppState,
+    app_session_id: &str,
+    role_name: &str,
+    requested: Option<&str>,
+    project_id_override: Option<&str>,
+) -> Option<String> {
+    let head = crate::db::app_session::load_session_head(state, app_session_id)
+        .ok()
+        .flatten();
+    let project_id = project_id_override
+        .map(str::to_string)
+        .or_else(|| head.as_ref().and_then(|h| h.project_id.clone()));
+    let non_empty = |r: &str| !r.trim().is_empty();
+    let session_runtime = head
+        .as_ref()
+        .and_then(|h| h.runtime_kind.clone())
+        .filter(|r| non_empty(r));
+    let is_active = head
+        .as_ref()
+        .is_some_and(|h| h.active_role.eq_ignore_ascii_case(role_name));
+    if is_active {
+        if let Some(rt) = requested
+            .filter(|r| non_empty(r))
+            .map(str::to_string)
+            .or_else(|| session_runtime.clone())
+        {
+            return Some(runtime_key(&rt));
+        }
+    }
+    let pin = crate::db::project_agent::load_project_agent_config(
+        state,
+        project_id.as_deref(),
+        role_name,
+    )
+    .ok()
+    .and_then(|c| c.runtime_kind);
+    let bound = crate::db::app_session_role::load_app_session_bound_runtime(
+        state,
+        app_session_id,
+        role_name,
+    )
+    .ok()
+    .flatten();
+    let persona =
+        crate::db::role::load_role_runtime_kind_scoped(state, role_name, project_id.as_deref())
+            .ok();
+    let by_name =
+        crate::runtime_kind::RuntimeKind::from_str(role_name).map(|_| role_name.to_string());
+    pin.or(bound)
+        .or(persona)
+        .or(by_name)
+        .or(session_runtime)
+        .filter(|r| non_empty(r))
+        .map(|r| runtime_key(&r))
+}
+
 /// Whether the runtime takes extra input into a running turn (vs. only between turns).
 pub(crate) async fn supports_steer(runtime: &str) -> bool {
     let want = runtime_key(runtime);
@@ -203,6 +271,7 @@ pub(crate) struct Route {
 /// error rather than silently becoming prompt text the agent never sees routed.
 pub(crate) fn route(
     state: &AppState,
+    session_id: &str,
     project_id: Option<&str>,
     active_role: &str,
     text: &str,
@@ -252,17 +321,10 @@ pub(crate) fn route(
             // Same precedence the turn itself uses for a non-active persona: the project's
             // pin, then the persona's default — normalised, so legacy spellings such as
             // `native:agy` never reach the session row or the views.
-            let pin = crate::db::project_agent::load_project_agent_config(
-                state,
-                project_id,
-                &role.role_name,
-            )
-            .ok()
-            .and_then(|c| c.runtime_kind);
-            let runtime = pin
-                .or_else(|| Some(role.runtime_kind.clone()))
-                .filter(|r| !r.trim().is_empty())
-                .map(|r| runtime_key(&r));
+            // Not yet active, so this resolves the persona's own engine (pin, binding,
+            // default) — normalised, so legacy spellings like `native:agy` never leak out.
+            let runtime =
+                resolve_role_runtime(state, session_id, &role.role_name, None, project_id);
             let profile = runtime.as_deref().map(crate::runtime_profile::profile_id);
             Some((role.role_name.clone(), runtime, profile))
         }
@@ -382,6 +444,108 @@ mod tests {
         assert_eq!(
             derive_title(&"x".repeat(80), 1).chars().count(),
             TITLE_FALLBACK_CHARS
+        );
+    }
+}
+
+#[cfg(test)]
+mod resolver_tests {
+    use super::*;
+    use crate::db::{init_db, DbPool};
+    use dashmap::DashMap;
+    use std::sync::Arc;
+
+    fn test_state(dir: &tempfile::TempDir) -> AppState {
+        let pool = DbPool::new(dir.path().join("t.sqlite3"), 2, "PRAGMA foreign_keys = ON;")
+            .expect("pool");
+        init_db(&pool.get().expect("conn")).expect("init");
+        AppState {
+            db: pool,
+            role_cache: Arc::new(DashMap::new()),
+        }
+    }
+
+    fn role(state: &AppState, name: &str, runtime: &str) {
+        crate::db::role::upsert_role(
+            state,
+            name.into(),
+            runtime.into(),
+            String::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("role");
+    }
+
+    #[test]
+    fn active_persona_uses_the_selection_others_resolve_their_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(&dir);
+        role(&state, "Developer", "claude-native");
+        role(&state, "agy", "native:agy");
+        let session = crate::db::app_session::create_app_session_internal(
+            &state,
+            Some("s"),
+            None,
+            Some("codex-cli"),
+            None,
+            None,
+        )
+        .unwrap();
+        // Active persona: the composer's pick wins, then the session's engine.
+        assert_eq!(
+            resolve_role_runtime(&state, &session.id, "Developer", Some("pi-cli"), None),
+            Some(runtime_key("pi-cli"))
+        );
+        assert_eq!(
+            resolve_role_runtime(&state, &session.id, "developer", None, None),
+            Some(runtime_key("codex-cli")),
+            "persona names compare case-insensitively"
+        );
+        // Another persona ignores the selection and normalises its legacy spelling.
+        assert_eq!(
+            resolve_role_runtime(&state, &session.id, "agy", Some("codex-cli"), None),
+            Some(runtime_key("native:agy"))
+        );
+        assert_ne!(runtime_key("native:agy"), "native:agy");
+    }
+
+    #[test]
+    fn project_pin_beats_the_persona_default_for_other_personas() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(&dir);
+        role(&state, "Developer", "claude-native");
+        role(&state, "agy", "native:agy");
+        let project = crate::db::project::create_project_internal(
+            &state,
+            "p".into(),
+            dir.path().to_string_lossy().to_string(),
+        )
+        .unwrap();
+        crate::db::project_agent::save_project_agent_runtime(
+            &state,
+            Some(&project.id),
+            "agy",
+            "codex-cli",
+        )
+        .unwrap();
+        let session = crate::db::app_session::create_app_session_internal(
+            &state,
+            Some("s"),
+            Some(&project.id),
+            Some("claude-native"),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_role_runtime(&state, &session.id, "agy", None, None),
+            Some(runtime_key("codex-cli"))
         );
     }
 }

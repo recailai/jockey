@@ -194,37 +194,18 @@ pub(super) fn load_role_runtime_data(
     context_options: ChatContextOptions,
 ) -> Result<RoleRuntimeData, String> {
     let project_id = crate::db::app_session::get_app_session_project_id(state, app_session_id);
-    let bound_runtime = crate::db::app_session_role::load_app_session_bound_runtime(
+    let role_data = load_role_scoped(state, role_name, project_id.as_deref())?;
+
+    // One rule for every caller (see `engine::sessions::resolve_role_runtime`): the request's
+    // selection applies to the active persona; any other persona resolves its own engine.
+    let runtime = crate::engine::sessions::resolve_role_runtime(
         state,
         app_session_id,
         role_name,
-    )?;
-    let role_data = load_role_scoped(state, role_name, project_id.as_deref())?;
-
-    // The runtime carried by the send request is the user's current selection. A project pin
-    // and the session-role row are fallbacks for commands and older clients that do not send it.
-    let project_pin =
-        crate::db::project_agent::load_project_agent_pin(state, project_id.as_deref(), role_name)
-            .unwrap_or_default();
-
-    let requested_runtime = normalize_runtime_key(assistant_runtime);
-    let runtime = if !requested_runtime.is_empty() {
-        requested_runtime
-    } else {
-        project_pin
-            .clone()
-            .or(bound_runtime)
-            .or_else(|| role_data.as_ref().map(|r| r.runtime_kind.clone()))
-            .or_else(|| {
-                if crate::runtime_kind::RuntimeKind::from_str(role_name).is_some() {
-                    Some(role_name.to_string())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_default()
-    };
-
+        Some(assistant_runtime),
+        None,
+    )
+    .unwrap_or_default();
     let runtime = normalize_runtime_key(&runtime);
 
     // Keep the authoritative runtime and its provider-session slot together. This makes a

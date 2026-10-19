@@ -93,7 +93,13 @@ pub(crate) async fn submit(app: &AppHandle, input: SubmitInput) -> Result<Submit
         .await;
     }
     // Reject an unknown @mention up front, before it can sit in the queue.
-    sessions::route(&state, head.project_id.as_deref(), &head.active_role, &text)?;
+    sessions::route(
+        &state,
+        &input.session_id,
+        head.project_id.as_deref(),
+        &head.active_role,
+        &text,
+    )?;
 
     // Older queued input goes first: between one turn finishing and the drain claiming the
     // next batch the session is briefly idle, and a fresh submit must not overtake the queue.
@@ -222,7 +228,13 @@ async fn run_one(app: &AppHandle, session_id: &str, pending: PendingTurn) -> boo
 
     let mut patch = Map::new();
     let mut active_role = head.active_role.clone();
-    let route = sessions::route(&state, head.project_id.as_deref(), &active_role, &text);
+    let route = sessions::route(
+        &state,
+        session_id,
+        head.project_id.as_deref(),
+        &active_role,
+        &text,
+    );
     let mut runtime = runtime_kind.filter(|r| !r.trim().is_empty());
     if let Ok(route) = &route {
         if let Some((role, role_runtime, profile)) = &route.activate {

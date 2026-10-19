@@ -345,7 +345,7 @@ pub(crate) async fn run_turn(
         // The selected engine belongs to the session's active persona. Any other mentioned
         // persona resolves its own (project pin, bound runtime, persona default) — passing the
         // selection to every role ran e.g. `@agy` on Claude with Gemini's model config.
-        let assistant_clone = if role_name == active_role {
+        let assistant_clone = if role_name.eq_ignore_ascii_case(active_role) {
             assistant.clone()
         } else {
             String::new()
