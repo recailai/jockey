@@ -2,32 +2,37 @@
 
 A high-performance, open-source Multi-Agent Collaboration Platform built with Tauri, Rust, and SolidJS.
 
-![JockeyUI](docs/ScreenShot_2026-03-23_201927_117.png)
+![JockeyUI](docs/assets/screenshot.png)
 
 ## Features
 
-- **Multi-Agent Orchestration via ACP**: Control and orchestrate multiple agents seamlessly using the Agent Client Protocol (ACP). Support for complex workflows, message lifecycle management, interruption, and progressive context disclosure.
-- **Role-Based Model Optimization**: Configure different models and operational modes for specific roles/agents, enabling fine-grained control over AI capabilities and token costs.
-- **Native Performance**: Built on Tauri and Rust for blazing-fast speeds, concurrency, and low memory footprint.
-- **Modern UI/UX**: Responsive, stunning interface crafted with SolidJS and TailwindCSS v4.
-- **Persistent Agent Memory**: Integrated cross-session memory mechanisms for dynamic, searchable history and shared context.
+- **Multi-agent orchestration**: Run Claude Code, Codex CLI, Pi CLI, and Antigravity CLI side by side. ACP (Agent Client Protocol) is the common event and permission surface; each CLI is driven over its most reliable protocol (ACP bridge, native JSON-RPC, or headless stream-json).
+- **Projects and sessions**: Group sessions by project, queue input while an agent is busy, cancel a turn without killing the agent process, and resume sessions across app restarts.
+- **Transcript import**: Import existing Claude Code, Codex, and Pi sessions into a project.
+- **Role-based configuration**: Bind a runtime, model, and mode to each role, and mention roles with `@role`. Each role can have its own MCP servers, skills, and rules.
+- **Built-in Jockey MCP**: Agents can read session context, list roles and skills, and invoke other roles.
+- **Workspace tools**: Git panel (status, diff, commit, push, PR), terminal, and file tree next to the chat.
+- **Web companion**: Reach your sessions from a phone through a lightweight web UI (Settings -> Remote companion; default port 8420, token auth, optional Tailscale for access away from home).
+- **Native desktop app**: Tauri 2, Rust, SolidJS, and TailwindCSS v4.
+
 ## Demo
 
-https://github.com/user-attachments/assets/fd1afbbc-d925-47df-89ed-a1125018f6b4
+Screen recording: [docs/assets/demo.mp4](docs/assets/demo.mp4), also at https://github.com/user-attachments/assets/fd1afbbc-d925-47df-89ed-a1125018f6b4
 
-**Video Walkthrough (Subtitles & Steps):**
-1. **Querying the Assistant**: Asked the default `@JockeyUIAssistant` for help and received its capability overview.
-2. **Engaging the PM Role (`claude-code`)**: Mentioned `@PM Who are you?`. The agent (Claude Opus), bound to a UX Designer prompt via the ACP protocol, responded concisely acknowledging its strict design role and avoiding implementation details.
-3. **Engaging the Developer Role (`codex-cli`)**: Mentioned `@Developer who are you?`. The system instantly launched the Codex CLI runtime bound to the shared context, declaring itself as the senior developer in charge of implementation.
-4. **Seamless Orchestration**: Showcases the ability to dynamically hot-swap models and prompts within a single chat window, controlling token costs and context flow per role.
+The walkthrough shows:
+1. Asking an assistant for a capability overview.
+2. Mentioning a role bound to Claude Code (`@PM Who are you?`) and getting an answer shaped by that role's prompt.
+3. Mentioning a role bound to Codex CLI (`@Developer who are you?`), which starts the Codex runtime for that role.
+4. Switching models and prompts per role within one chat window.
 
 ## Roadmap
 
-- [ ] Support custom **MCPs and Skills** individually for each role.
-- [ ] Implement **Shared Context** across different roles for seamless collaboration.
+- [x] Custom **MCPs and Skills** for each role.
 - [ ] Broaden support for **various CLIs** to improve development and tooling workflows.
 - [ ] Introduce **Multi-modal Inputs** (e.g., image, voice) for richer interactions.
 - [ ] Develop a plugin ecosystem for extended third-party capabilities.
+
+Detailed pending work: [docs/roadmap/pending.md](docs/roadmap/pending.md).
 
 ## Tech Stack
 
@@ -42,14 +47,14 @@ https://github.com/user-attachments/assets/fd1afbbc-d925-47df-89ed-a1125018f6b4
 - [Node.js](https://nodejs.org/) & [pnpm](https://pnpm.io/)
 - [Rust toolchain](https://rustup.rs/)
 
-> **Note**: Currently, you must manually install the ACP wrapper before starting the application.
+- At least one agent CLI: `claude`, `codex`, `pi`, or `agy`. CLIs are resolved from your interactive shell `PATH`. The Claude ACP bridge installs itself.
 
 ### Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/locustbaby/jockeyui.git
-cd jockeyui
+git clone https://github.com/recailai/jockey.git
+cd jockey
 
 # Install dependencies
 pnpm install
@@ -68,8 +73,10 @@ pnpm tauri build
 ## Project Structure
 
 - `src/`: SolidJS + TypeScript UI.
-- `src-tauri/src/`: Rust backend for Tauri commands (`lib.rs`) and orchestration logic (`acp.rs`).
-- `docs/`: Architecture notes and design docs.
+- `src-tauri/src/`: Rust backend. `lib.rs` registers Tauri commands; `engine/` owns turns, queue, and persistence; `acp/` holds runtime adapters and transports; `db/` is the SQLite layer; `web_gateway/` serves the web companion; `jockey_mcp/` is the built-in MCP bridge; `importer/` imports transcripts; `git/` backs the git panel.
+- `docs/`: Architecture notes, reviews, roadmap, and reference material. See [docs/README.md](docs/README.md).
+
+Contributors: see [AGENTS.md](AGENTS.md) for architecture, conventions, and PR guidelines.
 
 ## Commands
 
@@ -82,7 +89,7 @@ pnpm tauri build
 
 ## Known Issues
 
-- **Interactive slash commands may hang ACP sessions.** Some agent CLI commands (e.g. `/clear` in Claude Code) trigger TUI-level interactive prompts that cannot be answered over the ACP stdio pipe, causing the session to freeze indefinitely. This is an [upstream limitation](https://github.com/anthropics/claude-code/issues/28379) — the ACP spec sends slash commands as plain prompt text with no mechanism for interactive confirmation. Avoid sending commands that require user confirmation (e.g. `/clear`, `/init`) to roles backed by `claude-code` until this is resolved upstream.
+- **Interactive slash commands may hang `claude-code` (ACP bridge) sessions.** Some Claude Code commands (e.g. `/clear`) trigger TUI-level prompts that cannot be answered over the ACP stdio pipe, so the session can freeze. This is an [upstream limitation](https://github.com/anthropics/claude-code/issues/28379). Avoid commands that need confirmation (e.g. `/clear`, `/init`) on roles bound to the `claude-code` runtime.
 
 ## License
 

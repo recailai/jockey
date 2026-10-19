@@ -1,3 +1,5 @@
+> As of 2026-04-24 (third-party snapshot; upstream may have changed).
+
 # Zed's ACP Integration
 
 > **Repo**: [zed-industries/zed](https://github.com/zed-industries/zed) (79.6k ★, Rust + GPUI)

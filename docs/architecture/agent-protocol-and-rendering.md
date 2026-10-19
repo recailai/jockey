@@ -4,7 +4,7 @@
 > envelope, block semantics, capability meaning, and queue invariants in this document are
 > compatibility boundaries.
 
-Jockey supports several agent processes, but the UI must not depend on any one provider's wire format. Each adapter translates its provider events into the ACP-shaped event envelope; the frontend then translates that envelope into one ordered block stream.
+Jockey supports several agent processes, but the UI must not depend on any one provider's wire format. Each adapter translates its provider events into the ACP-shaped event envelope. The engine records that stream as the durable transcript; the frontend renders the same envelope live as one ordered block stream.
 
 ## Boundary model
 
@@ -18,6 +18,8 @@ provider protocol
   -> ordered AgentBlock/AppSegment
   -> Solid renderer
 ```
+
+Persistence is engine-owned and runs beside this path: `engine/transcript.rs` `TurnRecorder` turns the same event stream into the durable `AppMessage` rows and the engine emits them in `turn/finished` (see [Engine service layer](engine-service-layer.md)). The frontend reducer (`acpEventBridge`) is a live projection for latency; the persisted messages carried by `turn/finished` replace it. The web companion (`web_gateway/companion.html`) is a second, simpler renderer of the same engine events and persisted `segments`.
 
 The provider-specific layer owns field names, process lifecycle, resume identifiers, cancellation, and capability checks. The canonical layer owns only semantics:
 
@@ -108,7 +110,7 @@ third-party test fixtures. The separate `acp/delta` text batching event carries 
 `schemaVersion`/`turnId` metadata and is treated as a legacy transport for `TextDelta`, not as
 a second semantic model.
 
-Tool updates are joined by `toolCallId`, and nested work uses `parentId`. Unknown provider fields stay in `rawInput`, `rawOutput`, `content`, `diff`, or `terminalMeta`; an unknown event kind becomes `other` with its original payload. Consecutive `other` events are rendered as one collapsed provider-event group, while tool calls remain in the existing call-group path. Known control-plane metadata is transparent and cannot split a neighboring tool group. This follows DSH's projection boundary: transport lifecycle is consumed before rendering, and the fallback is diagnostic rather than a second chat-message model.
+Tool updates are joined by `toolCallId`, and nested work uses `parentId`. Unknown provider fields stay in `rawInput`, `rawOutput`, `content`, `diff`, or `terminalMeta`; an unknown event kind becomes `other` with its original payload. Consecutive `other` events are rendered as one collapsed provider-event group, while tool calls remain in the existing call-group path. Known control-plane metadata is transparent and cannot split a neighboring tool group. Codex lifecycle notifications (`thread/started`, `thread/status/changed`, `turn/started`, `mcpServer/startupStatus/updated`, `account/rateLimits/updated`, `turn/diff/updated`, and similar; see `is_codex_lifecycle_notification` in `native/codex.rs`) are dropped by the adapter, not stored as transcript segments. This follows DSH's projection boundary: transport lifecycle is consumed before rendering, and the fallback is diagnostic rather than a second chat-message model.
 
 `toolName` is optional and means the provider's stable tool identifier (`bash`, `Read`,
 `run_command`). `title` remains the human-readable label. ACP v1 does not define a separate
@@ -117,7 +119,7 @@ payload for display classification. Claude stream-json, Codex app-server, Pi RPC
 populate `toolName` when their wire protocols provide it. An omitted optional field is not the
 same as a JSON `null`: updates must not replace an already-known input or output with null.
 
-The frontend turns those events into the following durable model:
+The durable model below is what the engine's `TurnRecorder` writes; the frontend builds the same shape for the live turn and adopts the persisted messages when `turn/finished` arrives:
 
 ```text
 AppSession
@@ -129,7 +131,7 @@ AppSession
 │       └── { kind: "other", type, payload, roleName? }
 ├── streamSegments: AppSegment[]     live ordered turn
 ├── toolCalls: Record<toolCallId, AppToolCall>  indexed update cache
-├── queuedItems: QueuedItem[]        durable local projection
+├── queuedItems: QueuedItem[]        projection of the engine queue (`queue/changed`)
 └── usage / notices / permissions / plan / terminals
 ```
 
@@ -150,7 +152,7 @@ The frontend is SolidJS, so the SAR React implementation is a behavioral referen
 
 Do not port React Context, React hooks, or a global store solely to match SAR. A Solid component may receive an accessor or a narrow callback contract; it should not know the runtime protocol.
 
-The first render path is intentionally bounded: `MESSAGE_RENDER_WINDOW` limits historical rows, while live segments remain fully ordered. Virtualized rendering is a later optimization and requires profiling because tool cards, terminals, and preview interactions have different measurement costs.
+The first render path is intentionally bounded: `MESSAGE_RENDER_WINDOW` limits historical rows (off-screen rows additionally use `content-visibility: auto`), while live segments remain fully ordered. Virtualized rendering is a later optimization and requires profiling because tool cards, terminals, and preview interactions have different measurement costs.
 
 ## Capability matrix
 
@@ -162,9 +164,11 @@ Capabilities describe what an adapter can actually deliver, not what the underly
 | Thought/reasoning events | runtime-dependent | runtime-dependent | yes when emitted | runtime-dependent | not guaranteed in headless output |
 | Structured tool calls | yes | yes | yes | yes | limited detail |
 | Image input | inline ACP block | Anthropic image block | local image path | `images` array | local file reference fallback |
-| Permission UI | yes | yes | no | yes | no |
-| Resume handle | ACP session id | Claude session id | thread id | Pi session id | conversation id |
-| Native MCP mapping | yes | yes | adapter-dependent | adapter-dependent | no |
+| Permission UI | yes | yes | yes, via Codex approval requests (`native/approval.rs`) | no | no |
+| Resume handle | ACP session id | conversation id | thread id | Pi session id | conversation id |
+| Native MCP mapping | yes | yes | no | no | no |
+
+The `RuntimeCapabilities` values in `runtime_profile.rs` are the source of truth. Currently the Codex profile still declares `permissionRequests: false` even though its approval requests are bridged into the permission UI, so the Codex permission row above reflects behavior rather than that flag.
 
 An adapter must set a capability to `false` when its wire protocol cannot produce the corresponding canonical event. The UI should degrade to a shared fallback component instead of assuming every provider has the same fields.
 
@@ -199,13 +203,13 @@ enqueue -> claim(ids) -> prompt -> ack(remove)
                          \-> restore(ids) on failure
 ```
 
-The frontend must never implement queue delivery as `list all -> clear inbox -> prompt`. Claiming is conditional on the item still being unclaimed, and only the successful sender may acknowledge it. If an adapter cannot support `nextStep`, the adapter chooses a declared fallback; the UI must preserve the requested and delivered modes when that distinction is user-visible.
+Queue delivery is implemented in the engine (`engine/queue.rs`, `engine/service.rs`), never in a view, and never as `list all -> clear inbox -> prompt`. The engine drains the queue after `turn/finished`; views only render `queue/changed`. Claiming is conditional on the item still being unclaimed, and only the successful sender may acknowledge it. If an adapter cannot support `nextStep`, the adapter chooses a declared fallback; the UI must preserve the requested and delivered modes when that distinction is user-visible.
 
 ## Cancellation and queued sends
 
-`Send now` follows a drain barrier:
+`Send now` (`engine::service::send_queued_now`) follows a drain barrier in the engine:
 
-1. mark the current run cancelled and stop accepting late events;
+1. mark the current turn cancel-requested and stop accepting late events;
 2. request provider cancellation;
 3. wait until the provider turn releases its per-session execution slot;
 4. only then dequeue and send the next message.
@@ -227,17 +231,15 @@ The UI label describes the declared strategy: a true `steer` adapter may show `S
 current fallback shows `Send now` with an interrupt-and-drain tooltip. The ordinary Escape/Stop
 action remains a cancellation and continues to show `Cancellation requested.` only for that action.
 
-The invariant is that a cancellation marker may never be consumed by a newly started turn. A drain timeout is surfaced as an error and prevents the frontend from launching the queued turn blindly.
+The invariant is that a cancellation marker may never be consumed by a newly started turn. A drain timeout is surfaced as an error and prevents the engine from launching the queued turn blindly.
 
-The queue runner is also session-scoped and mutually exclusive. A second `Send now` click while
-that session is already claiming or sending a queued item is ignored by the command path and
-shown as `Sending…` in the UI; it must not cancel the newly started queued turn. Cancellation
+The queue runner is also session-scoped and mutually exclusive: `turns::reserve` makes the busy check atomic, so two clients cannot start overlapping turns in one session, and a fresh `submit` cannot overtake older queued input. A second `Send now` click while that session is already claiming or sending a queued item is ignored by the command path and shown as `Sending…` in the UI; it must not cancel the newly started queued turn. Cancellation
 messages, mode notices, and reconnect notices are appended to the originating session rather
 than whichever session happens to be active when the async operation completes. Backend cancel
 resolution filters lifecycle rows by the requested role, so cancelling one role cannot stop a
 co-running sibling role in the same app session.
 
-Legacy workflow events use their serialized `sessionId` when no `appSessionId` is present. They
+Legacy workflow events (`session/update` and `workflow/state_changed`) use their serialized `sessionId` when no `appSessionId` is present. They
 remain an out-of-band event stream and are buffered/merged separately from canonical assistant
 blocks; they must not be mistaken for a provider turn or used to adopt a new `turnId` after a
 cancellation.

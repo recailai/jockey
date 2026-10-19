@@ -42,17 +42,13 @@ This is the index: when you're about to touch a Jockey file, these are the refer
 
 2. **Then read the layering that Jockey is missing**: [`aionui.md § 1 — Single Owner `ProcessAcpClient`](./aionui.md#1-single-owner-processacpclient). One class owns process + connection + lifecycle. Jockey's equivalents are scattered across `worker/pool.rs` + `worker/handlers.rs` + `worker/notify.rs`.
 
-3. **Then the error layer**: [`aionui.md § 6`](./aionui.md#6-error-handling). AionUi built what Jockey most conspicuously lacks: a canonical error enum with retryability flags, a recursive payload extractor, and a JSON-RPC-code-to-app-code map. Jockey currently passes `String` everywhere.
+3. **Then the error layer**: [`aionui.md § 6`](./aionui.md#6-error-handling). AionUi built what Jockey most conspicuously lacks: a canonical error enum with retryability flags, a recursive payload extractor, and a JSON-RPC-code-to-app-code map. Jockey now has a typed `AcpErrorCode`/`SessionError` in `acp/error.rs`; compare it against AionUi's layer.
 
 4. Finally, the [`best_practices.md`](./best_practices.md) checklist for a prioritized view of "what's worth adopting, and what's already in place."
 
 ## Related existing docs
 
-- **[`../acp_sdk_notes.md`](../acp_sdk_notes.md)** — Jockey-specific SDK gotchas (non-exhaustive structs, builder methods, v0.10.2/v0.11.2 quirks). Not duplicated here.
-- **[`../rfd_mcp_over_acp.mdx`](../rfd_mcp_over_acp.mdx)** — RFD for MCP-over-ACP channel design.
-- **[`../rfd_session_fork.mdx`](../rfd_session_fork.mdx)** — RFD for forked sessions (PR summaries etc.).
-- **[`../rfd_meta_propagation.mdx`](../rfd_meta_propagation.mdx)** — RFD for W3C trace context in `_meta`.
-- **[`../rfd_proxy_chains.mdx`](../rfd_proxy_chains.mdx)** — RFD for middleware chains over ACP.
+- **[`../acp-sdk-notes.md`](../acp-sdk-notes.md)** — Jockey-specific SDK gotchas (non-exhaustive structs, builder methods; written for 0.10.x, Jockey now uses 2.0.0). Not duplicated here.
 
 ## Scope & maintenance
 

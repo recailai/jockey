@@ -1,18 +1,20 @@
 # Jockey Completed Milestones & Tasks
 
+> Historical record, superseded by [../architecture/](../architecture/engine-service-layer.md). The original Team/Controller/workflow design was not kept; routing and sessions are now engine-owned.
+
 This document keeps a record of all implemented features, completed tasks, and landed milestones across the Jockey desktop orchestrator.
 
 ## Landed Milestones & Features
 
 ### UX & Interface Polish
-- **Zed-Style Inline Approvals**: Replaced the floating permission modal with inline approval buttons inside the tool-call card.
+- **Zed-Style Inline Approvals**: Added inline approval buttons inside the tool-call card. They coexist with `PermissionModal` rather than replacing it.
 - **Redesigned Plan Block**: Implemented numbered rows, in-progress border highlights, completed strikethrough text, and priority badges (`high`/`medium`).
 - **ActivityBar & Separator Polish**: Added unified `--ui-separator` tokens, structural divider shadows, and upgraded resize handles (`.resizer-x`/`.resizer-y`) with wider hitboxes and hover animations.
 - **Preview Tabs**: Embedded SegmentedControl for tab selections, wide file/diff content previews in the main layout.
 
 ### Media & Attachment Input
 - **Image Attachments**: Integrated file picker support (PNG/JPG/GIF/WebP/SVG), clipboard paste, drag-and-drop, and preview thumbnail strips.
-- **Voice Input**: Integrated microphone recording using Web Speech API; voice transcripts are automatically appended to the input composer.
+- **Voice Input** (removed / not present): the Web Speech API recording described here has no code in the current tree.
 - **Backend Flow**: Implemented `ImageAttachment` types flowing through `AssistantChatInput` -> `WorkerMsg::Execute` -> `build_prompt_blocks`, and serialized to `ContentBlock::Image` ACP blocks.
 
 ### ACP Protocol Alignment & Architecture
@@ -32,5 +34,5 @@ This document keeps a record of all implemented features, completed tasks, and l
 
 ## Technical Debt & Performance
 - **Thought Deltas**: Routed thought deltas directly to the UI thinking indicator instead of streaming into the main message body.
-- **Monolithic Split**: Modularized both Rust and TypeScript codebases (split backend to `acp/*.rs`, `session/*.rs`, `worker/*.rs`, and cleaned up the UI shell structure).
+- **Monolithic Split**: Modularized both Rust and TypeScript codebases (split backend to `acp/*.rs`, `acp/session/`, `acp/worker/`, and cleaned up the UI shell structure).
 - **Streaming Buffers**: Implemented direct emit and RAF batching on the frontend.

@@ -55,7 +55,7 @@ pub(crate) enum SessionChange {
 }
 
 /// Announce a session change with its current summary row, so views patch their lists in
-/// place instead of refetching (see docs/engine-service-layer.md §2).
+/// place instead of refetching (see docs/architecture/engine-service-layer.md §2).
 pub(crate) fn session_changed(state: &AppState, session_id: &str, reason: SessionChange) {
     let summary: Option<SessionSummary> = crate::db::app_session::list_session_summaries(
         state,

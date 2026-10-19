@@ -1,32 +1,34 @@
+# Dependencies and build output
 node_modules/
 dist/
 .vite/
 .tmp-schema/
-.vscode/
-.DS_Store
-.pnpm-debug.log
 .pnpm-store/
+.pnpm-debug.log
+*.log
 
-/target
+# Rust / Tauri (see also src-tauri/.gitignore)
 /src-tauri/target
 /src-tauri/gen
 /src-tauri/.cargo
-
-/debug
 **/*.rs.bk
-*.pdb
 
-# Sensitive / local
+# Editors and OS
+.vscode/
+.DS_Store
+
+# Local data and secrets
 .env*
-.claude/settings.local.json
 *.db
 *.sqlite
 *.mov
-skill/
-skills/
+
+# Local agent / tool state
+.claude/settings.local.json
+.codegraph/
 .kiro/
-*.log
-design-system/
 .agent/
 .github/prompts/
-.codegraph/
+skill/
+skills/
+design-system/

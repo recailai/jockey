@@ -70,12 +70,22 @@ Tool and block variants use keyed registries. Keys are normalized and duplicate 
 - **`MasterItem`**: Clickable item with title, subtitle, active highlight, and hover delete button.
 - **`DetailPane`**: Right detail workspace with header, action buttons, error banner, and empty state fallback.
 
-### 2.6 Agent Output Truncation
+### 2.6 Navigation, Menus & Panels
+- **`Tabs`**, **`TabsList`**, **`TabsTrigger`**, **`TabsContent`**: Tabbed navigation. **`SegmentedControl`** / **`SegmentButton`** cover compact mutually exclusive toggles.
+- **`Switch`**: On/off setting control.
+- **`Tooltip`** / **`TooltipContent`**: Hover/focus label with a `placement` prop.
+- **`DropdownMenu`** with `DropdownTrigger`, `DropdownContent`, `DropdownItem`, `DropdownSub*`, `DropdownLabel`, `DropdownDescription`, `DropdownSeparator`: Trigger-anchored menus.
+- **`ContextMenuSurface`**, **`ContextMenuItem`**, **`ContextMenuSeparator`**: Right-click menus.
+- **`Panel`**, **`PanelHeader`**, **`PanelBody`**, **`PanelHeaderAction`**: Base panel shell.
+- **`DockPanel`** with `DockPanelToolbar`, `DockPanelBody`, `DockTabStrip`: Full-height shell for the left/right tool docks, built on `Panel`.
+- **`PopupSelectView`**: Floating, searchable list card above the composer, used by the `popupSelect` command UI kind (see Section 5).
+
+### 2.7 Agent Output Truncation
 - **`headTailCap(content, maxLines, headRatio)`**: Geometric truncation utility for terminal outputs, diffs, and agent tool execution outputs. Keeps the first $N$ and last $M$ lines with a collapsed summary indicator in the middle.
 
 ---
 
-### 2.7 Provider Event Projection
+### 2.8 Provider Event Projection
 - **Transparent protocol metadata**: Known lifecycle, rate-limit, and aggregate-diff frames are consumed by the adapter and do not render as message cards.
 - **Unknown event fallback**: A genuinely unknown provider frame remains lossless, but adjacent unknown frames render as one collapsed `ProviderEventGroup` with the raw payload available on demand.
 - **Execution group**: A `ToolCallGroup` may contain ordered tool calls, thought/process text, and provider-event groups before, between, or after calls. This is one execution container; individual tool rows still use the existing `toolCallId`-based grouping and detail presentation.
@@ -98,7 +108,7 @@ Tool and block variants use keyed registries. Keys are normalized and duplicate 
 1. The event bus validates `sessionId`, `turnId`, `seq`, and `runToken` before touching session state.
 2. Text/thought deltas are coalesced before expensive markdown or layout work; tool updates use id-based upsert and tool output uses append-only deltas.
 3. Scroll-to-bottom is scheduled through one RAF per session view and is skipped when the user has scrolled away from the bottom.
-4. Historical messages are rendered through a bounded window. Do not add virtualization until profiling shows the bounded window is insufficient.
+4. Historical messages are rendered through a bounded window (`MESSAGE_RENDER_WINDOW`), and off-screen rows use `content-visibility: auto` (`index.css`, `.message-list-inner`; the last rows are always rendered so scroll-to-bottom measures real heights). Do not add virtualization until profiling shows this is insufficient.
 5. Avoid `transition-all`, repeated markdown parsing, deep cloning of `AppSession`, and provider JSON parsing in components.
 6. Preserve `null` for unreported usage fields and preserve unknown payloads for diagnostics.
 
@@ -114,3 +124,5 @@ The performance target is interaction stability during a sustained stream, not a
 | `ToolCallGroup` | tool call presentation, terminal/diff affordances | alias detection by substring |
 | `CapabilityGate` | optional surface visibility | capability discovery or mutation |
 | `ui/*` primitives | accessible visual/control semantics | agent protocol knowledge |
+| `engineEvents` (`src/lib/engineEvents.ts`) | opening and settling live turns from `turn/started` / `turn/finished`, syncing queues from `queue/changed`, adopting messages from `message/added` and `turn/finished`, patching session lists from `session/changed` | persisting anything; the engine owns every durable fact |
+| Command UI registry (`src/lib/commandUi/registry.ts`) | composer command shells (`popupSelect`, `action`) registered against `contract.ts` specs | command parsing or turn submission (the engine routes input) |

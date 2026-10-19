@@ -202,7 +202,7 @@ export type QueuedItem = {
 };
 export type AssistantChatResponse = { ok: boolean; reply: string; runtimeKind: string | null; sessionId: string | null; roleReplies?: Array<{ roleName: string; reply: string; ok?: boolean; errorCode?: string | null }> };
 
-// Engine contract (docs/engine-service-layer.md). Every view renders turns from these events,
+// Engine contract (docs/architecture/engine-service-layer.md). Every view renders turns from these events,
 // whichever client started the turn.
 /** Session fields the engine changed for a turn: routed persona, its engine, auto-title. */
 export type EngineSessionPatch = Partial<Pick<AppSession, "activeRole" | "runtimeKind" | "runtimeProfileId" | "title">>;

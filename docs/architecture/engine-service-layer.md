@@ -1,7 +1,8 @@
 # Engine service layer
 
-Status: P1–P3 implemented (`src-tauri/src/engine/`). Supersedes the ad-hoc persistence in `useMessageSend` / `useSessionManager`
-and the duplicate logic in `web_gateway/api.rs`.
+Status: P1–P3 implemented (`src-tauri/src/engine/`). Supersedes the ad-hoc persistence that used to live in the desktop
+frontend and the duplicate logic in `web_gateway/api.rs`. Post-implementation fixes are tracked in
+[docs/reviews/review-2026-10.md](../reviews/review-2026-10.md).
 
 ## Problem
 
@@ -10,7 +11,9 @@ web companion, and agents talking to the Jockey MCP bridge — but only the desk
 the logic that makes a conversation durable. The Rust side runs agents and stores rows; the
 desktop frontend decides what a turn *is*.
 
-| Concern | Lives in today | Consequence |
+The table below is the original (pre-engine) state, now resolved; the file and function names no longer describe the code.
+
+| Concern | Lived in (pre-engine) | Consequence |
 | --- | --- | --- |
 | Turn transcript (text / thought / tool segments, tool upserts, thought cap) | `src/lib/acpEventBridge.ts`, `useStreamEngine.finalizeSessionStream` | Any non-desktop client must re-implement it; the companion persisted text only. |
 | Persisting the user message and the reply, streaming checkpoints | `useSessionManager.persistMessage` / `checkpointStreamingMessage` | A turn sent while the desktop window is closed (or from the web) is not recorded the same way. |
@@ -39,7 +42,7 @@ desktop frontend decides what a turn *is*.
 │   sessions    create / reopen / title / runtime preference                  │
 │   events      typed engine events, one emitter for every client             │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ existing: chat::assistant_chat core · acp worker/adapters · db/*            │
+│ existing: chat core (`chat.rs`, `chat/session_runtime.rs`) · acp worker/adapters · db/*            │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -64,7 +67,9 @@ Rules:
 | --- | --- | --- |
 | `turn/started` | `{ appSessionId, turnId, roleLabel, userMessage }` | A turn is accepted and its user message persisted. |
 | `turn/finished` | `{ appSessionId, turnId, ok, cancelled, error?, messages: AppMessage[] }` | The turn ended (success, failure, or cancel) and its transcript is persisted. |
-| `session/changed` | `{ appSessionId, projectId?, reason }` | Created, reopened, closed, renamed, imported. |
+| `queue/changed` | `{ appSessionId, items: InboxMessage[] }` | The session's queued input changed; views replace their copy with `items`. |
+| `message/added` | `{ appSessionId, message: AppMessage }` | A message was persisted outside a turn transcript (steered input, control-command echo). |
+| `session/changed` | `{ appSessionId, projectId, reason, session: SessionSummary }` | Created, updated, closed, reopened, imported. |
 | `project/changed` | `{ projectId, reason }` | Created, deleted. |
 
 `turnId` is the engine's id; the persisted assistant message for a single-role turn uses it as
@@ -80,7 +85,7 @@ Each phase leaves the desktop fully working and is committed separately.
   unknown → `other` segments, newline normalisation, tool sanitising) and the finalize rules
   (final reply replaces the trailing text segment; per-role split for multi-agent turns;
   partial content kept on failure/cancel).
-- `assistant_chat` persists the user message (`clientMessageId` from the caller), records the
+- `submit_input` (`engine::service::submit`) persists the user message (`clientMessageId` from the caller), records the
   turn, checkpoints every 1.5 s, persists the result, emits `turn/started` / `turn/finished`,
   and returns the persisted messages.
 - Desktop stops persisting turn messages and adopts the returned ones; the web drops its own
@@ -90,7 +95,7 @@ Each phase leaves the desktop fully working and is committed separately.
 - Busy registry and cancel live in the engine (`cancel_turn`); queued input drains from the
   inbox in the engine after `turn/finished`; `@role` routing has one implementation (Rust)
   that also returns the role/runtime the session switched to; auto-title moves to the engine.
-- `useMessageSend` shrinks to: optimistic user bubble → `submit_turn` → render events.
+- `useMessageSend` shrinks to: optimistic user bubble → `submit_input` → render events.
 - Web gains queueing and cancel with no extra code.
 - As built: `engine::service::{submit, cancel, send_queued_now}` behind `submit_input`,
   `cancel_turn`, `send_queued_input_now`, `remove_queued_input` (Tauri) and the gateway's
@@ -99,14 +104,15 @@ Each phase leaves the desktop fully working and is committed separately.
   `src/lib/engineEvents.ts`), syncs queues from `queue/changed`, and steered/control input
   from `message/added`. Multi-agent turns no longer run every mentioned persona on the
   session's selected engine.
-- Known adapter issue (not engine): after cancelling a `claude-native` turn, the next prompt
-  on the same provider session can return an empty result immediately.
+- The earlier adapter issue (empty result after cancelling a `claude-native` turn) is fixed; see review B1/B5.
+- Gateway routes (`web_gateway/api.rs`, all behind the token): `/status`, `/projects` (+ `/:id/importable`, `/:id/import`), `/sessions` (+ `/closed`, `/:id`), `/sessions/:id/{chat,cancel,queue,queue/:item/remove,send-now,reopen,close,role}`, `/roles`, `/fs/dirs`, `/permissions` (+ `/respond`), and `/events?focus=<sid>` (SSE).
+- The web role picker calls `POST /sessions/:id/role`, which goes through `engine::sessions::select_role`; persona editing stays desktop-only.
 
 **P3 — session service, change events, web read models** — done
 - Runtime preference, draft-session persistence and reopen/close go through
   `engine::sessions`; `session/changed` / `project/changed` replace `companion/changed`.
 - `web_gateway/api.rs` loses `preferred_runtime`, its running map and its own persistence;
-  `src/lib/companionSync.ts` becomes a generic `session/changed` listener.
+  the desktop listener is `src/lib/engineEvents.ts`.
 - Web: open a project by browsing host folders (not typing paths), close sessions, import
   CLI transcripts. Deliberately left out of the web: deleting projects, persona/role editing,
   MCP/skills/settings — destructive or desktop-shaped, rarely needed from a phone.

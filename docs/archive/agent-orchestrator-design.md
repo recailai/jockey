@@ -1,5 +1,7 @@
 # Multi-Agent Tauri Orchestrator Design (ACP-Based)
 
+> 历史文档，已被 [../architecture/](../architecture/engine-service-layer.md) 取代。其中的 Team/Controller/workflow 设计并未保留；路由与会话现在由 engine 负责。文中 `docs/rfds/*.mdx` 引用的上游 RFD 已删除（从未实现）。
+
 本项目旨在利用 Tauri (Rust) 构建一个高度可定制的多智能体编排器，通过 **Agent Client Protocol (ACP)** 标准连接并协调多个独立的 AI CLI Agents（如 Claude Code, Gemini CLI），实现复杂的协同工作流。
 
 ---

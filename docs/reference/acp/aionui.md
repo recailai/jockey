@@ -1,3 +1,5 @@
+> As of 2026-04-24 (third-party snapshot; upstream may have changed).
+
 # AionUi's ACP Integration
 
 > **Repo**: [iOfficeAI/AionUi](https://github.com/iOfficeAI/AionUi) (22.5k ★, TypeScript + Electron)

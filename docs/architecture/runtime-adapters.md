@@ -30,7 +30,7 @@ Each runtime is resolved into an adapter descriptor with these fields:
 
 - `kind` / `runtimeKey`: stable provider identity used by roles, sessions, and persisted handles.
 - `binary` / `args` / `env`: the resolved launch contract after PATH and interactive-shell resolution.
-- `launchMethod`: diagnostic metadata such as `native:codex-app-server`, `native:pi-rpc`, `headless-binary`, or `package-runner:pnpm`.
+- `launchMethod`: diagnostic metadata such as `native:codex-app-server`, `native:pi-rpc`, `native:claude-stream-json`, `headless-binary` (agy), `managed-binary`, `managed-install`, `path-binary`, `package-runner:<binary>`, `custom-acp-profile`, or `mock`.
 - `transport`: the protocol implementation selected for the runtime.
 - `capabilities`: the semantic output and control capabilities the adapter can actually deliver.
 - `inputDelivery`: which queue deliveries are safe for this adapter (`nextTurn`, `nextStep`, `interrupt`, `runNow`) plus the current `strategy` (`queue`, `interruptFollowUp`, or `steer`).
@@ -41,10 +41,13 @@ Current transport mapping:
 
 | Runtime | Transport | Native session handle |
 | --- | --- | --- |
-| Claude Code | ACP bridge | ACP session id |
+| `claude-code` | ACP bridge (`claude-agent-acp`) | ACP session id |
+| `claude-native` (alias `claude`) | headless `stream-json` (`session/headless*.rs`) | conversation id |
 | Codex CLI | Codex app-server JSON-RPC | Codex thread id |
 | Pi CLI | Pi JSONL RPC | `sessionId`, falling back to `sessionFile` |
 | Antigravity CLI (`agy`) | headless `stream-json` (persistent when supported) | conversation id |
+
+Custom ACP runtime profiles (`db/profiles.rs`, `runtime_profile.rs`) resolve to the same ACP transport with launch method `custom-acp-profile`. The `mock` runtime (empty runtime key or `mock`) has no provider process and exists for offline development.
 
 ### Provider session persistence
 
@@ -68,11 +71,15 @@ runtime switch therefore changes the lookup key but never deletes another agent'
 in-memory process slot is an optimization; if it is evicted, the DB handle is sufficient for
 the adapter to recover the provider session.
 
+Adapter resolution (`build_stdio_adapter`) caches only successes, so a transient failure such as the permission bridge not being ready at startup does not stick. The startup CLI probe runs off the main thread, which also warms the cache before the first turn. Thought deltas are coalesced like text deltas in all three paths (headless, native, ACP worker).
+
 The protocol runners own process launch, JSONL framing, request correlation, stderr tails, cancellation, model discovery, and conversion of provider events into the existing ACP event envelope. The UI therefore does not need provider-specific event types. Each process slot is keyed by `appSessionId + runtimeKey + roleName`, so independent roles cannot share a provider session accidentally.
 
 Model and mode discovery is runtime data, not a hardcoded model catalog. ACP providers update the runtime cache from session state; Codex refreshes through `model/list`; Pi refreshes through `get_available_models`; an explicit role-config refresh clears the previous runtime snapshot before probing again.
 
 Native sessions reuse one long-lived provider process while the app session is active. agy 1.1+ uses the same strategy with `--input-format stream-json --output-format stream-json`: one stdin/stdout process handles multiple turns and returns one `result` event per turn. Older agy builds fall back to one-shot headless JSON when the stream flags are not advertised. If a process exits, the cwd/launch contract changes, or the session is idle for five minutes, the slot is evicted and the persisted provider handle is used for recovery: Codex via `thread/resume`, Pi via `--session <session-file>`, and agy via `--conversation <id>` when a new process is needed.
+
+Cancel keeps warm processes warm: Claude sends an `interrupt` control request, Codex sends `turn/interrupt`, and Pi sends `abort`. The process is killed only if the same turn is still running after 3 seconds. Stale `result` frames from the interrupted turn are held back so the next turn does not read them as its own completion.
 
 Per-tool-use permission for the native Claude provider is bridged through the `--permission-prompt-tool` contract: the runner passes a temp `--mcp-config` pointing at `current_exe --__jockey-permission-bridge`, a minimal stdio MCP server that forwards each request over a loopback socket into the shared Jockey permission UI. Requests block until the user answers, are denied on timeout, and are denied when the bridge disconnects. Roles that explicitly enable auto-approve still run with `--dangerously-skip-permissions`; without it, a session whose bridge is unavailable refuses to start instead of silently bypassing. Native MCP config mapping for agy remains future work; until then, the native runner records unmapped MCP counts in diagnostics instead of silently claiming native MCP support.
 
@@ -80,7 +87,7 @@ The agy stream protocol is the current documented headless integration: an `init
 
 ACP itself is still actively maintained. Jockey now uses the official Rust SDK `2.0.0` with the stable `schema::v1` wire types. The SDK's high-level connection builder is intentionally not used here: the worker is a single-threaded Tokio `LocalSet` and the adapter layer needs one uniform process lifecycle, pending-request map, backpressure point, stderr tail, and shutdown path across ACP, Codex, Pi, and agy. `acp/transport.rs` therefore owns the small JSON-RPC-over-JSONL boundary while the SDK owns protocol types and serialization contracts. The old `unstable_session_model` API was removed; Claude model choices come from ACP `session/config_options`, while Codex and Pi expose their native model catalogs. The transport splits SDK 2.0 batch frames (a JSON array of JSON-RPC messages) into independently dispatched members, times out pending requests after 120 seconds, flushes every waiter on EOF, and logs orphan responses and unknown notifications for diagnosis.
 
-All runtimes are dispatched through the `RuntimeAdapter` trait (`session/adapter_runtime.rs`), which fixes the lifecycle and control entry points — `probe`, `prompt`, `cancel`, `steer`, `discard_slot`, `reconnect_slot`, `teardown`, `reclaim_idle`, `diagnostics` — so callers (execute dispatch, session commands, worker sweeps) never branch on transport kind. The enum-backed dispatch keeps per-transport runners where the verified protocol logic lives; a fake adapter implements the same trait for the unit-test matrix.
+All runtimes are dispatched through the `RuntimeAdapter` trait (`session/adapter_runtime.rs`), which fixes the lifecycle and control entry points — `probe`, `prompt`, `cancel`, `steer`, `discard_slot`, `reconnect_slot`, `teardown`, `reclaim_idle`, `set_mode`, `set_config_option`, `capabilities`, `diagnostics` — so callers (execute dispatch, session commands, worker sweeps) never branch on transport kind. The enum-backed dispatch keeps per-transport runners where the verified protocol logic lives; a fake adapter implements the same trait for the unit-test matrix.
 
 The lifecycle adapter and semantic normalizer are separate responsibilities:
 

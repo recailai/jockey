@@ -211,7 +211,6 @@ async fn run_one(app: &AppHandle, session_id: &str, pending: PendingTurn) -> boo
                 "turnId": "",
                 "ok": false,
                 "cancelled": false,
-                "isCommand": false,
                 "error": error,
                 "messages": [],
             }),

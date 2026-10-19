@@ -291,7 +291,7 @@ fn read_dir_listing(
 }
 
 /// Folder picker for "open project" on a phone, where typing an absolute path is the hard
-/// part. Directories only, dot-folders hidden; see docs/engine-service-layer.md §6.
+/// part. Directories only, dot-folders hidden; see docs/architecture/engine-service-layer.md §6.
 async fn list_dirs(
     State(ctx): State<ServerContext>,
     Query(q): Query<DirQuery>,
@@ -640,7 +640,7 @@ struct EventsQuery {
 }
 
 /// SSE: lifecycle events to everyone, stream frames only to the focused client
-/// (docs/engine-service-layer.md §4). A client that lags past the buffer gets `resync`.
+/// (docs/architecture/engine-service-layer.md §4). A client that lags past the buffer gets `resync`.
 async fn events(
     State(ctx): State<ServerContext>,
     Query(q): Query<EventsQuery>,

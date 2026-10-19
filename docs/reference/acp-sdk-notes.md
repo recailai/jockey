@@ -1,5 +1,7 @@
 # ACP SDK 踩坑记录
 
+> 本文写于 `agent-client-protocol` 0.10.x 时期；`src-tauri/Cargo.toml` 现已使用 `2.0.0`，下列坑点可能已不适用，使用前请对照当前代码核实。
+
 `agent-client-protocol` v0.10.2 / `agent-client-protocol-schema` v0.11.2
 
 ---
