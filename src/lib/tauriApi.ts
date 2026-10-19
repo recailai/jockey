@@ -479,6 +479,10 @@ export type WorkspaceAppRef = {
 };
 
 export const workspaceApi = {
+  /** Tell the backend where a draft (not yet persisted) session lives, so session-scoped
+   *  commands — open in IDE, git, files — resolve its project instead of `$HOME`. */
+  registerDraftCwd: (appSessionId: string, cwd: string) =>
+    call<void>("register_draft_session_cwd", { appSessionId, cwd }),
   open: (target: WorkspaceOpenTarget, appSessionId?: string | null, app?: WorkspaceAppRef) =>
     call<void>("open_workspace_cmd", {
       target,

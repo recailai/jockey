@@ -39,7 +39,7 @@ import { useInputHistory } from "./hooks/useInputHistory";
 import { uniqueName, makeDefaultSession, makeDraftSession, sessionFromRaw } from "./lib/sessionHelpers";
 import { registerEngineEvents } from "./lib/engineEvents";
 import { createSessionEventBuffer } from "./lib/sessionEventBuffer";
-import { appSessionApi, assistantApi, engineApi, projectAgentApi } from "./lib/tauriApi";
+import { appSessionApi, assistantApi, engineApi, projectAgentApi, workspaceApi } from "./lib/tauriApi";
 import { createCommandUiRegistry } from "./lib/commandUi/registry";
 import type { PopupSelectSpec } from "./lib/commandUi/contract";
 import type { RichNode } from "./components/RichInput";
@@ -227,6 +227,15 @@ export default function App() {
     onListMounted, onListUnmounted,
     getSessionIndex,
   } = sessionManager;
+
+  // Must run before the git poller's first fetch for a draft, so it resolves the project dir.
+  createEffect(() => {
+    const s = activeSession();
+    if (!s || s.persisted) return;
+    // The startup draft carries only its project id, not a cwd.
+    const cwd = s.cwd ?? projects().find((p) => p.id === s.projectId)?.rootPath ?? null;
+    if (cwd) void workspaceApi.registerDraftCwd(s.id, cwd).catch(() => {});
+  });
 
   const { gitChangeCount, gitStatus, refetch: refetchGitStatus } = useGitPoller(activeSession);
 

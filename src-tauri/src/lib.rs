@@ -369,6 +369,7 @@ pub fn run() {
             engine::commands::delete_app_session,
             engine::commands::reopen_app_session,
             engine::commands::get_app_sessions,
+            commands::cwd_util::register_draft_session_cwd,
             db::app_session::append_app_message,
             db::app_session::save_app_message,
             db::inbox::list_session_inbox_cmd,
