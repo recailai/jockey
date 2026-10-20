@@ -174,11 +174,26 @@
     .approval-session { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .approval-title { font-weight: 600; font-size: 14px; color: #fef3c7; margin-bottom: 4px; overflow-wrap: anywhere; }
     .approval-desc { font-size: 12px; color: #d1d5db; font-family: var(--mono); background: rgba(0, 0, 0, 0.3); padding: 6px 8px; border-radius: 6px; overflow-wrap: anywhere; max-height: 80px; overflow-y: auto; margin-bottom: 10px; }
-    .approval-actions { display: flex; gap: 8px; }
-    .approval-actions button { border: none; padding: 10px 8px; border-radius: 8px; font-weight: 600; font-size: 13px; cursor: pointer; }
-    .btn-allow { flex: 2; background: var(--success); color: #fff; }
-    .btn-allow-always { flex: 1.5; background: #3b82f6; color: #fff; }
-    .btn-deny { flex: 1; background: rgba(239, 68, 68, 0.2) !important; color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4) !important; }
+    .approval-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .approval-actions button { flex: 1 1 40%; min-width: 0; border: none; padding: 10px 8px; border-radius: 8px; font-weight: 600; font-size: 13px; line-height: 1.3; overflow-wrap: anywhere; cursor: pointer; }
+    .btn-allow { background: var(--success); color: #fff; }
+    .btn-allow-always { background: var(--accent); color: #fff; }
+    .btn-deny { background: rgba(239, 68, 68, 0.2) !important; color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4) !important; }
+    .ask-card { background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 8px; }
+    .ask-card:last-child { margin-bottom: 0; }
+    .ask-question { margin-bottom: 12px; }
+    .ask-header { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
+    .ask-prompt { font-size: 14px; margin-bottom: 8px; overflow-wrap: anywhere; }
+    .ask-option { display: flex; width: 100%; gap: 10px; align-items: flex-start; text-align: left; padding: 9px 10px; margin-bottom: 6px; background: transparent; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+    .ask-option.picked { border-color: var(--accent); background: var(--accent-soft); }
+    .ask-mark { width: 16px; height: 16px; margin-top: 2px; border: 1.5px solid var(--muted); border-radius: 50%; flex-shrink: 0; }
+    .ask-question.multi .ask-mark { border-radius: 4px; }
+    .ask-option.picked .ask-mark { border-color: var(--accent); background: var(--accent); box-shadow: inset 0 0 0 3px var(--surface-card); }
+    .ask-option-text { flex: 1; min-width: 0; }
+    .ask-option-label { display: block; font-size: 13.5px; overflow-wrap: anywhere; }
+    .ask-option-desc { display: block; font-size: 11.5px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+    .ask-card .ask-other { margin-bottom: 0; }
+    .ask-actions { display: flex; gap: 8px; }
 
     /* Messages */
     #messages-container {
@@ -217,6 +232,7 @@
     }
     .msg-event { align-self: center; font-size: 12px; color: var(--muted); background: rgba(255, 255, 255, 0.04); padding: 4px 10px; border-radius: 999px; max-width: 92%; overflow-wrap: anywhere; text-align: center; }
     .msg-event.error { color: #fca5a5; background: rgba(239, 68, 68, 0.12); }
+    .msg-event .btn { flex: none; padding: 2px 10px; margin-left: 8px; font-size: 12px; border-radius: 999px; }
     .msg-meta { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
     .msg-role-tag { background: rgba(99, 102, 241, 0.2); color: #a5b4fc; padding: 1px 6px; border-radius: 4px; font-weight: 500; }
     .thought-box { margin-bottom: 8px; background: rgba(0, 0, 0, 0.25); border-left: 2px solid var(--accent); padding: 6px 10px; border-radius: 0 6px 6px 0; font-size: 13px; color: #9ca3af; }
@@ -225,6 +241,12 @@
     .tools-box { margin-bottom: 8px; font-size: 12px; }
     .tool-call-pill { display: flex; gap: 6px; align-items: baseline; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-family: var(--mono); color: #d1d5db; margin-top: 4px; overflow-wrap: anywhere; }
     .tool-status { color: var(--muted); flex-shrink: 0; }
+    .tool-status.ok { color: var(--success); }
+    .tool-status.fail { color: #fca5a5; }
+    .tool-status.busy { color: var(--warning); animation: pulse 1.2s infinite; }
+    .tool-status.idle { color: var(--muted); font-style: italic; }
+    .msg-event.ok { color: #6ee7b7; background: rgba(16, 185, 129, 0.12); }
+    .msg-live-status { margin-top: 6px; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
     .cursor-pulse { display: inline-block; width: 7px; height: 14px; background: var(--accent); vertical-align: middle; animation: pulse 1s infinite; margin-left: 2px; }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 
@@ -366,7 +388,7 @@
       </button>
     </header>
 
-    <div id="approvals-section"><div id="approvals-list"></div></div>
+    <div id="approvals-section"><div id="ask-list"></div><div id="approvals-list"></div></div>
 
     <main id="messages-container">
       <div class="placeholder">连接到主机中...</div>
@@ -445,6 +467,7 @@
     let activeSessionId = localStorage.getItem('jockey_active_session') || '';
     let activeSession = null;
     let pendingPermissions = [];
+    let pendingUserInput = [];
     let eventSource = null;
     let openProjects = new Set(JSON.parse(localStorage.getItem('jockey_open_projects') || '[]'));
     let liveBubble = null;
@@ -465,6 +488,7 @@
     const btnStop = $('btn-stop');
     const approvalsSection = $('approvals-section');
     const approvalsList = $('approvals-list');
+    const askList = $('ask-list');
 
     // ---------------------------------------------------------------------
     // Helpers
@@ -1022,6 +1046,7 @@
       renderSidebar();
       // Re-subscribe so this connection carries the new session's stream frames.
       setupSSE();
+      loadPermissions();
       loadQueue(sid);
       await loadMessages(sid);
     }
@@ -1054,21 +1079,42 @@
       updateComposer();
     }
 
-    function toolPill(tc) {
+    // A tool the provider never closed (cancelled or dropped turn) must not read as running
+    // once its message is persisted; only a live message may show progress.
+    function toolState(tc, live) {
+      const st = String(tc.status || '').replace(/[-_]/g, '').toLowerCase();
+      if (st === 'completed' || st === 'success') return { cls: 'ok', label: '完成' };
+      if (st === 'failure' || st === 'failed' || st === 'error') return { cls: 'fail', label: '失败' };
+      if (st === 'cancelled' || st === 'canceled' || st === 'declined') return { cls: 'fail', label: '已取消' };
+      if (st === 'interrupted') return { cls: 'idle', label: '已中断' };
+      if (!live) return { cls: 'idle', label: '未完成' };
+      return { cls: 'busy', label: st === 'pending' ? '等待' : '进行中' };
+    }
+
+    function toolPill(tc, live) {
       const pill = el('div', 'tool-call-pill');
       pill.appendChild(el('span', null, `⚙ ${tc.title || tc.toolName || tc.kind || 'tool'}`));
-      if (tc.status) pill.appendChild(el('span', 'tool-status', tc.status));
+      const state = toolState(tc, live);
+      pill.appendChild(el('span', 'tool-status ' + state.cls, state.label));
       return pill;
     }
 
     // Consecutive tool calls collapse into one expandable group; a phone does not need every
     // file read spelled out between two paragraphs.
-    function appendToolGroup(card, tools) {
+    function appendToolGroup(card, tools, live) {
       if (tools.length === 0) return;
       const box = el('details', 'tools-box');
-      const running = tools.filter((tc) => tc.status === 'running' || tc.status === 'pending').length;
-      box.appendChild(el('summary', null, `工具调用 (${tools.length})${running ? ` · ${running} 进行中` : ''}`));
-      tools.forEach((tc) => box.appendChild(toolPill(tc)));
+      const states = tools.map((tc) => toolState(tc, live).cls);
+      const running = states.filter((c) => c === 'busy').length;
+      const failed = states.filter((c) => c === 'fail').length;
+      const unfinished = states.filter((c) => c === 'idle').length;
+      const notes = [];
+      if (running) notes.push(`${running} 进行中`);
+      if (failed) notes.push(`${failed} 失败`);
+      if (unfinished) notes.push(`${unfinished} 未完成`);
+      box.appendChild(el('summary', null, `工具调用 (${tools.length})${notes.length ? ` · ${notes.join(' · ')}` : ''}`));
+      if (running || failed) box.open = true;
+      tools.forEach((tc) => box.appendChild(toolPill(tc, live)));
       card.appendChild(box);
     }
 
@@ -1089,26 +1135,26 @@
 
     // Same record the desktop renders: `segments` is the ordered timeline (text / thought /
     // tool / other); messages without it (plain rows, older data) fall back to `text`.
-    function renderAgentBody(card, msg) {
+    function renderAgentBody(card, msg, live) {
       const segments = Array.isArray(msg.segments) ? msg.segments : null;
       if (!segments || segments.length === 0) {
         appendThought(card, msg.thoughtText);
-        appendToolGroup(card, Array.isArray(msg.toolCalls) ? msg.toolCalls : []);
+        appendToolGroup(card, Array.isArray(msg.toolCalls) ? msg.toolCalls : [], live);
         appendText(card, msg.text || '');
         return;
       }
       let tools = [];
       for (const seg of segments) {
         if (seg.kind === 'tool' && seg.tc) { tools.push(seg.tc); continue; }
-        appendToolGroup(card, tools);
+        appendToolGroup(card, tools, live);
         tools = [];
         if (seg.kind === 'text') appendText(card, seg.text);
         else if (seg.kind === 'thought') appendThought(card, seg.text);
       }
-      appendToolGroup(card, tools);
+      appendToolGroup(card, tools, live);
     }
 
-    function renderMessage(msg) {
+    function renderMessage(msg, live) {
       const role = msg.roleName || 'assistant';
       const group = el('div', 'msg-group');
       group.dataset.id = msg.id || '';
@@ -1118,7 +1164,25 @@
       }
       if (role === 'event') {
         const text = msg.text || '';
-        group.appendChild(el('div', 'msg-event' + (/^error/i.test(text) ? ' error' : ''), text));
+        const failed = (msg.id || '').endsWith(':error') || /^(error|background task (failed|killed|error))/i.test(text);
+        const done = /^background task completed/i.test(text);
+        const row = el('div', 'msg-event' + (failed ? ' error' : done ? ' ok' : ''), text);
+        const pl = msg.payload;
+        if (pl && pl.kind === 'turnError') {
+          const labels = { AUTH_REQUIRED: '需要登录授权', CREDENTIAL_UNAVAILABLE: '凭据不可用', PROCESS_DIED: 'Agent 进程已退出', CONNECTION_FAILED: '连接 Agent 失败', PROMPT_TIMEOUT: 'Agent 响应超时', ADAPTER_UNAVAILABLE: '运行时适配器不可用', UNSUPPORTED_RUNTIME: '不支持的运行时', AGENT_ERROR: 'Agent 报错' };
+          row.appendChild(el('span', 'event-code', ` [${labels[pl.code] || pl.code}]`));
+          const retry = el('button', 'btn', '重试');
+          retry.onclick = async () => {
+            const sid = activeSessionId;
+            const lastUser = [...messagesContainer.querySelectorAll('.msg-user')].pop();
+            if (!sid || !lastUser) return;
+            retry.disabled = true;
+            try { await api(`/api/sessions/${encodeURIComponent(sid)}/chat`, { method: 'POST', body: JSON.stringify({ input: lastUser.textContent }) }); }
+            catch (err) { retry.disabled = false; toast(`发送失败：${err.message}`, true); }
+          };
+          row.appendChild(retry);
+        }
+        group.appendChild(row);
         return group;
       }
       const meta = el('div', 'msg-meta');
@@ -1127,7 +1191,8 @@
       group.appendChild(meta);
 
       const card = el('div', 'msg-agent');
-      renderAgentBody(card, msg);
+      renderAgentBody(card, msg, live);
+      if (live) card.appendChild(el('span', 'cursor-pulse'));
       group.appendChild(card);
       return group;
     }
@@ -1162,6 +1227,17 @@
       if (force || nearBottom()) messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
 
+    function setLiveStatus(text) {
+      if (!liveBubble) return;
+      const card = liveBubble.parentNode;
+      let status = card.querySelector('.msg-live-status');
+      if (!status) {
+        status = el('div', 'msg-live-status');
+        card.appendChild(status);
+      }
+      status.textContent = text;
+    }
+
     function appendLiveText(delta, role) {
       if (!liveBubble) {
         const placeholder = messagesContainer.querySelector('.placeholder');
@@ -1177,6 +1253,7 @@
         group.appendChild(card);
         messagesContainer.appendChild(group);
       }
+      if (!delta) return;
       liveText += delta;
       // Re-parsing the whole reply per token is wasteful; batch to one parse per frame.
       if (!liveRenderQueued) {
@@ -1260,27 +1337,30 @@
     // ---------------------------------------------------------------------
     // Permissions
     // ---------------------------------------------------------------------
+    // Stream events are not replayed, so pending prompts are pulled from the server
+    // snapshot on load, session switch, reconnect and resync. The snapshot is authoritative
+    // and keyed by requestId, so cards never duplicate.
     async function loadPermissions() {
       try {
-        pendingPermissions = await api('/api/permissions');
+        const snap = await api('/api/pending');
+        pendingPermissions = snap.permissions || [];
+        // Re-rendering rebuilds the forms and would drop half-typed answers, so only do
+        // it when the set of pending questions actually changed.
+        const fresh = snap.userInputs || [];
+        const same = fresh.length === pendingUserInput.length
+          && fresh.every((r) => pendingUserInput.some((p) => p.requestId === r.requestId));
+        if (!same) {
+          pendingUserInput = fresh;
+          renderUserInput();
+        }
         renderPermissions();
       } catch (_) {}
     }
 
     function renderPermissions() {
       approvalsList.innerHTML = '';
-      if (pendingPermissions.length === 0) {
-        approvalsSection.style.display = 'none';
-        return;
-      }
-      approvalsSection.style.display = 'block';
       for (const perm of pendingPermissions) {
-        // Option ids are runtime-specific (Codex uses `accept`, the Claude
-        // bridge uses `allow`, ACP agents pick their own), so resolve by kind.
         const options = perm.options || [];
-        const allowOnce = options.find((o) => o.kind === 'allow_once')
-          || options.find((o) => typeof o.kind === 'string' && o.kind.startsWith('allow'));
-        const allowAlways = options.find((o) => o.kind === 'allow_always' && o !== allowOnce);
         const session = sessions.find((s) => s.id === perm.appSessionId);
 
         const card = el('div', 'approval-card');
@@ -1296,12 +1376,125 @@
           btn.onclick = () => respondPermission(perm.requestId, optionId, cancelled);
           actions.appendChild(btn);
         };
-        if (allowOnce) addButton('btn-allow', '✓ 批准', allowOnce.optionId, false);
-        if (allowAlways) addButton('btn-allow-always', '本会话允许', allowAlways.optionId, false);
-        addButton('btn-deny', '✕ 拒绝', '', true);
+        // Option ids and labels are runtime-specific (ACP agents send `name`, Codex `title`;
+        // a question-style prompt offers arbitrary choices), so every option the agent
+        // offered is shown and classified by kind only for colour.
+        const label = (o) => o.name || o.title || o.optionId;
+        const kind = (o) => (typeof o.kind === 'string' ? o.kind : '');
+        for (const o of options) {
+          if (kind(o).startsWith('reject')) continue;
+          addButton(kind(o) === 'allow_always' ? 'btn-allow-always' : 'btn-allow', label(o), o.optionId, false);
+        }
+        const rejects = options.filter((o) => kind(o).startsWith('reject'));
+        for (const o of rejects) addButton('btn-deny', label(o), o.optionId, false);
+        if (rejects.length === 0) addButton('btn-deny', '✕ 拒绝', '', true);
         card.appendChild(actions);
         approvalsList.appendChild(card);
       }
+      syncApprovalsSection();
+    }
+
+    function syncApprovalsSection() {
+      approvalsSection.style.display = pendingPermissions.length + pendingUserInput.length > 0 ? 'block' : 'none';
+    }
+
+    // Structured questions (Codex `requestUserInput`): several questions per request, each
+    // single/multi choice, free text or secret. Same answer shape as the desktop modal:
+    // { [questionId]: string[] }.
+    function renderUserInput() {
+      askList.innerHTML = '';
+      for (const req of pendingUserInput) {
+        const picked = {};
+        const typed = {};
+        const session = sessions.find((s) => s.id === req.appSessionId);
+        const card = el('div', 'ask-card');
+        const header = el('div', 'approval-header');
+        header.appendChild(el('span', 'approval-badge', `❓ 需要你的回答${req.roleName ? ` · ${req.roleName}` : ''}`));
+        if (session) header.appendChild(el('span', 'approval-session', session.title));
+        card.appendChild(header);
+        if (req.title) card.appendChild(el('div', 'approval-title', req.title));
+
+        const answerFor = (q) => {
+          const free = (typed[q.id] || '').trim();
+          return free ? [free] : (picked[q.id] || []);
+        };
+        const submit = el('button', 'btn primary', '提交');
+        const refresh = () => { submit.disabled = !req.questions.every((q) => answerFor(q).length > 0); };
+
+        for (const q of req.questions) {
+          const options = Array.isArray(q.options) ? q.options : [];
+          const block = el('div', `ask-question${q.multi ? ' multi' : ''}`);
+          if (q.header) block.appendChild(el('div', 'ask-header', q.header));
+          block.appendChild(el('div', 'ask-prompt', q.prompt));
+          const buttons = [];
+          for (const opt of options) {
+            const btn = el('button', 'ask-option');
+            btn.type = 'button';
+            const text = el('span', 'ask-option-text');
+            text.appendChild(el('span', 'ask-option-label', opt.label || opt.value));
+            if (opt.description) text.appendChild(el('span', 'ask-option-desc', opt.description));
+            btn.append(el('span', 'ask-mark'), text);
+            btn.onclick = () => {
+              const current = picked[q.id] || [];
+              picked[q.id] = q.multi
+                ? (current.includes(opt.value) ? current.filter((v) => v !== opt.value) : [...current, opt.value])
+                : [opt.value];
+              typed[q.id] = '';
+              if (input) input.value = '';
+              buttons.forEach(([b, v]) => b.classList.toggle('picked', (picked[q.id] || []).includes(v)));
+              refresh();
+            };
+            buttons.push([btn, opt.value]);
+            block.appendChild(btn);
+          }
+          let input = null;
+          if (q.allowOther || options.length === 0) {
+            input = el('input', 'modal-input ask-other');
+            input.type = q.secret ? 'password' : 'text';
+            input.placeholder = options.length === 0 ? '你的回答' : '其他…';
+            input.autocomplete = 'off';
+            input.oninput = () => {
+              typed[q.id] = input.value;
+              if (input.value.trim()) {
+                picked[q.id] = [];
+                buttons.forEach(([b]) => b.classList.remove('picked'));
+              }
+              refresh();
+            };
+            block.appendChild(input);
+          }
+          card.appendChild(block);
+        }
+
+        const send = async (answers) => {
+          submit.disabled = true;
+          try {
+            await api('/api/user-input/respond', { method: 'POST', body: JSON.stringify({ requestId: req.requestId, answers }) });
+            dropUserInput(req.requestId);
+          } catch (err) {
+            refresh();
+            toast(`提交失败：${err.message}`, true);
+          }
+        };
+        const skip = el('button', 'btn', '跳过');
+        skip.onclick = () => send(null);
+        submit.onclick = () => {
+          const answers = {};
+          for (const q of req.questions) answers[q.id] = answerFor(q);
+          send(answers);
+        };
+        refresh();
+        const actions = el('div', 'ask-actions');
+        actions.append(skip, submit);
+        card.appendChild(actions);
+        askList.appendChild(card);
+      }
+      syncApprovalsSection();
+    }
+
+    function dropUserInput(requestId) {
+      pendingUserInput = pendingUserInput.filter((r) => r.requestId !== requestId);
+      renderUserInput();
     }
 
     async function respondPermission(requestId, optionId, cancelled) {
@@ -1324,8 +1517,8 @@
     let ownPendingSend = null;
     const HISTORY_TAIL = 200;
 
-    function upsertMessage(msg) {
-      const node = renderMessage(msg);
+    function upsertMessage(msg, live) {
+      const node = renderMessage(msg, live);
       const existing = msg.id && messagesContainer.querySelector(`[data-id="${CSS.escape(msg.id)}"]`);
       if (existing) existing.replaceWith(node);
       else messagesContainer.appendChild(node);
@@ -1338,7 +1531,7 @@
         const placeholder = messagesContainer.querySelector('.placeholder');
         if (placeholder) placeholder.remove();
         const stick = nearBottom();
-        upsertMessage(live.message);
+        upsertMessage(live.message, true);
         if (stick) scrollToBottom(true);
         markSessionRunning(sid, true);
       } catch (_) {}
@@ -1370,6 +1563,7 @@
       eventSource.onopen = () => {
         statusDot.className = 'status-dot online';
         statusDot.title = '已连接';
+        loadPermissions();
       };
 
       eventSource.onerror = async () => {
@@ -1402,6 +1596,24 @@
         try { payload = JSON.parse(ev.data); } catch (_) { return; }
         const kind = payload.event && payload.event.kind;
         if (kind === 'permissionRequest' || kind === 'permissionExpired') loadPermissions();
+        if (payload.appSessionId === activeSessionId && followingLive) {
+          const e = payload.event;
+          if (kind === 'toolCall') setLiveStatus(`⚙ ${e.title || e.toolName || 'tool'}`);
+          else if (kind === 'thoughtDelta') setLiveStatus('思考中…');
+          else if (kind === 'statusUpdate' && e.text) setLiveStatus(e.text);
+          else if (kind === 'permissionRequest') setLiveStatus('等待审批');
+        }
+        if (kind === 'userInputRequest' && payload.event.requestId) {
+          const rest = pendingUserInput.filter((r) => r.requestId !== payload.event.requestId);
+          pendingUserInput = [...rest, {
+            requestId: payload.event.requestId,
+            appSessionId: payload.appSessionId,
+            roleName: payload.role,
+            title: payload.event.title || null,
+            questions: payload.event.questions || [],
+          }];
+          renderUserInput();
+        }
       });
 
       // Engine turn lifecycle — same events the desktop consumes, whoever started the turn.
@@ -1412,10 +1624,14 @@
         markSessionRunning(sid, true);
         if (sid !== activeSessionId) return;
         followingLive = true;
-        if (ownPendingSend === sid) { ownPendingSend = null; return; }
-        const placeholder = messagesContainer.querySelector('.placeholder');
-        if (placeholder) placeholder.remove();
-        if (payload.userMessage) messagesContainer.appendChild(renderMessage(payload.userMessage));
+        if (ownPendingSend === sid) {
+          ownPendingSend = null;
+        } else {
+          const placeholder = messagesContainer.querySelector('.placeholder');
+          if (placeholder) placeholder.remove();
+          if (payload.userMessage) messagesContainer.appendChild(renderMessage(payload.userMessage));
+        }
+        appendLiveText('', payload.roleLabel);
         scrollToBottom(true);
       });
 
@@ -1424,11 +1640,20 @@
         try { payload = JSON.parse(ev.data); } catch (_) { return; }
         const sid = payload.appSessionId;
         finishedTurns.add(payload.turnId);
+        if (pendingPermissions.some((p) => p.appSessionId === sid)) {
+          pendingPermissions = pendingPermissions.filter((p) => p.appSessionId !== sid);
+          renderPermissions();
+        }
+        if (pendingUserInput.some((r) => r.appSessionId === sid)) {
+          pendingUserInput = pendingUserInput.filter((r) => r.appSessionId !== sid);
+          renderUserInput();
+        }
         markSessionRunning(sid, false);
         if (sid === activeSessionId) followingLive = false;
         const messages = payload.messages || [];
         if (sid === activeSessionId) {
           if (!payload.ok && !payload.cancelled && payload.error) toast(`运行出错：${payload.error}`, true);
+          else if (payload.cancelled) toast('已停止');
           adoptTurnMessages(messages);
         }
         const s = sessions.find((x) => x.id === sid);

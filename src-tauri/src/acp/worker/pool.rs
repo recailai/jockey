@@ -29,6 +29,8 @@ pub(crate) struct LiveConnection {
     pub(crate) conn: Rc<AcpConnection>,
     pub(crate) session_id: acp::SessionId,
     pub(crate) cwd: String,
+    /// Launch env (includes the role's account), compared on reuse like `cwd`.
+    pub(crate) env: Vec<(String, String)>,
     pub(crate) delta_slot: DeltaSlot,
     /// Shared cell updated when CurrentModeUpdate arrives and on optimistic
     /// `set_session_mode`. Cloned into the owning JockeyUiClient so writes

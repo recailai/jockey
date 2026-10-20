@@ -94,6 +94,7 @@ async fn handle_connection(
 
     let mut content_length: usize = 0;
     let mut authorized = false;
+    let mut binding: Option<super::binding::McpBinding> = None;
     let expected_header = format!("Bearer {token}");
     loop {
         let mut line = String::new();
@@ -109,6 +110,11 @@ async fn handle_connection(
             .or_else(|| line.strip_prefix("content-length:"))
         {
             content_length = val.trim().parse().unwrap_or(0);
+        }
+        if let Some((name, val)) = line.split_once(':') {
+            if name.trim().eq_ignore_ascii_case(super::binding::BINDING_HEADER) {
+                binding = super::binding::McpBinding::decode(val);
+            }
         }
         if let Some(val) = line
             .strip_prefix("Authorization:")
@@ -153,7 +159,7 @@ async fn handle_connection(
         }
     };
 
-    let response_body = handle_mcp_request(state, app, &body_str).await;
+    let response_body = handle_mcp_request(state, app, &body_str, binding.as_ref()).await;
     let resp = http_response(200, &response_body);
     let _ = writer.write_all(resp.as_bytes()).await;
 }
@@ -173,7 +179,12 @@ fn http_response(status: u16, body: &str) -> String {
     )
 }
 
-async fn handle_mcp_request(state: &AppState, app: &tauri::AppHandle, body: &str) -> String {
+async fn handle_mcp_request(
+    state: &AppState,
+    app: &tauri::AppHandle,
+    body: &str,
+    binding: Option<&super::binding::McpBinding>,
+) -> String {
     #[derive(serde::Deserialize)]
     struct Req {
         id: Option<Value>,
@@ -218,7 +229,8 @@ async fn handle_mcp_request(state: &AppState, app: &tauri::AppHandle, body: &str
                 .get("name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let arguments = req.params.get("arguments").cloned().unwrap_or(json!({}));
+            let mut arguments = req.params.get("arguments").cloned().unwrap_or(json!({}));
+            super::binding::apply_binding(name, &mut arguments, binding);
             match dispatch(state, app, name, arguments).await {
                 Ok(result) => {
                     let text = match result {
@@ -305,7 +317,7 @@ fn tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "appSessionId": { "type": "string", "description": "Jockey app session id from the Jockey context note." },
+                    "appSessionId": { "type": "string", "description": "Jockey app session id. Optional: defaults to the current session." },
                     "view": { "type": "string", "enum": ["summary", "roles", "turns", "messages"], "default": "summary" },
                     "roleName": { "type": "string", "description": "Optional exact role filter for messages and turns." },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 50, "default": 5, "description": "Maximum messages or turns to inspect." },
@@ -315,7 +327,7 @@ fn tool_definitions() -> Vec<Value> {
                     "include": { "type": "array", "items": { "type": "string", "enum": ["text", "toolSummary", "tools", "toolOutput", "raw"] }, "description": "Optional fields to include. Defaults to text and toolSummary." },
                     "includePayload": { "type": "boolean", "default": false, "description": "Compatibility shortcut for include:[raw]." }
                 },
-                "required": ["appSessionId"]
+                "required": []
             }
         }),
         json!({
@@ -348,9 +360,9 @@ fn tool_definitions() -> Vec<Value> {
                 "properties": {
                     "roleName": { "type": "string", "minLength": 1, "maxLength": 128 },
                     "prompt": { "type": "string", "minLength": 1, "maxLength": 32000 },
-                    "appSessionId": { "type": "string", "minLength": 1, "description": "Jockey app session id for workspace and transcript ownership." }
+                    "appSessionId": { "type": "string", "minLength": 1, "description": "Jockey app session id for workspace and transcript ownership. Optional: defaults to the current session." }
                 },
-                "required": ["roleName", "prompt", "appSessionId"]
+                "required": ["roleName", "prompt"]
             }
         }),
     ]

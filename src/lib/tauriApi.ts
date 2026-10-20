@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AcpConfigOption,
   AppMentionItem,
+  AppPermission,
+  AppUserInputRequest,
   AppMessage,
   AppSkill,
   AssistantRuntime,
@@ -140,6 +142,9 @@ export const appSessionApi = {
   remove: (id: string) => call<void>("delete_app_session", { id }),
   list: (projectId?: string) => call<RawSession[]>("list_app_sessions", { projectId }),
   listClosed: () => call<RawSession[]>("list_closed_app_sessions"),
+  /** Continue the session's agent conversation in Terminal; resolves to the command run. */
+  openInTerminal: (appSessionId: string) =>
+    call<string>("open_session_in_terminal_cmd", { appSessionId }),
   /** Full sessions by id, for one another client created (seen only as a summary). */
   getMany: (ids: string[]) => call<RawSession[]>("get_app_sessions", { ids }),
   /** Follow a session while it is shown; returns the running turn's snapshot, if any. */
@@ -215,6 +220,79 @@ export const runtimeProfileApi = {
   }) => call<RuntimeProfile>("upsert_runtime_profile_cmd", { input }),
   remove: (id: string) => call<void>("delete_runtime_profile_cmd", { id }),
 };
+
+export type CredentialProviderKey = "claude" | "codex" | "pi" | "antigravity";
+
+export type AgentAccountStatus = { signedIn: boolean; identity?: string | null };
+
+export type CredentialProviderInfo = {
+  key: CredentialProviderKey;
+  label: string;
+  /// The CLI can sign in to a separate account inside its own config dir.
+  supportsSignIn: boolean;
+  loginHint: string;
+  suggestedEnvKeys: string[];
+  defaultConfigDir?: string | null;
+  defaultAccount: AgentAccountStatus;
+};
+
+export type AgentCredential = {
+  id: string;
+  provider: CredentialProviderKey;
+  label: string;
+  configDir?: string | null;
+  managed: boolean;
+  envKeys: string[];
+  account: AgentAccountStatus;
+  loginCommand?: string | null;
+  usedBy: string[];
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type CredentialsOverview = {
+  providers: CredentialProviderInfo[];
+  credentials: AgentCredential[];
+};
+
+/// Agent accounts: per-CLI credential profiles that roles can launch under. Env values are
+/// write-only from the UI; the backend keeps them in the OS keychain and only reports names.
+export const credentialApi = {
+  overview: () => call<CredentialsOverview>("list_agent_credentials_cmd"),
+  create: (input: {
+    provider: CredentialProviderKey;
+    label: string;
+    configDir?: string | null;
+    env?: Record<string, string>;
+  }) => call<CredentialsOverview>("create_agent_credential_cmd", { input }),
+  update: (input: {
+    id: string;
+    label?: string;
+    setEnv?: Record<string, string>;
+    removeEnv?: string[];
+  }) => call<CredentialsOverview>("update_agent_credential_cmd", { input }),
+  remove: (id: string) => call<CredentialsOverview>("delete_agent_credential_cmd", { id }),
+  openLogin: (id: string) => call<void>("open_agent_credential_login_cmd", { id }),
+  roleBindings: (roleId: string) =>
+    call<Array<{ provider: CredentialProviderKey; credentialId: string }>>("get_role_credentials_cmd", { roleId }),
+  setRoleBinding: (roleId: string, provider: CredentialProviderKey, credentialId: string | null) =>
+    call<void>("set_role_credential_cmd", { roleId, provider, credentialId }),
+};
+
+const CREDENTIAL_PROVIDER_BY_RUNTIME: Record<string, CredentialProviderKey> = {
+  claude: "claude", "native:claude": "claude", "claude-native": "claude",
+  "claude-code": "claude", "claude-acp": "claude", "acp:claude-code": "claude",
+  codex: "codex", "codex-cli": "codex", "native:codex": "codex",
+  pi: "pi", "pi-cli": "pi", "native:pi": "pi",
+  agy: "antigravity", "native:agy": "antigravity", antigravity: "antigravity",
+  "antigravity-cli": "antigravity", gemini: "antigravity", "gemini-cli": "antigravity",
+};
+
+/// Mirrors `CredentialProvider::for_runtime`: both Claude runtimes run the same Claude Code
+/// install, so they share one account.
+export function credentialProviderFor(runtimeKind: string): CredentialProviderKey | null {
+  return CREDENTIAL_PROVIDER_BY_RUNTIME[runtimeKind.trim().toLowerCase()] ?? null;
+}
 
 export type ProviderSessionSummary = {
   providerSessionId: string;
@@ -396,6 +474,11 @@ export const assistantApi = {
     call<string[]>("sync_role_mode_cmd", { roleId, modeId }),
   respondUserInput: (requestId: string, answers: Record<string, string[]> | null) =>
     call<void>("respond_user_input_cmd", { requestId, answers }),
+  listPendingPrompts: (sessionId?: string) =>
+    call<{
+      permissions: Array<AppPermission & { appSessionId: string }>;
+      userInputs: Array<AppUserInputRequest & { appSessionId: string }>;
+    }>("list_pending_prompts_cmd", { sessionId }),
   respondPermission: (requestId: string, optionId: string, cancelled: boolean) =>
     call<void>("respond_permission", { requestId, optionId, cancelled }),
 };

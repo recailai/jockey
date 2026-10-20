@@ -8,6 +8,7 @@ import {
   Code2,
   FolderArchive,
   GitBranch,
+  KeyRound,
   Monitor,
   Palette,
   Settings,
@@ -29,6 +30,7 @@ import { RulesTab } from "./management/RulesTab";
 import { ExternalAgentsTab } from "./management/ExternalAgentsTab";
 import CustomAppsSettings from "./management/CustomAppsSettings";
 import { RemoteCompanionTab } from "./management/RemoteCompanionTab";
+import { AgentAccountsTab } from "./management/AgentAccountsTab";
 import { Panel, PanelBody, RowButton, Switch as UiSwitch } from "./ui";
 import { loadUiPrefs, saveUiPrefs, type UiPrefs, type WorkMode } from "../lib/uiPrefs";
 import type { Toast } from "../lib/useToast";
@@ -45,6 +47,7 @@ export type SettingsTab =
   | "worktrees"
   | "automations"
   | "roles"
+  | "accounts"
   | "rules"
   | "archived";
 
@@ -82,6 +85,7 @@ const NAV: Array<{ id: SettingsTab; label: string; icon: typeof Settings }> = [
   { id: "worktrees", label: "Worktrees", icon: BriefcaseBusiness },
   { id: "automations", label: "Automations", icon: Workflow },
   { id: "roles", label: "Roles", icon: Bot },
+  { id: "accounts", label: "Agent accounts", icon: KeyRound },
   { id: "rules", label: "Rules", icon: SlidersHorizontal },
   { id: "archived", label: "Archived sessions", icon: FolderArchive },
 ];
@@ -403,6 +407,17 @@ export default function SettingsPage(props: SettingsPageProps) {
                     initialRoleName={initialRoleName()}
                     currentProject={props.currentProject}
                   />
+                </div>
+              </div>
+            </section>
+          </Show>
+
+          <Show when={activeTab() === "accounts"}>
+            <section>
+              <h1 class="settings-title">Agent accounts</h1>
+              <div class="settings-section">
+                <div class="settings-management-panel">
+                  <AgentAccountsTab />
                 </div>
               </div>
             </section>

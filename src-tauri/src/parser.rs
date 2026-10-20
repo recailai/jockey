@@ -6,8 +6,11 @@ pub(crate) fn parse_route_input(raw: &str) -> ParsedRouteInput {
     let mut message_tokens = Vec::new();
     let mut seen_skills: HashSet<String> = HashSet::new();
     let mut seen_roles: HashSet<String> = HashSet::new();
+    let mut role_spans: Vec<(usize, usize)> = Vec::new();
 
     for token in raw.split_whitespace() {
+        let start = token.as_ptr() as usize - raw.as_ptr() as usize;
+        let span = (start, start + token.len());
         if let Some(skill_ref) = token.strip_prefix('#') {
             let name = strip_trailing_punct(skill_ref).trim();
             if !name.is_empty()
@@ -37,6 +40,7 @@ pub(crate) fn parse_route_input(raw: &str) -> ParsedRouteInput {
                 if seen_roles.insert(key) {
                     out.role_names.push(clean_role);
                 }
+                role_spans.push(span);
                 continue;
             }
         }
@@ -84,6 +88,7 @@ pub(crate) fn parse_route_input(raw: &str) -> ParsedRouteInput {
             if seen_roles.insert(key) {
                 out.role_names.push(clean_role);
             }
+            role_spans.push(span);
             continue;
         }
 
@@ -91,7 +96,20 @@ pub(crate) fn parse_route_input(raw: &str) -> ParsedRouteInput {
     }
 
     out.message = message_tokens.join(" ").trim().to_string();
+    out.prompt = strip_spans(raw, &role_spans);
     out
+}
+
+fn strip_spans(raw: &str, spans: &[(usize, usize)]) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut cursor = 0;
+    for &(start, end) in spans {
+        out.push_str(&raw[cursor..start]);
+        let tail = &raw[end..];
+        cursor = end + (tail.len() - tail.trim_start().len());
+    }
+    out.push_str(&raw[cursor..]);
+    out.trim().to_string()
 }
 
 pub(crate) fn strip_trailing_punct(token: &str) -> &str {
@@ -118,4 +136,22 @@ pub(crate) fn sanitize_role_name(raw: &str) -> Option<String> {
         return Some(clean.to_string());
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt_is_verbatim_without_role_mentions() {
+        let raw = "fix\n\n  this   @src/a.rs #skill\n- item";
+        assert_eq!(parse_route_input(raw).prompt, raw);
+    }
+
+    #[test]
+    fn prompt_drops_only_role_tokens() {
+        let routed = parse_route_input("@dev  review\n@src/a.rs and @role:qa now");
+        assert_eq!(routed.role_names, vec!["dev", "qa"]);
+        assert_eq!(routed.prompt, "review\n@src/a.rs and now");
+    }
 }

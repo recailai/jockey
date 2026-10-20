@@ -71,25 +71,14 @@ export function useAgentContext(
     const empty = { options: [] as AcpConfigOption[], modes: [] as string[] };
     try {
       const resolvedRole = roleName ?? normalizeRuntimeKey(runtimeKey);
-      // Last-resort shape for a runtime that reports nothing: whatever discovery last
-      // persisted onto the persona row.
-      const roleStoredOptions = (): AcpConfigOption[] => {
-        const role = roles().find((r) => r.roleName === resolvedRole);
-        if (!role) return [];
-        try {
-          const parsed = JSON.parse(role.configOptionDefsJson || "[]");
-          return Array.isArray(parsed) ? (parsed as AcpConfigOption[]) : [];
-        } catch { return []; }
-      };
       const sid = activeSessionId();
-      if (!sid) return { options: roleStoredOptions(), modes: [] };
+      if (!sid) return empty;
       const projectId = activeSession()?.projectId ?? undefined;
 
       const result = await assistantApi.prewarmRoleConfig(resolvedRole, sid, projectId, forceRefresh, runtimeKey);
       const opts = result.configOptions as AcpConfigOption[];
       const modes = result.modes as string[];
-      if (opts.length > 0) void refreshRoles(projectId);
-      return { options: opts.length > 0 ? opts : roleStoredOptions(), modes };
+      return { options: opts, modes };
     } catch {
       return empty;
     }

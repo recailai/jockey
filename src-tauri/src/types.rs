@@ -144,27 +144,6 @@ pub(crate) struct ImageAttachment {
     pub(crate) mime_type: String,
 }
 
-#[derive(Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ChatContextOptions {
-    #[serde(default)]
-    pub(crate) mode: Option<String>,
-    #[serde(default)]
-    pub(crate) recent_turns: Option<usize>,
-    #[serde(default)]
-    pub(crate) include_current_role: Option<bool>,
-}
-
-impl Default for ChatContextOptions {
-    fn default() -> Self {
-        Self {
-            mode: None,
-            recent_turns: None,
-            include_current_role: None,
-        }
-    }
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AssistantChatInput {
@@ -173,8 +152,6 @@ pub(crate) struct AssistantChatInput {
     pub(crate) app_session_id: Option<String>,
     #[serde(default)]
     pub(crate) attachments: Vec<ImageAttachment>,
-    #[serde(default)]
-    pub(crate) context: ChatContextOptions,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -209,6 +186,9 @@ pub(crate) struct StartWorkflowInput {
 pub(crate) struct ParsedRouteInput {
     pub(crate) role_names: Vec<String>,
     pub(crate) message: String,
+    /// The typed text with only `@role` routing tokens removed; everything else, including
+    /// whitespace, is exactly as the user wrote it.
+    pub(crate) prompt: String,
     pub(crate) file_refs: Vec<String>,
     pub(crate) dir_refs: Vec<String>,
     pub(crate) skill_refs: Vec<String>,
@@ -312,10 +292,6 @@ pub(crate) struct AppSkillUpsert {
     pub(crate) content: String,
 }
 
-pub(crate) const ATTACH_MAX_TOTAL_BYTES: usize = 160 * 1024;
-pub(crate) const ATTACH_MAX_FILE_BYTES: usize = 24 * 1024;
-pub(crate) const ATTACH_MAX_DIR_FILES: usize = 30;
-pub(crate) const ATTACH_MAX_DIR_DEPTH: usize = 3;
 pub(crate) const DEFAULT_MODELS: &[&str] = &[];
 pub(crate) const DEFAULT_MCP_SERVERS: &[&str] = &[];
 pub(crate) const DEFAULT_SKILLS: &[&str] = &[];

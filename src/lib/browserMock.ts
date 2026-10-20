@@ -213,6 +213,9 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
           const list = getStorage<MockSession[]>(STORAGE_KEY_SESSIONS, []);
           return list.filter((s: { closedAt?: number | null }) => !s.closedAt);
         }
+        case "open_session_in_terminal_cmd": {
+          throw new Error("Open in Terminal needs the desktop app");
+        }
         case "list_closed_app_sessions": {
           const list = getStorage<MockSession[]>(STORAGE_KEY_SESSIONS, []);
           return list.filter((s: { closedAt?: number | null }) => !!s.closedAt);

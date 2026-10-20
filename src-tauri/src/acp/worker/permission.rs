@@ -124,22 +124,70 @@ pub fn respond_to_permission(request_id: &str, outcome: acp::RequestPermissionOu
 /// Answers to a structured `UserInputRequest`, keyed by question id.
 pub type UserInputAnswers = std::collections::HashMap<String, Vec<String>>;
 
-static USER_INPUT_REQUESTS: OnceLock<DashMap<String, oneshot::Sender<Option<UserInputAnswers>>>> =
-    OnceLock::new();
+/// What a late-joining client needs to re-render a pending question; mirrors the
+/// `userInputRequest` stream event plus the session/role it belongs to.
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingUserInputInfo {
+    pub request_id: String,
+    pub role_name: String,
+    pub app_session_id: String,
+    pub title: Option<String>,
+    pub blocking: bool,
+    pub questions: Vec<serde_json::Value>,
+}
 
-fn user_input_requests() -> &'static DashMap<String, oneshot::Sender<Option<UserInputAnswers>>> {
+struct PendingUserInput {
+    tx: oneshot::Sender<Option<UserInputAnswers>>,
+    info: PendingUserInputInfo,
+}
+
+static USER_INPUT_REQUESTS: OnceLock<DashMap<String, PendingUserInput>> = OnceLock::new();
+
+fn user_input_requests() -> &'static DashMap<String, PendingUserInput> {
     USER_INPUT_REQUESTS.get_or_init(DashMap::new)
 }
 
-pub(crate) fn insert_user_input(request_id: String, tx: oneshot::Sender<Option<UserInputAnswers>>) {
-    user_input_requests().insert(request_id, tx);
+pub(crate) fn insert_user_input(
+    info: PendingUserInputInfo,
+    tx: oneshot::Sender<Option<UserInputAnswers>>,
+) {
+    user_input_requests().insert(info.request_id.clone(), PendingUserInput { tx, info });
+}
+
+#[derive(serde::Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingPrompts {
+    pub permissions: Vec<PendingPermissionInfo>,
+    pub user_inputs: Vec<PendingUserInputInfo>,
+}
+
+/// Prompts the agent is currently blocked on. Stream events are fire-and-forget, so a client
+/// that connects after one was emitted recovers it from here.
+pub fn list_pending_prompts(app_session_id: Option<&str>) -> PendingPrompts {
+    let wanted = |sid: &str| app_session_id.map_or(true, |want| want == sid);
+    let mut permissions: Vec<_> = list_pending_permissions()
+        .into_iter()
+        .filter(|p| wanted(&p.app_session_id))
+        .collect();
+    let mut user_inputs: Vec<_> = user_input_requests()
+        .iter()
+        .map(|e| e.info.clone())
+        .filter(|i| wanted(&i.app_session_id))
+        .collect();
+    permissions.sort_by(|a, b| a.request_id.cmp(&b.request_id));
+    user_inputs.sort_by(|a, b| a.request_id.cmp(&b.request_id));
+    PendingPrompts {
+        permissions,
+        user_inputs,
+    }
 }
 
 /// `None` means the user dismissed the form; the adapter decides what that means for its
 /// protocol (Codex treats it as no answers).
 pub fn respond_to_user_input(request_id: &str, answers: Option<UserInputAnswers>) {
-    if let Some((_, tx)) = user_input_requests().remove(request_id) {
-        let _ = tx.send(answers);
+    if let Some((_, pending)) = user_input_requests().remove(request_id) {
+        let _ = pending.tx.send(answers);
     }
 }
 
@@ -191,5 +239,60 @@ pub(crate) fn cancel_all_permissions() {
             }
             let _ = pending.tx.send(acp::RequestPermissionOutcome::Cancelled);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_prompts_snapshot_filters_by_session_and_clears_on_respond() {
+        let (ptx, _prx) = oneshot::channel();
+        insert_permission(
+            "snap-perm-a".into(),
+            PendingPermission {
+                runtime_key: "codex-cli".into(),
+                role_name: "r".into(),
+                app_session_id: "snap-s1".into(),
+                cache_key: String::new(),
+                allow_always_option_ids: vec![],
+                delta_tx: None,
+                tx: ptx,
+                title: Some("Run".into()),
+                description: None,
+                options: vec![],
+            },
+        );
+        let (utx, _urx) = oneshot::channel();
+        insert_user_input(
+            PendingUserInputInfo {
+                request_id: "snap-ask-b".into(),
+                role_name: "r".into(),
+                app_session_id: "snap-s2".into(),
+                title: None,
+                blocking: true,
+                questions: vec![serde_json::json!({ "id": "q" })],
+            },
+            utx,
+        );
+
+        let s1 = list_pending_prompts(Some("snap-s1"));
+        assert_eq!(s1.permissions.len(), 1);
+        assert!(s1.user_inputs.is_empty());
+        let s2 = list_pending_prompts(Some("snap-s2"));
+        assert!(s2.permissions.is_empty());
+        assert_eq!(s2.user_inputs[0].request_id, "snap-ask-b");
+        let all = list_pending_prompts(None);
+        assert!(all.permissions.iter().any(|p| p.request_id == "snap-perm-a"));
+        assert!(all.user_inputs.iter().any(|u| u.request_id == "snap-ask-b"));
+
+        respond_to_user_input("snap-ask-b", None);
+        respond_to_permission(
+            "snap-perm-a",
+            acp::RequestPermissionOutcome::Cancelled,
+        );
+        assert!(list_pending_prompts(Some("snap-s2")).user_inputs.is_empty());
+        assert!(list_pending_prompts(Some("snap-s1")).permissions.is_empty());
     }
 }

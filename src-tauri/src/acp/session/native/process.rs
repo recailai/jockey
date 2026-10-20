@@ -66,7 +66,7 @@ impl NativeProcess {
         protocol: NativeProtocol,
         method: &str,
         params: Value,
-        timeout: Duration,
+        timeout: Option<Duration>,
         auto_approve: bool,
     ) -> Result<(Value, Vec<Value>), String> {
         let request_id = self.next_request_id();
@@ -121,7 +121,7 @@ impl NativeProcess {
     pub(super) async fn next_agent_message(
         &mut self,
         protocol: NativeProtocol,
-        timeout: Duration,
+        timeout: Option<Duration>,
         auto_approve: bool,
     ) -> Result<Value, String> {
         loop {
@@ -138,7 +138,7 @@ impl NativeProcess {
     /// Read the next frame without interpreting server requests. Callers that can surface an
     /// approval to the user take this and resolve the request themselves; `next_agent_message`
     /// remains the auto-answering path for transports with no interactive surface.
-    pub(super) async fn next_frame(&mut self, timeout: Duration) -> Result<Value, String> {
+    pub(super) async fn next_frame(&mut self, timeout: Option<Duration>) -> Result<Value, String> {
         self.next_message(timeout).await
     }
 
@@ -150,14 +150,21 @@ impl NativeProcess {
         }
     }
 
-    async fn next_message(&mut self, timeout: Duration) -> Result<Value, String> {
+    /// `None` waits for as long as the agent takes: a turn has no deadline, it ends when the
+    /// agent finishes, the user cancels, or the process exits.
+    async fn next_message(&mut self, timeout: Option<Duration>) -> Result<Value, String> {
         let mut line = String::new();
         loop {
             line.clear();
-            let read = tokio::time::timeout(timeout, self.process.stdout.read_line(&mut line))
-                .await
-                .map_err(|_| self.timeout_error())?
-                .map_err(|error| self.io_error("read", error))?;
+            let read = match timeout {
+                Some(timeout) => {
+                    tokio::time::timeout(timeout, self.process.stdout.read_line(&mut line))
+                        .await
+                        .map_err(|_| self.timeout_error())?
+                }
+                None => self.process.stdout.read_line(&mut line).await,
+            }
+            .map_err(|error| self.io_error("read", error))?;
             if read == 0 {
                 return Err(self.exit_error());
             }

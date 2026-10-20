@@ -46,7 +46,9 @@ pub(super) fn router(ctx: ServerContext) -> Router {
         .route("/roles", get(list_roles))
         .route("/fs/dirs", get(list_dirs))
         .route("/permissions", get(list_permissions))
+        .route("/pending", get(list_pending))
         .route("/permissions/respond", post(respond_permission))
+        .route("/user-input/respond", post(respond_user_input))
         .route("/events", get(events))
         .route_layer(middleware::from_fn_with_state(ctx.clone(), require_token));
 
@@ -610,6 +612,19 @@ async fn list_permissions() -> ApiResult<Value> {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct PendingQuery {
+    session_id: Option<String>,
+}
+
+/// Prompts the agent is blocked on right now, for clients that missed the live event.
+async fn list_pending(Query(q): Query<PendingQuery>) -> ApiResult<Value> {
+    serde_json::to_value(crate::acp::list_pending_prompts(q.session_id.as_deref()))
+        .map(Json)
+        .map_err(internal)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RespondPermissionBody {
     request_id: String,
     option_id: String,
@@ -632,6 +647,19 @@ async fn respond_permission(
         payload: std::sync::Arc::from(json!({ "status": "resolved" }).to_string()),
         focus: None,
     });
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RespondUserInputBody {
+    request_id: String,
+    answers: Option<std::collections::HashMap<String, Vec<String>>>,
+}
+
+async fn respond_user_input(Json(body): Json<RespondUserInputBody>) -> ApiResult<Value> {
+    crate::commands::runtime_cmd::respond_user_input_cmd(body.request_id, body.answers)
+        .map_err(bad_request)?;
     Ok(Json(json!({ "ok": true })))
 }
 

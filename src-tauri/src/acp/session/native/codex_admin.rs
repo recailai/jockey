@@ -17,7 +17,7 @@ use std::time::Duration;
 use super::super::super::adapter::{acp_log, NativeProtocol};
 use super::NativeProcess;
 
-const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
+const CONTROL_TIMEOUT: Option<Duration> = Some(Duration::from_secs(30));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

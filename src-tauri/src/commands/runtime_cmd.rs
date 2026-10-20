@@ -310,16 +310,6 @@ pub(crate) async fn prewarm_role_config_cmd(
         force.unwrap_or(false),
     )
     .await;
-    if !opts.is_empty() {
-        if let Ok(serialized) = serde_json::to_string(&opts) {
-            let _ = crate::db::role::update_role_config_option_defs_if_changed(
-                get_state(&state),
-                &role_name,
-                Some(&runtime),
-                &serialized,
-            );
-        }
-    }
     Ok(serde_json::json!({ "configOptions": opts, "modes": modes }))
 }
 
@@ -590,6 +580,11 @@ pub(crate) fn bind_session_agent_cmd(
         &runtime,
     )?;
     Ok(runtime)
+}
+
+#[tauri::command]
+pub(crate) fn list_pending_prompts_cmd(session_id: Option<String>) -> crate::acp::PendingPrompts {
+    crate::acp::list_pending_prompts(session_id.as_deref())
 }
 
 #[tauri::command]

@@ -13,7 +13,7 @@ mod session_cmds;
 // cold_start is called by worker/handlers.rs via super::super::session::cold_start
 pub(crate) use cold_start::cold_start;
 
-pub use execute::execute_runtime;
+pub use execute::{execute_runtime, execute_runtime_with_system};
 
 /// True when the runtime supports provider session administration
 /// (list/fork/rewind). Verified per-protocol; native Codex only.

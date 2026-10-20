@@ -349,6 +349,7 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         ",
     )
     .map_err(|e| e.to_string())?;
+    crate::credentials::store::init_schema(conn)?;
     ensure_column(
         conn,
         "roles",

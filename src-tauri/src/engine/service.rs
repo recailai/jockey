@@ -328,7 +328,6 @@ async fn run_one(app: &AppHandle, session_id: &str, pending: PendingTurn) -> boo
         runtime_kind: runtime,
         app_session_id: Some(session_id.to_string()),
         attachments,
-        context: crate::types::ChatContextOptions::default(),
     };
     match crate::chat::run_turn(
         app.clone(),

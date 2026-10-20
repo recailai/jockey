@@ -10,12 +10,13 @@ type Props = {
   patchActiveSession: (patch: Partial<AppSession>) => void;
 };
 
-type Tone = "auth" | "connection" | "timeout" | "generic";
+type Tone = "auth" | "connection" | "timeout" | "cancelled" | "generic";
 
 function toneFor(code: string): Tone {
   if (code === "AUTH_REQUIRED") return "auth";
   if (code === "CONNECTION_FAILED" || code === "PROCESS_CRASHED") return "connection";
   if (code === "PROMPT_TIMEOUT") return "timeout";
+  if (code === "ACP_REQ_CANCELLED") return "cancelled";
   return "generic";
 }
 
@@ -27,8 +28,10 @@ function toneClasses(tone: Tone): string {
       return "is-danger";
     case "timeout":
       return "is-info";
-    default:
+    case "cancelled":
       return "is-muted";
+    default:
+      return "is-danger";
   }
 }
 

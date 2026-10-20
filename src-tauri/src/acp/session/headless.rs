@@ -22,7 +22,6 @@ pub(in crate::acp) use catalog::refresh_headless_catalog;
 /// How long a Claude `result` that arrived before this turn produced anything is held back
 /// before being accepted as the turn's answer (see `read_headless_turn`).
 const STALE_RESULT_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
-const HEADLESS_TIMEOUT: Duration = Duration::from_secs(600);
 const PROCESS_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Text deltas arrive roughly one per token here. Each one used to cost an IPC serialize plus
@@ -391,7 +390,6 @@ pub(super) async fn execute_headless_runtime(
     let runtime_key = request.runtime_key;
     let role_name = request.role_name;
     let prompt = request.prompt;
-    let context = request.context;
     let cwd = request.cwd;
     let app = request.app;
     let auto_approve = request.auto_approve;
@@ -477,6 +475,7 @@ pub(super) async fn execute_headless_runtime(
             command_args.push(session_id.to_string());
         }
     }
+    stream::append_system_prompt_args(&mut command_args, protocol, request.append_system_prompt);
     if stream_input {
         command_args.extend(["--input-format".to_string(), "stream-json".to_string()]);
     }
@@ -484,7 +483,6 @@ pub(super) async fn execute_headless_runtime(
         command_args.extend(["--output-format".to_string(), "stream-json".to_string()]);
     }
 
-    let prompt = compose_prompt(prompt, context);
     if !stream_input {
         command_args.push("--print".to_string());
         if matches!(protocol, HeadlessProtocol::ClaudeStreamJson)
@@ -493,7 +491,7 @@ pub(super) async fn execute_headless_runtime(
         {
             command_args.push("--verbose".to_string());
         }
-        command_args.push(prompt.clone());
+        command_args.push(prompt.to_string());
     }
 
     acp_log(
@@ -675,42 +673,18 @@ pub(super) async fn execute_headless_runtime(
         }
     };
 
-    let read_result = tokio::time::timeout(
-        HEADLESS_TIMEOUT,
-        read_headless_output(
-            stdout,
-            protocol,
-            output_format,
-            app,
-            role_name,
-            runtime_key,
-            app_session_id,
-            turn_id,
-            &mut sequence,
-        ),
+    let turn = read_headless_output(
+        stdout,
+        protocol,
+        output_format,
+        app,
+        role_name,
+        runtime_key,
+        app_session_id,
+        turn_id,
+        &mut sequence,
     )
     .await;
-
-    let turn = match read_result {
-        Ok(result) => result,
-        Err(_) => {
-            cleanup_child(&key, pid, &mut child, stderr_task).await;
-            return error_result(
-                runtime_key,
-                role_name,
-                app_session_id,
-                turn_id,
-                app,
-                AcpErrorCode::PromptTimeout,
-                format!(
-                    "{} did not finish within {}s",
-                    protocol_display_name(protocol),
-                    HEADLESS_TIMEOUT.as_secs()
-                ),
-                json!({ "mode": "headless-json", "runtimeKey": runtime_key }),
-            );
-        }
-    };
 
     let status_result = if turn.result_seen {
         terminate_child(&mut child).await
@@ -1667,18 +1641,6 @@ fn normalize_mode(mode: &str) -> Option<&'static str> {
         "accept-edits" | "accept_edits" | "accept edits" | "edit" | "auto" => Some("accept-edits"),
         _ => None,
     }
-}
-
-fn compose_prompt(prompt: &str, context: &[(String, String)]) -> String {
-    if context.is_empty() {
-        return prompt.to_string();
-    }
-    let context = context
-        .iter()
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("{prompt}\n\n[context]\n{context}")
 }
 
 fn emit_event(

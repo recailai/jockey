@@ -220,7 +220,6 @@ pub(crate) enum WorkerMsg {
         role_name: String,
         app_session_id: String,
         prompt: String,
-        context: Vec<(String, String)>,
         attachments: Vec<crate::types::ImageAttachment>,
         cwd: String,
         delta_tx: mpsc::Sender<AcpEvent>,

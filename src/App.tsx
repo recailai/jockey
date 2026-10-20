@@ -881,6 +881,28 @@ export default function App() {
       startupRaf = null;
       await refreshProjects();
       await bootstrapApp();
+      // Stream events are not replayed: after a window reload, recover prompts the agent is still blocked on.
+      try {
+        const pending = await assistantApi.listPendingPrompts();
+        for (const p of pending.permissions) {
+          if (getSessionIndex(p.appSessionId) === -1) continue;
+          mutateSession(p.appSessionId, (s) => {
+            if (!(s.pendingPermissions ?? []).some((x) => x.requestId === p.requestId)) {
+              s.pendingPermissions = [...(s.pendingPermissions ?? []), p];
+            }
+          });
+        }
+        for (const u of pending.userInputs) {
+          if (getSessionIndex(u.appSessionId) === -1) continue;
+          mutateSession(u.appSessionId, (s) => {
+            if (!(s.pendingUserInput ?? []).some((x) => x.requestId === u.requestId)) {
+              s.pendingUserInput = [...(s.pendingUserInput ?? []), u];
+            }
+          });
+        }
+      } catch {
+        // Hydration is best-effort; live events still arrive.
+      }
     });
 
     const pushMessageToSession = (sid: string, role: string, text: string) => {
@@ -964,6 +986,15 @@ export default function App() {
       showToast(`Duplicated session '${s.title}'`, "info");
     } catch (e) {
       showToast(`Failed to duplicate session: ${String(e)}`, "error");
+    }
+  };
+
+  const openSessionInTerminal = async (session: AppSession) => {
+    try {
+      const command = await appSessionApi.openInTerminal(session.id);
+      showToast(`Opened in Terminal: ${command}`, "info");
+    } catch (e) {
+      showToast(String(e), "error");
     }
   };
 
@@ -1051,6 +1082,7 @@ export default function App() {
             onNewSession={(projectId) => { void newSession(projectId); }}
             onCloseSession={closeSession}
             onDuplicateSession={duplicateSession}
+            onOpenSessionInTerminal={openSessionInTerminal}
             onDeleteProject={deleteProject}
             onOpenAddProject={() => setShowProjectModal(true)}
             onOpenSettings={(tab) => openSettings((tab ?? "general") as SettingsTab)}

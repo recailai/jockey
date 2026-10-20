@@ -363,6 +363,63 @@ impl Drop for TurnHandle {
     }
 }
 
+/// Tool calls still open when the turn ends: truthful per outcome. A turn that completed
+/// normally but left a tool unreported is "interrupted", not "completed".
+fn settled_tool_status(ok: bool, cancelled: bool) -> &'static str {
+    if cancelled {
+        "cancelled"
+    } else if ok {
+        "interrupted"
+    } else {
+        "failure"
+    }
+}
+
+fn outcome_error_code(outcome: &TurnOutcome<'_>) -> &'static str {
+    let code = match outcome {
+        TurnOutcome::Reply { role_replies, .. } => role_replies
+            .iter()
+            .find(|r| !r.ok)
+            .and_then(|r| r.error_code.as_deref()),
+        TurnOutcome::Failed => None,
+    };
+    normalize_error_code(code)
+}
+
+/// Stable codes the UI knows how to label; anything else collapses to `AGENT_ERROR`.
+fn normalize_error_code(code: Option<&str>) -> &'static str {
+    match code {
+        Some("AUTH_REQUIRED") => "AUTH_REQUIRED",
+        Some("CREDENTIAL_UNAVAILABLE") => "CREDENTIAL_UNAVAILABLE",
+        Some("ADAPTER_UNAVAILABLE") => "ADAPTER_UNAVAILABLE",
+        Some("UNSUPPORTED_RUNTIME") => "UNSUPPORTED_RUNTIME",
+        Some("PROCESS_CRASHED") | Some("PROCESS_DIED") => "PROCESS_DIED",
+        Some("CONNECTION_FAILED") => "CONNECTION_FAILED",
+        Some("PROMPT_TIMEOUT") => "PROMPT_TIMEOUT",
+        _ => "AGENT_ERROR",
+    }
+}
+
+pub(crate) fn error_event_row(turn_id: &str, error: &str, code: &str, at: i64) -> Value {
+    json!({
+        "id": format!("{turn_id}:error"),
+        "roleName": "event",
+        "text": crate::clip_text(error, 2000),
+        "at": at,
+        "payload": { "kind": "turnError", "code": code },
+    })
+}
+
+pub(crate) fn cancelled_event_row(turn_id: &str, at: i64) -> Value {
+    json!({
+        "id": format!("{turn_id}:cancelled"),
+        "roleName": "event",
+        "text": "已停止 · Stopped by user",
+        "at": at,
+        "payload": { "kind": "turnCancelled" },
+    })
+}
+
 impl TurnHandle {
     /// Persist the turn's final messages, release the session, and announce the outcome.
     /// Returns the messages exactly as stored, for the caller to adopt.
@@ -374,10 +431,13 @@ impl TurnHandle {
         let (mut messages, cancelled) = match self.entry.lock() {
             Ok(mut turn) => {
                 turn.finished = true;
+                let cancelled = turn.cancel_requested && !ok;
+                turn.transcript
+                    .settle_open_tools(settled_tool_status(ok, cancelled));
                 let messages = turn
                     .transcript
                     .finish(&turn.message_id, crate::now_ms(), &outcome);
-                (messages, turn.cancel_requested && !ok)
+                (messages, cancelled)
             }
             Err(_) => (Vec::new(), false),
         };
@@ -385,12 +445,16 @@ impl TurnHandle {
         // producing anything left only the user's message, with no trace of why after a
         // reload. (A multi-agent turn's per-role replies already carry each error.)
         if let Some(error) = error.filter(|_| !ok && !cancelled && !is_multi_agent) {
-            messages.push(json!({
-                "id": format!("{}:error", self.turn_id),
-                "roleName": "event",
-                "text": crate::clip_text(error, 2000),
-                "at": crate::now_ms(),
-            }));
+            messages.push(error_event_row(
+                &self.turn_id,
+                error,
+                outcome_error_code(&outcome),
+                crate::now_ms(),
+            ));
+        }
+        // A cancelled turn keeps whatever it produced; this marker is what says it was stopped.
+        if cancelled {
+            messages.push(cancelled_event_row(&self.turn_id, crate::now_ms()));
         }
         // Replace rather than update the checkpoint row: input steered into the turn was
         // stored after the first checkpoint, and an in-place update would sort the reply
@@ -431,6 +495,22 @@ impl TurnHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markers_and_codes() {
+        let e = error_event_row("t1", "boom", normalize_error_code(Some("PROCESS_CRASHED")), 5);
+        assert_eq!(e["id"], "t1:error");
+        assert_eq!(e["payload"]["kind"], "turnError");
+        assert_eq!(e["payload"]["code"], "PROCESS_DIED");
+        assert_eq!(normalize_error_code(Some("weird")), "AGENT_ERROR");
+        assert_eq!(normalize_error_code(None), "AGENT_ERROR");
+        let c = cancelled_event_row("t1", 5);
+        assert_eq!(c["id"], "t1:cancelled");
+        assert_eq!(c["roleName"], "event");
+        assert_eq!(settled_tool_status(false, true), "cancelled");
+        assert_eq!(settled_tool_status(false, false), "failure");
+        assert_eq!(settled_tool_status(true, false), "interrupted");
+    }
 
     fn register(sid: &str, role: &str) -> Arc<Mutex<ActiveTurn>> {
         let entry = Arc::new(Mutex::new(ActiveTurn {

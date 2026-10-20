@@ -10,7 +10,7 @@
 //!   locally installed `claude` is new enough to route it.
 
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -50,9 +50,21 @@ struct ClaudeModel {
 const EFFORT_FALLBACK: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 const EFFORT_NONE: &[&str] = &[];
 
-/// Newest first — the picker preserves this order, and a bare alias like `opus` resolves to
-/// the first match.
+/// Capability manifest and offline fallback. The picker's model list is NOT built from these ids
+/// when the CLI answers `/model`: each alias it offers is resolved by the CLI itself, so a new
+/// release shows up without anyone editing this table. Entries here only supply per-family
+/// capabilities (1M, fast, effort) and a list for when the probe cannot run.
+/// Newest first — a bare alias like `opus` resolves to the first match.
 const CLAUDE_MODELS: &[ClaudeModel] = &[
+    ClaudeModel {
+        id: "claude-opus-5-5",
+        label: "Opus 5.5",
+        blurb: "most capable",
+        min_version: None,
+        one_million: true,
+        supports_fast: true,
+        effort_levels: EFFORT_FALLBACK,
+    },
     ClaudeModel {
         id: "claude-opus-5",
         label: "Opus 5",
@@ -72,6 +84,15 @@ const CLAUDE_MODELS: &[ClaudeModel] = &[
         effort_levels: EFFORT_FALLBACK,
     },
     ClaudeModel {
+        id: "claude-sonnet-5-5",
+        label: "Sonnet 5.5",
+        blurb: "everyday",
+        min_version: None,
+        one_million: true,
+        supports_fast: false,
+        effort_levels: EFFORT_FALLBACK,
+    },
+    ClaudeModel {
         id: "claude-sonnet-5",
         label: "Sonnet 5",
         blurb: "everyday",
@@ -79,6 +100,15 @@ const CLAUDE_MODELS: &[ClaudeModel] = &[
         one_million: true,
         supports_fast: false,
         effort_levels: EFFORT_FALLBACK,
+    },
+    ClaudeModel {
+        id: "claude-haiku-5-5",
+        label: "Haiku 5.5",
+        blurb: "fastest",
+        min_version: None,
+        one_million: false,
+        supports_fast: false,
+        effort_levels: EFFORT_NONE,
     },
     ClaudeModel {
         id: "claude-haiku-4-5",
@@ -225,6 +255,15 @@ pub(in crate::acp) async fn refresh_headless_catalog(
         known_models.push(model.id.clone());
         if model.one_million {
             known_models.push(format!("{}[1m]", model.id));
+        }
+    }
+    if protocol == HeadlessProtocol::ClaudeStreamJson {
+        // Roles saved against a dated id keep working after the picker moves to aliases.
+        for model in CLAUDE_MODELS {
+            known_models.push(model.id.to_string());
+            if model.one_million {
+                known_models.push(format!("{}[1m]", model.id));
+            }
         }
     }
     remember_runtime_models(runtime_key, known_models);
@@ -397,36 +436,52 @@ async fn claude_models(binary: &str, env: &[(String, String)], cwd: &str) -> Vec
             .clone()
             .unwrap_or_else(|| fallback.iter().map(|s| s.to_string()).collect())
     };
-    let mut models: Vec<ModelEntry> = CLAUDE_MODELS
-        .iter()
-        .filter(|model| match (model.min_version, version) {
-            (Some(required), Some(installed)) => installed >= required,
-            // An unreadable `--version` must not silently hide models the user has.
-            (Some(_), None) => true,
-            (None, _) => true,
-        })
-        .map(|model| ModelEntry {
-            id: model.id.to_string(),
-            label: model.label.to_string(),
-            blurb: model.blurb.to_string(),
-            one_million: model.one_million,
-            supports_fast: model.supports_fast,
-            effort_levels: if model.effort_levels.is_empty() {
-                Vec::new()
-            } else {
-                effort_for(model.effort_levels)
-            },
-            default_effort: default_effort_for(model.effort_levels),
-            is_default: false,
-        })
-        .collect();
+    let alias_models = if current.aliases.is_empty() {
+        Vec::new()
+    } else {
+        let mut resolved = BTreeMap::new();
+        for alias in model_alias_families(&current.aliases) {
+            if let Some(label) = claude_alias_label(binary, env, &alias).await {
+                resolved.insert(alias, label);
+            }
+        }
+        models_from_aliases(&current.aliases, &resolved, &effort_for(EFFORT_FALLBACK))
+    };
+    let from_cli = !alias_models.is_empty();
+    let mut models: Vec<ModelEntry> = if from_cli {
+        alias_models
+    } else {
+        CLAUDE_MODELS
+            .iter()
+            .filter(|model| match (model.min_version, version) {
+                (Some(required), Some(installed)) => installed >= required,
+                // An unreadable `--version` must not silently hide models the user has.
+                (Some(_), None) => true,
+                (None, _) => true,
+            })
+            .map(|model| ModelEntry {
+                id: model.id.to_string(),
+                label: model.label.to_string(),
+                blurb: model.blurb.to_string(),
+                one_million: model.one_million,
+                supports_fast: model.supports_fast,
+                effort_levels: if model.effort_levels.is_empty() {
+                    Vec::new()
+                } else {
+                    effort_for(model.effort_levels)
+                },
+                default_effort: default_effort_for(model.effort_levels),
+                is_default: false,
+            })
+            .collect()
+    };
 
     // The CLI's `Available:` list is the real menu, and it offers one alias per family
     // (`opus`, `sonnet`, …) pointing at that family's newest model. Older dated builds are
     // reachable only by full id, which we cannot verify — so keep the newest entry of each
     // offered family and drop the rest. That is what the hand-maintained "previous" tier was
     // standing in for, and it was wrong as often as it was right.
-    if !current.aliases.is_empty() {
+    if !from_cli && !current.aliases.is_empty() {
         let offered: BTreeSet<String> = current
             .aliases
             .iter()
@@ -534,6 +589,85 @@ fn parse_claude_model_command(result: &str) -> Option<ClaudeCurrentModel> {
         return None;
     }
     Some(out)
+}
+
+/// Aliases that name a model family (`opus`, `fable`), as opposed to modifiers (`opus[1m]`),
+/// routing modes (`opusplan`, `best`) or `default`, which point at one of the others.
+fn model_alias_families(aliases: &[String]) -> Vec<String> {
+    const NOT_A_MODEL: &[&str] = &["default", "best", "opusplan"];
+    let mut out: Vec<String> = Vec::new();
+    for alias in aliases {
+        let alias = alias.trim();
+        if alias.contains('[') || NOT_A_MODEL.contains(&alias) || out.iter().any(|a| a == alias) {
+            continue;
+        }
+        out.push(alias.to_string());
+    }
+    out
+}
+
+/// Parses ``Set model to `Opus 5.5 (1M context)` for this session only``.
+fn parse_set_model_label(result: &str) -> Option<String> {
+    let label = result
+        .split("Set model to")
+        .nth(1)?
+        .split('`')
+        .nth(1)?
+        .trim();
+    let label = label.strip_suffix("(1M context)").unwrap_or(label).trim();
+    (!label.is_empty()).then(|| label.to_string())
+}
+
+/// `/model <alias>` is a local command like bare `/model`: it answers with the version the
+/// alias currently resolves to without spending a token.
+async fn claude_alias_label(binary: &str, env: &[(String, String)], alias: &str) -> Option<String> {
+    let probe_dir = std::env::temp_dir();
+    let probe_cwd = probe_dir.to_str().unwrap_or("");
+    let command = format!("/model {alias}");
+    let output = run_capture(
+        binary,
+        &["--print", &command, "--output-format", "json"],
+        env,
+        probe_cwd,
+    )
+    .await?;
+    let parsed = serde_json::from_str::<Value>(&output).ok()?;
+    parse_set_model_label(parsed.get("result").and_then(Value::as_str)?)
+}
+
+/// Builds the picker's models from the CLI's own alias menu. The id is the alias itself, which
+/// the CLI always routes to that family's newest model, so the entry cannot go stale when a
+/// release lands. Capabilities come from the manifest entry of the same family; a family the
+/// manifest has never heard of gets permissive defaults.
+fn models_from_aliases(
+    aliases: &[String],
+    labels: &BTreeMap<String, String>,
+    default_effort_levels: &[String],
+) -> Vec<ModelEntry> {
+    model_alias_families(aliases)
+        .into_iter()
+        .filter_map(|alias| {
+            let label = labels.get(&alias)?.clone();
+            let known = CLAUDE_MODELS
+                .iter()
+                .find(|m| model_family(m.id).as_deref() == Some(alias.as_str()));
+            let efforts_supported = known.map_or(true, |m| !m.effort_levels.is_empty());
+            Some(ModelEntry {
+                one_million: aliases.iter().any(|a| a.trim() == format!("{alias}[1m]")),
+                supports_fast: known.is_some_and(|m| m.supports_fast),
+                effort_levels: if efforts_supported {
+                    default_effort_levels.to_vec()
+                } else {
+                    Vec::new()
+                },
+                default_effort: efforts_supported.then(|| "high".to_string()),
+                is_default: false,
+                blurb: known.map(|m| m.blurb.to_string()).unwrap_or_default(),
+                id: alias,
+                label,
+            })
+        })
+        .collect()
 }
 
 async fn claude_current_model(
@@ -711,6 +845,42 @@ async fn run_capture(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn alias_menu_drives_models_not_the_static_ids() {
+        let aliases: Vec<String> =
+            "sonnet, opus, haiku, fable, best, sonnet[1m], opus[1m], fable[1m], opusplan, default"
+                .split(", ")
+                .map(String::from)
+                .collect();
+        let labels: BTreeMap<String, String> = [
+            ("opus", "Opus 5.5"),
+            ("sonnet", "Sonnet 5.5"),
+            ("haiku", "Haiku 5.5"),
+            ("fable", "Fable 5.1"),
+        ]
+        .iter()
+        .map(|(a, l)| (a.to_string(), l.to_string()))
+        .collect();
+        let models =
+            models_from_aliases(&aliases, &labels, &["low".to_string(), "high".to_string()]);
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["sonnet", "opus", "haiku", "fable"]);
+        let by = |id: &str| models.iter().find(|m| m.id == id).unwrap();
+        assert!(by("opus").one_million && by("opus").supports_fast);
+        assert!(by("fable").one_million && !by("fable").supports_fast);
+        assert!(!by("haiku").one_million && by("haiku").effort_levels.is_empty());
+        assert_eq!(by("opus").label, "Opus 5.5");
+    }
+
+    #[test]
+    fn parses_set_model_reply() {
+        assert_eq!(
+            parse_set_model_label("Set model to `Opus 5.5 (1M context)` for this session only"),
+            Some("Opus 5.5".to_string())
+        );
+        assert_eq!(parse_set_model_label("nope"), None);
+    }
+
     #[test]
     fn the_offered_alias_list_replaces_the_hand_written_previous_tier() {
         // Real aliases from `/model` on 2.1.273. The CLI offers one alias per family, so only

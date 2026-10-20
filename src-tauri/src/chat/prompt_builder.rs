@@ -1,64 +1,35 @@
-pub(crate) fn build_prepared_prompt(
+/// User-authored role prompt plus enabled rules, for the runtime's native system-prompt
+/// channel. The user's message itself is never wrapped: it reaches every runtime verbatim.
+pub(crate) fn build_system_prompt(
     role_system_prompt: Option<&str>,
     enabled_rules: &[(String, String)],
-    context_pairs: &[(String, String)],
-    message: &str,
-) -> String {
-    // Slash commands must be passed raw to CLI/ACP so native commands like /cost, /compact execute directly.
-    if message.starts_with('/') {
-        return message.to_string();
+) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(sp) = role_system_prompt.map(str::trim).filter(|s| !s.is_empty()) {
+        parts.push(sp.to_string());
     }
-
-    let has_system = role_system_prompt
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
-    let has_rules = !enabled_rules.is_empty();
-    let has_context = !context_pairs.is_empty();
-
-    // Native first: if no system prompt, rules, or extra context, pass raw message directly.
-    if !has_system && !has_rules && !has_context {
-        return message.to_string();
-    }
-
-    let mut prepared = String::new();
-    if let Some(sp) = role_system_prompt {
-        let trimmed = sp.trim();
-        if !trimmed.is_empty() {
-            prepared.push_str("System:\n");
-            prepared.push_str(trimmed);
-        }
-    }
-
     for (name, content) in enabled_rules {
-        if !prepared.is_empty() {
-            prepared.push_str("\n\n");
-        }
-        prepared.push_str("Rule: ");
-        prepared.push_str(name);
-        prepared.push('\n');
-        prepared.push_str(content);
+        parts.push(format!("Rule: {name}\n{content}"));
     }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
 
-    if has_context {
-        if !prepared.is_empty() {
-            prepared.push_str("\n\n");
-        }
-        prepared.push_str("Context:\n");
-        for (i, (k, v)) in context_pairs.iter().enumerate() {
-            if i > 0 {
-                prepared.push('\n');
-            }
-            prepared.push_str(k);
-            prepared.push_str(": ");
-            prepared.push_str(v);
-        }
-    }
-
-    if !prepared.is_empty() {
-        prepared.push_str("\n\nUser:\n");
-    }
-    prepared.push_str(message);
-    prepared
+/// Loads the role's prompt and enabled rules for launch-time delivery. Prewarm and turns
+/// must agree on this text, since it is part of the provider process's launch contract.
+pub(crate) fn role_instructions(
+    state: &crate::types::AppState,
+    role_name: &str,
+    project_id: Option<&str>,
+) -> Option<String> {
+    let role = crate::db::role::load_role_scoped(state, role_name, project_id)
+        .ok()
+        .flatten()?;
+    let rules = crate::db::rule::get_enabled_rules_for_role(state, &role.id).unwrap_or_default();
+    build_system_prompt(Some(role.system_prompt.as_str()), &rules)
 }
 
 pub(super) fn with_command_suggestion(output: String) -> String {
@@ -70,32 +41,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_slash_command_passes_through_raw() {
-        let rules = vec![("rule1".to_string(), "content".to_string())];
-        let context = vec![("cwd".to_string(), "/tmp".to_string())];
-        let result = build_prepared_prompt(
-            Some("You are a senior developer."),
-            &rules,
-            &context,
-            "/cost",
+    fn system_prompt_carries_role_prompt_and_rules() {
+        let rules = vec![("style".to_string(), "be terse".to_string())];
+        let text = build_system_prompt(Some("You are Dev."), &rules).expect("system text");
+        assert_eq!(text, "You are Dev.\n\nRule: style\nbe terse");
+    }
+
+    #[test]
+    fn blank_prompt_and_no_rules_yield_nothing() {
+        assert_eq!(build_system_prompt(Some("  "), &[]), None);
+        assert_eq!(build_system_prompt(None, &[]), None);
+    }
+
+    #[test]
+    fn rules_alone_are_enough() {
+        let rules = vec![("a".to_string(), "b".to_string())];
+        assert_eq!(
+            build_system_prompt(None, &rules).as_deref(),
+            Some("Rule: a\nb")
         );
-        assert_eq!(result, "/cost");
-    }
-
-    #[test]
-    fn test_empty_system_prompt_emits_no_system_block() {
-        let rules = vec![("formatting".to_string(), "be concise".to_string())];
-        let context = vec![("cwd".to_string(), "/workspace".to_string())];
-        let result = build_prepared_prompt(None, &rules, &context, "hello");
-        assert!(!result.contains("System:"));
-        assert!(result.contains("Rule: formatting\nbe concise"));
-        assert!(result.contains("Context:\ncwd: /workspace"));
-        assert!(result.ends_with("User:\nhello"));
-    }
-
-    #[test]
-    fn test_raw_message_when_no_extras() {
-        let result = build_prepared_prompt(None, &[], &[], "hello world");
-        assert_eq!(result, "hello world");
     }
 }

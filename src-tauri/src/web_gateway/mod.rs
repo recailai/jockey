@@ -7,7 +7,10 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Listener};
 
-const DEFAULT_PORT: u16 = 8420;
+const RELEASE_PORT: u16 = 8420;
+/// Dev builds listen elsewhere so `pnpm tauri dev` can run beside the installed app.
+const DEV_PORT: u16 = 8421;
+const PORT_ENV: &str = "JOCKEY_GATEWAY_PORT";
 const TOKEN_FILE: &str = "companion_token";
 /// Upper bound on how long stop waits for in-flight requests (e.g. a long
 /// `assistant_chat`) before the server future is dropped outright.
@@ -87,13 +90,28 @@ fn get_manager() -> &'static Mutex<GatewayManager> {
     MANAGER.get_or_init(|| {
         let (tx, _) = tokio::sync::broadcast::channel(BROADCAST_CAPACITY);
         Mutex::new(GatewayManager {
-            port: DEFAULT_PORT,
+            port: default_port(),
             token: None,
             server: None,
             broadcaster: tx,
             listeners_installed: false,
         })
     })
+}
+
+fn default_port() -> u16 {
+    if let Some(port) = std::env::var(PORT_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u16>().ok())
+        .filter(|p| *p != 0)
+    {
+        return port;
+    }
+    if crate::app_paths::is_dev_build() {
+        DEV_PORT
+    } else {
+        RELEASE_PORT
+    }
 }
 
 fn token_path() -> Option<PathBuf> {

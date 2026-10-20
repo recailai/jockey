@@ -4,6 +4,7 @@ pub(crate) mod fs_cmd;
 pub(crate) mod git_cmd;
 pub(crate) mod project_cmd;
 pub(crate) mod provider_session_cmd;
+pub(crate) mod resume_cmd;
 pub(crate) mod runtime_cmd;
 pub(crate) mod session_context_cmd;
 pub(crate) mod terminal_cmd;

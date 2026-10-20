@@ -1,7 +1,9 @@
 mod acp;
+mod app_paths;
 mod assistant;
 mod chat;
 mod commands;
+mod credentials;
 mod db;
 mod engine;
 mod error;
@@ -78,14 +80,17 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| -> Result<(), Box<dyn std::error::Error>> {
-            let app_dir = app.path().app_local_data_dir()?;
+            let release_dir = app.path().app_local_data_dir()?;
+            let app_dir = app_paths::resolve_data_dir(&release_dir);
             fs::create_dir_all(&app_dir)?;
+            app_paths::seed_dev_database(&release_dir, &app_dir);
+            eprintln!("[jockey] data dir: {}", app_dir.to_string_lossy());
             acp::set_app_data_dir(app_dir.clone());
             acp::start_permission_bridge(app.handle().clone());
             engine::install(app.handle());
             git::set_app_handle(app.handle().clone());
 
-            let db_path = app_dir.join("jockey.sqlite3");
+            let db_path = app_dir.join(app_paths::DB_FILE);
             // Per-connection PRAGMAs run by the pool on every new connection.
             const CONN_INIT_SQL: &str =
                 "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;";
@@ -344,8 +349,17 @@ pub fn run() {
             commands::provider_session_cmd::rewind_provider_session_cmd,
             commands::runtime_cmd::sync_role_mode_cmd,
             commands::runtime_cmd::prewarm_role_config_cmd,
+            credentials::list_agent_credentials_cmd,
+            credentials::create_agent_credential_cmd,
+            credentials::update_agent_credential_cmd,
+            credentials::delete_agent_credential_cmd,
+            credentials::get_role_credentials_cmd,
+            credentials::set_role_credential_cmd,
+            credentials::open_agent_credential_login_cmd,
+            commands::resume_cmd::open_session_in_terminal_cmd,
             commands::runtime_cmd::bind_session_agent_cmd,
             commands::runtime_cmd::respond_user_input_cmd,
+            commands::runtime_cmd::list_pending_prompts_cmd,
             commands::runtime_cmd::get_project_agent_config_cmd,
             commands::runtime_cmd::list_project_agent_pins_cmd,
             commands::runtime_cmd::set_project_agent_config_cmd,

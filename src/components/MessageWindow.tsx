@@ -13,10 +13,35 @@ import { renderMd, renderMdCached } from "../lib/markdown";
 import { ToolCallGroup, type ToolCallGroupItem } from "./ToolCallGroup";
 import { PermissionModal } from "./PermissionModal";
 import SessionErrorBanner from "./SessionErrorBanner";
-import { assistantApi } from "../lib/tauriApi";
+import { assistantApi, engineApi } from "../lib/tauriApi";
 import { isTransparentProviderEvent } from "../lib/providerEventPolicy";
-import { Badge, ContextMenuItem, ContextMenuSurface } from "./ui";
+import { Badge, Button, ContextMenuItem, ContextMenuSurface } from "./ui";
 import { Check, Copy } from "lucide-solid";
+
+/** Failed turns are persisted as `event` rows with the id `<turnId>:error`; background task
+ *  rows come from the Claude transcript importer ("Background task <status>: ..."). */
+const TURN_ERROR_LABELS: Record<string, string> = {
+  AUTH_REQUIRED: "需要登录授权",
+  CREDENTIAL_UNAVAILABLE: "凭据不可用",
+  PROCESS_DIED: "Agent 进程已退出",
+  CONNECTION_FAILED: "连接 Agent 失败",
+  PROMPT_TIMEOUT: "Agent 响应超时",
+  ADAPTER_UNAVAILABLE: "运行时适配器不可用",
+  UNSUPPORTED_RUNTIME: "不支持的运行时",
+  AGENT_ERROR: "Agent 报错",
+};
+const RECONNECT_CODES = new Set(["PROCESS_DIED", "CONNECTION_FAILED", "ADAPTER_UNAVAILABLE", "AUTH_REQUIRED"]);
+
+function turnErrorCode(msg: AppMessage): string | null {
+  return msg.roleName === "event" && msg.payload?.kind === "turnError" ? msg.payload.code : null;
+}
+
+function eventRowTone(msg: AppMessage): "danger" | "success" | "neutral" {
+  if (msg.roleName !== "event") return "neutral";
+  if (msg.id.endsWith(":error") || /^(background task (failed|killed|error)|error\b)/i.test(msg.text)) return "danger";
+  if (/^background task completed/i.test(msg.text)) return "success";
+  return "neutral";
+}
 
 function AgentStatusIndicator(props: { stateText?: string; fallback?: string }) {
   const text = () => props.stateText || props.fallback || "running";
@@ -161,6 +186,14 @@ export default function MessageWindow(props: MessageWindowProps) {
   const [queueCollapsed, setQueueCollapsed] = createSignal(true);
   const [searchOpen, setSearchOpen] = createSignal(false);
   const [searchQuery, setSearchQuery] = createSignal("");
+  const lastGroupIsTools = createMemo(() => {
+    const groups = collectToolGroups(props.activeSession()?.streamSegments ?? []);
+    return groups[groups.length - 1]?.kind === "tools";
+  });
+  const isNativeRuntime = () => {
+    const kind = props.activeSession()?.runtimeKind;
+    return !!kind && (kind.includes("native") || kind === "antigravity-cli" || kind === "codex-cli" || kind === "pi-cli");
+  };
   const queuedItems = () => props.activeSession()?.queuedItems.filter((item) => item.status === "queued") ?? [];
 
   createEffect(() => {
@@ -368,15 +401,9 @@ export default function MessageWindow(props: MessageWindowProps) {
             <div class="flex items-center justify-between text-[11px]">
               <span class="theme-muted">Engine</span>
               <div class="flex items-center gap-1.5 font-mono">
-                <span class={`text-[8.5px] font-semibold px-1.5 py-0.2 rounded border ${
-                  (props.activeSession()?.runtimeKind?.includes("native") || props.activeSession()?.runtimeKind === "antigravity-cli" || props.activeSession()?.runtimeKind === "codex-cli" || props.activeSession()?.runtimeKind === "pi-cli")
-                    ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
-                    : "bg-blue-500/15 text-blue-400 border-blue-500/30"
-                }`}>
-                  {(props.activeSession()?.runtimeKind?.includes("native") || props.activeSession()?.runtimeKind === "antigravity-cli" || props.activeSession()?.runtimeKind === "codex-cli" || props.activeSession()?.runtimeKind === "pi-cli")
-                    ? "⚡ Native"
-                    : "🔌 ACP"}
-                </span>
+                <Badge tone={isNativeRuntime() ? "warning" : "info"} variant="outline" class="text-[8.5px] font-semibold">
+                  {isNativeRuntime() ? "⚡ Native" : "🔌 ACP"}
+                </Badge>
                 <span class="theme-text text-[10px]">{props.activeSession()?.runtimeKind ?? "default"}</span>
               </div>
             </div>
@@ -436,22 +463,50 @@ export default function MessageWindow(props: MessageWindowProps) {
               </div>
             );
           }
-          if (msg.roleName === "system" || msg.roleName === "event") return (
+          if (msg.roleName === "system" || msg.roleName === "event") {
+            const tone = eventRowTone(msg);
+            const errorCode = turnErrorCode(msg);
+            const isLastRow = () => {
+              const rows = props.activeSession()?.messages ?? [];
+              return rows[rows.length - 1]?.id === msg.id;
+            };
+            const retry = () => {
+              const sid = props.activeSessionId();
+              const rows = props.activeSession()?.messages ?? [];
+              const idx = rows.findIndex((m) => m.id === msg.id);
+              const lastUser = rows.slice(0, idx < 0 ? rows.length : idx).reverse().find((m) => m.roleName === "user");
+              if (sid && lastUser?.text) void engineApi.submit({ sessionId: sid, text: lastUser.text });
+            };
+            return (
             <div class="flex justify-center my-3 relative">
               <div class="absolute inset-x-0 top-1/2 h-px bg-gradient-to-r from-transparent via-[var(--ui-border)] to-transparent -z-10"></div>
-              <div class="max-w-[90%] px-4 py-1.5 border rounded-full text-[11.5px] flex items-center gap-2.5 backdrop-blur-md shadow-sm theme-panel theme-border theme-muted">
-                <span class="system-event-mark">✧</span>
+              <div
+                class="max-w-[90%] px-4 py-1.5 border rounded-full text-[11.5px] flex items-center gap-2.5 backdrop-blur-md shadow-sm theme-panel theme-border theme-muted"
+                classList={{ "event-row-danger": tone === "danger", "event-row-success": tone === "success" }}
+                role={tone === "danger" ? "alert" : undefined}
+              >
+                <span class="system-event-mark">{tone === "danger" ? "!" : "✧"}</span>
                 <Show when={q} fallback={
-                  <span class="whitespace-pre-wrap break-words tracking-wide">{msg.text}</span>
+                  <span class="whitespace-pre-wrap break-words tracking-wide min-w-0">{msg.text}</span>
                 }>
-                  <span class="whitespace-pre-wrap break-words tracking-wide" innerHTML={highlightText(msg.text, q)} />
+                  <span class="whitespace-pre-wrap break-words tracking-wide min-w-0" innerHTML={highlightText(msg.text, q)} />
+                </Show>
+                <Show when={errorCode}>
+                  <Badge tone="danger" variant="outline">{TURN_ERROR_LABELS[errorCode!] ?? errorCode}</Badge>
+                  <Show when={isLastRow() && !props.activeSession()?.streamingMessage}>
+                    <Show when={RECONNECT_CODES.has(errorCode!) && props.onReconnectAgent}>
+                      <Button size="sm" variant="outline" onClick={() => props.onReconnectAgent?.()}>重新连接</Button>
+                    </Show>
+                    <Button size="sm" variant="outline" onClick={retry}>重试</Button>
+                  </Show>
                 </Show>
                 <Show when={item.count > 1}>
                   <span class="system-event-count">{item.count}</span>
                 </Show>
               </div>
             </div>
-          );
+            );
+          }
           const hasContent = !!msg.text?.trim() || (msg.segments && msg.segments.length > 0) || (msg.toolCalls && msg.toolCalls.length > 0);
           if (!hasContent) return null;
 
@@ -633,7 +688,7 @@ export default function MessageWindow(props: MessageWindowProps) {
         activeBackendRole={props.activeBackendRole}
         patchActiveSession={props.patchActiveSession}
       />
-      <Show when={(props.activeSession()?.streamSegments ?? []).length === 0}>
+      <Show when={!lastGroupIsTools()}>
         <PermissionModal
           activeSession={props.activeSession}
           patchActiveSession={props.patchActiveSession}

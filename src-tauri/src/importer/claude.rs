@@ -147,9 +147,39 @@ fn clean_claude_title(text: &str) -> String {
     cleaned.trim().to_string()
 }
 
+fn tag_body<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let start = text.find(&open)? + open.len();
+    let end = text[start..].find(&format!("</{tag}>"))? + start;
+    Some(text[start..end].trim())
+}
+
+/// The CLI wakes the model with a `<task-notification>` block stored as a user-role entry
+/// (`origin.kind == "task-notification"`) when a background task or subagent finishes. It is
+/// not human input; it is surfaced as a compact event row instead of a user bubble.
+fn task_notification_event(entry: &serde_json::Value, text: &str) -> Option<String> {
+    let flagged = entry.pointer("/origin/kind").and_then(|k| k.as_str()) == Some("task-notification");
+    let trimmed = text.trim();
+    if !flagged && !trimmed.starts_with("<task-notification>") {
+        return None;
+    }
+    let status = tag_body(trimmed, "status").filter(|s| !s.is_empty()).unwrap_or("finished");
+    let summary = tag_body(trimmed, "summary").filter(|s| !s.is_empty());
+    let unescape = |s: &str| {
+        s.replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&amp;", "&")
+    };
+    Some(match summary {
+        Some(summary) => format!("Background task {status}: {}", unescape(summary)),
+        None => format!("Background task {status}"),
+    })
+}
+
 fn clean_claude_user_text(text: &str) -> Option<String> {
     let trimmed = text.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || trimmed.starts_with("<task-notification>") {
         return None;
     }
     if trimmed.starts_with("<local-command-")
@@ -245,6 +275,9 @@ fn inspect_claude_session(path: &Path, session_id: &str) -> Option<(String, usiz
                 }
             }
 
+            if val.pointer("/origin/kind").and_then(|k| k.as_str()) == Some("task-notification") {
+                continue;
+            }
             if let Some(cleaned) = clean_claude_user_text(&raw_text) {
                 user_turns += 1;
                 if first_user_prompt.is_none() {
@@ -313,7 +346,13 @@ pub(crate) fn parse_claude_session_messages(path: &Path) -> Vec<ParsedImportedMe
                     }
                 }
 
-                if let Some(cleaned) = clean_claude_user_text(&user_text) {
+                if let Some(summary) = task_notification_event(&val, &user_text) {
+                    messages.push(ParsedImportedMessage {
+                        role_name: "event".to_string(),
+                        content: summary,
+                        created_at: timestamp_ms,
+                    });
+                } else if let Some(cleaned) = clean_claude_user_text(&user_text) {
                     messages.push(ParsedImportedMessage {
                         role_name: "user".to_string(),
                         content: cleaned,
@@ -374,6 +413,33 @@ pub(crate) fn parse_claude_session_messages(path: &Path) -> Vec<ParsedImportedMe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_notifications_become_event_rows_not_user_messages() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sess.jsonl");
+        let note = "<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n<summary>Agent &quot;x&quot; done</summary>\n</task-notification>";
+        let flagged = serde_json::json!({"type":"user","origin":{"kind":"task-notification"},
+            "message":{"role":"user","content":note}});
+        let bare = serde_json::json!({"type":"user","message":{"role":"user","content":note}});
+        let human = serde_json::json!({"type":"user","origin":{"kind":"human"},
+            "message":{"role":"user","content":"go on"}});
+        std::fs::write(&path, format!("{flagged}\n{bare}\n{human}\n")).expect("write fixture");
+        let msgs = parse_claude_session_messages(&path);
+        let rows: Vec<(&str, &str)> = msgs
+            .iter()
+            .map(|m| (m.role_name.as_str(), m.content.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("event", "Background task completed: Agent \"x\" done"),
+                ("event", "Background task completed: Agent \"x\" done"),
+                ("user", "go on"),
+            ]
+        );
+        assert!(clean_claude_user_text(note).is_none());
+    }
 
     #[test]
     fn counts_only_message_envelopes() {

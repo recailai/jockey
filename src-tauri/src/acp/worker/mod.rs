@@ -7,7 +7,8 @@ mod types;
 pub use crate::runtime_kind::RuntimeKind;
 pub use notify::{set_death_event_sender, set_prewarm_event_sender};
 pub use permission::{
-    list_pending_permissions, respond_to_permission, respond_to_user_input, UserInputAnswers,
+    list_pending_permissions, list_pending_prompts, respond_to_permission, respond_to_user_input,
+    PendingPrompts, UserInputAnswers,
 };
 pub use types::{
     AcpEvent, AcpPromptResult, ActiveConnectionInfo, ConnectionDeathEvent, PrewarmEvent,
@@ -16,6 +17,7 @@ pub use types::{
 pub(crate) use permission::{
     cached_approval, cancel_all_permissions, cancel_all_user_input, cancel_permissions_for,
     insert_permission, insert_user_input, permission_requests, PendingPermission,
+    PendingUserInputInfo,
 };
 pub(crate) use pool::{
     pool_key, register_child_pid, unregister_child_pid, ConfigStateCell, DeltaSlot, LiveConnection,
@@ -132,7 +134,6 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 role_name,
                 app_session_id,
                 prompt,
-                context,
                 attachments,
                 cwd,
                 delta_tx,
@@ -154,7 +155,6 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                         role_name,
                         app_session_id,
                         prompt,
-                        context,
                         attachments,
                         cwd,
                         delta_tx,

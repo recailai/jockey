@@ -276,8 +276,18 @@ export default function AgentPicker(props: AgentPickerProps) {
   };
 
   const modelSummary = () => currentModel()?.name ?? currentModelId();
-  /** Unpinned rows show what will actually run, not an opaque "default: runtime". */
-  const effectiveModelLabel = () => effectiveModel()?.name ?? personaTemplate().model;
+  /** "Default — Opus 5.5 · high (from CLI)": the model and effort the CLI itself would run. */
+  const defaultModelLabel = () => {
+    const model = effectiveModel();
+    if (!model) return personaTemplate().model || "Default (from CLI)";
+    const source = personaTemplate().model && !model.isDefault ? "persona" : "from CLI";
+    return `Default — ${model.name}${model.defaultEffort ? ` · ${model.defaultEffort}` : ""} (${source})`;
+  };
+  /** A pinned model the live catalog no longer lists: kept and still launched, but flagged. */
+  const staleModelId = () => {
+    const id = currentModelId();
+    return id && models().length > 0 && !currentModel() ? id : "";
+  };
 
   /** The chip beside the agent name: the first parameter carrying a value worth showing. */
   const summaryChip = createMemo(() => {
@@ -389,7 +399,7 @@ export default function AgentPicker(props: AgentPickerProps) {
             <DropdownSubTrigger>
               <SummaryRow
                 label="Model"
-                value={modelSummary() || effectiveModelLabel() || "default: runtime"}
+                value={modelSummary() || defaultModelLabel()}
                 unset={!currentModelId()}
               />
             </DropdownSubTrigger>
@@ -400,9 +410,18 @@ export default function AgentPicker(props: AgentPickerProps) {
                 onSelect={() => void selectModel("")}
               >
                 <span class="theme-muted">
-                  {effectiveModelLabel() ? `default: ${effectiveModelLabel()}` : "default: runtime"}
+                  {defaultModelLabel()}
                 </span>
               </DropdownItem>
+              <Show when={staleModelId()}>
+                <DropdownItem class="is-active" closeOnSelect={false} title={staleModelId()}>
+                  <span class="jui-agent-value-row">
+                    <span class="truncate">{staleModelId()}</span>
+                    <span class="jui-agent-value-blurb">not offered by the CLI anymore</span>
+                    <Check size={12} />
+                  </span>
+                </DropdownItem>
+              </Show>
               <For each={models()}>
                 {(model) => (
                   <DropdownItem
@@ -446,7 +465,7 @@ export default function AgentPicker(props: AgentPickerProps) {
                   <DropdownSubTrigger>
                     <SummaryRow
                       label={option.name}
-                      value={label(valueOf(option) || defaultOf(option)) || "default: runtime"}
+                      value={label(valueOf(option) || defaultOf(option)) || "Default (from CLI)"}
                       unset={!valueOf(option)}
                     />
                   </DropdownSubTrigger>
@@ -458,8 +477,8 @@ export default function AgentPicker(props: AgentPickerProps) {
                     >
                       <span class="theme-muted">
                         {defaultOf(option)
-                          ? `default: ${label(defaultOf(option))}`
-                          : "default: runtime"}
+                          ? `Default — ${label(defaultOf(option))} (from CLI)`
+                          : "Default (from CLI)"}
                       </span>
                     </DropdownItem>
                     <For each={choicesOf(option)}>

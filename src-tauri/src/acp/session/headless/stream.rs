@@ -10,13 +10,12 @@ use super::super::super::worker::{
     register_child_pid, unregister_child_pid, AcpEvent, AcpPromptResult,
 };
 use super::{
-    append_cli_config, append_stderr, cancelled_result, classify_error, compose_prompt, emit_event,
+    append_cli_config, append_stderr, cancelled_result, classify_error, emit_event,
     error_result, headless_active, headless_cancelled, headless_children, headless_key,
     headless_locks, headless_stdins, protocol_display_name, protocol_transport_name,
     read_headless_turn, ActivityGuard, HeadlessTurn,
 };
 
-const STREAM_TIMEOUT: Duration = Duration::from_secs(600);
 const STREAM_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const STREAM_IDLE_AFTER: Duration = Duration::from_secs(300);
 
@@ -248,6 +247,31 @@ impl StreamSession {
     }
 }
 
+/// Role prompt and rules are delivered natively or not at all: Claude takes
+/// `--append-system-prompt`; the Antigravity CLI has no system-prompt flag, so they are
+/// dropped (logged once) rather than wrapped around the user's message.
+pub(super) fn append_system_prompt_args(
+    args: &mut Vec<String>,
+    protocol: HeadlessProtocol,
+    system_prompt: Option<&str>,
+) {
+    let Some(text) = system_prompt.map(str::trim).filter(|t| !t.is_empty()) else {
+        return;
+    };
+    if matches!(protocol, HeadlessProtocol::ClaudeStreamJson) {
+        args.push("--append-system-prompt".to_string());
+        args.push(text.to_string());
+    } else {
+        static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            crate::acp::adapter::acp_log(
+                "headless.system_prompt_unsupported",
+                json!({ "protocol": protocol_transport_name(protocol) }),
+            );
+        }
+    }
+}
+
 pub(super) async fn execute_stream_runtime(
     request: &crate::acp::session::adapter_runtime::PromptRequest<'_>,
     protocol: HeadlessProtocol,
@@ -256,7 +280,6 @@ pub(super) async fn execute_stream_runtime(
     let runtime_key = request.runtime_key;
     let role_name = request.role_name;
     let prompt = request.prompt;
-    let context = request.context;
     let cwd = request.cwd;
     let app = request.app;
     let auto_approve = request.auto_approve;
@@ -335,6 +358,9 @@ pub(super) async fn execute_stream_runtime(
             }
         }
     }
+    // Part of `args`, hence of the slot's launch contract: editing a role's prompt or rules
+    // respawns the process (resuming via --resume) instead of keeping the stale one.
+    append_system_prompt_args(&mut args, protocol, request.append_system_prompt);
     if conversation {
         if let Some(session_id) = resume_session_id
             .as_deref()
@@ -474,7 +500,7 @@ pub(super) async fn execute_stream_runtime(
         },
     );
 
-    let input = compose_prompt(prompt, context);
+    let input = prompt.to_string();
     let send_result = {
         let session = slot
             .as_mut()
@@ -503,49 +529,20 @@ pub(super) async fn execute_stream_runtime(
         );
     }
 
-    let read_result = {
-        let session = slot
-            .as_mut()
-            .expect("headless stream session must exist before reading");
-        tokio::time::timeout(
-            STREAM_TIMEOUT,
-            session.process.read_turn(
-                protocol,
-                app,
-                role_name,
-                runtime_key,
-                app_session_id,
-                turn_id,
-                &mut sequence,
-            ),
+    let turn = slot
+        .as_mut()
+        .expect("headless stream session must exist before reading")
+        .process
+        .read_turn(
+            protocol,
+            app,
+            role_name,
+            runtime_key,
+            app_session_id,
+            turn_id,
+            &mut sequence,
         )
-        .await
-    };
-    let turn = match read_result {
-        Ok(result) => result,
-        Err(_) => {
-            close_session(&mut slot, &key).await;
-            stream_sessions().remove(&key);
-            return error_result(
-                runtime_key,
-                role_name,
-                app_session_id,
-                turn_id,
-                app,
-                super::super::super::error::AcpErrorCode::PromptTimeout,
-                format!(
-                    "{} did not finish within {}s",
-                    protocol_display_name(protocol),
-                    STREAM_TIMEOUT.as_secs()
-                ),
-                json!({
-                    "mode": "headless-json",
-                    "transport": protocol_transport_name(protocol),
-                    "runtimeKey": runtime_key,
-                }),
-            );
-        }
-    };
+        .await;
 
     let stderr = slot
         .as_ref()
@@ -785,7 +782,35 @@ fn args_without_conversation(args: &[String]) -> Vec<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_image_blocks;
+    use super::{append_system_prompt_args, args_without_conversation, valid_image_blocks};
+    use crate::acp::adapter::HeadlessProtocol;
+
+    #[test]
+    fn claude_system_prompt_is_part_of_launch_args() {
+        let mut a = vec!["--verbose".to_string()];
+        let mut b = a.clone();
+        append_system_prompt_args(&mut a, HeadlessProtocol::ClaudeStreamJson, Some("one"));
+        append_system_prompt_args(&mut b, HeadlessProtocol::ClaudeStreamJson, Some("two"));
+        assert_eq!(a[1], "--append-system-prompt");
+        assert_ne!(args_without_conversation(&a), args_without_conversation(&b));
+        a.extend(["--resume".to_string(), "sid".to_string()]);
+        let mut same = vec!["--verbose".to_string()];
+        append_system_prompt_args(&mut same, HeadlessProtocol::ClaudeStreamJson, Some("one"));
+        assert_eq!(
+            args_without_conversation(&a),
+            args_without_conversation(&same)
+        );
+    }
+
+    #[test]
+    fn empty_or_non_claude_system_prompt_adds_no_args() {
+        let mut args = Vec::new();
+        append_system_prompt_args(&mut args, HeadlessProtocol::ClaudeStreamJson, Some("  "));
+        append_system_prompt_args(&mut args, HeadlessProtocol::ClaudeStreamJson, None);
+        append_system_prompt_args(&mut args, HeadlessProtocol::AgyStreamJson, Some("x"));
+        assert!(args.is_empty());
+    }
+
     use crate::types::ImageAttachment;
 
     #[test]

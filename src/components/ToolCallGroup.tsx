@@ -33,11 +33,14 @@ function ToolGroupExecutionText(props: { text: string }) {
   return <div class="tool-execution-text md-prose">{renderMd(props.text)}</div>;
 }
 
-function tcStatusDot(status: string): string {
+/** A finished message can still carry a tool the provider never closed (cancelled or dropped
+ *  turn); outside a live stream it is shown as unfinished instead of pulsing forever. */
+function tcStatusDot(status: string, live = true): string {
   const normalized = status.replace(/[-_]/g, "").toLowerCase();
   if (normalized === "success" || normalized === "completed") return "ui-tool-status-success";
   if (normalized === "failure" || normalized === "failed" || normalized === "error" || normalized === "declined" || normalized === "cancelled" || normalized === "canceled") return "ui-tool-status-danger";
-  return "ui-tool-status-warning animate-pulse";
+  if (normalized === "interrupted") return "ui-tool-status-idle";
+  return live ? "ui-tool-status-warning animate-pulse" : "ui-tool-status-idle";
 }
 
 /** Extract `{ terminalId }` from a tool call's terminalMeta.terminalInfo, if any. */
@@ -169,6 +172,7 @@ type ToolCallItemProps = {
   tc: AppToolCall;
   cwd?: string | null;
   terminals?: Record<string, TerminalEntry>;
+  live?: boolean;
   inlinePermission?: AppPermission | null;
   onApprove?: (optionId: string) => void;
   onDeny?: () => void;
@@ -246,7 +250,7 @@ function ToolCallItem(props: ToolCallItemProps) {
       classList={{ "needs-approval": showPermission() }}
     >
       <summary class="tool-call-item-summary select-none flex items-center gap-2 py-1.5 px-3">
-        <span class={`ui-tool-status-dot shrink-0 ${tcStatusDot(tc().status)}`} />
+        <span class={`ui-tool-status-dot shrink-0 ${tcStatusDot(tc().status, props.live)}`} />
         
         {/* Canonical action badge */}
         <Badge
@@ -477,7 +481,7 @@ export function ToolCallGroup(props: {
         class="tool-call-summary select-none"
         onClick={() => setExpanded(v => !v)}
       >
-        <span class={`ui-tool-status-dot ${tcStatusDot(lastTool()?.status ?? "pending")}`} />
+        <span class={`ui-tool-status-dot ${tcStatusDot(lastTool()?.status ?? "pending", props.streaming)}`} />
         <span class="theme-text font-mono tracking-tight font-medium truncate max-w-[340px]">
           {groupSummaryLabel()}
         </span>
@@ -501,8 +505,8 @@ export function ToolCallGroup(props: {
             </span>
           </Show>
           <Show when={statusCounts().pending > 0 && !hasPendingPermission()}>
-            <span class="tool-summary-badge is-warning">
-              <span class="ui-tool-status-dot ui-tool-status-warning animate-pulse" />
+            <span class="tool-summary-badge" classList={{ "is-warning": props.streaming }} title={props.streaming ? undefined : "Never finished"}>
+              <span class="ui-tool-status-dot" classList={{ "ui-tool-status-warning animate-pulse": props.streaming, "ui-tool-status-idle": !props.streaming }} />
               {statusCounts().pending}
             </span>
           </Show>
@@ -522,6 +526,7 @@ export function ToolCallGroup(props: {
                 tc={item.tool}
                 cwd={props.cwd}
                 terminals={props.terminals}
+                live={props.streaming}
                 inlinePermission={toolIndex() === pendingToolCallIndex() ? props.pendingPermission : null}
                 onApprove={props.onApprove}
                 onDeny={props.onDeny}

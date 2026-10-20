@@ -379,11 +379,13 @@ impl JockeyUiClient {
                 options: perm_options,
             },
         );
-        match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
-            Ok(Ok(decision)) => Ok(acp::RequestPermissionResponse::new(decision)),
-            _ => {
+        // No deadline: answered by the user, or resolved as cancelled when the turn is cancelled
+        // and the pending entry (holding `tx`) is dropped.
+        match rx.await {
+            Ok(decision) => Ok(acp::RequestPermissionResponse::new(decision)),
+            Err(_) => {
                 super::worker::permission_requests().remove(&request_id);
-                // Notify frontend that this permission request timed out / was cancelled
+                // Notify frontend that this permission request was cancelled
                 if let Ok(guard) = self.delta_slot.lock() {
                     if let Some(tx) = guard.as_ref() {
                         let _ = tx.try_send(AcpEvent::PermissionExpired {

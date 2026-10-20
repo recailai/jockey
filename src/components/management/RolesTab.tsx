@@ -4,6 +4,7 @@ import { Copy, Edit3, Files, FolderGit2, Globe, Trash2 } from "lucide-solid";
 import type { AppSession, Role, RoleUpsertInput, AcpConfigOption, AssistantRuntime, Project } from "../types";
 import { RUNTIME_COLOR, RUNTIMES, flattenConfigValues } from "../types";
 import { FieldRow, TextInput, InlineSelect, ActionButton } from "./primitives";
+import { RoleAccountField } from "./RoleAccountField";
 import { roleApi, assistantApi, globalMcpApi, ruleApi, skillApi, parseError } from "../../lib/tauriApi";
 import type { RoleMcpEntry, RoleRule, RoleSkill } from "../../lib/tauriApi";
 import { isModeOption, isModelOption, optionCurrentValue } from "../../lib/configOptions";
@@ -229,7 +230,6 @@ export function RolesTab(props: {
         mode: role.mode,
         mcpServersJson: role.mcpServersJson,
         configOptionsJson: role.configOptionsJson,
-        configOptionDefsJson: role.configOptionDefsJson,
         autoApprove: role.autoApprove,
         projectId: role.projectId,
       });
@@ -258,7 +258,6 @@ export function RolesTab(props: {
         mode: role.mode,
         mcpServersJson: role.mcpServersJson,
         configOptionsJson: role.configOptionsJson,
-        configOptionDefsJson: role.configOptionDefsJson,
         autoApprove: role.autoApprove,
         projectId: targetProject.id,
       });
@@ -489,19 +488,9 @@ export function RolesTab(props: {
     }
   };
 
-  const parseRoleConfigDefs = (json?: string | null): AcpConfigOption[] => {
-    try {
-      const parsed = JSON.parse(json || "[]");
-      return Array.isArray(parsed) ? (parsed as AcpConfigOption[]) : [];
-    } catch {
-      return [];
-    }
-  };
-
   const roleConfigDefs = (role: Role): AcpConfigOption[] => {
-    const cached = roleConfigCache()[role.roleName]?.options;
-    if (cached?.length) return cached;
-    return parseRoleConfigDefs(role.configOptionDefsJson);
+    // Live catalog only; the persisted `configOptionDefsJson` is never a source of options.
+    return roleConfigCache()[role.roleName]?.options ?? [];
   };
 
   /** The chip shown beside a persona in the list: its first configured select parameter. The
@@ -544,44 +533,37 @@ export function RolesTab(props: {
   const configOptionSelectOptions = (opt: AcpConfigOption, defaultLabel = "default") =>
     [{ value: "", label: `${defaultLabel}: ${optionCurrentValue(opt) || "runtime"}` }, ...flattenConfigValues(opt.options).map((v) => ({ value: v.value, label: v.description ? `${v.name} — ${v.description}` : v.name }))];
 
-  // Last-resort list, shown only before the backend catalog has been discovered for this
-  // runtime. Prefer family aliases over pinned ids here: the CLI resolves an alias to
-  // whatever the installed build treats as current, so these cannot go stale.
-  const RUNTIME_DEFAULT_MODELS: Record<string, { value: string; label: string }[]> = {
-    "claude-native": [
-      { value: "", label: "default: runtime" },
-      { value: "opus", label: "Opus (alias)" },
-      { value: "sonnet", label: "Sonnet (alias)" },
-      { value: "haiku", label: "Haiku (alias)" },
-      { value: "fable", label: "Fable (alias)" },
-    ],
-    "claude-code": [
-      { value: "", label: "default: runtime" },
-      { value: "opus", label: "Opus (alias)" },
-      { value: "sonnet", label: "Sonnet (alias)" },
-      { value: "haiku", label: "Haiku (alias)" },
-      { value: "fable", label: "Fable (alias)" },
-    ],
-    "antigravity-cli": [{ value: "", label: "default: runtime" }],
-    "codex-cli": [{ value: "", label: "default: runtime" }],
-  };
-
   const isProjectOverride = (role: Role) =>
     Boolean(role.projectId && globalRoles().some((gr) => gr.roleName.toLowerCase() === role.roleName.toLowerCase()));
 
-  const resolvedModelOptions = (runtimeKind: string, modelOpt?: AcpConfigOption) => {
-    // The catalog is scoped per-runtime in the backend, so whatever arrives here already
-    // belongs to this runtime — no client-side family filtering.
-    if (modelOpt && modelOpt.options && modelOpt.options.length > 0) {
-      return configOptionSelectOptions(modelOpt);
-    }
+  /** The "no explicit pick" entry names what the CLI will really run: its current default model
+   *  and that model's default effort, both read live from the runtime catalog. */
+  const cliDefaultLabel = (modelOpt?: AcpConfigOption) => {
+    if (!modelOpt) return "Default (from CLI)";
+    const declared = readRuntimeOptions([modelOpt])[0];
+    const model = declared?.values.find((v) => v.isDefault)
+      ?? declared?.values.find((v) => v.value === declared.runtimeDefault);
+    if (!model) return "Default (from CLI)";
+    const effort = model.defaultEffort ? ` · ${model.defaultEffort}` : "";
+    return `Default — ${model.name}${effort} (from CLI)`;
+  };
 
-    for (const [key, list] of Object.entries(RUNTIME_DEFAULT_MODELS)) {
-      if (runtimeKind.includes(key) || key.includes(runtimeKind)) {
-        return list;
-      }
-    }
-    return [{ value: "", label: "default: runtime" }];
+  // The catalog is scoped per-runtime in the backend, so whatever arrives here already belongs
+  // to this runtime. Until it has been discovered only the default entry is offered.
+  const catalogModelOptions = (modelOpt?: AcpConfigOption) => {
+    const live = modelOpt?.options && modelOpt.options.length > 0
+      ? flattenConfigValues(modelOpt.options).map((v) => ({ value: v.value, label: v.description ? `${v.name} — ${v.description}` : v.name }))
+      : [];
+    return [{ value: "", label: cliDefaultLabel(modelOpt) }, ...live];
+  };
+
+  // A stored pick the CLI no longer lists is kept (never rewritten) and still launches; the
+  // CLI decides. It is flagged so the user can see why it is missing from the live list.
+  const resolvedModelOptions = (modelOpt?: AcpConfigOption, current?: string) => {
+    const options = catalogModelOptions(modelOpt);
+    const live = modelOpt?.options && modelOpt.options.length > 0;
+    if (!current || options.some((o) => o.value === current)) return options;
+    return [...options, { value: current, label: live ? `${current} (not offered by the CLI anymore)` : `${current} (saved)` }];
   };
 
   // ── Create submit ───────────────────────────────────────────────────────────
@@ -601,7 +583,6 @@ export function RolesTab(props: {
         systemPrompt: cPrompt().trim(),
         model: cModel().trim() || null, mode: cMode().trim() || null,
         mcpServersJson: "[]", configOptionsJson: JSON.stringify(configMap),
-        configOptionDefsJson: JSON.stringify(resolvedCreateConfigOpts()),
         autoApprove: true,
         projectId: targetPid,
       } satisfies RoleUpsertInput);
@@ -654,7 +635,6 @@ export function RolesTab(props: {
         systemPrompt: ePrompt().trim(), model: eModel().trim() || null,
         mode: newMode, mcpServersJson: "[]",
         configOptionsJson: JSON.stringify(parsedCfg),
-        configOptionDefsJson: JSON.stringify(resolvedEditConfigOpts()),
         autoApprove: true,
         projectId: targetPid,
       } satisfies RoleUpsertInput);
@@ -1032,7 +1012,7 @@ export function RolesTab(props: {
                 <Show when={!cConfigLoading()} fallback={<span class="font-mono text-[10px] theme-muted">loading…</span>}>
                   <InlineSelect
                     value={cModel()}
-                    options={resolvedModelOptions(cRuntime(), resolvedCreateConfigOpts().find(isModelOption))}
+                    options={resolvedModelOptions(resolvedCreateConfigOpts().find(isModelOption), cModel())}
                     onChange={setCModel}
                   />
                 </Show>
@@ -1285,6 +1265,7 @@ export function RolesTab(props: {
                       <span class="text-[10px] theme-muted">Renaming keeps this role's settings and existing session bindings.</span>
                     </div>
                   </FieldRow>
+                  <RoleAccountField roleId={role().id} runtimeKind={role().runtimeKind} />
                   <FieldRow label="Prompt (Optional)">
                     <div class="w-full flex flex-col gap-1">
                       <TextInput
@@ -1305,7 +1286,7 @@ export function RolesTab(props: {
                         <Show when={!eConfigLoading()} fallback={<span class="font-mono text-[10px] theme-muted">loading…</span>}>
                           <InlineSelect
                             value={eModel()}
-                            options={resolvedModelOptions(role().runtimeKind, modelOpt())}
+                            options={resolvedModelOptions(modelOpt(), eModel())}
                             onChange={setEModel}
                           />
                         </Show>

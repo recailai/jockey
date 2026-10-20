@@ -8,7 +8,6 @@ use super::mcp::load_role_mcp_servers;
 use super::native::refresh_native_catalog;
 use crate::acp::protocol as acp;
 use crate::db::app_session_role::{load_app_session_role_cli_id, save_app_session_role_cli_id};
-use crate::db::role::update_role_config_option_defs_if_changed;
 use crate::types::AppState;
 
 fn normalize_runtime_key(runtime_kind: &str) -> Option<&'static str> {
@@ -30,15 +29,40 @@ struct PrewarmOpts<'a> {
     /// The caller will bind the returned provider session id, so the native path has to spawn
     /// even when its catalog is already known.
     want_session_id: bool,
+    /// The role's account env (`credentials::launch_env_for`). A process warmed without it
+    /// would be evicted by the first turn, which launches with it.
+    launch_env: Result<Vec<(String, String)>, String>,
+    /// Role prompt and rules for ACP bridges that take them at session creation; part of the
+    /// launch contract, so a warmed slot must carry exactly what the first turn will.
+    system_prompt: Option<String>,
+}
+
+fn role_launch_env(
+    state: Option<&AppState>,
+    role_name: &str,
+    project_id: Option<&str>,
+    runtime_kind: &str,
+) -> Result<Vec<(String, String)>, String> {
+    state.map_or(Ok(Vec::new()), |s| {
+        crate::credentials::launch_env_for(s, role_name, project_id, runtime_kind)
+    })
 }
 
 async fn send_prewarm(
     opts: PrewarmOpts<'_>,
 ) -> Option<oneshot::Receiver<(Vec<Value>, Vec<String>, String)>> {
-    let adapter = match build_stdio_adapter(opts.runtime_kind) {
+    let launch_env = match opts.launch_env {
+        Ok(env) => env,
+        Err(e) => {
+            eprintln!("[prewarm] skipped for {}: {e}", opts.role_name);
+            return None;
+        }
+    };
+    let mut adapter = match build_stdio_adapter(opts.runtime_kind) {
         Ok(Some(a)) => a,
         _ => return None,
     };
+    adapter.env.extend(launch_env);
     let resolved_session_id = opts
         .app_session_id
         .filter(|id| !id.trim().is_empty())
@@ -79,16 +103,27 @@ async fn send_prewarm(
         let _ = tx.send((catalog.options, catalog.modes, catalog.session_id));
         return Some(rx);
     }
+    let mut env = adapter.env;
+    if let Some(text) = opts.system_prompt.as_deref().filter(|t| !t.trim().is_empty()) {
+        env.push((
+            super::cold_start::ACP_SYSTEM_PROMPT_ENV.to_string(),
+            text.trim().to_string(),
+        ));
+    }
+    let mut mcp_servers = opts.mcp_servers;
+    if let Some(app_session_id) = opts.app_session_id.filter(|id| !id.trim().is_empty()) {
+        crate::jockey_mcp::binding::bind_jockey_servers(&mut mcp_servers, app_session_id, opts.role_name);
+    }
     let _ = worker_tx().send(WorkerMsg::Prewarm {
         runtime_key: adapter.runtime_key,
         binary: adapter.binary,
         args: adapter.args,
-        env: adapter.env,
+        env,
         role_name: opts.role_name.to_string(),
         app_session_id: resolved_session_id,
         cwd: opts.cwd.to_string(),
         auto_approve: true,
-        mcp_servers: opts.mcp_servers,
+        mcp_servers,
         role_mode: opts.role_mode,
         role_config_options: opts.role_config_options,
         result_tx: Some(tx),
@@ -98,41 +133,13 @@ async fn send_prewarm(
     Some(rx)
 }
 
-fn persist_config_option_defs(
-    state: &AppState,
-    role_name: &str,
-    runtime_kind: &str,
-    opts: &[Value],
-) {
-    if opts.is_empty() {
-        return;
-    }
-    match serde_json::to_string(opts) {
-        Ok(serialized) => {
-            if let Err(e) = update_role_config_option_defs_if_changed(
-                state,
-                role_name,
-                Some(runtime_kind),
-                &serialized,
-            ) {
-                eprintln!("[prewarm] failed to persist config option defs for {role_name}: {e}");
-            }
-        }
-        Err(e) => {
-            eprintln!("[prewarm] failed to serialize config option defs for {role_name}: {e}");
-        }
-    }
-}
-
 fn persist_prewarm_result(
     state: &AppState,
     app_sid: &str,
     runtime_key: &str,
     role_name: &str,
-    opts: &[Value],
     sid: &str,
 ) {
-    persist_config_option_defs(state, role_name, runtime_key, opts);
     if !sid.is_empty() {
         let _ = save_app_session_role_cli_id(state, app_sid, runtime_key, role_name, sid);
     }
@@ -184,20 +191,15 @@ struct ConfigPrewarmRequest<'a> {
 
 async fn prewarm_config_impl(req: ConfigPrewarmRequest<'_>) -> (Vec<Value>, Vec<String>) {
     let runtime_key = normalize_runtime_key(req.runtime_kind).unwrap_or(req.runtime_kind);
+    let session_project_id = req.state.zip(req.app_session_id).and_then(|(s, app_session_id)| {
+        crate::db::app_session::get_app_session_project_id(s, app_session_id)
+    });
+    let project_id = session_project_id.as_deref().or(req.project_id);
     let mcp_servers = req
         .state
-        .map(|s| {
-            let project_id = req.app_session_id.and_then(|app_session_id| {
-                crate::db::app_session::get_app_session_project_id(s, app_session_id)
-            });
-            load_role_mcp_servers(
-                s,
-                req.role_name,
-                project_id.as_deref().or(req.project_id),
-                req.runtime_kind,
-            )
-        })
+        .map(|s| load_role_mcp_servers(s, req.role_name, project_id, req.runtime_kind))
         .unwrap_or_default();
+    let launch_env = role_launch_env(req.state, req.role_name, project_id, req.runtime_kind);
     let Some(rx) = send_prewarm(PrewarmOpts {
         runtime_kind: req.runtime_kind,
         role_name: req.role_name,
@@ -209,6 +211,10 @@ async fn prewarm_config_impl(req: ConfigPrewarmRequest<'_>) -> (Vec<Value>, Vec<
         role_config_options: req.role_config_options,
         force_refresh: req.force_refresh,
         want_session_id: req.persist_cli_id,
+        launch_env,
+        system_prompt: req
+            .state
+            .and_then(|s| crate::chat::prompt_builder::role_instructions(s, req.role_name, project_id)),
     })
     .await
     else {
@@ -219,10 +225,9 @@ async fn prewarm_config_impl(req: ConfigPrewarmRequest<'_>) -> (Vec<Value>, Vec<
     if let Some(s) = req.state {
         if req.persist_cli_id {
             if let Some(app_sid) = req.app_session_id {
-                persist_prewarm_result(s, app_sid, runtime_key, req.role_name, &opts, &sid);
+                persist_prewarm_result(s, app_sid, runtime_key, req.role_name, &sid);
             }
         } else {
-            persist_config_option_defs(s, req.role_name, req.runtime_kind, &opts);
         }
     }
     (opts, modes)
@@ -230,7 +235,7 @@ async fn prewarm_config_impl(req: ConfigPrewarmRequest<'_>) -> (Vec<Value>, Vec<
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Fire-and-forget prewarm; persists session ID and config option defs.
+/// Fire-and-forget prewarm; persists the provider session ID (never the option catalog).
 pub async fn prewarm_role(
     runtime_kind: &str,
     role_name: &str,
@@ -242,13 +247,19 @@ pub async fn prewarm_role(
         .as_ref()
         .and_then(|(s, sid)| load_app_session_role_cli_id(s, sid, runtime_key, role_name));
     let app_session_id = state.as_ref().map(|(_, sid)| *sid);
+    let project_id = state.as_ref().and_then(|(s, app_session_id)| {
+        crate::db::app_session::get_app_session_project_id(s, app_session_id)
+    });
     let mcp_servers = state
         .as_ref()
-        .map(|(s, app_session_id)| {
-            let project_id = crate::db::app_session::get_app_session_project_id(s, app_session_id);
-            load_role_mcp_servers(s, role_name, project_id.as_deref(), runtime_kind)
-        })
+        .map(|(s, _)| load_role_mcp_servers(s, role_name, project_id.as_deref(), runtime_kind))
         .unwrap_or_default();
+    let launch_env = role_launch_env(
+        state.map(|(s, _)| s),
+        role_name,
+        project_id.as_deref(),
+        runtime_kind,
+    );
 
     let Some(rx) = send_prewarm(PrewarmOpts {
         runtime_kind,
@@ -261,14 +272,18 @@ pub async fn prewarm_role(
         role_config_options: vec![],
         force_refresh: false,
         want_session_id: true,
+        launch_env,
+        system_prompt: state.as_ref().and_then(|(s, _)| {
+            crate::chat::prompt_builder::role_instructions(s, role_name, project_id.as_deref())
+        }),
     })
     .await
     else {
         return;
     };
 
-    if let (Some((s, app_sid)), Ok((opts, _modes, sid))) = (state, rx.await) {
-        persist_prewarm_result(s, app_sid, runtime_key, role_name, &opts, &sid);
+    if let (Some((s, app_sid)), Ok((_, _modes, sid))) = (state, rx.await) {
+        persist_prewarm_result(s, app_sid, runtime_key, role_name, &sid);
     }
 }
 
@@ -327,6 +342,7 @@ pub async fn prewarm_role_with_session_id(
     let runtime_key = normalize_runtime_key(runtime_kind).unwrap_or(runtime_kind);
     let project_id = crate::db::app_session::get_app_session_project_id(state, app_session_id);
     let mcp_servers = load_role_mcp_servers(state, role_name, project_id.as_deref(), runtime_kind);
+    let launch_env = role_launch_env(Some(state), role_name, project_id.as_deref(), runtime_kind);
     let Some(rx) = send_prewarm(PrewarmOpts {
         runtime_kind,
         role_name,
@@ -338,12 +354,18 @@ pub async fn prewarm_role_with_session_id(
         role_config_options: vec![],
         force_refresh: false,
         want_session_id: true,
+        launch_env,
+        system_prompt: crate::chat::prompt_builder::role_instructions(
+            state,
+            role_name,
+            project_id.as_deref(),
+        ),
     })
     .await
     else {
         return;
     };
-    if let Ok((opts, _modes, sid)) = rx.await {
-        persist_prewarm_result(state, app_session_id, runtime_key, role_name, &opts, &sid);
+    if let Ok((_, _modes, sid)) = rx.await {
+        persist_prewarm_result(state, app_session_id, runtime_key, role_name, &sid);
     }
 }

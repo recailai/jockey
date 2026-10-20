@@ -280,6 +280,8 @@ export type AppMessage = {
   text: string;
   at: number;
   messageType?: AppMessageType;
+  /** Structured marker on engine `event` rows: `<turnId>:error` and `<turnId>:cancelled`. */
+  payload?: { kind: "turnError"; code: string } | { kind: "turnCancelled" };
   purpose?: "request" | "response" | "providerEvent" | "roleHandoff" | "taskState" | "conversationHistory";
   toolCalls?: AppToolCall[];
   segments?: AppSegment[];

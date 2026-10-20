@@ -6,8 +6,8 @@ use super::super::super::runtime_state::{
 use super::super::super::worker::AcpEvent;
 use super::super::option_spec::{OptionSpec, OptionValue, Wire};
 use super::{
-    compose_prompt, extract_pi_session_id, find_option, first_text, resolve_wired_values,
-    NativeCatalog, NativeEventSink, NativeProcess, NativeRunRequest, CONTROL_TIMEOUT, TURN_TIMEOUT,
+    extract_pi_session_id, find_option, first_text, resolve_wired_values,
+    NativeCatalog, NativeEventSink, NativeProcess, NativeRunRequest, CONTROL_TIMEOUT,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -22,7 +22,6 @@ pub(super) async fn run(
     let runtime_key = request.runtime_key;
     let role_name = request.role_name;
     let prompt = request.prompt;
-    let context = request.context;
     let attachments = request.attachments;
     let auto_approve = request.auto_approve;
     let options = request.role_config_options;
@@ -137,7 +136,7 @@ pub(super) async fn run(
             }
         }
     }
-    let input = compose_prompt(prompt, context);
+    let input = prompt;
     let images = attachments
         .iter()
         .map(|attachment| {
@@ -154,7 +153,7 @@ pub(super) async fn run(
             NativeProtocol::PiRpc,
             "prompt",
             json!({ "message": input, "images": images }),
-            TURN_TIMEOUT,
+            None,
             auto_approve,
         )
         .await?;
@@ -169,7 +168,7 @@ pub(super) async fn run(
     }
     while !completed {
         let message = process
-            .next_agent_message(NativeProtocol::PiRpc, TURN_TIMEOUT, auto_approve)
+            .next_agent_message(NativeProtocol::PiRpc, None, auto_approve)
             .await?;
         completed = process_message(&message, sink, &mut output, &mut tool_call_buffers)?;
     }
@@ -480,8 +479,14 @@ pub(super) async fn refresh_catalog(
         .as_ref()
         .and_then(|s| s.get("thinkingLevel").and_then(Value::as_str))
         .map(ToString::to_string);
+    let current_model = state.as_ref().and_then(current_model_value);
     NativeCatalog {
-        options: pi_options(&models, thinking_levels, current_thinking.as_deref()),
+        options: pi_options(
+            &models,
+            thinking_levels,
+            current_thinking.as_deref(),
+            current_model.as_deref(),
+        ),
         modes: vec![],
         session_id: state
             .as_ref()
@@ -527,6 +532,17 @@ fn extract_models(value: &Value) -> Option<Vec<PiModel>> {
         })
 }
 
+/// The model Pi reports as in force (`get_state.model`), in the `provider/id` form used by the
+/// catalog, so the picker can name what runs when nothing is pinned.
+fn current_model_value(state: &Value) -> Option<String> {
+    let model = state.get("model")?;
+    let id = model.get("id").and_then(Value::as_str)?;
+    Some(match model.get("provider").and_then(Value::as_str) {
+        Some(provider) => format!("{provider}/{id}"),
+        None => id.to_string(),
+    })
+}
+
 /// Pi's parameters. Neither is a turn parameter: both are control-plane calls made before the
 /// prompt, which is precisely the kind of per-runtime difference the declaration exists to
 /// carry instead of encoding it as a branch in the send path.
@@ -534,6 +550,7 @@ fn pi_options(
     models: &[PiModel],
     thinking: &[String],
     current_thinking: Option<&str>,
+    current_model: Option<&str>,
 ) -> Vec<Value> {
     let model_values = models
         .iter()
@@ -544,7 +561,7 @@ fn pi_options(
                 "description": m.provider,
                 "effortLevels": thinking,
                 "defaultEffort": current_thinking,
-                "isDefault": false,
+                "isDefault": current_model == Some(m.value.as_str()),
                 "oneMillion": false,
                 "supportsFast": false,
             })
@@ -563,6 +580,7 @@ fn pi_options(
         Vec::new(),
     )
     .describe("Discovered from the native runtime")
+    .defaulting_to(current_model.map(ToString::to_string))
     .to_value();
     model_value["values"] = json!(model_values);
     model_value["options"] = json!(model_values);
@@ -591,4 +609,24 @@ fn pi_options(
         );
     }
     options
+}
+
+#[cfg(test)]
+mod catalog_default_tests {
+    use super::*;
+
+    #[test]
+    fn the_model_pi_reports_in_force_is_the_declared_default() {
+        let state = json!({ "model": { "id": "sonnet-x", "provider": "anthropic" } });
+        let current = current_model_value(&state);
+        assert_eq!(current.as_deref(), Some("anthropic/sonnet-x"));
+        let models = vec![PiModel {
+            value: "anthropic/sonnet-x".into(),
+            label: "Sonnet X".into(),
+            provider: "anthropic".into(),
+        }];
+        let options = pi_options(&models, &[], None, current.as_deref());
+        assert_eq!(options[0]["default"], "anthropic/sonnet-x");
+        assert_eq!(options[0]["values"][0]["isDefault"], true);
+    }
 }

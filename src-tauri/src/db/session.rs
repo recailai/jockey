@@ -1,4 +1,4 @@
-use crate::db::context::{list_shared_context_internal, set_shared_context_internal};
+use crate::db::context::set_shared_context_internal;
 use crate::db::role::{load_role, load_role_runtime_kind};
 use crate::db::workflow::load_workflow;
 use crate::db::{get_state, parse_payload, with_db};
@@ -236,11 +236,6 @@ pub(crate) async fn run_workflow(
             json!({ "message": started.message, "runtimeKind": runtime_kind }),
         )?;
 
-        let context_entries = list_shared_context_internal(state.inner(), &context_scope)?;
-        let context_pairs = context_entries
-            .iter()
-            .map(|entry| (entry.key.clone(), entry.value.clone()))
-            .collect::<Vec<_>>();
         let role_data = load_role(state.inner(), role_name).unwrap_or(None);
         let auto_approve = role_data.as_ref().map(|r| r.auto_approve).unwrap_or(true);
         let role_mode = role_data.as_ref().and_then(|r| r.mode.clone());
@@ -259,7 +254,6 @@ pub(crate) async fn run_workflow(
             &runtime_kind,
             role_name,
             &prompt,
-            &context_pairs,
             &[],
             &workspace_path,
             &app,

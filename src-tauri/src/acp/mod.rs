@@ -24,12 +24,13 @@ pub use runtime_state::{
 pub use session::perm_bridge::bridge_subcommand_main as permission_bridge_main;
 pub(crate) use session::perm_bridge::start_permission_bridge;
 pub use session::{
-    cancel_session, execute_runtime, prewarm_role, prewarm_role_with_session_id, reconnect_session,
-    refresh_role_config_defs, refresh_role_config_defs_with, reset_session, set_config_option,
-    set_mode, steer_session, sync_role_mode,
+    cancel_session, execute_runtime, execute_runtime_with_system, prewarm_role,
+    prewarm_role_with_session_id, reconnect_session, refresh_role_config_defs,
+    refresh_role_config_defs_with, reset_session, set_config_option, set_mode, steer_session,
+    sync_role_mode,
 };
 pub use worker::{
-    active_connections_snapshot, list_pending_permissions, respond_to_permission,
+    active_connections_snapshot, list_pending_permissions, list_pending_prompts, respond_to_permission,
     respond_to_user_input, set_death_event_sender, set_prewarm_event_sender, shutdown,
-    ActiveConnectionInfo, ConnectionDeathEvent, PrewarmEvent,
+    ActiveConnectionInfo, ConnectionDeathEvent, PendingPrompts, PrewarmEvent,
 };

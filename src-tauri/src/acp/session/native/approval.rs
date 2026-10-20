@@ -10,7 +10,8 @@ use tokio::sync::oneshot;
 
 use super::super::super::protocol as acp;
 use super::super::super::worker::{
-    insert_permission, insert_user_input, AcpEvent, PendingPermission, UserInputAnswers,
+    insert_permission, insert_user_input, AcpEvent, PendingPermission, PendingUserInputInfo,
+    UserInputAnswers,
 };
 use super::NativeEventSink;
 
@@ -206,15 +207,30 @@ pub(super) async fn resolve_user_input(
         })
         .collect();
 
+    let blocking = params
+        .get("isBlocking")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
     let (tx, rx) = oneshot::channel();
-    insert_user_input(request_key.clone(), tx);
+    let (_, role, app_session_id) = {
+        let (r, ro, a) = sink.identity();
+        (r.to_string(), ro.to_string(), a.to_string())
+    };
+    insert_user_input(
+        PendingUserInputInfo {
+            request_id: request_key.clone(),
+            role_name: role,
+            app_session_id,
+            title: None,
+            blocking,
+            questions: normalized.clone(),
+        },
+        tx,
+    );
     sink.emit(AcpEvent::UserInputRequest {
         request_id: request_key,
         title: None,
-        blocking: params
-            .get("isBlocking")
-            .and_then(Value::as_bool)
-            .unwrap_or(true),
+        blocking,
         questions: normalized,
     });
 

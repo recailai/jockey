@@ -219,12 +219,12 @@ pub(crate) fn upsert_role_with_id(
                 .and_then(|(_, _, cfg, _, _, _)| cfg.clone())
         })
         .unwrap_or_else(|| "{}".to_string());
-    let cfg_defs = config_option_defs_json
-        .or_else(|| {
-            existing
-                .as_ref()
-                .and_then(|(_, _, _, defs, _, _)| defs.clone())
-        })
+    // The option catalog is always read live from the CLI; a caller-supplied snapshot is never
+    // stored, only whatever the row already holds is carried over.
+    let _ = config_option_defs_json;
+    let cfg_defs = existing
+        .as_ref()
+        .and_then(|(_, _, _, defs, _, _)| defs.clone())
         .unwrap_or_else(|| "[]".to_string());
     let approve = auto_approve
         .or_else(|| existing.as_ref().and_then(|(_, _, _, _, v, _)| *v))
@@ -767,6 +767,7 @@ pub(crate) fn delete_role_internal(
         }
         conn.execute("DELETE FROM roles WHERE id = ?1", params![&target_id])
             .map_err(|e| AppError::db(e.to_string()).to_string())?;
+        crate::credentials::store::delete_role_bindings(conn, &target_id)?;
         let remaining_with_name: i64 = conn
             .query_row(
                 "SELECT count(1) FROM roles WHERE lower(role_name) = lower(?1)",
@@ -910,62 +911,6 @@ pub(crate) fn load_role_scoped(
         }
     }
     Ok(result)
-}
-
-pub(crate) fn update_role_config_option_defs_if_changed(
-    state: &AppState,
-    role_name: &str,
-    runtime_kind: Option<&str>,
-    config_option_defs_json: &str,
-) -> Result<bool, String> {
-    with_db(state, |conn| {
-        // These defs are the runtime's own option catalog, so they legitimately apply to every
-        // same-named persona running that runtime — but the guard below must select by the same
-        // predicate the UPDATE uses. Reading an arbitrary row (`LIMIT 1`, unscoped) meant a
-        // persona row on another engine could veto the write, leaving every row's defs stale.
-        let existing: Option<String> = conn
-            .query_row(
-                "SELECT config_option_defs_json FROM roles
-                 WHERE role_name = ?1 AND (?2 IS NULL OR runtime_kind = ?2)
-                 ORDER BY updated_at DESC LIMIT 1",
-                params![role_name, runtime_kind],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| AppError::db(e.to_string()).to_string())?
-            .flatten();
-
-        let changed = match existing {
-            Some(current) => {
-                let current_v = serde_json::from_str::<serde_json::Value>(&current).ok();
-                let next_v =
-                    serde_json::from_str::<serde_json::Value>(config_option_defs_json).ok();
-                match (current_v, next_v) {
-                    (Some(a), Some(b)) => a != b,
-                    _ => current != config_option_defs_json,
-                }
-            }
-            None => false,
-        };
-        if !changed {
-            return Ok(false);
-        }
-
-        conn.execute(
-            "UPDATE roles
-             SET config_option_defs_json = ?1, updated_at = ?2
-             WHERE role_name = ?3 AND (?4 IS NULL OR runtime_kind = ?4)",
-            params![config_option_defs_json, now_ms(), role_name, runtime_kind],
-        )
-        .map_err(|e| AppError::db(e.to_string()).to_string())?;
-        Ok(true)
-    })
-    .map(|changed| {
-        if changed {
-            state.role_cache.clear();
-        }
-        changed
-    })
 }
 
 pub(crate) fn load_role_runtime_kind(state: &AppState, role_name: &str) -> Result<String, String> {

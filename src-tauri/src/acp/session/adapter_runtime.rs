@@ -158,7 +158,6 @@ pub(crate) struct PromptRequest<'a> {
     pub(crate) app_session_id: &'a str,
     pub(crate) turn_id: &'a str,
     pub(crate) prompt: &'a str,
-    pub(crate) context: &'a [(String, String)],
     pub(crate) attachments: &'a [crate::types::ImageAttachment],
     pub(crate) cwd: &'a str,
     pub(crate) app: &'a tauri::AppHandle,
@@ -172,6 +171,7 @@ pub(crate) struct PromptRequest<'a> {
     pub(crate) env: &'a [(String, String)],
     pub(crate) resume_session_id: Option<&'a str>,
     pub(crate) mcp_servers: &'a [acp::McpServer],
+    pub(crate) append_system_prompt: Option<&'a str>,
 }
 
 /// Fixed lifecycle entry points shared by every runtime.
@@ -398,7 +398,6 @@ impl RuntimeAdapter for AnyRuntimeAdapter {
                     runtime_key: request.runtime_key,
                     role_name: request.role_name,
                     prompt: request.prompt,
-                    context: request.context,
                     attachments: request.attachments,
                     cwd: request.cwd,
                     app: request.app,
@@ -412,12 +411,24 @@ impl RuntimeAdapter for AnyRuntimeAdapter {
                     mcp_servers: request.mcp_servers,
                     app_session_id: request.app_session_id,
                     turn_id: request.turn_id,
+                    append_system_prompt: request.append_system_prompt,
                 })
                 .await
             }
             // The ACP worker owns the shared delta-batching/heartbeat runner;
             // its prompt path is delegated unchanged (see execute.rs).
             Self::AcpWorker => {
+                let mut env = request.env.to_vec();
+                if let Some(text) = request
+                    .append_system_prompt
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                {
+                    env.push((
+                        super::cold_start::ACP_SYSTEM_PROMPT_ENV.to_string(),
+                        text.to_string(),
+                    ));
+                }
                 let context = AcpWorkerPromptContext {
                     runtime_key: request.runtime_key,
                     role_name: request.role_name.to_string(),
@@ -426,9 +437,8 @@ impl RuntimeAdapter for AnyRuntimeAdapter {
                     agent_kind: request.agent_kind,
                     binary: request.binary.to_string(),
                     args: request.adapter_args.to_vec(),
-                    env: request.env.to_vec(),
+                    env,
                     prompt: request.prompt.to_string(),
-                    context: request.context.to_vec(),
                     attachments: request.attachments.to_vec(),
                     cwd: request.cwd.to_string(),
                     auto_approve: request.auto_approve,
@@ -439,7 +449,7 @@ impl RuntimeAdapter for AnyRuntimeAdapter {
                 };
                 super::execute::execute_acp_worker_prompt(context, request.app.clone()).await
             }
-            Self::Mock => mock_execute(request.role_name, request.prompt, request.context),
+            Self::Mock => mock_execute(request.role_name, request.prompt),
         }
     }
 

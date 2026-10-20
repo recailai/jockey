@@ -41,9 +41,7 @@ use super::execute::AcpStreamPayload;
 /// How long a permission request may sit unanswered before it is denied.
 /// The bridge subprocess uses a slightly larger timeout so the app side
 /// always decides first.
-const PERMISSION_TIMEOUT: Duration = Duration::from_secs(300);
 const BRIDGE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const BRIDGE_TIMEOUT_PAD: Duration = Duration::from_secs(30);
 
 /// MCP tool name Claude is instructed to call for permission prompts.
 pub(crate) const PERMISSION_TOOL_NAME: &str = "mcp__jockey_perm__request_permission";
@@ -253,23 +251,13 @@ async fn handle_bridge_connection(stream: tokio::net::TcpStream, app: tauri::App
             },
         );
 
-        let outcome = tokio::time::timeout(PERMISSION_TIMEOUT, rx).await;
-        let (allowed, notify_expired) = match outcome {
-            Ok(Ok(acp::RequestPermissionOutcome::Selected(selected))) => {
-                (selected.option_id.to_string() == "allow", true)
-            }
-            // User pressed cancel, the runner cancelled the turn, or the
-            // pending map entry was dropped: deny and let the UI clear.
-            Ok(_) => (false, true),
-            Err(_) => {
-                // Timed out: deny and retract the modal ourselves.
-                if let Some((_, pending)) = permission_requests().remove(&request_id) {
-                    let _ = pending.tx.send(acp::RequestPermissionOutcome::Cancelled);
-                }
-                (false, true)
-            }
-        };
-        if notify_expired {
+        // No deadline: the request stays open until the user answers or the turn is cancelled
+        // (which drops the pending entry and resolves `rx`).
+        let allowed = matches!(
+            rx.await,
+            Ok(acp::RequestPermissionOutcome::Selected(selected)) if selected.option_id.to_string() == "allow"
+        );
+        {
             emit_permission_event(
                 &app,
                 &runtime_key,
@@ -698,8 +686,9 @@ fn handle_tool_call(
         return deny_result("cannot reach Jockey permission bridge");
     }
 
-    // App side decides within PERMISSION_TIMEOUT; allow extra slack here.
-    match rx.recv_timeout(PERMISSION_TIMEOUT + BRIDGE_TIMEOUT_PAD) {
+    // Waits as long as the app does; a closed socket fails every pending call (see
+    // `spawn_socket_reader`), so this cannot outlive Jockey.
+    match rx.recv() {
         Ok(response) => {
             let behavior = response
                 .get("behavior")
@@ -722,7 +711,7 @@ fn handle_tool_call(
             if let Ok(mut map) = pending.lock() {
                 map.remove(&call_id);
             }
-            deny_result("permission request timed out")
+            deny_result("permission bridge disconnected")
         }
     }
 }

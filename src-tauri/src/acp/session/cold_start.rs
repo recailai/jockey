@@ -72,6 +72,20 @@ pub(super) fn extract_models_from_config_options(
     models
 }
 
+/// Reserved env entry carrying a role's system-prompt addition to `cold_start`. Riding in
+/// `env` makes it part of the slot's launch contract (`evict_if_launch_changed`), so editing
+/// a role prompt or rule respawns the bridge; it is stripped before the process spawns.
+pub(crate) const ACP_SYSTEM_PROMPT_ENV: &str = "JOCKEY_ACP_APPEND_SYSTEM_PROMPT";
+
+/// `_meta.systemPrompt.append` is honoured by `@agentclientprotocol/claude-agent-acp` when
+/// it creates a session; it appends to Claude Code's own preset prompt.
+fn system_prompt_meta(system_prompt: Option<&str>) -> Option<serde_json::Map<String, Value>> {
+    let text = system_prompt.map(str::trim).filter(|t| !t.is_empty())?;
+    let mut meta = serde_json::Map::new();
+    meta.insert("systemPrompt".to_string(), json!({ "append": text }));
+    Some(meta)
+}
+
 pub(crate) async fn cold_start(
     runtime_key: &'static str,
     role_name: &str,
@@ -85,6 +99,10 @@ pub(crate) async fn cold_start(
     resume_session_id: Option<String>,
 ) -> Result<LiveConnection, String> {
     clear_runtime(runtime_key);
+    let system_prompt = env_pairs
+        .iter()
+        .find(|(k, _)| k == ACP_SYSTEM_PROMPT_ENV)
+        .map(|(_, v)| v.clone());
     let delta_slot: DeltaSlot = Arc::new(Mutex::new(None));
     acp_log("spawn.start", json!({ "binary": binary, "cwd": abs_cwd }));
 
@@ -96,7 +114,7 @@ pub(crate) async fn cold_start(
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .process_group(0);
-    for (k, v) in env_pairs {
+    for (k, v) in env_pairs.iter().filter(|(k, _)| k != ACP_SYSTEM_PROMPT_ENV) {
         cmd.env(k, v);
     }
 
@@ -227,8 +245,12 @@ pub(crate) async fn cold_start(
         abs_cwd: &str,
         mcp_servers: Vec<acp::McpServer>,
         stderr_buf: Arc<Mutex<String>>,
+        system_prompt: Option<&str>,
     ) -> Result<SessionStartResult, String> {
         let mut req = acp::NewSessionRequest::new(std::path::PathBuf::from(abs_cwd));
+        if let Some(meta) = system_prompt_meta(system_prompt) {
+            req = req.meta(meta);
+        }
         if !mcp_servers.is_empty() {
             req = req.mcp_servers(mcp_servers);
         }
@@ -263,6 +285,9 @@ pub(crate) async fn cold_start(
             if !mcp_servers.is_empty() {
                 load_req = load_req.mcp_servers(mcp_servers.clone());
             }
+            if let Some(meta) = system_prompt_meta(system_prompt.as_deref()) {
+                load_req = load_req.meta(meta);
+            }
             match tokio::time::timeout(SESSION_TIMEOUT, conn.load_session(load_req))
                 .await
                 .map_err(|_| {
@@ -293,14 +318,17 @@ pub(crate) async fn cold_start(
                         "session.load.fallback",
                         json!({ "runtime": runtime_key, "error": AcpLayerError::from(e).into_message(), "stderr": clip(&stderr_tail(&stderr_buf), 360) }),
                     );
-                    do_new_session(&conn, abs_cwd, mcp_servers, stderr_buf.clone()).await?
+                    do_new_session(&conn, abs_cwd, mcp_servers, stderr_buf.clone(), system_prompt.as_deref())
+                        .await?
                 }
             }
         } else {
-            do_new_session(&conn, abs_cwd, mcp_servers, stderr_buf.clone()).await?
+            do_new_session(&conn, abs_cwd, mcp_servers, stderr_buf.clone(), system_prompt.as_deref())
+                        .await?
         }
     } else {
-        do_new_session(&conn, abs_cwd, mcp_servers, stderr_buf.clone()).await?
+        do_new_session(&conn, abs_cwd, mcp_servers, stderr_buf.clone(), system_prompt.as_deref())
+                        .await?
     };
 
     let discovered_models =
@@ -382,6 +410,7 @@ pub(crate) async fn cold_start(
         conn,
         session_id,
         cwd: abs_cwd.to_string(),
+        env: env_pairs.to_vec(),
         delta_slot,
         mode_state,
         config_state,

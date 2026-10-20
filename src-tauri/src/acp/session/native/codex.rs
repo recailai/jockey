@@ -6,8 +6,8 @@ use super::super::super::worker::AcpEvent;
 use super::super::option_spec::{OptionSpec, OptionValue, Wire};
 use super::approval;
 use super::{
-    compose_prompt, find_option, first_text, resolve_wired_values, NativeCatalog, NativeEventSink,
-    NativeProcess, NativeRunRequest, CONTROL_TIMEOUT, TURN_TIMEOUT,
+    find_option, first_text, resolve_wired_values, NativeCatalog, NativeEventSink,
+    NativeProcess, NativeRunRequest, CONTROL_TIMEOUT,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};
@@ -65,7 +65,6 @@ pub(super) async fn run(
 ) -> Result<(String, String, u32), String> {
     let runtime_key = request.runtime_key;
     let prompt = request.prompt;
-    let context = request.context;
     let attachments = request.attachments;
     let cwd = request.cwd;
     let auto_approve = request.auto_approve;
@@ -200,6 +199,13 @@ pub(super) async fn run(
     if let Some(policy) = policy {
         thread_params["approvalPolicy"] = json!(policy);
     }
+    let developer_instructions = request
+        .append_system_prompt
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+    if let Some(text) = developer_instructions {
+        thread_params["developerInstructions"] = json!(text);
+    }
     if !mcp_servers.is_empty() {
         // The Codex app-server protocol (verified against codex 0.150.1 v2
         // schema) has no per-thread MCP channel: servers are config.toml-level
@@ -222,7 +228,13 @@ pub(super) async fn run(
             .request(
                 NativeProtocol::CodexAppServer,
                 "thread/resume",
-                json!({ "threadId": resume, "cwd": cwd }),
+                {
+                    let mut params = json!({ "threadId": resume, "cwd": cwd });
+                    if let Some(text) = developer_instructions {
+                        params["developerInstructions"] = json!(text);
+                    }
+                    params
+                },
                 CONTROL_TIMEOUT,
                 auto_approve,
             )
@@ -254,8 +266,7 @@ pub(super) async fn run(
     }?;
     let thread_id = extract_thread_id(&thread.0)
         .ok_or_else(|| "Codex app-server did not return a thread id".to_string())?;
-    let input = compose_prompt(prompt, context);
-    let mut input_items = vec![json!({ "type": "text", "text": input })];
+    let mut input_items = vec![json!({ "type": "text", "text": prompt })];
     input_items.extend(materialize_codex_images(attachments));
     let mut turn_params = json!({
         "threadId": thread_id,
@@ -296,7 +307,7 @@ pub(super) async fn run(
     }
     let mut approval_seq = 0u32;
     while !completed {
-        let message = process.next_frame(TURN_TIMEOUT).await?;
+        let message = process.next_frame(None).await?;
         if let Some(id) = NativeProcess::server_request_id(&message) {
             let method = message
                 .get("method")

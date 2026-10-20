@@ -49,6 +49,22 @@ impl AcpConnection {
         Req: Serialize,
         Resp: DeserializeOwned,
     {
+        self.request_within(method, params, Some(ACP_REQUEST_TIMEOUT))
+            .await
+    }
+
+    /// `None` is for `session/prompt`: a turn runs until the agent answers, the user cancels,
+    /// or the process dies (the prompt handler watches liveness separately).
+    async fn request_within<Req, Resp>(
+        &self,
+        method: &str,
+        params: Req,
+        timeout: Option<Duration>,
+    ) -> Result<Resp, acp::Error>
+    where
+        Req: Serialize,
+        Resp: DeserializeOwned,
+    {
         let id = Value::String(uuid::Uuid::new_v4().to_string());
         let key = id_key(&id);
         let (tx, rx) = oneshot::channel();
@@ -74,10 +90,13 @@ impl AcpConnection {
             return Err(internal_error(error));
         }
 
-        let response = tokio::time::timeout(ACP_REQUEST_TIMEOUT, rx)
-            .await
-            .map_err(|_| internal_error(format!("ACP request timed out for {method}")))?
-            .map_err(|_| internal_error(format!("ACP response channel closed for {method}")))??;
+        let response = match timeout {
+            Some(timeout) => tokio::time::timeout(timeout, rx)
+                .await
+                .map_err(|_| internal_error(format!("ACP request timed out for {method}")))?,
+            None => rx.await,
+        }
+        .map_err(|_| internal_error(format!("ACP response channel closed for {method}")))??;
         serde_json::from_value(response)
             .map_err(|error| internal_error(format!("invalid ACP response for {method}: {error}")))
     }
@@ -121,7 +140,7 @@ impl AcpConnection {
         &self,
         request: acp::PromptRequest,
     ) -> Result<acp::PromptResponse, acp::Error> {
-        self.request("session/prompt", request).await
+        self.request_within("session/prompt", request, None).await
     }
 
     pub(crate) async fn cancel(&self, notification: acp::CancelNotification) {

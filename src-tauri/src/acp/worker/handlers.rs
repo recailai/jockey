@@ -203,18 +203,30 @@ pub(crate) async fn reconnect_worker_session(
 
 // ── Connection helpers ────────────────────────────────────────────────────────
 
-/// Evict the connection if the working directory has changed.
-pub(crate) fn evict_if_cwd_changed(key: &str, resolved: &str, runtime_key: &str, role_name: &str) {
-    let should_evict = CONN_MAP.with(|m| {
-        m.borrow()
-            .get(key)
-            .map(|c| c.cwd != resolved)
-            .unwrap_or(false)
+/// Evict the connection if the working directory or launch env (e.g. the role's account)
+/// has changed.
+pub(crate) fn evict_if_launch_changed(
+    key: &str,
+    resolved: &str,
+    env: &[(String, String)],
+    runtime_key: &str,
+    role_name: &str,
+) {
+    let reason = CONN_MAP.with(|m| {
+        m.borrow().get(key).and_then(|c| {
+            if c.cwd != resolved {
+                Some("cwd_change")
+            } else if c.env.as_slice() != env {
+                Some("env_change")
+            } else {
+                None
+            }
+        })
     });
-    if should_evict {
+    if let Some(reason) = reason {
         acp_log(
             "pool.evict",
-            json!({ "runtime": runtime_key, "role": role_name, "reason": "cwd_change" }),
+            json!({ "runtime": runtime_key, "role": role_name, "reason": reason }),
         );
         CONN_MAP.with(|m| m.borrow_mut().remove(key));
     }
@@ -464,21 +476,10 @@ pub(crate) async fn apply_cold_start_config(
 
 pub(crate) fn build_prompt_blocks(
     prompt: String,
-    context: &[(String, String)],
     attachments: &[crate::types::ImageAttachment],
 ) -> Vec<acp::ContentBlock> {
     let mut blocks: Vec<acp::ContentBlock> =
         vec![acp::ContentBlock::Text(acp::TextContent::new(prompt))];
-    if !context.is_empty() {
-        let ctx = context
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        blocks.push(acp::ContentBlock::Text(acp::TextContent::new(format!(
-            "[context]\n{ctx}"
-        ))));
-    }
     const ALLOWED_MIME: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
     for att in attachments {
         if !ALLOWED_MIME.contains(&att.mime_type.as_str()) {
@@ -553,7 +554,6 @@ pub(crate) async fn handle_execute(
     role_name: String,
     app_session_id: String,
     prompt: String,
-    context: Vec<(String, String)>,
     attachments: Vec<crate::types::ImageAttachment>,
     cwd: String,
     delta_tx: mpsc::Sender<AcpEvent>,
@@ -566,7 +566,7 @@ pub(crate) async fn handle_execute(
 ) {
     let resolved = resolve_cwd(&cwd);
 
-    evict_if_cwd_changed(&key, &resolved, runtime_key, &role_name);
+    evict_if_launch_changed(&key, &resolved, &env, runtime_key, &role_name);
 
     let conn_exists = CONN_MAP.with(|m| m.borrow().contains_key(&key));
     if !conn_exists {
@@ -671,7 +671,7 @@ pub(crate) async fn handle_execute(
         }
     }
 
-    let blocks = build_prompt_blocks(prompt, &context, &attachments);
+    let blocks = build_prompt_blocks(prompt, &attachments);
 
     // Install cancel handle so the Cancel message handler can send ACP cancel
     // without touching CONN_MAP.

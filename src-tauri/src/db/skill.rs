@@ -172,63 +172,6 @@ pub(crate) fn load_skill_by_name(state: &AppState, name: &str) -> Result<Option<
     })
 }
 
-pub(crate) fn load_skills_by_names(state: &AppState, names: &[String]) -> Vec<AppSkill> {
-    if names.is_empty() {
-        return Vec::new();
-    }
-    with_db(state, |conn| {
-        let placeholders = names
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 1))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT id, name, description, content, created_at, updated_at
-             FROM app_skills WHERE name IN ({placeholders})"
-        );
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| AppError::db(e.to_string()).to_string())?;
-        let rows = stmt
-            .query_map(rusqlite::params_from_iter(names.iter()), skill_from_row)
-            .map_err(|e| AppError::db(e.to_string()).to_string())?;
-        let mut out = Vec::new();
-        for row in rows {
-            if let Ok(s) = row {
-                out.push(s);
-            }
-        }
-        Ok(out)
-    })
-    .unwrap_or_default()
-}
-
-pub(crate) fn get_enabled_skills_for_role(
-    state: &AppState,
-    role_id: &str,
-) -> Result<Vec<(String, String)>, String> {
-    with_db(state, |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT s.name, s.content
-                 FROM role_skills rs
-                 JOIN app_skills s ON s.id = rs.skill_id
-                 WHERE rs.role_id = ?1 AND rs.enabled = 1
-                 ORDER BY rs.ord ASC, s.name ASC",
-            )
-            .map_err(|e| AppError::db(e.to_string()).to_string())?;
-        let rows = stmt
-            .query_map(params![role_id], |row| Ok((row.get(0)?, row.get(1)?)))
-            .map_err(|e| AppError::db(e.to_string()).to_string())?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(|e| AppError::db(e.to_string()).to_string())?);
-        }
-        Ok(out)
-    })
-}
-
 pub(crate) fn list_all_skills_for_role_internal(
     state: &AppState,
     role_id: &str,

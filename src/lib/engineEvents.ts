@@ -89,6 +89,7 @@ export async function registerEngineEvents(input: EngineEventsInput): Promise<Un
         streamSegments: [],
         currentPlan: null,
         pendingPermissions: [],
+        pendingUserInput: [],
         thoughtText: "",
         agentState: undefined,
         lastError: null,

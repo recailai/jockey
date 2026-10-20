@@ -55,7 +55,6 @@ pub async fn execute_runtime(
     runtime_kind: &str,
     role_name: &str,
     prompt: &str,
-    context: &[(String, String)],
     attachments: &[crate::types::ImageAttachment],
     cwd: &str,
     app: &tauri::AppHandle,
@@ -66,13 +65,50 @@ pub async fn execute_runtime(
     state: Option<(&AppState, &str)>,
     app_session_id: &str,
 ) -> AcpPromptResult {
+    execute_runtime_with_system(
+        runtime_kind,
+        role_name,
+        prompt,
+        attachments,
+        cwd,
+        app,
+        auto_approve,
+        mcp_servers,
+        role_mode,
+        role_config_options,
+        state,
+        app_session_id,
+        None,
+    )
+    .await
+}
+
+/// `append_system_prompt` (role prompt + rules) travels through each runtime's native
+/// system-prompt channel: claude-native `--append-system-prompt`, pi `--append-system-prompt`,
+/// codex `developerInstructions`, claude-code bridge `_meta.systemPrompt.append`. Runtimes
+/// without one (Antigravity) drop it; the user's message is never wrapped.
+pub async fn execute_runtime_with_system(
+    runtime_kind: &str,
+    role_name: &str,
+    prompt: &str,
+    attachments: &[crate::types::ImageAttachment],
+    cwd: &str,
+    app: &tauri::AppHandle,
+    auto_approve: bool,
+    mcp_servers: Vec<acp::McpServer>,
+    role_mode: Option<String>,
+    role_config_options: Vec<(String, String)>,
+    state: Option<(&AppState, &str)>,
+    app_session_id: &str,
+    append_system_prompt: Option<&str>,
+) -> AcpPromptResult {
     let normalized = runtime_kind.trim().to_ascii_lowercase();
 
     if normalized.is_empty() || normalized == "mock" {
-        return mock_execute(role_name, prompt, context);
+        return mock_execute(role_name, prompt);
     }
 
-    let adapter = match build_stdio_adapter(&normalized) {
+    let mut adapter = match build_stdio_adapter(&normalized) {
         Ok(Some(a)) => a,
         Ok(None) => {
             return AcpPromptResult {
@@ -95,6 +131,24 @@ pub async fn execute_runtime(
             }
         }
     };
+
+    if let Some((s, app_sid)) = state {
+        let project_id = crate::db::app_session::get_app_session_project_id(s, app_sid);
+        match crate::credentials::launch_env_for(s, role_name, project_id.as_deref(), &normalized)
+        {
+            Ok(env) => adapter.env.extend(env),
+            Err(e) => {
+                return AcpPromptResult {
+                    ok: false,
+                    output: e.clone(),
+                    error_code: Some("CREDENTIAL_UNAVAILABLE".to_string()),
+                    deltas: vec![],
+                    meta: json!({ "mode": "credential-unavailable", "runtime": normalized, "error": e }),
+                    session_handle: None,
+                }
+            }
+        }
+    }
 
     acp_log(
         "execute.start",
@@ -127,7 +181,6 @@ pub async fn execute_runtime(
         app_session_id: &app_session_scope,
         turn_id: &turn_id,
         prompt,
-        context,
         attachments,
         cwd: &resolved_cwd,
         app,
@@ -141,6 +194,7 @@ pub async fn execute_runtime(
         env: &adapter.env,
         resume_session_id: resume_session_id.as_deref(),
         mcp_servers: &mcp_servers,
+        append_system_prompt,
     };
     let result = RuntimeAdapter::prompt(&adapter_impl, prompt_request).await;
 
@@ -181,7 +235,6 @@ pub(super) struct AcpWorkerPromptContext {
     pub(super) args: Vec<String>,
     pub(super) env: Vec<(String, String)>,
     pub(super) prompt: String,
-    pub(super) context: Vec<(String, String)>,
     pub(super) attachments: Vec<crate::types::ImageAttachment>,
     pub(super) cwd: String,
     pub(super) auto_approve: bool,
@@ -205,7 +258,6 @@ pub(super) async fn execute_acp_worker_prompt(
         args,
         env,
         prompt,
-        context,
         attachments,
         cwd,
         auto_approve,
@@ -227,7 +279,6 @@ pub(super) async fn execute_acp_worker_prompt(
         role_name: role_name.to_string(),
         app_session_id: app_session_id_owned.clone(),
         prompt: prompt.to_string(),
-        context: context.to_vec(),
         attachments: attachments.to_vec(),
         cwd: cwd.to_string(),
         delta_tx,
@@ -572,14 +623,9 @@ fn event_kind_label(evt: &AcpEvent) -> &'static str {
     }
 }
 
-pub(super) fn mock_execute(role: &str, prompt: &str, ctx: &[(String, String)]) -> AcpPromptResult {
+pub(super) fn mock_execute(role: &str, prompt: &str) -> AcpPromptResult {
     use super::super::worker::RuntimeKind;
-    let snap = ctx
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join("; ");
-    let out = format!("{role} prompt: {prompt}. Context: {snap}.");
+    let out = format!("{role} prompt: {prompt}");
     AcpPromptResult {
         ok: true,
         output: out.clone(),

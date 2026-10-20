@@ -22,8 +22,7 @@ mod pi;
 mod process;
 use process::{terminate_pid, transport_name, NativeProcess};
 
-const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
-const TURN_TIMEOUT: Duration = Duration::from_secs(600);
+const CONTROL_TIMEOUT: Option<Duration> = Some(Duration::from_secs(30));
 const NATIVE_IDLE_AFTER: Duration = Duration::from_secs(300);
 const NATIVE_DELTA_BATCH_BYTES: usize = 4096;
 const NATIVE_DELTA_FLUSH_AFTER: Duration = Duration::from_millis(30);
@@ -458,6 +457,7 @@ struct NativeSession {
     args: Vec<String>,
     env: Vec<(String, String)>,
     cwd: String,
+    system_prompt: Option<String>,
     session_id: Option<String>,
     initialized: bool,
     commands_loaded: bool,
@@ -465,6 +465,7 @@ struct NativeSession {
 }
 
 impl NativeSession {
+    #[allow(clippy::too_many_arguments)]
     fn matches(
         &mut self,
         protocol: NativeProtocol,
@@ -472,6 +473,7 @@ impl NativeSession {
         args: &[String],
         env: &[(String, String)],
         cwd: &str,
+        system_prompt: Option<&str>,
         resume_session_id: Option<&str>,
     ) -> bool {
         let args_match = if protocol == NativeProtocol::PiRpc {
@@ -492,6 +494,7 @@ impl NativeSession {
             && args_match
             && self.env.as_slice() == env
             && self.cwd == cwd
+            && self.system_prompt.as_deref() == system_prompt
             && resume_match
             && self.process.is_alive();
         if matches {
@@ -513,7 +516,6 @@ pub(super) struct NativeRunRequest<'a> {
     pub(super) runtime_key: &'static str,
     pub(super) role_name: &'a str,
     pub(super) prompt: &'a str,
-    pub(super) context: &'a [(String, String)],
     pub(super) attachments: &'a [crate::types::ImageAttachment],
     pub(super) cwd: &'a str,
     pub(super) app: &'a tauri::AppHandle,
@@ -527,6 +529,7 @@ pub(super) struct NativeRunRequest<'a> {
     pub(super) mcp_servers: &'a [acp::McpServer],
     pub(super) app_session_id: &'a str,
     pub(super) turn_id: &'a str,
+    pub(super) append_system_prompt: Option<&'a str>,
 }
 
 pub(super) struct NativeEventSink<'a> {
@@ -708,6 +711,7 @@ async fn execute_native_inner(request: &NativeRunRequest<'_>, key: &str) -> AcpP
             &args,
             request.env,
             request.cwd,
+            native_system_prompt(request),
             request.resume_session_id,
         )
     });
@@ -747,6 +751,7 @@ async fn execute_native_inner(request: &NativeRunRequest<'_>, key: &str) -> AcpP
             args,
             env: request.env.to_vec(),
             cwd: request.cwd.to_string(),
+            system_prompt: native_system_prompt(request).map(str::to_string),
             session_id: None,
             initialized: false,
             commands_loaded: false,
@@ -875,10 +880,21 @@ async fn execute_native_inner(request: &NativeRunRequest<'_>, key: &str) -> AcpP
     }
 }
 
+fn native_system_prompt<'a>(request: &NativeRunRequest<'a>) -> Option<&'a str> {
+    request
+        .append_system_prompt
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+}
+
 fn native_launch_args(request: &NativeRunRequest<'_>) -> Vec<String> {
     let mut args = request.adapter_args.to_vec();
     if request.protocol == NativeProtocol::PiRpc {
         append_pi_session_arg(&mut args, request.resume_session_id);
+        // Pi takes role instructions at launch; being part of `args`, an edit respawns it.
+        if let Some(text) = native_system_prompt(request) {
+            args.extend(["--append-system-prompt".to_string(), text.to_string()]);
+        }
     }
     args
 }
@@ -1133,18 +1149,6 @@ pub(super) fn resolve_wired_values(catalog: &[Value], config: &[(String, String)
         }
     }
     out
-}
-
-pub(super) fn compose_prompt(prompt: &str, context: &[(String, String)]) -> String {
-    if context.is_empty() {
-        return prompt.to_string();
-    }
-    let context = context
-        .iter()
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("{prompt}\n\n[context]\n{context}")
 }
 
 pub(super) fn first_text(value: &Value, names: &[&str]) -> Option<String> {

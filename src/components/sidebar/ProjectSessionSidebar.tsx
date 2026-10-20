@@ -11,6 +11,7 @@ import {
   LoaderCircle,
   Plus,
   Settings,
+  SquareTerminal,
   ArchiveRestore,
   Bot,
   PanelLeftClose,
@@ -32,6 +33,7 @@ type ProjectSessionSidebarProps = {
   onNewSession: (projectId?: string) => void;
   onCloseSession: (sessionId: string) => void;
   onDuplicateSession?: (session: AppSession) => void;
+  onOpenSessionInTerminal?: (session: AppSession) => void;
   onDeleteProject?: (id: string) => Promise<void>;
   onOpenAddProject: () => void;
   onOpenSettings: (tab?: string) => void;
@@ -534,6 +536,18 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
                 }}
               >
                 Duplicate
+              </ContextMenuItem>
+            </Show>
+            <Show when={props.onOpenSessionInTerminal}>
+              <ContextMenuItem
+                icon={<SquareTerminal size={13} />}
+                onSelect={() => {
+                  const s = menu().session;
+                  closeContextMenus();
+                  props.onOpenSessionInTerminal?.(s);
+                }}
+              >
+                Open in Terminal
               </ContextMenuItem>
             </Show>
             <ContextMenuSeparator />

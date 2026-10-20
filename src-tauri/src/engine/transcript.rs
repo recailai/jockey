@@ -45,6 +45,7 @@ fn normalize_tool_status(status: &str) -> String {
         "completed" | "success" => "completed",
         "failed" | "failure" | "error" => "failure",
         "declined" | "cancelled" | "canceled" => "cancelled",
+        "interrupted" => "interrupted",
         _ => return status.to_string(),
     }
     .to_string()
@@ -390,6 +391,34 @@ impl Transcript {
         }
     }
 
+    /// Close tool calls the provider never reported a final status for, so a persisted message
+    /// never reloads with a spinner-state tool. Returns whether anything changed.
+    pub(crate) fn settle_open_tools(&mut self, status: &str) -> bool {
+        fn settle(tc: &mut Value, status: &str) -> bool {
+            let open = match tc.get("status").and_then(Value::as_str) {
+                Some(s) => !matches!(
+                    normalize_tool_status(s).as_str(),
+                    "completed" | "failure" | "cancelled" | "interrupted"
+                ),
+                None => true,
+            };
+            if open {
+                tc["status"] = json!(status);
+            }
+            open
+        }
+        let mut changed = false;
+        for tc in self.tools.values_mut() {
+            changed |= settle(tc, status);
+        }
+        for seg in &mut self.segments {
+            if let Some(tc) = seg.get_mut("tc") {
+                changed |= settle(tc, status);
+            }
+        }
+        changed
+    }
+
     fn ordered_tools(&self) -> Vec<Value> {
         self.tool_order
             .iter()
@@ -551,13 +580,14 @@ pub(crate) fn storage_columns(msg: &Value) -> (Option<&'static str>, Option<Stri
             .and_then(Value::as_str)
             .is_some_and(|t| !t.is_empty())
         || msg.get("messageType").is_some()
-        || msg.get("purpose").is_some();
+        || msg.get("purpose").is_some()
+        || msg.get("payload").is_some_and(Value::is_object);
     if !has_structured {
         return (None, None);
     }
     let mut payload = Map::new();
     payload.insert("text".into(), msg.get("text").cloned().unwrap_or(json!("")));
-    for key in ["images", "thoughtText", "messageType", "purpose"] {
+    for key in ["images", "thoughtText", "messageType", "purpose", "payload"] {
         if let Some(v) = msg.get(key) {
             payload.insert(key.into(), v.clone());
         }
@@ -694,6 +724,37 @@ mod tests {
             MAX_THOUGHT_CHARS
         );
         assert_eq!(msg["segments"][0]["text"].as_str().unwrap().len(), 6000);
+    }
+
+    #[test]
+    fn settle_closes_open_tools_in_tools_and_segments() {
+        let mut t = Transcript::new("Developer");
+        for (id, st) in [("a", "in_progress"), ("b", "pending"), ("c", "completed")] {
+            t.apply_event(
+                &json!({"kind": "toolCall", "toolCallId": id, "title": id, "status": st}),
+                Some("Developer"),
+            );
+        }
+        assert!(t.settle_open_tools("cancelled"));
+        let msg = t.message("m", 1, None);
+        let st: Vec<&str> = msg["toolCalls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tc| tc["status"].as_str().unwrap())
+            .collect();
+        assert_eq!(st, ["cancelled", "cancelled", "completed"]);
+        assert_eq!(msg["segments"][0]["tc"]["status"], "cancelled");
+        assert_eq!(msg["segments"][2]["tc"]["status"], "completed");
+        assert!(!t.settle_open_tools("failure"));
+    }
+
+    #[test]
+    fn event_payload_is_persisted_as_structured_column() {
+        let row = json!({"id": "t:error", "roleName": "event", "text": "x", "payload": {"kind": "turnError", "code": "AUTH_REQUIRED"}});
+        let (ct, p) = storage_columns(&row);
+        assert_eq!(ct, Some("json"));
+        assert!(p.unwrap().contains("AUTH_REQUIRED"));
     }
 
     #[test]

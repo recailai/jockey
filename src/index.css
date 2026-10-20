@@ -4106,6 +4106,19 @@ pre:hover .jui-code-copy,
   font-family: ui-serif, Georgia, serif;
   opacity: 0.72;
 }
+.event-row-danger {
+  border-color: color-mix(in srgb, var(--ui-state-danger-text), transparent 55%);
+  background: var(--ui-state-danger-bg);
+  color: var(--ui-state-danger-text);
+}
+.event-row-danger .system-event-mark,
+.event-row-success .system-event-mark {
+  color: inherit;
+  opacity: 1;
+}
+.event-row-success .system-event-mark {
+  color: var(--ui-state-success-text);
+}
 .system-event-count,
 .message-mode-badge {
   display: inline-flex;
@@ -4270,6 +4283,10 @@ pre:hover .jui-code-copy,
 .ui-tool-status-danger {
   background: var(--ui-state-danger-text);
   box-shadow: 0 0 0 3px var(--ui-state-danger-bg);
+}
+.ui-tool-status-idle {
+  background: var(--ui-muted);
+  opacity: 0.55;
 }
 .ui-tool-status-info {
   background: var(--ui-accent);

@@ -133,6 +133,7 @@ export function useStreamEngine(sessionManager: SessionManager) {
       streamSegments: [],
       currentPlan: null,
       pendingPermissions: [],
+      pendingUserInput: [],
       agentState: undefined,
       thoughtText: "",
     });
