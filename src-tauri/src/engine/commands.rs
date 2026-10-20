@@ -53,6 +53,28 @@ pub(crate) fn reopen_app_session(
     sessions::reopen_session(get_state(&state), &id)
 }
 
+/// Sidebar rows for every open session, without transcripts. Startup loads full history only
+/// for the current project; the other projects' rows come from here so the sidebar is complete.
+#[tauri::command(async)]
+pub(crate) fn list_session_summaries_cmd(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+    closed: Option<bool>,
+) -> Result<Vec<crate::types::SessionSummary>, String> {
+    let state = get_state(&state);
+    let mut rows = crate::db::app_session::list_session_summaries(
+        state,
+        project_id.as_deref().filter(|p| !p.trim().is_empty()),
+        closed.unwrap_or(false),
+        None,
+    )?;
+    for row in &mut rows {
+        row.external_active = super::watch::is_external_active(&row.id)
+            || (row.closed_at.is_some() && super::watch::provider_recently_written(state, &row.id));
+    }
+    Ok(rows)
+}
+
 /// Full sessions (with transcripts) by id — what a view loads when another client created
 /// a session it has only seen as a `session/changed` summary.
 #[tauri::command(async)]
@@ -125,4 +147,25 @@ pub(crate) async fn import_project_sessions_cmd(
     external_session_ids: Option<Vec<String>>,
 ) -> Result<Vec<AppSession>, String> {
     sessions::import_sessions(get_state(&state), &project_id, external_session_ids).await
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CliImportResult {
+    sessions: Vec<AppSession>,
+    created_projects: Vec<Project>,
+}
+
+/// Import sessions picked from the machine-wide list; `source_ids` are `ImportableSession.sourceId`s.
+#[tauri::command]
+pub(crate) async fn import_cli_sessions_cmd(
+    state: State<'_, AppState>,
+    source_ids: Vec<String>,
+) -> Result<CliImportResult, String> {
+    let (sessions, created_projects) =
+        sessions::import_cli_sessions(get_state(&state), source_ids).await?;
+    Ok(CliImportResult {
+        sessions,
+        created_projects,
+    })
 }

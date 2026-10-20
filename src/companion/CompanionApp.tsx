@@ -119,6 +119,7 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
   const [listError, setListError] = createSignal<string | null>(null);
   const [closedFor, setClosedFor] = createSignal<Project | null>(null);
   const [importFor, setImportFor] = createSignal<Project | null>(null);
+  const [importAll, setImportAll] = createSignal(false);
   const [showProjectModal, setShowProjectModal] = createSignal(false);
   const [browseOpen, setBrowseOpen] = createSignal(false);
   const [roleOpen, setRoleOpen] = createSignal(false);
@@ -357,6 +358,7 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
             onNewSession={(pid) => void newSession(pid)}
             onShowClosed={setClosedFor}
             onImport={setImportFor}
+            onImportAll={() => setImportAll(true)}
             onAddProject={() => setShowProjectModal(true)}
           />
         }
@@ -453,14 +455,20 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
       />
       <ClosedSessionsDialog project={closedFor()} onClose={() => setClosedFor(null)} onRestored={openRestored} />
       <ImportSessionsModal
-        open={importFor() !== null}
+        open={importFor() !== null || importAll()}
         project={importFor()}
-        onClose={() => setImportFor(null)}
+        initialScope={importAll() ? "all" : "project"}
+        onClose={() => {
+          setImportFor(null);
+          setImportAll(false);
+        }}
         onImported={(raw) => {
           setImportFor(null);
-          void refreshSummaries();
+          setImportAll(false);
+          resync();
           if (raw[0]) void openSession(raw[0].id);
         }}
+        onOpenExisting={(id) => void openSession(id)}
       />
       <ProjectModal
         open={showProjectModal()}

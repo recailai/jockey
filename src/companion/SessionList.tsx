@@ -26,6 +26,7 @@ type SessionListProps = {
   onNewSession: (projectId: string) => void;
   onShowClosed: (project: Project) => void;
   onImport: (project: Project) => void;
+  onImportAll: () => void;
   onAddProject: () => void;
 };
 
@@ -86,6 +87,9 @@ export default function SessionList(props: SessionListProps) {
         <h1 class="flex-1 text-sm font-semibold">Jockey</h1>
         <IconButton title="Refresh" aria-label="Refresh" onClick={props.onRefresh}>
           <RefreshCw size={16} />
+        </IconButton>
+        <IconButton title="Import CLI sessions" aria-label="Import CLI sessions" onClick={props.onImportAll}>
+          <DownloadCloud size={16} />
         </IconButton>
         <IconButton title="Add project" aria-label="Add project" onClick={props.onAddProject}>
           <FolderPlus size={16} />

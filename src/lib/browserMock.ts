@@ -205,8 +205,12 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
         case "import_project_sessions_cmd": {
           return [];
         }
-        case "scan_importable_sessions_cmd": {
+        case "scan_importable_sessions_cmd":
+        case "scan_all_importable_sessions_cmd": {
           return [];
+        }
+        case "import_cli_sessions_cmd": {
+          return { sessions: [], createdProjects: [] };
         }
 
         case "list_app_sessions": {
@@ -215,6 +219,9 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
         }
         case "open_session_in_terminal_cmd": {
           throw new Error("Open in Terminal needs the desktop app");
+        }
+        case "list_session_summaries_cmd": {
+          return [];
         }
         case "list_closed_app_sessions": {
           const list = getStorage<MockSession[]>(STORAGE_KEY_SESSIONS, []);

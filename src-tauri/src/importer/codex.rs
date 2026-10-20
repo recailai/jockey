@@ -6,19 +6,30 @@ use std::path::{Path, PathBuf};
 
 const MAX_METADATA_LINES: usize = 200;
 
-pub(crate) fn scan_codex_sessions(project_path: &str) -> Vec<DiscoveredSession> {
-    let Some(home) = std::env::var_os("HOME") else {
-        return Vec::new();
-    };
-    let root = PathBuf::from(home).join(".codex").join("sessions");
-    let project_cwd = canonical_path(project_path);
-    let mut files = Vec::new();
-    collect_jsonl_files(&root, &mut files);
+pub(crate) fn scan_all_codex_sessions() -> Vec<DiscoveredSession> {
+    sessions_root()
+        .map(|root| scan_codex_root(&root, None))
+        .unwrap_or_default()
+}
 
+pub(crate) fn scan_codex_sessions(project_path: &str) -> Vec<DiscoveredSession> {
+    sessions_root()
+        .map(|root| scan_codex_root(&root, Some(&canonical_path(project_path))))
+        .unwrap_or_default()
+}
+
+fn scan_codex_root(root: &Path, project_cwd: Option<&str>) -> Vec<DiscoveredSession> {
+    let mut files = Vec::new();
+    collect_jsonl_files(root, &mut files);
     files
         .into_iter()
-        .filter_map(|file_path| scan_file(&file_path, &project_cwd))
+        .filter_map(|file_path| scan_file(&file_path, project_cwd))
         .collect()
+}
+
+fn sessions_root() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join(".codex").join("sessions"))
 }
 
 fn clean_codex_user_text(text: &str) -> Option<String> {
@@ -51,7 +62,7 @@ fn clean_codex_user_text(text: &str) -> Option<String> {
     Some(after_context.to_string())
 }
 
-fn scan_file(path: &Path, project_cwd: &str) -> Option<DiscoveredSession> {
+fn scan_file(path: &Path, project_cwd: Option<&str>) -> Option<DiscoveredSession> {
     let file = File::open(path).ok()?;
     let mut session_id = None;
     let mut cwd = None;
@@ -95,7 +106,7 @@ fn scan_file(path: &Path, project_cwd: &str) -> Option<DiscoveredSession> {
 
     let cwd = cwd?;
     // Sessions started in a sub-directory of the project belong to it too.
-    if !std::path::Path::new(&cwd).starts_with(project_cwd) {
+    if project_cwd.is_some_and(|root| !std::path::Path::new(&cwd).starts_with(root)) {
         return None;
     }
     let turns = count_codex_session_turns(path).max(turn_count);
@@ -305,7 +316,7 @@ mod tests {
         .expect("write codex fixture");
 
         let project_cwd = canonical_path(cwd);
-        let session = scan_file(&path, &project_cwd).expect("session found");
+        let session = scan_file(&path, Some(&project_cwd)).expect("session found");
         assert_eq!(session.title, "重构完成。104 个测试通过");
         assert_eq!(session.turn_count, 2);
 
@@ -315,5 +326,22 @@ mod tests {
         assert_eq!(msgs[0].content, "重构完成。104 个测试通过");
         assert_eq!(msgs[1].role_name, "Developer");
         assert_eq!(msgs[1].content, "很好！");
+    }
+
+    #[test]
+    fn scan_all_ignores_the_project_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, cwd) in [("a", "/work/a"), ("b", "/other/b")] {
+            std::fs::write(
+                dir.path().join(format!("{name}.jsonl")),
+                format!(
+                    "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{name}\",\"cwd\":\"{cwd}\"}}}}\n{}\n",
+                    r#"{"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":"hi"}]}}"#
+                ),
+            )
+            .unwrap();
+        }
+        assert_eq!(scan_codex_root(dir.path(), None).len(), 2);
+        assert_eq!(scan_codex_root(dir.path(), Some("/work")).len(), 1);
     }
 }

@@ -26,6 +26,8 @@ pub(super) fn router(ctx: ServerContext) -> Router {
         .route("/projects", get(list_projects).post(create_project))
         .route("/projects/:id/importable", get(list_importable))
         .route("/projects/:id/import", post(import_sessions))
+        .route("/importable", get(list_all_importable))
+        .route("/import", post(import_cli_sessions))
         .route("/sessions", get(list_sessions).post(create_session))
         .route("/sessions/closed", get(list_closed_sessions))
         .route("/sessions/:id", get(session_detail))
@@ -317,6 +319,43 @@ async fn list_importable(
     .map_err(internal)?
     .map(Json)
     .map_err(bad_request)
+}
+
+async fn list_all_importable(
+    State(ctx): State<ServerContext>,
+    Query(q): Query<ImportableQuery>,
+) -> ApiResult<Vec<crate::importer::ImportableSession>> {
+    let state = ctx.app.state::<AppState>().clone_refs();
+    tokio::task::spawn_blocking(move || {
+        crate::importer::scan_all_importable_sessions_internal(&state, q.refresh.unwrap_or(false))
+    })
+    .await
+    .map_err(internal)?
+    .map(Json)
+    .map_err(bad_request)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportAllBody {
+    source_ids: Vec<String>,
+}
+
+async fn import_cli_sessions(
+    State(ctx): State<ServerContext>,
+    Json(body): Json<ImportAllBody>,
+) -> ApiResult<Vec<SessionSummary>> {
+    if body.source_ids.is_empty() {
+        return Err(bad_request("请选择要导入的会话"));
+    }
+    let state = ctx.app.state::<AppState>();
+    let (imported, _) = engine_sessions::import_cli_sessions(&state, body.source_ids)
+        .await
+        .map_err(bad_request)?;
+    let ids: Vec<String> = imported.into_iter().map(|s| s.id).collect();
+    crate::db::app_session::list_session_summaries(&state, None, false, Some(&ids))
+        .map(Json)
+        .map_err(internal)
 }
 
 #[derive(Deserialize)]

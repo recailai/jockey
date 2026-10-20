@@ -315,6 +315,9 @@ export type AppSession = {
    *  A draft only exists in the frontend store; switching persona/model on it must not
    *  hit any Tauri command that assumes a real row (FK inserts, session-role bindings). */
   persisted: boolean;
+  /** false for a sidebar row restored without its transcript; the history loads when the
+   *  session is first shown. Absent means loaded. */
+  historyLoaded?: boolean;
   title: string;
   activeRole: string;
   runtimeKind: string | null;

@@ -89,6 +89,12 @@ export const projectApi = {
   /** Omit `externalSessionIds` to import every transcript found. */
   importSessions: (projectId: string, externalSessionIds?: string[]) =>
     call<RawSession[]>("import_project_sessions_cmd", { projectId, externalSessionIds }),
+  /** Every CLI session on the machine, each annotated with the project it would land in. */
+  scanAllImportable: (forceRefresh = false) =>
+    call<ImportableSession[]>("scan_all_importable_sessions_cmd", { forceRefresh }),
+  /** Import from the all-directories list; projects are resolved (or created) per cwd. */
+  importCliSessions: (sourceIds: string[]) =>
+    call<{ sessions: RawSession[]; createdProjects: Project[] }>("import_cli_sessions_cmd", { sourceIds }),
 };
 
 export type ImportableSession = {
@@ -102,6 +108,11 @@ export type ImportableSession = {
   createdAt: number;
   lastActiveAt: number;
   imported: boolean;
+  /** Jockey session already holding this conversation. */
+  appSessionId?: string | null;
+  /** Project importing lands in; null means one would be created for `cwd`. */
+  projectId?: string | null;
+  projectName?: string | null;
 };
 
 export type InboxMessage = {
@@ -123,6 +134,18 @@ export type AgentLifecycle = {
   updatedAt: number;
 };
 
+export type SessionSummaryRow = {
+  id: string;
+  title: string;
+  activeRole: string;
+  runtimeKind: string | null;
+  projectId: string | null;
+  cwd: string | null;
+  lastActiveAt: number;
+  /** The provider conversation is being driven outside Jockey (e.g. resumed in the CLI). */
+  externalActive?: boolean;
+};
+
 export const appSessionApi = {
   create: (
     title: string,
@@ -142,6 +165,9 @@ export const appSessionApi = {
   remove: (id: string) => call<void>("delete_app_session", { id }),
   list: (projectId?: string) => call<RawSession[]>("list_app_sessions", { projectId }),
   listClosed: () => call<RawSession[]>("list_closed_app_sessions"),
+  /** Every open session as a sidebar row, without transcripts. */
+  listSummaries: (projectId?: string, closed = false) =>
+    call<SessionSummaryRow[]>("list_session_summaries_cmd", { projectId, closed }),
   /** Continue the session's agent conversation in Terminal; resolves to the command run. */
   openInTerminal: (appSessionId: string) =>
     call<string>("open_session_in_terminal_cmd", { appSessionId }),

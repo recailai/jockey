@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 import type { AppSession } from "../types";
 import { RUNTIME_COLOR } from "../types";
-import { Alert, EmptyState, Badge } from "../ui";
+import { Alert, EmptyState, Badge, Button } from "../ui";
 import { FieldRow, ActionButton } from "./primitives";
 import type { ContextEntry, StoredSession } from "./primitives";
 import { fmtDate, fmtRelative } from "./primitives";
@@ -293,6 +293,7 @@ export function SessionsTab(props: {
   const [reopenError, setReopenError] = createSignal<string | null>(null);
   const [search, setSearch] = createSignal("");
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
+  const [cliActive, setCliActive] = createSignal<Set<string>>(new Set());
 
   type RawSession = {
     id: string; title: string; activeRole?: string;
@@ -316,24 +317,27 @@ export function SessionsTab(props: {
   const load = async () => {
     setLoading(true);
     try {
-      const [active, closed] = await Promise.all([
-        appSessionApi.list(),
-        appSessionApi.listClosed(),
-      ]);
-      setStoredSessions([
-        ...active.map((r) => mapRaw(r, null)),
-        ...closed.map((r) => mapRaw(r, r.closedAt ?? null)),
-      ]);
+      const closed = await appSessionApi.listClosed();
+      setStoredSessions(closed.map((r) => mapRaw(r, r.closedAt ?? null)));
     } catch { /* ignore */ }
+    try {
+      const summaries = await appSessionApi.listSummaries(undefined, true);
+      setCliActive(new Set(summaries.filter((r) => r.externalActive).map((r) => r.id)));
+    } catch { /* the CLI-activity hint is optional */ }
     setLoading(false);
   };
 
   onMount(() => void load());
 
+  const activeIds = () => new Set(props.activeSessions.map((s) => s.id));
+
   const filtered = createMemo(() => {
     const q = search().toLowerCase();
+    // This is the archive: sessions open in Jockey live in the sidebar, and listing them here
+    // made them look archived with no way to restore them.
     const matches = storedSessions().filter((s) =>
-      !q || s.title.toLowerCase().includes(q) || (s.cwd ?? "").toLowerCase().includes(q),
+      s.closedAt !== null && !activeIds().has(s.id)
+      && (!q || s.title.toLowerCase().includes(q) || (s.cwd ?? "").toLowerCase().includes(q)),
     );
     return matches.sort((a, b) => {
       const aClosed = a.closedAt !== null;
@@ -347,7 +351,6 @@ export function SessionsTab(props: {
     storedSessions().find((s) => s.id === selectedId()) ?? null,
   );
 
-  const activeIds = () => new Set(props.activeSessions.map((s) => s.id));
 
   const handleReopen = async (s: StoredSession) => {
     if (reopening()) return;
@@ -356,7 +359,7 @@ export function SessionsTab(props: {
     try {
       await appSessionApi.reopen(s.id);
       await props.onRestoreSession?.(s.id);
-      setSelectedId(s.id);
+      setSelectedId(null);
       setStoredSessions((prev) => prev.map((p) => p.id === s.id ? { ...p, closedAt: null, updatedAt: Date.now() } : p));
     } catch (e) {
       // e.g. "session name already exists" — silently doing nothing looked like a dead button.
@@ -384,12 +387,12 @@ export function SessionsTab(props: {
             class="h-7 w-full rounded-md border theme-border theme-surface px-2.5 font-mono text-[10px] theme-text placeholder:text-[var(--ui-muted)] focus:border-[var(--ui-border-strong)] focus:outline-none"
           />
         </div>
-        <div class="flex-1 overflow-y-auto space-y-0.5 py-1">
+        <div class="flex-1 overflow-y-auto overflow-x-hidden space-y-0.5 py-1">
           <Show when={loading()}>
             <p class="p-4 font-mono text-[10px] theme-muted opacity-60">Loading…</p>
           </Show>
           <Show when={!loading() && filtered().length === 0}>
-            <p class="p-4 font-mono text-[10px] theme-muted opacity-60">No sessions found.</p>
+            <p class="p-4 font-mono text-[10px] theme-muted opacity-60">No archived sessions.</p>
           </Show>
           <For each={filtered()}>
             {(s) => {
@@ -398,13 +401,16 @@ export function SessionsTab(props: {
               const isReopening = () => reopening() === s.id;
               const color = () => RUNTIME_COLOR[s.runtimeKind ?? ""] ?? "theme-muted";
               return (
-                <button
-                  onClick={() => {
-                    if (isClosed()) { void handleReopen(s); } else { setSelectedId(s.id); }
+                <div
+                  role="button"
+                  tabindex="0"
+                  onClick={() => setSelectedId(s.id)}
+                  onDblClick={() => { if (isClosed()) void handleReopen(s); }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { if (isClosed()) void handleReopen(s); else setSelectedId(s.id); }
                   }}
-                  disabled={isReopening()}
-                  class={`group flex w-full flex-col gap-0.5 rounded-lg mx-1.5 px-2.5 py-2 text-left transition-colors duration-100 ${selectedId() === s.id && !isClosed() ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-accent-soft)]"} ${isClosed() ? "opacity-60 hover:opacity-100" : ""}`}
-                  title={isClosed() ? "Click to reopen" : undefined}
+                  class={`group mx-1.5 flex flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left cursor-pointer transition-colors duration-100 ${selectedId() === s.id ? "bg-[var(--ui-surface-muted)]" : "hover:bg-[var(--ui-accent-soft)]"}`}
+                  title={isClosed() ? "Archived in Jockey · double-click to restore" : "Open in Jockey"}
                 >
                   <div class="flex items-center gap-1.5 min-w-0">
                     <Show when={isActive()}>
@@ -413,9 +419,20 @@ export function SessionsTab(props: {
                     <Show when={isClosed()}>
                       <span class="management-muted-dot" />
                     </Show>
-                    <span class={`truncate font-mono text-[10px] font-semibold ${isClosed() ? "theme-muted" : selectedId() === s.id ? "theme-text" : "theme-muted"}`}>{s.title}</span>
-                    <Show when={isReopening()}>
-                      <span class="ml-auto font-mono text-[9px] theme-muted shrink-0">opening…</span>
+                    <span class={`min-w-0 flex-1 truncate font-mono text-[10px] font-semibold ${selectedId() === s.id ? "theme-text" : "theme-muted"}`}>{s.title}</span>
+                    <Show when={isClosed() && cliActive().has(s.id)}>
+                      <Badge label="CLI" tone="info" />
+                    </Show>
+                    <Show when={isClosed()}>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        class="shrink-0"
+                        disabled={isReopening()}
+                        onClick={(e) => { e.stopPropagation(); void handleReopen(s); }}
+                      >
+                        {isReopening() ? "Restoring…" : "Restore"}
+                      </Button>
                     </Show>
                   </div>
                   <div class="flex items-center gap-1.5">
@@ -427,7 +444,7 @@ export function SessionsTab(props: {
                     <span class="theme-muted opacity-40">·</span>
                     <span class="font-mono text-[9px] theme-muted opacity-60">{fmtRelative(s.updatedAt || s.createdAt)}</span>
                   </div>
-                </button>
+                </div>
               );
             }}
           </For>
@@ -437,7 +454,7 @@ export function SessionsTab(props: {
       {/* Detail pane */}
       <div class="flex-1 overflow-y-auto p-5">
         <Show when={selected()} fallback={
-          <EmptyState icon="◫" title="Select a session" description="Click any session on the left to inspect it" />
+          <EmptyState icon="◫" title="Select a session" description="Click a session to inspect it. Archived sessions can be restored with Restore or a double-click." />
         }>
           {(s) => (
             <div class="space-y-5">
@@ -449,17 +466,31 @@ export function SessionsTab(props: {
                 </div>
                 <div class="flex gap-2 shrink-0">
                   <Show when={activeIds().has(s().id)}>
-                    <Badge label="active" tone="success" />
+                    <Badge label="open in Jockey" tone="success" />
+                  </Show>
+                  <Show when={s().closedAt !== null && !activeIds().has(s().id) && cliActive().has(s().id)}>
+                    <Badge label="agent active in CLI" tone="info" />
                   </Show>
                   <Show when={s().closedAt !== null && !activeIds().has(s().id)}>
-                    <ActionButton
-                      label={reopening() === s().id ? "Opening…" : "Reopen"}
-                      variant="ghost"
-                      onClick={() => { if (s().closedAt !== null) void handleReopen(s()); }}
-                    />
+                    <Badge label="archived in Jockey" tone="neutral" />
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      disabled={reopening() === s().id}
+                      onClick={() => void handleReopen(s())}
+                    >
+                      {reopening() === s().id ? "Restoring…" : "Restore to Jockey"}
+                    </Button>
                   </Show>
                 </div>
               </div>
+
+              <Show when={s().closedAt !== null && !activeIds().has(s().id) && cliActive().has(s().id)}>
+                <Alert tone="info" title="The agent conversation is still running in the CLI">
+                  This session is archived in Jockey only. Restore brings it back to the sidebar; turns
+                  made in the CLI are imported into it while it is shown.
+                </Alert>
+              </Show>
 
               {/* Metadata */}
               <div class="space-y-2 rounded-lg border theme-border theme-surface p-4">

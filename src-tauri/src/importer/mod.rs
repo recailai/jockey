@@ -4,13 +4,15 @@ pub(crate) mod pi;
 
 use crate::db::app_session_role::save_app_session_role_cli_id;
 use crate::db::project::get_project_internal;
-use crate::types::{AppSession, AppState};
+use crate::types::{AppSession, AppState, Project};
 use rusqlite::params;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 const CATALOG_FRESH_FOR_MS: i64 = 5 * 60 * 1000;
+/// Catalog scope for the machine-wide scan. Not a project id, so it never collides with one.
+const ALL_SCOPE: &str = "*all*";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedImportedMessage {
@@ -50,29 +52,69 @@ pub(crate) struct ImportableSession {
     pub(crate) last_active_at: i64,
     /// Already pulled in — the picker shows it, but selecting it only refreshes timestamps.
     pub(crate) imported: bool,
+    /// The Jockey session that already holds this conversation, when `imported`.
+    pub(crate) app_session_id: Option<String>,
+    /// Where importing lands: an existing project, or `None` when one would be created for `cwd`.
+    pub(crate) project_id: Option<String>,
+    pub(crate) project_name: Option<String>,
+}
+
+/// Result of importing from the machine-wide list.
+pub(crate) struct CliImport {
+    pub(crate) sessions: Vec<AppSession>,
+    pub(crate) created_projects: Vec<Project>,
 }
 
 fn source_id(runtime_kind: &str, session_id: &str) -> String {
     format!("{runtime_kind}:{session_id}")
 }
 
-fn imported_source_ids(state: &AppState) -> HashSet<String> {
+fn imported_source_ids(state: &AppState) -> HashMap<String, String> {
     crate::db::with_db(state, |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT runtime_kind, external_session_id FROM app_sessions
+                "SELECT runtime_kind, external_session_id, id FROM app_sessions
                  WHERE external_session_id IS NOT NULL",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })
             .map_err(|e| e.to_string())?;
         Ok(rows
             .filter_map(Result::ok)
-            .map(|(runtime_kind, session_id)| source_id(&runtime_kind, &session_id))
-            .collect::<HashSet<String>>())
+            .map(|(runtime_kind, session_id, id)| (source_id(&runtime_kind, &session_id), id))
+            .collect::<HashMap<String, String>>())
+    })
+    .unwrap_or_default()
+}
+
+/// Provider conversations Jockey itself started, keyed by provider session id. Their id lives in
+/// the session-role tables, not in `app_sessions.external_session_id`, so without this the
+/// import picker offered Jockey's own sessions and importing one created a duplicate.
+fn jockey_owned_conversations(state: &AppState) -> HashMap<String, String> {
+    crate::db::with_db(state, |conn| {
+        let mut owned = HashMap::new();
+        for sql in [
+            "SELECT acp_session_id, app_session_id FROM app_session_role_runtime_configs
+             WHERE acp_session_id IS NOT NULL AND trim(acp_session_id) <> ''",
+            "SELECT acp_session_id, app_session_id FROM app_session_roles
+             WHERE acp_session_id IS NOT NULL AND trim(acp_session_id) <> ''",
+        ] {
+            let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .map_err(|e| e.to_string())?;
+            for (provider_id, app_session_id) in rows.filter_map(Result::ok) {
+                owned.entry(provider_id).or_insert(app_session_id);
+            }
+        }
+        Ok(owned)
     })
     .unwrap_or_default()
 }
@@ -81,7 +123,18 @@ fn scan_sessions(project_path: &str) -> Vec<DiscoveredSession> {
     let mut sessions = claude::scan_claude_sessions(project_path);
     sessions.extend(codex::scan_codex_sessions(project_path));
     sessions.extend(pi::scan_pi_sessions(project_path));
-    sessions = deduplicate_sessions(sessions);
+    finish_scan(sessions)
+}
+
+fn scan_all_sessions() -> Vec<DiscoveredSession> {
+    let mut sessions = claude::scan_all_claude_sessions();
+    sessions.extend(codex::scan_all_codex_sessions());
+    sessions.extend(pi::scan_all_pi_sessions());
+    finish_scan(sessions)
+}
+
+fn finish_scan(sessions: Vec<DiscoveredSession>) -> Vec<DiscoveredSession> {
+    let mut sessions = deduplicate_sessions(sessions);
     sessions.sort_by_key(|session| std::cmp::Reverse(session.last_active_at));
     sessions
 }
@@ -246,6 +299,41 @@ fn refresh_catalog(state: &AppState, project_id: &str, project_path: &str) -> Re
     replace_catalog(state, project_id, &scan_sessions(project_path))
 }
 
+fn importable_from(
+    state: &AppState,
+    sessions: Vec<DiscoveredSession>,
+    resolve: impl Fn(&str) -> Option<(String, String)>,
+) -> Vec<ImportableSession> {
+    let already = imported_source_ids(state);
+    let owned = jockey_owned_conversations(state);
+    sessions
+        .into_iter()
+        .map(|session| {
+            let sid = source_id(session.runtime_kind, &session.session_id);
+            let app_session_id = already
+                .get(&sid)
+                .or_else(|| owned.get(&session.session_id))
+                .cloned();
+            let target = resolve(&session.cwd);
+            ImportableSession {
+                source_id: sid,
+                imported: app_session_id.is_some(),
+                app_session_id,
+                project_id: target.as_ref().map(|(id, _)| id.clone()),
+                project_name: target.map(|(_, name)| name),
+                external_session_id: session.session_id,
+                runtime_kind: session.runtime_kind.to_string(),
+                agent: session.agent.to_string(),
+                cwd: session.cwd,
+                title: session.title,
+                created_at: session.created_at,
+                last_active_at: session.last_active_at,
+                turn_count: session.turn_count,
+            }
+        })
+        .collect()
+}
+
 /// List what could be imported for a project without writing anything.
 pub(crate) fn scan_importable_sessions_internal(
     state: &AppState,
@@ -257,22 +345,50 @@ pub(crate) fn scan_importable_sessions_internal(
     if force_refresh || !catalog_is_fresh(state, project_id)? {
         refresh_catalog(state, project_id, &project.root_path)?;
     }
-    let already = imported_source_ids(state);
-    Ok(cached_sessions(state, project_id)?
-        .into_iter()
-        .map(|session| ImportableSession {
-            source_id: source_id(session.runtime_kind, &session.session_id),
-            imported: already.contains(&source_id(session.runtime_kind, &session.session_id)),
-            external_session_id: session.session_id,
-            runtime_kind: session.runtime_kind.to_string(),
-            agent: session.agent.to_string(),
-            cwd: session.cwd,
-            title: session.title,
-            created_at: session.created_at,
-            last_active_at: session.last_active_at,
-            turn_count: session.turn_count,
-        })
-        .collect())
+    let target = (project.id.clone(), project.name.clone());
+    Ok(importable_from(
+        state,
+        cached_sessions(state, project_id)?,
+        |_| Some(target.clone()),
+    ))
+}
+
+/// Every CLI session on the machine, each annotated with the project it would be imported into.
+pub(crate) fn scan_all_importable_sessions_internal(
+    state: &AppState,
+    force_refresh: bool,
+) -> Result<Vec<ImportableSession>, String> {
+    ensure_all_catalog(state, force_refresh)?;
+    let projects = crate::db::project::list_projects_internal(state)?;
+    Ok(importable_from(state, cached_sessions(state, ALL_SCOPE)?, |cwd| {
+        resolve_project(&projects, cwd).map(|p| (p.id.clone(), p.name.clone()))
+    }))
+}
+
+fn ensure_all_catalog(state: &AppState, force_refresh: bool) -> Result<(), String> {
+    if force_refresh || !catalog_is_fresh(state, ALL_SCOPE)? {
+        replace_catalog(state, ALL_SCOPE, &scan_all_sessions())?;
+    }
+    Ok(())
+}
+
+/// The project a working directory belongs to: the one rooted exactly there, else the one with
+/// the deepest root containing it. `None` means a project has to be created.
+pub(crate) fn resolve_project<'a>(projects: &'a [Project], cwd: &str) -> Option<&'a Project> {
+    let cwd = Path::new(cwd);
+    projects
+        .iter()
+        .filter(|p| cwd.starts_with(&p.root_path))
+        .max_by_key(|p| Path::new(&p.root_path).components().count())
+}
+
+fn project_name_for(cwd: &str) -> String {
+    Path::new(cwd)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| !n.is_empty())
+        .unwrap_or(cwd)
+        .to_string()
 }
 
 /// Import the selected transcripts. `only` is the set of external session ids the user picked;
@@ -399,6 +515,59 @@ pub(crate) fn mark_transcript_read(
     crate::db::app_session_role::set_transcript_cursor(state, session_id, conversation, len)
 }
 
+/// Bring one discovered conversation into `project_id`; returns the Jockey session holding it.
+fn import_one(
+    state: &AppState,
+    project_id: &str,
+    session: &DiscoveredSession,
+    already: &HashMap<String, String>,
+    owned: &HashMap<String, String>,
+) -> Result<String, String> {
+    // A conversation Jockey started is already a session; hand that one back.
+    if !already.contains_key(&source_id(session.runtime_kind, &session.session_id)) {
+        if let Some(app_session_id) = owned.get(&session.session_id) {
+            let closed = crate::db::app_session::load_session_head(state, app_session_id)?
+                .is_some_and(|head| head.closed);
+            if closed {
+                crate::db::app_session::reopen_app_session_internal(state, app_session_id)?;
+            }
+            return Ok(app_session_id.clone());
+        }
+    }
+
+    let app_sess = crate::db::app_session::upsert_imported_session(
+        state,
+        Some(project_id),
+        &session.title,
+        &session.cwd,
+        session.runtime_kind,
+        &session.session_id,
+        session.created_at,
+        session.last_active_at,
+    )?;
+
+    // Bind role to CLI session ID for resume
+    let _ = save_app_session_role_cli_id(
+        state,
+        &app_sess.id,
+        session.runtime_kind,
+        &app_sess.active_role,
+        &session.session_id,
+    );
+
+    // Same path the session watcher uses: only transcript entries past the conversation's
+    // cursor are added, so turns Jockey itself ran are never imported a second time.
+    // Propagate rather than swallow: a silent failure here would return the session as if
+    // fully imported while it actually has zero messages.
+    let conversation = crate::db::app_session_role::list_provider_conversations(state, &app_sess.id)?
+        .into_iter()
+        .find(|c| c.runtime_kind == session.runtime_kind && c.provider_id == session.session_id);
+    if let Some(conversation) = conversation {
+        sync_transcript(state, &app_sess.id, &conversation, &session.file_path)?;
+    }
+    Ok(app_sess.id)
+}
+
 pub(crate) fn import_project_sessions_internal(
     state: &AppState,
     project_id: &str,
@@ -413,6 +582,8 @@ pub(crate) fn import_project_sessions_internal(
         refresh_catalog(state, project_id, &project.root_path)?;
     }
 
+    let already = imported_source_ids(state);
+    let owned = jockey_owned_conversations(state);
     let mut imported: Vec<String> = Vec::new();
     for session in cached_sessions(state, project_id)? {
         if let Some(ref selected) = selected {
@@ -421,47 +592,52 @@ pub(crate) fn import_project_sessions_internal(
                 continue;
             }
         }
-
-        let app_sess = crate::db::app_session::upsert_imported_session(
-            state,
-            Some(project_id),
-            &session.title,
-            &session.cwd,
-            session.runtime_kind,
-            &session.session_id,
-            session.created_at,
-            session.last_active_at,
-        )?;
-
-        // Bind role to CLI session ID for resume
-        let _ = save_app_session_role_cli_id(
-            state,
-            &app_sess.id,
-            session.runtime_kind,
-            &app_sess.active_role,
-            &session.session_id,
-        );
-
-        // Same path the session watcher uses: only transcript entries past the conversation's
-        // cursor are added, so turns Jockey itself ran are never imported a second time.
-        // Propagate rather than swallow: a silent failure here would return the session as if
-        // fully imported while it actually has zero messages.
-        let conversation =
-            crate::db::app_session_role::list_provider_conversations(state, &app_sess.id)?
-                .into_iter()
-                .find(|c| {
-                    c.runtime_kind == session.runtime_kind && c.provider_id == session.session_id
-                });
-        if let Some(conversation) = conversation {
-            sync_transcript(state, &app_sess.id, &conversation, &session.file_path)?;
-        }
-
-        imported.push(app_sess.id);
+        imported.push(import_one(state, project_id, &session, &already, &owned)?);
     }
 
     // Re-read so the caller gets the persisted title/role plus the transcript messages that
     // were just inserted; the upsert return value predates them.
     crate::db::app_session::get_app_sessions_by_ids(state, &imported)
+}
+
+/// Import sessions picked from the machine-wide list, each into the project its cwd resolves
+/// to, creating a project (named after the directory) where none covers it.
+pub(crate) fn import_cli_sessions_internal(
+    state: &AppState,
+    source_ids: &[String],
+) -> Result<CliImport, String> {
+    ensure_all_catalog(state, false)?;
+    let selected: HashSet<&str> = source_ids.iter().map(String::as_str).collect();
+    let mut projects = crate::db::project::list_projects_internal(state)?;
+    let mut created_projects = Vec::new();
+    let already = imported_source_ids(state);
+    let owned = jockey_owned_conversations(state);
+    let mut imported: Vec<String> = Vec::new();
+    for session in cached_sessions(state, ALL_SCOPE)? {
+        if !selected.contains(source_id(session.runtime_kind, &session.session_id).as_str()) {
+            continue;
+        }
+        let project_id = match resolve_project(&projects, &session.cwd) {
+            Some(project) => project.id.clone(),
+            None => {
+                let project = crate::db::project::create_project_internal(
+                    state,
+                    project_name_for(&session.cwd),
+                    session.cwd.clone(),
+                )?;
+                let id = project.id.clone();
+                // Later sessions from nested directories resolve to this project.
+                projects.push(project.clone());
+                created_projects.push(project);
+                id
+            }
+        };
+        imported.push(import_one(state, &project_id, &session, &already, &owned)?);
+    }
+    Ok(CliImport {
+        sessions: crate::db::app_session::get_app_sessions_by_ids(state, &imported)?,
+        created_projects,
+    })
 }
 
 #[cfg(test)]
@@ -512,5 +688,102 @@ mod tests {
 
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].turn_count, 5);
+    }
+
+    fn project(id: &str, root: &str) -> Project {
+        Project {
+            id: id.into(),
+            name: id.into(),
+            root_path: root.into(),
+            created_at: 0,
+            updated_at: 0,
+            deleted_at: None,
+        }
+    }
+
+    #[test]
+    fn cwd_resolves_to_exact_then_deepest_project() {
+        let projects = vec![project("outer", "/w/app"), project("inner", "/w/app/pkg")];
+        assert_eq!(resolve_project(&projects, "/w/app").unwrap().id, "outer");
+        assert_eq!(resolve_project(&projects, "/w/app/pkg").unwrap().id, "inner");
+        assert_eq!(resolve_project(&projects, "/w/app/pkg/src").unwrap().id, "inner");
+        assert_eq!(resolve_project(&projects, "/w/app/other").unwrap().id, "outer");
+        assert!(resolve_project(&projects, "/w/app-two").is_none());
+        assert!(resolve_project(&projects, "/elsewhere").is_none());
+    }
+
+    #[test]
+    fn project_name_is_the_directory_basename() {
+        assert_eq!(project_name_for("/a/b/repo"), "repo");
+        assert_eq!(project_name_for("/"), "/");
+    }
+
+    fn test_state(dir: &tempfile::TempDir) -> AppState {
+        let pool = crate::db::DbPool::new(
+            dir.path().join("t.sqlite3"),
+            2,
+            "PRAGMA foreign_keys = ON;",
+        )
+        .expect("pool");
+        crate::db::init_db(&pool.get().expect("conn")).expect("init");
+        AppState {
+            db: pool,
+            role_cache: std::sync::Arc::new(dashmap::DashMap::new()),
+        }
+    }
+
+    #[test]
+    fn importing_from_all_creates_a_project_only_where_none_covers_the_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(&dir);
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let known = root.join("known");
+        let fresh = root.join("fresh");
+        std::fs::create_dir_all(known.join("sub")).unwrap();
+        std::fs::create_dir_all(&fresh).unwrap();
+        let existing = crate::db::project::create_project_internal(
+            &state,
+            "known".into(),
+            known.to_string_lossy().to_string(),
+        )
+        .unwrap();
+
+        let mut sessions = Vec::new();
+        for (id, cwd) in [("s1", known.join("sub")), ("s2", fresh.clone())] {
+            let transcript = root.join(format!("{id}.jsonl"));
+            std::fs::write(&transcript, "").unwrap();
+            let mut found = session("claude-native", id, 10, 1);
+            found.agent = "Claude Code";
+            found.cwd = cwd.to_string_lossy().to_string();
+            found.file_path = transcript;
+            sessions.push(found);
+        }
+        replace_catalog(&state, ALL_SCOPE, &sessions).unwrap();
+
+        let listed = scan_all_importable_sessions_internal(&state, false).unwrap();
+        let by_id = |id: &str| listed.iter().find(|s| s.external_session_id == id).unwrap();
+        assert_eq!(by_id("s1").project_id.as_deref(), Some(existing.id.as_str()));
+        assert!(by_id("s2").project_id.is_none());
+
+        let result = import_cli_sessions_internal(
+            &state,
+            &["claude-native:s1".to_string(), "claude-native:s2".to_string()],
+        )
+        .unwrap();
+        assert_eq!(result.sessions.len(), 2);
+        assert_eq!(result.created_projects.len(), 1);
+        assert_eq!(result.created_projects[0].name, "fresh");
+        let project_of = |ext: &str| {
+            result
+                .sessions
+                .iter()
+                .find(|s| s.external_session_id.as_deref() == Some(ext))
+                .and_then(|s| s.project_id.clone())
+        };
+        assert_eq!(project_of("s1").as_deref(), Some(existing.id.as_str()));
+        assert_eq!(project_of("s2"), Some(result.created_projects[0].id.clone()));
+
+        let again = scan_all_importable_sessions_internal(&state, false).unwrap();
+        assert!(again.iter().all(|s| s.imported && s.app_session_id.is_some()));
     }
 }

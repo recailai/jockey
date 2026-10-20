@@ -237,9 +237,7 @@ export default function SettingsPage(props: SettingsPageProps) {
           <Show when={activeTab() === "remote"}>
             <section>
               <h1 class="settings-title">Remote Companion</h1>
-              <div class="settings-management-panel">
-                <RemoteCompanionTab />
-              </div>
+              <RemoteCompanionTab />
             </section>
           </Show>
 

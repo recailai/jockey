@@ -1,6 +1,6 @@
 import { DEFAULT_ROLE_ALIAS } from "../components/types";
 import type { AppSession } from "../components/types";
-import type { RawSession } from "./tauriApi";
+import type { RawSession, SessionSummaryRow } from "./tauriApi";
 
 export const MAX_MESSAGES = 500;
 export const MAX_THOUGHT_CHARS = 5000;
@@ -83,6 +83,18 @@ export const makeDraftSession = (
 });
 
 /** A stored session row as the store's `AppSession` (transcript included, live state empty). */
+/** A sidebar row whose transcript has not been fetched yet (`historyLoaded: false`). */
+export const sessionFromSummary = (r: SessionSummaryRow): AppSession => {
+  const s = makeDefaultSession(r.title);
+  s.id = r.id;
+  if (r.activeRole) s.activeRole = r.activeRole;
+  s.runtimeKind = r.runtimeKind ?? null;
+  s.cwd = r.cwd ?? null;
+  s.projectId = r.projectId ?? null;
+  s.historyLoaded = false;
+  return s;
+};
+
 export const sessionFromRaw = (r: RawSession): AppSession => {
   const s = makeDefaultSession(r.title);
   s.id = r.id;

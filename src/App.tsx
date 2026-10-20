@@ -83,6 +83,8 @@ export default function App() {
   const [settingsInitialRole, setSettingsInitialRole] = createSignal<string | undefined>(undefined);
   const [showProjectModal, setShowProjectModal] = createSignal(false);
   const [importProject, setImportProject] = createSignal<Project | null>(null);
+  const [importOpen, setImportOpen] = createSignal(false);
+  const [importScope, setImportScope] = createSignal<"project" | "all">("project");
 
   const {
     projects,
@@ -427,6 +429,45 @@ export default function App() {
     showToast,
   });
 
+  // Sidebar rows restored without a transcript (`historyLoaded: false`) fetch it the first time
+  // they are shown, whichever path selected them.
+  const historyLoads = new Set<string>();
+  createEffect(on(activeSessionId, (id) => {
+    if (!id || historyLoads.has(id)) return;
+    const session = sessions[getSessionIndex(id)];
+    if (!session || session.historyLoaded !== false) return;
+    historyLoads.add(id);
+    void (async () => {
+      try {
+        const [raw] = await appSessionApi.getMany([id]);
+        if (!raw) return;
+        const full = sessionFromRaw(raw);
+        const inbox = await appSessionApi.listInbox(id).catch(() => []);
+        updateSession(id, {
+          messages: full.messages,
+          cwd: full.cwd,
+          runtimeKind: full.runtimeKind,
+          runtimeProfileId: full.runtimeProfileId,
+          historyLoaded: true,
+          queuedItems: inbox.map((item) => ({
+            id: item.id,
+            clientId: item.id,
+            text: item.text,
+            attachments: item.attachments ?? [],
+            roleName: item.roleName,
+            delivery: item.delivery === "nextStep" ? "nextStep" : "nextTurn",
+            createdAt: item.createdAt,
+            status: "queued" as const,
+          })),
+        });
+      } catch (e) {
+        showToast(`Failed to load session history: ${String(e)}`);
+      } finally {
+        historyLoads.delete(id);
+      }
+    })();
+  }));
+
   const handleSelectProject = async (proj: Project, targetSessionId?: string) => {
     selectProject(proj);
     try {
@@ -479,15 +520,19 @@ export default function App() {
   };
 
 
-  const openImportSessions = () => {
+  const openImportSessions = (scope: "project" | "all" = "project") => {
     const project = currentProject();
-    if (!project) {
+    if (!project && scope === "project") {
       showToast("Select a project before importing CLI sessions.", "error");
       return;
     }
     // Kobalte closes the project menu after its selection callback. Deferring the dialog by a
     // frame keeps the two modal focus lifecycles separate, so the picker reliably appears.
-    window.requestAnimationFrame(() => setImportProject(project));
+    window.requestAnimationFrame(() => {
+      setImportProject(project);
+      setImportScope(scope);
+      setImportOpen(true);
+    });
   };
 
   /**
@@ -495,8 +540,9 @@ export default function App() {
    * every other project's sessions, and omitting projectId strands the new ones outside the
    * project group in the sidebar.
    */
-  const mergeImportedSessions = (raw: RawSession[]) => {
+  const mergeImportedSessions = async (raw: RawSession[], createdProjects: Project[] = []) => {
     if (raw.length === 0) return;
+    if (createdProjects.length > 0) await refreshProjects();
     const existing = new Set(sessions.map((s) => s.id));
     const fresh = raw
       .filter((r) => !existing.has(r.id))
@@ -513,8 +559,26 @@ export default function App() {
       });
     if (fresh.length > 0) setSessions((prev) => [...prev, ...fresh]);
     const focus = fresh[0]?.id ?? raw[0].id;
-    if (focus) setActiveSessionId(focus);
-    showToast(`Imported ${raw.length} session(s)`, "info");
+    const focusProjectId = (fresh[0]?.projectId ?? raw[0].projectId) || null;
+    const target = focusProjectId ? projects().find((p) => p.id === focusProjectId) : undefined;
+    if (target && target.id !== currentProject()?.id) await handleSelectProject(target, focus);
+    else if (focus) setActiveSessionId(focus);
+    showToast(`Imported ${raw.length} ${raw.length === 1 ? "session" : "sessions"}`, "info");
+  };
+
+  const openExistingSession = async (id: string) => {
+    let known = sessions.find((s) => s.id === id);
+    if (!known) {
+      try {
+        await mergeImportedSessions(await appSessionApi.getMany([id]));
+      } catch (e) {
+        showToast(`Could not open session: ${String(e)}`);
+      }
+      return;
+    }
+    const target = known.projectId ? projects().find((p) => p.id === known!.projectId) : undefined;
+    if (target && target.id !== currentProject()?.id) await handleSelectProject(target, id);
+    else setActiveSessionId(id);
   };
 
   const { sendRaw, cancelCurrentRun, sendQueuedNow } = useMessageSend({
@@ -1070,6 +1134,7 @@ export default function App() {
             onOpenSessionInTerminal={openSessionInTerminal}
             onDeleteProject={deleteProject}
             onOpenAddProject={() => setShowProjectModal(true)}
+            onImportSessions={() => openImportSessions("all")}
             onOpenSettings={(tab) => openSettings((tab ?? "general") as SettingsTab)}
             onToggleSidebar={toggleLeftSidebar}
             updateSession={updateSession}
@@ -1100,7 +1165,7 @@ export default function App() {
             }
           }}
           onOpenAddProject={() => setShowProjectModal(true)}
-          onImportSessions={openImportSessions}
+          onImportSessions={() => openImportSessions("project")}
         />
       }
       conversation={
@@ -1153,10 +1218,12 @@ export default function App() {
       toasts={
         <>
           <ImportSessionsModal
-            open={importProject() !== null}
+            open={importOpen()}
             project={importProject()}
-            onClose={() => setImportProject(null)}
-            onImported={mergeImportedSessions}
+            initialScope={importScope()}
+            onClose={() => setImportOpen(false)}
+            onImported={(raw, created) => void mergeImportedSessions(raw, created)}
+            onOpenExisting={(id) => void openExistingSession(id)}
           />
           <ProjectModal
             open={showProjectModal()}

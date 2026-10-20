@@ -162,7 +162,13 @@ export function createHttpTransport(initialToken: string): HttpTransport {
       case "create_project_cmd":
         return api("/projects", { body: { name: a.name, rootPath: a.rootPath } });
       case "scan_importable_sessions_cmd":
-        return api(`/projects/${enc(a.projectId)}/importable`);
+        return api(`/projects/${enc(a.projectId)}/importable${q({ refresh: a.forceRefresh ? "true" : undefined })}`);
+      case "scan_all_importable_sessions_cmd":
+        return api(`/importable${q({ refresh: a.forceRefresh ? "true" : undefined })}`);
+      case "import_cli_sessions_cmd": {
+        const summaries = await api<RawSummary[]>("/import", { body: { sourceIds: a.sourceIds } });
+        return { sessions: summaries.map(summaryToRaw), createdProjects: [] } as T;
+      }
       case "import_project_sessions_cmd": {
         const summaries = await api<RawSummary[]>(`/projects/${enc(a.projectId)}/import`, {
           body: { externalSessionIds: a.externalSessionIds ?? [] },

@@ -1,7 +1,7 @@
 import type { Accessor } from "solid-js";
 import { DEFAULT_ROLE_ALIAS } from "../components/types";
 import type { AppSession, AssistantRuntime, QueuedItem, Role } from "../components/types";
-import { makeDefaultSession, makeDraftSession } from "../lib/sessionHelpers";
+import { makeDefaultSession, makeDraftSession, sessionFromSummary } from "../lib/sessionHelpers";
 import { appSessionApi, projectAgentApi } from "../lib/tauriApi";
 
 type SetSessions = {
@@ -65,7 +65,20 @@ export function useAppBootstrap(input: UseAppBootstrapInput) {
       loaded = [makeDraftSession("Session_1", { projectId: pid ?? null })];
     }
 
-    setSessions(loaded);
+    // Other projects' sessions are listed without transcripts (those load when a session is
+    // shown); without them the sidebar showed only the current project until a project switch.
+    let others: AppSession[] = [];
+    try {
+      const known = new Set(loaded.map((s) => s.id));
+      others = (await appSessionApi.listSummaries())
+        .filter((r) => !known.has(r.id))
+        .map(sessionFromSummary);
+    } catch {
+      // The sidebar still fills in per project on selection.
+    }
+
+    // `loaded` stays first, so its indexes below address the same store rows.
+    setSessions([...loaded, ...others]);
     await Promise.all(loaded.map(async (session, index) => {
       if (!session.persisted) return;
       try {

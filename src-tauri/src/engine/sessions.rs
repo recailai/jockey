@@ -283,6 +283,27 @@ pub(crate) async fn import_sessions(
     Ok(imported)
 }
 
+/// Import sessions picked from the machine-wide list into the projects their cwds belong to.
+/// Returns the imported sessions and the projects that had to be created for them.
+pub(crate) async fn import_cli_sessions(
+    state: &AppState,
+    source_ids: Vec<String>,
+) -> Result<(Vec<AppSession>, Vec<Project>), String> {
+    let worker_state = state.clone_refs();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::importer::import_cli_sessions_internal(&worker_state, &source_ids)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    for project in &result.created_projects {
+        events::project_changed(&project.id, ProjectChange::Created);
+    }
+    for session in &result.sessions {
+        events::session_changed(state, &session.id, SessionChange::Imported);
+    }
+    Ok((result.sessions, result.created_projects))
+}
+
 pub(crate) fn create_project(
     state: &AppState,
     name: String,

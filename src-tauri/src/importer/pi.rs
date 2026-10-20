@@ -4,21 +4,30 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
+pub(crate) fn scan_all_pi_sessions() -> Vec<DiscoveredSession> {
+    sessions_root()
+        .map(|root| scan_pi_root(&root, None))
+        .unwrap_or_default()
+}
+
 pub(crate) fn scan_pi_sessions(project_path: &str) -> Vec<DiscoveredSession> {
-    let Some(home) = std::env::var_os("HOME") else {
-        return Vec::new();
-    };
-    let root = PathBuf::from(home)
-        .join(".pi")
-        .join("agent")
-        .join("sessions");
-    let project_cwd = canonical_path(project_path);
+    sessions_root()
+        .map(|root| scan_pi_root(&root, Some(&canonical_path(project_path))))
+        .unwrap_or_default()
+}
+
+fn scan_pi_root(root: &Path, project_cwd: Option<&str>) -> Vec<DiscoveredSession> {
     let mut files = Vec::new();
-    collect_jsonl_files(&root, &mut files);
+    collect_jsonl_files(root, &mut files);
     files
         .into_iter()
-        .filter_map(|file_path| scan_file(&file_path, &project_cwd))
+        .filter_map(|file_path| scan_file(&file_path, project_cwd))
         .collect()
+}
+
+fn sessions_root() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join(".pi").join("agent").join("sessions"))
 }
 
 fn clean_pi_user_text(text: &str) -> Option<String> {
@@ -39,7 +48,7 @@ fn clean_pi_user_text(text: &str) -> Option<String> {
     Some(after_context.to_string())
 }
 
-fn scan_file(path: &Path, project_cwd: &str) -> Option<DiscoveredSession> {
+fn scan_file(path: &Path, project_cwd: Option<&str>) -> Option<DiscoveredSession> {
     let file = File::open(path).ok()?;
     let mut session_id = None;
     let mut cwd = None;
@@ -74,7 +83,7 @@ fn scan_file(path: &Path, project_cwd: &str) -> Option<DiscoveredSession> {
 
     let cwd = cwd?;
     // Sessions started in a sub-directory of the project belong to it too.
-    if !std::path::Path::new(&cwd).starts_with(project_cwd) {
+    if project_cwd.is_some_and(|root| !std::path::Path::new(&cwd).starts_with(root)) {
         return None;
     }
     let turns = count_pi_session_turns(path).max(turn_count);

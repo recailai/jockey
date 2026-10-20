@@ -26,16 +26,40 @@ pub(crate) fn encode_claude_project_dir(path: &str) -> String {
     }
 }
 
-pub(crate) fn scan_claude_sessions(project_path: &str) -> Vec<DiscoveredSession> {
+fn claude_projects_dir() -> Option<PathBuf> {
     let home = std::env::var("HOME").unwrap_or_default();
     if home.is_empty() {
-        return Vec::new();
+        return None;
     }
     let config_dir =
         std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| format!("{}/.claude", home));
+    Some(Path::new(&config_dir).join("projects"))
+}
+
+/// Every Claude transcript on the machine, whatever directory it ran in.
+pub(crate) fn scan_all_claude_sessions() -> Vec<DiscoveredSession> {
+    claude_projects_dir()
+        .map(|dir| scan_all_claude_sessions_in(&dir))
+        .unwrap_or_default()
+}
+
+fn scan_all_claude_sessions_in(projects_dir: &Path) -> Vec<DiscoveredSession> {
+    let dirs = std::fs::read_dir(projects_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| (entry.path(), true))
+        .collect();
+    scan_claude_dirs(dirs, None)
+}
+
+pub(crate) fn scan_claude_sessions(project_path: &str) -> Vec<DiscoveredSession> {
+    let Some(projects_dir) = claude_projects_dir() else {
+        return Vec::new();
+    };
     let encoded = encode_claude_project_dir(project_path);
     let project_root = canonical_project_path(project_path);
-    let projects_dir = Path::new(&config_dir).join("projects");
 
     // Claude keeps one directory per working directory, so sessions started in a
     // sub-directory of the project live under `<encoded>-<sub>`. Encoding is lossy (`/` and
@@ -53,6 +77,12 @@ pub(crate) fn scan_claude_sessions(project_path: &str) -> Vec<DiscoveredSession>
         }
     }
 
+    scan_claude_dirs(dirs, Some(&project_root))
+}
+
+/// `dirs` pairs a transcript directory with whether the cwd must come from the transcript
+/// itself. With a `project_root`, only transcripts inside it are kept.
+fn scan_claude_dirs(dirs: Vec<(PathBuf, bool)>, project_root: Option<&str>) -> Vec<DiscoveredSession> {
     let mut sessions = Vec::new();
     for (dir, verify_cwd) in dirs {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -71,12 +101,13 @@ pub(crate) fn scan_claude_sessions(project_path: &str) -> Vec<DiscoveredSession>
                 continue;
             };
             let cwd = if verify_cwd {
-                match transcript_cwd(&path) {
-                    Some(cwd) if Path::new(&cwd).starts_with(&project_root) => cwd,
+                match (transcript_cwd(&path), project_root) {
+                    (Some(cwd), Some(root)) if Path::new(&cwd).starts_with(root) => cwd,
+                    (Some(cwd), None) => cwd,
                     _ => continue,
                 }
             } else {
-                project_root.clone()
+                project_root.unwrap_or_default().to_string()
             };
             let Some((title, turn_count)) = inspect_claude_session(&path, &session_id) else {
                 continue;
@@ -590,5 +621,16 @@ mod subdir_tests {
             sub_session.cwd, sub,
             "resume needs the directory the session ran in"
         );
+    }
+
+    #[test]
+    fn scan_all_reads_every_directory_and_its_cwd() {
+        let projects = tempfile::tempdir().unwrap();
+        transcript(&projects.path().join("-a"), "one", "/work/a");
+        transcript(&projects.path().join("-b"), "two", "/work/b");
+        let mut found = scan_all_claude_sessions_in(projects.path());
+        found.sort_by(|x, y| x.session_id.cmp(&y.session_id));
+        let seen: Vec<_> = found.iter().map(|s| (s.session_id.as_str(), s.cwd.as_str())).collect();
+        assert_eq!(seen, [("one", "/work/a"), ("two", "/work/b")]);
     }
 }

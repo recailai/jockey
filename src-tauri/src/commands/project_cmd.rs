@@ -32,3 +32,15 @@ pub(crate) fn scan_importable_sessions_cmd(
         force_refresh.unwrap_or(false),
     )
 }
+
+/// Every CLI session on the machine, not just one project's directory.
+#[tauri::command(async)]
+pub(crate) fn scan_all_importable_sessions_cmd(
+    state: State<'_, AppState>,
+    force_refresh: Option<bool>,
+) -> Result<Vec<crate::importer::ImportableSession>, String> {
+    crate::importer::scan_all_importable_sessions_internal(
+        get_state(&state),
+        force_refresh.unwrap_or(false),
+    )
+}

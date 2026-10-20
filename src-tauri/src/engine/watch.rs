@@ -26,6 +26,9 @@ use crate::types::AppState;
 const TICK: Duration = Duration::from_secs(1);
 /// How long after its transcript last grew a conversation still counts as running elsewhere.
 const EXTERNAL_ACTIVE_FOR: Duration = Duration::from_secs(8);
+/// Without a watcher there is no live tick, so an unwatched session counts as driven elsewhere
+/// for longer: a CLI conversation sits idle between turns.
+const UNWATCHED_ACTIVE_FOR: Duration = Duration::from_secs(10 * 60);
 /// The CLI can flush its last transcript lines after the turn's result frame reached Jockey.
 const OWN_WRITE_SETTLE: Duration = Duration::from_secs(2);
 /// A transcript that is not on disk yet (first turn still starting) is looked up again later.
@@ -112,6 +115,20 @@ pub(crate) fn is_external_active(session_id: &str) -> bool {
         .lock()
         .map(|s| s.external_active)
         .unwrap_or(false)
+}
+
+/// For sessions nobody is watching (e.g. archived ones): whether one of its provider
+/// conversations was written to recently, i.e. the agent is being driven outside Jockey.
+pub(crate) fn provider_recently_written(state: &AppState, session_id: &str) -> bool {
+    if super::turns::is_busy(session_id) {
+        return false;
+    }
+    crate::db::app_session_role::list_provider_conversations(state, session_id)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|c| crate::importer::locate_transcript(&c.runtime_kind, &c.provider_id))
+        .filter_map(|path| std::fs::metadata(path).and_then(|m| m.modified()).ok())
+        .any(|at| at.elapsed().is_ok_and(|age| age < UNWATCHED_ACTIVE_FOR))
 }
 
 /// A Jockey turn is about to write to the provider conversation. Waits for a sync in progress,

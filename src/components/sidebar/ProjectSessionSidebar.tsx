@@ -7,6 +7,7 @@ import {
   Edit3,
   Files,
   FolderGit2,
+  Download,
   FolderPlus,
   LoaderCircle,
   Plus,
@@ -36,6 +37,7 @@ type ProjectSessionSidebarProps = {
   onOpenSessionInTerminal?: (session: AppSession) => void;
   onDeleteProject?: (id: string) => Promise<void>;
   onOpenAddProject: () => void;
+  onImportSessions?: () => void;
   onOpenSettings: (tab?: string) => void;
   onToggleSidebar: () => void;
   updateSession: (id: string, patch: Partial<AppSession>) => void;
@@ -130,6 +132,16 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
           Projects
         </span>
         <div class="flex items-center gap-0.5">
+          <Show when={props.onImportSessions}>
+            <button
+              type="button"
+              onClick={props.onImportSessions}
+              title="Import CLI sessions"
+              class="p-1 rounded theme-muted hover:theme-text hover:bg-[var(--ui-surface-muted)] transition-colors"
+            >
+              <Download size={14} />
+            </button>
+          </Show>
           <button
             type="button"
             onClick={props.onOpenAddProject}
