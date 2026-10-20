@@ -38,6 +38,7 @@ import { useMessageSend } from "./hooks/useMessageSend";
 import { useInputHistory } from "./hooks/useInputHistory";
 import { uniqueName, makeDefaultSession, makeDraftSession, sessionFromRaw } from "./lib/sessionHelpers";
 import { adoptLiveTurn, registerEngineEvents } from "./lib/engineEvents";
+import { hydratePendingPrompts } from "./lib/pendingPrompts";
 import { createSessionEventBuffer } from "./lib/sessionEventBuffer";
 import { appSessionApi, assistantApi, engineApi, projectAgentApi, workspaceApi } from "./lib/tauriApi";
 import { createCommandUiRegistry } from "./lib/commandUi/registry";
@@ -883,23 +884,7 @@ export default function App() {
       await bootstrapApp();
       // Stream events are not replayed: after a window reload, recover prompts the agent is still blocked on.
       try {
-        const pending = await assistantApi.listPendingPrompts();
-        for (const p of pending.permissions) {
-          if (getSessionIndex(p.appSessionId) === -1) continue;
-          mutateSession(p.appSessionId, (s) => {
-            if (!(s.pendingPermissions ?? []).some((x) => x.requestId === p.requestId)) {
-              s.pendingPermissions = [...(s.pendingPermissions ?? []), p];
-            }
-          });
-        }
-        for (const u of pending.userInputs) {
-          if (getSessionIndex(u.appSessionId) === -1) continue;
-          mutateSession(u.appSessionId, (s) => {
-            if (!(s.pendingUserInput ?? []).some((x) => x.requestId === u.requestId)) {
-              s.pendingUserInput = [...(s.pendingUserInput ?? []), u];
-            }
-          });
-        }
+        await hydratePendingPrompts({ getSessionIndex, mutateSession });
       } catch {
         // Hydration is best-effort; live events still arrive.
       }

@@ -1,4 +1,5 @@
 mod api;
+mod companion_assets;
 
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;

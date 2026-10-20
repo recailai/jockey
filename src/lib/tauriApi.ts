@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { call as transportCall } from "./transport";
 import type {
   AcpConfigOption,
   AppMentionItem,
@@ -46,7 +46,7 @@ export type RawSession = {
   closedAt?: number | null;
 };
 
-const call = <T>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
+const call = <T>(command: string, args?: Record<string, unknown>) => transportCall<T>(command, args);
 
 export type AppErrorCode =
   | "VALIDATION_FAILED"

@@ -1,10 +1,10 @@
 use axum::{
     extract::{Path, Query, Request, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{
         sse::{Event as SseEvent, KeepAlive, Sse},
-        Html, IntoResponse, Response,
+        IntoResponse, Response,
     },
     routing::{get, post},
     Json, Router,
@@ -18,8 +18,6 @@ use super::{GatewayEvent, ServerContext};
 use crate::engine::sessions as engine_sessions;
 use crate::types::{AppSession, AppState, SessionSummary};
 
-const COMPANION_HTML: &str = include_str!("companion.html");
-const MARKED_JS: &str = include_str!("vendor/marked.umd.js");
 const MAX_DIR_ENTRIES: usize = 500;
 
 pub(super) fn router(ctx: ServerContext) -> Router {
@@ -43,7 +41,10 @@ pub(super) fn router(ctx: ServerContext) -> Router {
         .route("/sessions/:id/close", post(session_close))
         .route("/sessions/:id/role", post(session_select_role))
         .route("/sessions/:id/live", get(session_live))
+        .route("/sessions/:id/reconnect", post(session_reconnect))
+        .route("/sessions/:id/reset", post(session_reset))
         .route("/roles", get(list_roles))
+        .route("/assistants", get(list_assistants))
         .route("/fs/dirs", get(list_dirs))
         .route("/permissions", get(list_permissions))
         .route("/pending", get(list_pending))
@@ -53,9 +54,8 @@ pub(super) fn router(ctx: ServerContext) -> Router {
         .route_layer(middleware::from_fn_with_state(ctx.clone(), require_token));
 
     Router::new()
-        .route("/", get(index))
-        .route("/assets/marked.js", get(marked_js))
         .nest("/api", api)
+        .fallback(get(super::companion_assets::serve))
         .with_state(ctx)
 }
 
@@ -126,20 +126,6 @@ type ApiResult<T> = Result<Json<T>, ApiError>;
 // ---------------------------------------------------------------------------
 // Static
 // ---------------------------------------------------------------------------
-
-async fn index() -> Html<&'static str> {
-    Html(COMPANION_HTML)
-}
-
-async fn marked_js() -> impl IntoResponse {
-    (
-        [
-            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
-            (header::CACHE_CONTROL, "public, max-age=86400"),
-        ],
-        MARKED_JS,
-    )
-}
 
 async fn status() -> Json<Value> {
     Json(json!({ "ok": true, "name": "jockey-companion", "version": "0.1.0" }))
@@ -538,8 +524,14 @@ async fn session_live(Path(id): Path<String>) -> Json<Value> {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ChatBody {
     input: String,
+    #[serde(default)]
+    attachments: Vec<crate::types::ImageAttachment>,
+    user_message_id: Option<String>,
+    assistant_message_id: Option<String>,
+    runtime_kind: Option<String>,
 }
 
 /// Same front door as the desktop: idle sessions start a turn, busy ones queue the input.
@@ -553,12 +545,51 @@ async fn session_chat(
         crate::engine::service::SubmitInput {
             session_id: id,
             text: body.input,
-            ..Default::default()
+            attachments: body.attachments,
+            user_message_id: body.user_message_id,
+            assistant_message_id: body.assistant_message_id,
+            runtime_kind: body.runtime_kind,
         },
     )
     .await
     .map(Json)
     .map_err(bad_request)
+}
+
+#[derive(Deserialize)]
+struct RuntimeRoleBody {
+    role: String,
+}
+
+async fn session_reconnect(
+    State(ctx): State<ServerContext>,
+    Path(id): Path<String>,
+    Json(body): Json<RuntimeRoleBody>,
+) -> ApiResult<Value> {
+    crate::commands::runtime_cmd::reconnect_acp_session(ctx.app.state(), body.role, id)
+        .await
+        .map_err(bad_request)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn session_reset(
+    State(ctx): State<ServerContext>,
+    Path(id): Path<String>,
+    Json(body): Json<RuntimeRoleBody>,
+) -> ApiResult<Value> {
+    crate::commands::runtime_cmd::reset_acp_session(ctx.app.state(), body.role, id)
+        .await
+        .map_err(bad_request)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Which agent CLIs this machine can run, with their capabilities; the composer and the
+/// queue's delivery options depend on it.
+async fn list_assistants() -> ApiResult<Vec<crate::types::AssistantRuntime>> {
+    tokio::task::spawn_blocking(crate::assistant::cached_assistant_catalog)
+        .await
+        .map(Json)
+        .map_err(internal)
 }
 
 async fn session_cancel(

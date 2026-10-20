@@ -414,7 +414,7 @@ pub(crate) fn cancelled_event_row(turn_id: &str, at: i64) -> Value {
     json!({
         "id": format!("{turn_id}:cancelled"),
         "roleName": "event",
-        "text": "已停止 · Stopped by user",
+        "text": "Stopped by user",
         "at": at,
         "payload": { "kind": "turnCancelled" },
     })

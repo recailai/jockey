@@ -38,7 +38,7 @@ cargo fmt --manifest-path src-tauri/Cargo.toml    # Format Rust code
   - `chat.rs`, `chat/` — Chat core: prompt building, context bundle, and session runtime between the engine and `acp`.
   - `db/` — SQLite persistence (pooled, migrations gated on `user_version`).
   - `commands/` — Tauri `#[command]` handlers (runtime control, git, completion, ...).
-  - `web_gateway/` — axum HTTP + SSE gateway for the phone companion (`companion.html`); token auth, default port 8420.
+  - `web_gateway/` — axum HTTP + SSE gateway for the phone companion (`src/companion/`, built to `dist-companion/` and embedded by `build.rs`); token auth, default port 8420.
   - `jockey_mcp/` — Built-in MCP bridge exposing `get_session_context`, `list_roles`, `list_skills`, `get_skill`, `invoke_role`.
   - `importer/` — Claude/Codex/Pi transcript import.
   - `git/` — Git operations behind the `git_*_cmd` commands.

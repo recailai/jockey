@@ -1,4 +1,5 @@
 import { For, Show, createSignal } from "solid-js";
+import { isRejectOption, needsGenericDeny, visiblePermissionOptions } from "../lib/permissionOptions";
 import type { Accessor } from "solid-js";
 import type { AppSession } from "./types";
 import { assistantApi } from "../lib/tauriApi";
@@ -22,11 +23,10 @@ function PermissionsQueue(props: PermissionModalProps) {
 
   const queue = () => props.activeSession()?.pendingPermissions ?? [];
   const current = () => queue()[0]!;
-  const hasRememberable = () => current().options.some((o) => o.kind === "allow_always");
+  const hasRememberable = () => current().options.some((o) => (o.kind ?? "").endsWith("_always"));
   const opts = () => {
     const all = current().options;
-    if (remember()) return all.filter((o) => o.kind === "allow_always" || !o.kind || o.kind === "allow_once");
-    return all.filter((o) => o.kind !== "allow_always");
+    return visiblePermissionOptions(all, remember());
   };
   const advance = () => {
     props.patchActiveSession({ pendingPermissions: queue().slice(1) });
@@ -44,7 +44,7 @@ function PermissionsQueue(props: PermissionModalProps) {
       <div class="flex flex-wrap gap-2">
         <For each={opts()}>{(opt) => (
           <Button
-            variant="secondary"
+            variant={isRejectOption(opt) ? "destructive" : "secondary"}
             size="sm"
             onClick={() => {
               void assistantApi.respondPermission(current().requestId, opt.optionId, false);
@@ -54,16 +54,18 @@ function PermissionsQueue(props: PermissionModalProps) {
             {opt.title ?? opt.optionId}
           </Button>
         )}</For>
-        <Button
-          variant="destructive"
-          size="sm"
-          onClick={() => {
-            void assistantApi.respondPermission(current().requestId, "", true);
-            advance();
-          }}
-        >
-          Deny
-        </Button>
+        <Show when={needsGenericDeny(current().options)}>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => {
+              void assistantApi.respondPermission(current().requestId, "", true);
+              advance();
+            }}
+          >
+            Deny
+          </Button>
+        </Show>
       </div>
       <Show when={hasRememberable()}>
         <label class="mt-2 flex items-center gap-1.5 cursor-pointer select-none w-fit">

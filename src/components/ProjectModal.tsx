@@ -1,6 +1,5 @@
 import { createSignal, Show } from "solid-js";
 import { Folder, FolderPlus, Sparkles } from "lucide-solid";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Alert, Button, Dialog, DialogBody, DialogContent, DialogFooter, FormField, Input } from "./ui";
 import type { Project } from "../lib/tauriApi";
 
@@ -8,7 +7,15 @@ type ProjectModalProps = {
   open: boolean;
   onClose: () => void;
   onCreateProject: (name: string, rootPath: string) => Promise<Project | void>;
+  /** Host-specific folder picker; defaults to the native dialog on desktop. */
+  pickDirectory?: () => Promise<string | null>;
 };
+
+async function pickNativeDirectory(): Promise<string | null> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({ directory: true, multiple: false, title: "Select Project Directory" });
+  return typeof selected === "string" ? selected : null;
+}
 
 export default function ProjectModal(props: ProjectModalProps) {
   const [name, setName] = createSignal("");
@@ -27,14 +34,8 @@ export default function ProjectModal(props: ProjectModalProps) {
 
   const handleBrowse = async () => {
     try {
-      const selected = await openDialog({
-        directory: true,
-        multiple: false,
-        title: "Select Project Directory",
-      });
-      if (typeof selected === "string" && selected.trim()) {
-        handlePathChange(selected.trim());
-      }
+      const selected = await (props.pickDirectory ?? pickNativeDirectory)();
+      if (selected?.trim()) handlePathChange(selected.trim());
     } catch {
       // ignore
     }

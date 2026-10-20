@@ -1,0 +1,42 @@
+.companion-root {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.companion-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 3rem;
+  padding: 0 0.75rem;
+  padding-top: env(safe-area-inset-top);
+  border-bottom: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+}
+
+.companion-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.companion-chat-body {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.companion-root .composer-shell {
+  padding: 0.5rem 0.75rem;
+}
+
+.companion-root .jui-dialog-content {
+  width: min(32rem, calc(100vw - 1.5rem));
+  max-height: calc(100dvh - 2rem);
+}

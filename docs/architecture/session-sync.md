@@ -41,7 +41,7 @@ Pieces:
   mid-turn in interleaves both, per the Claude Code docs).
 - Views: desktop `engineEvents.ts` (`turn/progress` → `adoptLiveTurn`, ignoring turns it saw
   finish) and a spinner titled "Running outside Jockey" on the session chip; web
-  `companion.html` renders snapshots instead of raw frames when it did not see the turn start,
+  the companion page renders snapshots instead of raw frames when it did not see the turn start,
   and shows 终端运行中.
 
 Verified end to end through the gateway (claude-native): a client subscribing 4 s into a

@@ -1,4 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { isRejectOption, needsGenericDeny, visiblePermissionOptions } from "../lib/permissionOptions";
 import type { AppPermission, AppToolCall, TerminalEntry } from "./types";
 import { DiffViewer } from "./DiffViewer";
 import { parseDiff, isDiffLike, hunkToRejectPrompt } from "../lib/diffParser";
@@ -296,8 +297,7 @@ function ToolCallItem(props: ToolCallItemProps) {
           const perm = () => props.inlinePermission!;
           const opts = () => {
             const all = perm().options;
-            if (remember()) return all.filter((o) => o.kind === "allow_always" || !o.kind || o.kind === "allow_once");
-            return all.filter((o) => o.kind !== "allow_always");
+            return visiblePermissionOptions(all, remember());
           };
           return (
             <div class="tool-permission-block">
@@ -308,20 +308,22 @@ function ToolCallItem(props: ToolCallItemProps) {
               <div class="flex flex-wrap gap-2">
                 <For each={opts()}>{(opt) => (
                   <Button
-                    variant="secondary"
+                    variant={isRejectOption(opt) ? "destructive" : "secondary"}
                     size="sm"
                     onClick={(e) => { e.preventDefault(); props.onApprove?.(opt.optionId); }}
                   >
                     {opt.title ?? opt.optionId}
                   </Button>
                 )}</For>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={(e) => { e.preventDefault(); props.onDeny?.(); }}
-                >
-                  Deny
-                </Button>
+                <Show when={needsGenericDeny(perm().options)}>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={(e) => { e.preventDefault(); props.onDeny?.(); }}
+                  >
+                    Deny
+                  </Button>
+                </Show>
               </div>
               <Show when={hasRememberableOptions()}>
                 <label class="mt-2 flex items-center gap-1.5 cursor-pointer select-none w-fit">

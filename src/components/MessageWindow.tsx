@@ -1,4 +1,3 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { For, Index, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { Accessor } from "solid-js";
 import type { AppSession, AppMessage, AppSegment, AppPermission, InputDeliveryCapabilities, RuntimeCapabilities } from "./types";
@@ -14,6 +13,7 @@ import { ToolCallGroup, type ToolCallGroupItem } from "./ToolCallGroup";
 import { PermissionModal } from "./PermissionModal";
 import SessionErrorBanner from "./SessionErrorBanner";
 import { assistantApi, engineApi } from "../lib/tauriApi";
+import { openExternal } from "../lib/transport";
 import { isTransparentProviderEvent } from "../lib/providerEventPolicy";
 import { Badge, Button, ContextMenuItem, ContextMenuSurface } from "./ui";
 import { Check, Copy } from "lucide-solid";
@@ -21,14 +21,14 @@ import { Check, Copy } from "lucide-solid";
 /** Failed turns are persisted as `event` rows with the id `<turnId>:error`; background task
  *  rows come from the Claude transcript importer ("Background task <status>: ..."). */
 const TURN_ERROR_LABELS: Record<string, string> = {
-  AUTH_REQUIRED: "需要登录授权",
-  CREDENTIAL_UNAVAILABLE: "凭据不可用",
-  PROCESS_DIED: "Agent 进程已退出",
-  CONNECTION_FAILED: "连接 Agent 失败",
-  PROMPT_TIMEOUT: "Agent 响应超时",
-  ADAPTER_UNAVAILABLE: "运行时适配器不可用",
-  UNSUPPORTED_RUNTIME: "不支持的运行时",
-  AGENT_ERROR: "Agent 报错",
+  AUTH_REQUIRED: "Sign-in required",
+  CREDENTIAL_UNAVAILABLE: "Account unavailable",
+  PROCESS_DIED: "Agent process exited",
+  CONNECTION_FAILED: "Could not connect to agent",
+  PROMPT_TIMEOUT: "Agent timed out",
+  ADAPTER_UNAVAILABLE: "Runtime adapter unavailable",
+  UNSUPPORTED_RUNTIME: "Unsupported runtime",
+  AGENT_ERROR: "Agent error",
 };
 const RECONNECT_CODES = new Set(["PROCESS_DIED", "CONNECTION_FAILED", "ADAPTER_UNAVAILABLE", "AUTH_REQUIRED"]);
 
@@ -300,7 +300,7 @@ export default function MessageWindow(props: MessageWindowProps) {
     const href = a.getAttribute("href");
     if (!href || !href.startsWith("http")) return;
     e.preventDefault();
-    openUrl(href);
+    openExternal(href);
   }
 
   const [ctxMenu, setCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
@@ -481,23 +481,23 @@ export default function MessageWindow(props: MessageWindowProps) {
             <div class="flex justify-center my-3 relative">
               <div class="absolute inset-x-0 top-1/2 h-px bg-gradient-to-r from-transparent via-[var(--ui-border)] to-transparent -z-10"></div>
               <div
-                class="max-w-[90%] px-4 py-1.5 border rounded-full text-[11.5px] flex items-center gap-2.5 backdrop-blur-md shadow-sm theme-panel theme-border theme-muted"
-                classList={{ "event-row-danger": tone === "danger", "event-row-success": tone === "success" }}
+                class="max-w-[90%] px-4 py-1.5 border text-[11.5px] flex items-center gap-2.5 backdrop-blur-md shadow-sm theme-panel theme-border theme-muted"
+                classList={{ "event-row-danger": tone === "danger", "event-row-success": tone === "success", "rounded-full": !errorCode, "rounded-2xl flex-wrap": !!errorCode }}
                 role={tone === "danger" ? "alert" : undefined}
               >
                 <span class="system-event-mark">{tone === "danger" ? "!" : "✧"}</span>
                 <Show when={q} fallback={
-                  <span class="whitespace-pre-wrap break-words tracking-wide min-w-0">{msg.text}</span>
+                  <span class="whitespace-pre-wrap break-words tracking-wide min-w-0" classList={{ "basis-[12rem] flex-1": !!errorCode }}>{msg.text}</span>
                 }>
-                  <span class="whitespace-pre-wrap break-words tracking-wide min-w-0" innerHTML={highlightText(msg.text, q)} />
+                  <span class="whitespace-pre-wrap break-words tracking-wide min-w-0" classList={{ "basis-[12rem] flex-1": !!errorCode }} innerHTML={highlightText(msg.text, q)} />
                 </Show>
                 <Show when={errorCode}>
                   <Badge tone="danger" variant="outline">{TURN_ERROR_LABELS[errorCode!] ?? errorCode}</Badge>
                   <Show when={isLastRow() && !props.activeSession()?.streamingMessage}>
                     <Show when={RECONNECT_CODES.has(errorCode!) && props.onReconnectAgent}>
-                      <Button size="sm" variant="outline" onClick={() => props.onReconnectAgent?.()}>重新连接</Button>
+                      <Button size="sm" variant="outline" onClick={() => props.onReconnectAgent?.()}>Reconnect</Button>
                     </Show>
-                    <Button size="sm" variant="outline" onClick={retry}>重试</Button>
+                    <Button size="sm" variant="outline" onClick={retry}>Retry</Button>
                   </Show>
                 </Show>
                 <Show when={item.count > 1}>

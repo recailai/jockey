@@ -19,7 +19,7 @@ provider protocol
   -> Solid renderer
 ```
 
-Persistence is engine-owned and runs beside this path: `engine/transcript.rs` `TurnRecorder` turns the same event stream into the durable `AppMessage` rows and the engine emits them in `turn/finished` (see [Engine service layer](engine-service-layer.md)). The frontend reducer (`acpEventBridge`) is a live projection for latency; the persisted messages carried by `turn/finished` replace it. The web companion (`web_gateway/companion.html`) is a second, simpler renderer of the same engine events and persisted `segments`.
+Persistence is engine-owned and runs beside this path: `engine/transcript.rs` `TurnRecorder` turns the same event stream into the durable `AppMessage` rows and the engine emits them in `turn/finished` (see [Engine service layer](engine-service-layer.md)). The frontend reducer (`acpEventBridge`) is a live projection for latency; the persisted messages carried by `turn/finished` replace it. The web companion (`src/companion/`, served by `web_gateway/`) runs the same reducers and components over an HTTP/SSE `Transport` (`src/lib/transport.ts`).
 
 The provider-specific layer owns field names, process lifecycle, resume identifiers, cancellation, and capability checks. The canonical layer owns only semantics:
 
