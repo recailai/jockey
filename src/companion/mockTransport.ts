@@ -71,7 +71,7 @@ const sessions: MockSession[] = [
     runtimeKind: "claude-native",
     projectId: "p1",
     lastActiveAt: min(0),
-    preview: "Running…",
+    preview: "Ready for your next direction.",
     running: false,
     messages: [{ id: "m10", roleName: "user", text: "Show me a streaming turn", at: min(1) }],
   },
@@ -117,6 +117,16 @@ const sessions: MockSession[] = [
 
 const pending = {
   permissions: [
+    {
+      appSessionId: "s-chat",
+      requestId: "perm-read",
+      title: "Read repository configuration",
+      description: "Read the project configuration before continuing the fix.",
+      options: [
+        { optionId: "read_once", title: "Allow once", kind: "allow_once" },
+        { optionId: "deny", title: "Reject", kind: "reject_once" },
+      ],
+    },
     {
       appSessionId: "s-perm",
       requestId: "perm-1",
@@ -164,6 +174,7 @@ const summary = (s: MockSession) => ({
   closedAt: null,
   messageCount: s.messages.length,
   preview: s.preview,
+  lastError: s.id === "s-error" ? "Claude Code is not signed in. Open chat to reconnect after signing in." : null,
   running: s.running,
   externalActive: s.id === "s-chat" ? false : s.id === "s-ask",
 });
@@ -192,18 +203,23 @@ export function createMockTransport(): HttpTransport {
   const handlers = new Map<string, Set<Handler>>();
   const emit = (event: string, payload: unknown) => handlers.get(event)?.forEach((h) => h({ payload }));
   const find = (id: string) => sessions.find((s) => s.id === id);
+  const timers = new Map<string, number[]>();
 
-  const streamTurn = (sid: string) => {
-    const turnId = "turn-live";
+  const streamTurn = (sid: string, input: Record<string, any>) => {
+    const turnId = `turn-${Date.now()}`;
+    const userMessage = { id: input.userMessageId, roleName: "user", text: input.text, at: Date.now() };
+    const assistantMessageId = input.assistantMessageId;
+    const session = find(sid)!;
+    session.running = true;
     const base = { role: "Developer", appSessionId: sid, turnId, runtimeKind: "claude-native" };
     const stream = (event: Record<string, unknown>) => emit("acp/stream", { ...base, event });
     const delta = (text: string) => emit("acp/delta", { role: "Developer", appSessionId: sid, turnId, delta: text });
     emit("turn/started", {
       appSessionId: sid,
       turnId,
-      assistantMessageId: "a-live",
+      assistantMessageId,
       roleLabel: "Developer",
-      userMessage: { id: "u-live", roleName: "user", text: "Show me a streaming turn", at: Date.now() },
+      userMessage,
       session: {},
     });
     const steps: Array<() => void> = [
@@ -214,18 +230,29 @@ export function createMockTransport(): HttpTransport {
       () => delta("Every command now goes through a `Transport`, so the phone and the desktop run the **same** reducers.\n\n"),
       () => delta("Next I am mapping the SSE stream onto the existing `listen` handlers"),
     ];
-    steps.forEach((step, i) => window.setTimeout(step, 150 + i * 120));
+    const scheduled = steps.map((step, i) => window.setTimeout(step, 150 + i * 120));
+    scheduled.push(window.setTimeout(() => {
+      const message = { id: assistantMessageId, roleName: "Developer", text: "The shared transport delivered this message. The agent is ready for your next direction.", at: Date.now() };
+      session.messages.push(userMessage, message);
+      session.running = false;
+      session.preview = message.text;
+      session.lastActiveAt = Date.now();
+      emit("turn/finished", { appSessionId: sid, turnId, ok: true, cancelled: false, messages: [userMessage, message] });
+      timers.delete(sid);
+    }, 1100));
+    timers.set(sid, scheduled);
   };
 
   const call = async (command: string, args: Record<string, any> = {}): Promise<any> => {
     switch (command) {
       case "list_projects_cmd": return projects;
+      case "list_session_summaries_cmd":
       case "gateway_list_sessions": return sessions.map(summary);
       case "gateway_list_closed_sessions": return [];
       case "get_app_sessions":
         return (args.ids as string[]).map((id) => {
           const s = find(id)!;
-          return { ...summary(s), messages: s.messages };
+          return { ...summary(s), messages: structuredClone(s.messages) };
         });
       case "watch_session":
       case "get_live_turn": return null;
@@ -233,10 +260,47 @@ export function createMockTransport(): HttpTransport {
       case "list_session_inbox_cmd": return queued.filter((q) => q.appSessionId === args.sessionId);
       case "detect_assistants": return assistants;
       case "list_roles": return [{ id: "Developer", name: "Developer", roleName: "Developer", runtimeKind: "claude-native", skills: [] }];
-      case "list_pending_prompts_cmd": return pending;
+      case "list_pending_prompts_cmd": return structuredClone(pending);
+      case "create_app_session": {
+        const session = {
+          id: `new-${sessions.length}`,
+          title: args.title || "Session_1",
+          activeRole: "Developer",
+          runtimeKind: "claude-native",
+          projectId: args.projectId,
+          lastActiveAt: Date.now(),
+          preview: "",
+          running: false,
+          messages: [],
+        };
+        sessions.push(session);
+        return summary(session);
+      }
       case "submit_input": {
-        if (args.input.sessionId === "s-stream") streamTurn("s-stream");
+        streamTurn(args.input.sessionId, args.input);
         return { status: "started" };
+      }
+      case "respond_permission":
+      case "respond_user_input_cmd": {
+        if (new URLSearchParams(window.location.search).has("fail-decisions")) throw new Error("Test: connection lost");
+        const rows = command === "respond_permission" ? pending.permissions : pending.userInputs;
+        const index = rows.findIndex((r) => r.requestId === args.requestId);
+        if (index >= 0) rows.splice(index, 1);
+        emit("permission_update", { status: "resolved" });
+        return { ok: true };
+      }
+      case "update_app_session": {
+        const s = find(args.id);
+        if (s) Object.assign(s, args.update);
+        return;
+      }
+      case "cancel_turn": {
+        timers.get(args.sessionId)?.forEach(window.clearTimeout);
+        timers.delete(args.sessionId);
+        const s = find(args.sessionId);
+        if (s) s.running = false;
+        emit("turn/finished", { appSessionId: args.sessionId, turnId: "cancelled", ok: true, cancelled: true, messages: [] });
+        return true;
       }
       case "gateway_list_dirs":
         return { path: "/Users/dev/GitHub", parent: "/Users/dev", entries: [{ name: "jockey", path: "/Users/dev/GitHub/jockey", isGitRepo: true, projectId: "p1" }, { name: "blog", path: "/Users/dev/GitHub/blog", isGitRepo: true, projectId: null }] };

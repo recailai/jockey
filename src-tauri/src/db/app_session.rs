@@ -122,7 +122,10 @@ pub(crate) fn list_session_summaries(
                 (SELECT count(1) FROM app_session_messages m WHERE m.session_id = s.id),
                 (SELECT substr(m.content, 1, 400) FROM app_session_messages m
                   WHERE m.session_id = s.id AND m.role_name <> 'event' AND trim(m.content) <> ''
-                  ORDER BY m.id DESC LIMIT 1)
+                  ORDER BY m.id DESC LIMIT 1),
+                (SELECT CASE WHEN a.state = 'error' THEN a.last_error END
+                   FROM agent_lifecycle a WHERE a.app_session_id = s.id
+                   ORDER BY a.updated_at DESC LIMIT 1)
          FROM app_sessions s WHERE 1 = 1",
     );
     let mut args: Vec<rusqlite::types::Value> = Vec::new();
@@ -171,6 +174,7 @@ pub(crate) fn list_session_summaries(
                         .get::<_, Option<String>>(9)?
                         .map(|t| compact_preview(&t)),
                     running: false,
+                    last_error: row.get(10)?,
                     external_active: false,
                 })
             })
@@ -1044,6 +1048,26 @@ mod tests {
             db: pool,
             role_cache: Arc::new(DashMap::new()),
         }
+    }
+
+    #[test]
+    fn summaries_report_agent_errors_and_clear_them_after_reconnect() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(&dir);
+        let session = create_app_session_internal(&state, Some("s"), None, None, None, None)
+            .expect("create session");
+        let transition = |next, error| {
+            crate::db::lifecycle::transition_internal(
+                &state, &session.id, "Developer", "codex-cli", next, error,
+            ).unwrap();
+        };
+        transition("running", None);
+        transition("error", Some("Sign in required"));
+        let rows = list_session_summaries(&state, None, false, None).unwrap();
+        assert_eq!(rows[0].last_error.as_deref(), Some("Sign in required"));
+        transition("prewarming", None);
+        let rows = list_session_summaries(&state, None, false, None).unwrap();
+        assert!(rows[0].last_error.is_none());
     }
 
     #[test]

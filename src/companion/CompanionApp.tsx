@@ -5,7 +5,7 @@ import ChatInput from "../components/ChatInput";
 import ProjectModal from "../components/ProjectModal";
 import ImportSessionsModal from "../components/ImportSessionsModal";
 import type { RichNode } from "../components/RichInput";
-import { getPlainText } from "../components/RichInput";
+import { getPlainText, isImageNode } from "../components/RichInput";
 import { DEFAULT_ROLE_ALIAS, now } from "../components/types";
 import type {
   InputDeliveryCapabilities,
@@ -34,6 +34,7 @@ import {
 import { call, listen, type UnlistenFn } from "../lib/transport";
 import { useToast } from "../lib/useToast";
 import SessionList from "./SessionList";
+import ControlCenter from "../components/ControlCenter";
 import {
   ClosedSessionsDialog,
   ConfirmDialog,
@@ -124,6 +125,7 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
   const [browseOpen, setBrowseOpen] = createSignal(false);
   const [roleOpen, setRoleOpen] = createSignal(false);
   const [closeOpen, setCloseOpen] = createSignal(false);
+  const [browseSessions, setBrowseSessions] = createSignal(false);
   let browseResolver: ((path: string | null) => void) | null = null;
 
   const refreshSummaries = async () => {
@@ -162,7 +164,16 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
     if (!raw) throw new Error("session not found");
     const session = sessionFromRaw(raw);
     if (getSessionIndex(id) === -1) setSessions((prev) => [...prev, session]);
-    else sessionManager.adoptMessages(id, session.messages);
+    else {
+      sessionManager.adoptMessages(id, session.messages);
+      updateSession(id, {
+        title: session.title,
+        activeRole: session.activeRole,
+        runtimeKind: session.runtimeKind,
+        runtimeProfileId: session.runtimeProfileId,
+        cwd: session.cwd,
+      });
+    }
     await refreshQueue(id);
   };
 
@@ -177,6 +188,7 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
   };
 
   const closeChat = () => {
+    setBrowseSessions(false);
     if (window.history.state?.chat) window.history.back();
     else setActiveSessionId(null);
   };
@@ -315,10 +327,13 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
   const noTimer = { current: null as number | null };
   const handleSend = async (e: SubmitEvent) => {
     e.preventDefault();
-    const text = getPlainText(richNodes()).trim();
-    if (!text) return;
+    const nodes = richNodes();
+    const text = getPlainText(nodes).trim();
+    const attachments = nodes.filter(isImageNode).map((n) => n.img);
+    if (!text && attachments.length === 0) return;
     setRichNodes([]);
-    await sendRaw(text);
+    const sent = await sendRaw(text, false, null, attachments.length ? attachments : undefined);
+    if (!sent && richNodes().length === 0) setRichNodes(nodes);
   };
 
   const queuedCount = () => activeSession()?.queuedItems.filter((i) => i.status === "queued").length ?? 0;
@@ -335,12 +350,37 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
     }
   };
 
-  const pickRole = (roleName: string) => {
+  const pickRole = async (roleName: string) => {
     const sid = activeSessionId();
     if (!sid) return;
-    const role = roles().find((r) => r.roleName === roleName);
-    patchActiveSession({ activeRole: roleName, runtimeKind: role?.runtimeKind ?? activeSession()?.runtimeKind ?? null });
-    void appSessionApi.update(sid, { activeRole: roleName }).catch((e) => showToast(`Could not switch persona: ${String(e)}`));
+    try {
+      await appSessionApi.update(sid, { activeRole: roleName });
+      await loadSession(sid);
+    } catch (e) {
+      showToast(`Could not switch persona: ${String(e)}`);
+    }
+  };
+
+  const handlePasteImage = (items: DataTransferItemList) => {
+    if (runtimeCapabilities()?.attachments === false) {
+      showToast("This agent does not support image attachments.");
+      return;
+    }
+    const sid = activeSessionId();
+    for (const item of Array.from(items)) {
+      if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+      const file = item.getAsFile();
+      if (!file) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (activeSessionId() !== sid || typeof reader.result !== "string") return;
+        const data = reader.result.split(",")[1];
+        if (!data) return;
+        setRichNodes((prev) => [...prev, { kind: "image", index: Math.max(-1, ...prev.filter(isImageNode).map((n) => n.index)) + 1, img: { data, mimeType: file.type } }]);
+      };
+      reader.onerror = () => showToast("Could not read image attachment.");
+      reader.readAsDataURL(file);
+    }
   };
 
   return (
@@ -348,7 +388,17 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
       <Show
         when={activeSession()}
         fallback={
+          <Show when={browseSessions()} fallback={
+            <ControlCenter
+              projects={projects}
+              onOpenChat={(id) => void openSession(id)}
+              onSend={async (id, text) => { await loadSession(id); return sendRaw(text, false, id); }}
+              onStop={(id) => engineApi.cancel(id)}
+              onBrowseSessions={() => setBrowseSessions(true)}
+            />
+          }>
           <SessionList
+            onControlCenter={() => setBrowseSessions(false)}
             projects={projects}
             sessions={summaries}
             state={listState}
@@ -361,6 +411,7 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
             onImportAll={() => setImportAll(true)}
             onAddProject={() => setShowProjectModal(true)}
           />
+          </Show>
         }
       >
         {(session) => (
@@ -373,7 +424,6 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
                 <div class="truncate text-sm font-semibold">{session().title}</div>
                 <div class="flex items-center gap-1.5 truncate text-[11px] theme-muted">
                   <span class="truncate">{projectName()}</span>
-                  <Show when={session().runtimeKind}><span>· {session().runtimeKind}</span></Show>
                   <Show when={session().externalActive}><Badge tone="info">terminal</Badge></Show>
                 </div>
               </div>
@@ -389,6 +439,7 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
             </header>
             <div class="companion-chat-body">
               <MessageWindow
+                presentation="responses"
                 activeSessionId={activeSessionId}
                 activeSession={activeSession}
                 activeBackendRole={activeBackendRole}
@@ -406,6 +457,7 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
               />
               <ChatInput
                 layout="active"
+                placeholder={`Message ${session().activeRole || DEFAULT_ROLE_ALIAS}…`}
                 richNodes={richNodes}
                 setRichNodes={setRichNodes}
                 activeRole={() => session().activeRole ?? DEFAULT_ROLE_ALIAS}
@@ -429,9 +481,9 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
                 richInputRef={() => {}}
                 mentionCloseTimerRef={noTimer}
                 mentionDebounceTimerRef={noTimer}
-                hasImages={() => false}
-                onPasteImage={() => {}}
-                onRemoveImage={() => {}}
+                hasImages={() => richNodes().some(isImageNode)}
+                onPasteImage={handlePasteImage}
+                onRemoveImage={(index) => setRichNodes((prev) => prev.filter((n) => !isImageNode(n) || n.index !== index))}
               />
             </div>
           </>
@@ -442,7 +494,7 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
         open={roleOpen()}
         projectId={activeSession()?.projectId ?? null}
         activeRole={activeSession()?.activeRole ?? DEFAULT_ROLE_ALIAS}
-        onPick={pickRole}
+        onPick={(role) => void pickRole(role)}
         onClose={() => setRoleOpen(false)}
       />
       <ConfirmDialog

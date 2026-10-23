@@ -36,6 +36,7 @@ type ChatInputProps = {
   onRemoveImage: (index: number) => void;
   contextFooter?: JSX.Element;
   layout?: "empty" | "active";
+  placeholder?: string;
 
   popupSelectOpen?: Accessor<boolean>;
   popupSelectCommandName?: Accessor<string>;
@@ -121,7 +122,7 @@ export default function ChatInput(props: ChatInputProps) {
               ref={props.richInputRef}
               nodes={props.richNodes}
               onRemoveImage={props.onRemoveImage}
-              placeholder={`Chat with ${props.activeRole()}... (type / for commands)`}
+              placeholder={props.placeholder ?? `Chat with ${props.activeRole()}... (type / for commands)`}
               class="composer-rich-input rich-input"
               onNodesChange={(nodes) => props.setRichNodes(nodes)}
               onCaretText={(text, caret) => {

@@ -194,6 +194,8 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
           rawInput: event.rawInput ?? undefined,
           rawOutput: event.rawOutput ?? undefined,
           terminalMeta: event.terminalMeta,
+          parentId: event.parentId ?? null,
+          diff: event.diff,
           roleName,
         };
         mutateSession(sid, (s) => {

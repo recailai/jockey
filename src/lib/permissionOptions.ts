@@ -2,6 +2,10 @@ type PermissionOptionLike = { optionId: string; kind?: string | null; title?: st
 
 export const isRejectOption = (o: PermissionOptionLike) => (o.kind ?? "").startsWith("reject");
 
+export function allowOnceOption<T extends PermissionOptionLike>(options: T[]): T | undefined {
+  return options.find((o) => o.kind === "allow_once" || (!o.kind && o.optionId === "allow_once"));
+}
+
 /** Options to show for the current "remember my choice" state. With it on, the `*_always`
  *  variants replace their `*_once` siblings; options without a kind always show. */
 export function visiblePermissionOptions<T extends PermissionOptionLike>(all: T[], remember: boolean): T[] {

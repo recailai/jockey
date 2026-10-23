@@ -1,6 +1,7 @@
 import type { AppMessage } from "../components/types";
 import { now } from "../components/types";
 import { engineApi } from "../lib/tauriApi";
+import { createClientId } from "../lib/clientId";
 import type { ImageAttachment } from "../lib/tauriApi";
 import type { SessionManager } from "./useSessionManager";
 
@@ -70,7 +71,7 @@ export function useMessageSend({
     const session = idx !== -1 ? sessions[idx] : null;
 
     // Busy sessions queue the input instead; its chip appears via `queue/changed`.
-    const userMessageId = crypto.randomUUID();
+    const userMessageId = createClientId();
     const optimistic = !session?.submitting;
     if (optimistic) {
       const userMessage: AppMessage = {
@@ -90,7 +91,7 @@ export function useMessageSend({
         text,
         attachments: attachments && attachments.length > 0 ? attachments : undefined,
         userMessageId,
-        assistantMessageId: crypto.randomUUID(),
+        assistantMessageId: createClientId(),
         runtimeKind: session?.runtimeKind ?? null,
       });
       if (res.status === "queued" && optimistic) {

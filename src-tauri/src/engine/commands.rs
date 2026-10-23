@@ -69,6 +69,7 @@ pub(crate) fn list_session_summaries_cmd(
         None,
     )?;
     for row in &mut rows {
+        row.running = super::turns::is_busy(&row.id);
         row.external_active = super::watch::is_external_active(&row.id)
             || (row.closed_at.is_some() && super::watch::provider_recently_written(state, &row.id));
     }

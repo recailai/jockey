@@ -5,6 +5,14 @@ import { setTransport } from "../lib/transport";
 import CompanionApp from "./CompanionApp";
 import { createHttpTransport, readStoredToken, type HttpTransport } from "./httpTransport";
 
+document.documentElement.classList.add("companion-host");
+const syncViewport = () => {
+  document.documentElement.style.setProperty("--companion-viewport-height", `${window.visualViewport?.height ?? window.innerHeight}px`);
+};
+syncViewport();
+window.visualViewport?.addEventListener("resize", syncViewport);
+window.addEventListener("resize", syncViewport);
+
 async function createTransport(): Promise<HttpTransport> {
   // `?mock` serves recorded fixtures through the same seam; it is not part of production builds.
   if (import.meta.env.DEV && new URLSearchParams(window.location.search).has("mock")) {

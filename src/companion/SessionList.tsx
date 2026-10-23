@@ -1,5 +1,5 @@
 import { For, Show, createSignal } from "solid-js";
-import { ChevronRight, FolderPlus, History, Plus, RefreshCw, DownloadCloud } from "lucide-solid";
+import { ArrowLeft, ChevronRight, FolderPlus, History, Plus, RefreshCw, DownloadCloud } from "lucide-solid";
 import type { SessionSummary } from "../components/types";
 import type { Project } from "../lib/tauriApi";
 import { fmtRelative } from "../lib/formatHelpers";
@@ -28,6 +28,7 @@ type SessionListProps = {
   onImport: (project: Project) => void;
   onImportAll: () => void;
   onAddProject: () => void;
+  onControlCenter?: () => void;
 };
 
 function SessionRow(props: { session: SessionSummary; onOpen: (id: string) => void }) {
@@ -84,7 +85,8 @@ export default function SessionList(props: SessionListProps) {
   return (
     <div class="flex min-h-0 flex-1 flex-col">
       <header class="companion-header">
-        <h1 class="flex-1 text-sm font-semibold">Jockey</h1>
+        <Show when={props.onControlCenter}><IconButton title="Control center" aria-label="Back to control center" onClick={props.onControlCenter}><ArrowLeft size={18} /></IconButton></Show>
+        <h1 class="flex-1 text-sm font-semibold">Sessions</h1>
         <IconButton title="Refresh" aria-label="Refresh" onClick={props.onRefresh}>
           <RefreshCw size={16} />
         </IconButton>

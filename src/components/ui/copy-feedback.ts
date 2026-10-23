@@ -1,5 +1,6 @@
 import { createSignal, onCleanup } from "solid-js";
 import type { Accessor } from "solid-js";
+import { copyText } from "../../lib/clipboard";
 
 export interface CopyFeedback {
   copied: Accessor<boolean>;
@@ -22,7 +23,7 @@ export function createCopyFeedback(
     const value = typeof text === "function" ? text() : text;
     if (!value) return false;
     try {
-      await navigator.clipboard.writeText(value);
+      if (!await copyText(value)) return false;
       setCopied(true);
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(() => setCopied(false), durationMs);

@@ -240,6 +240,7 @@ export type SessionSummary = {
   closedAt: number | null;
   messageCount: number;
   preview: string | null;
+  lastError?: string | null;
   running: boolean;
   /** The provider conversation is being driven outside Jockey (e.g. a terminal). */
   externalActive: boolean;

@@ -1,5 +1,15 @@
+.companion-host,
+.companion-host body,
+.companion-host #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
 .companion-root {
-  height: 100dvh;
+  height: var(--companion-viewport-height, 100dvh);
+  min-width: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   background: var(--ui-bg);
@@ -16,6 +26,7 @@
   padding-top: env(safe-area-inset-top);
   border-bottom: 1px solid var(--ui-border);
   background: var(--ui-surface);
+  flex-shrink: 0;
 }
 
 .companion-scroll {
@@ -30,13 +41,43 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
 }
+
+.companion-root .message-list { min-height: 0; min-width: 0; overflow-x: hidden; overscroll-behavior: contain; }
+.companion-root .message-list-inner { width: 100%; min-width: 0; }
+.companion-root .is-responses .agent-avatar { display: none; }
+.companion-root .is-responses .agent-message-card { overflow-wrap: anywhere; min-width: 0; }
+.companion-root .is-responses .md-prose pre { max-width: 100%; overflow-x: auto; }
+.companion-root .is-responses .md-prose table { display: block; max-width: 100%; overflow-x: auto; }
+.companion-root .is-responses .group\/agent { max-width: 100%; gap: 0; }
+.companion-root .is-responses .group\/agent .opacity-0,
+.companion-root .is-responses .group\/user .opacity-0 { opacity: 1; }
 
 .companion-root .composer-shell {
   padding: 0.5rem 0.75rem;
 }
 
-.companion-root .jui-dialog-content {
+.companion-host .jui-dialog-content {
   width: min(32rem, calc(100vw - 1.5rem));
-  max-height: calc(100dvh - 2rem);
+  max-height: calc(var(--companion-viewport-height, 100dvh) - 2rem);
+  top: calc(var(--companion-viewport-height, 100dvh) / 2);
+}
+
+@media (max-width: 600px) {
+  .companion-host .jui-dialog-content { padding: 16px; }
+  .companion-host .jui-dialog-footer { flex-wrap: wrap; }
+  .companion-host .jui-button,
+  .companion-host .jui-icon-button,
+  .companion-host .jui-row-button { min-height: 44px; }
+  .companion-host .jui-icon-button { min-width: 44px; flex-shrink: 0; }
+  .companion-header { gap: 4px; padding-inline: 8px; }
+  .companion-header .jui-pill { max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .companion-host input,
+  .companion-host textarea,
+  .companion-host .composer-rich-input { font-size: 16px; }
+  .companion-host .composer-input-row { padding: 8px; gap: 8px; }
+  .companion-host .composer-input-row .composer-send-button.jui-icon-button { width: 44px; height: 44px; }
+  .companion-session-row { min-width: 0; padding-block: 10px; }
 }

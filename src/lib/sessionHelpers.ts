@@ -1,4 +1,5 @@
 import { DEFAULT_ROLE_ALIAS } from "../components/types";
+import { createClientId } from "./clientId";
 import type { AppSession } from "../components/types";
 import type { RawSession, SessionSummaryRow } from "./tauriApi";
 
@@ -73,7 +74,7 @@ export const makeDraftSession = (
   } = {},
 ): AppSession => ({
   ...makeDefaultSession(title),
-  id: crypto.randomUUID(),
+  id: createClientId(),
   persisted: false,
   projectId: opts.projectId ?? null,
   runtimeKind: opts.runtimeKind ?? null,

@@ -14,6 +14,8 @@ import { PermissionModal } from "./PermissionModal";
 import SessionErrorBanner from "./SessionErrorBanner";
 import { assistantApi, engineApi } from "../lib/tauriApi";
 import { openExternal } from "../lib/transport";
+import { copyText } from "../lib/clipboard";
+import { responseSession } from "../lib/messagePresentation";
 import { isTransparentProviderEvent } from "../lib/providerEventPolicy";
 import { Badge, Button, ContextMenuItem, ContextMenuSurface } from "./ui";
 import { Check, Copy } from "lucide-solid";
@@ -114,7 +116,8 @@ function MessageCopyButton(props: { text: string; class?: string }) {
     e.stopPropagation();
     e.preventDefault();
     if (!props.text) return;
-    void navigator.clipboard.writeText(props.text).then(() => {
+    void copyText(props.text).then((ok) => {
+      if (!ok) return;
       setCopied(true);
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => setCopied(false), 1500);
@@ -163,6 +166,7 @@ function highlightText(text: string, query: string): string {
 }
 
 type MessageWindowProps = {
+  presentation?: "full" | "responses";
   activeSessionId: Accessor<string | null>;
   activeSession: Accessor<AppSession | null>;
   activeBackendRole: () => string;
@@ -180,6 +184,11 @@ type MessageWindowProps = {
 };
 
 export default function MessageWindow(props: MessageWindowProps) {
+  const displaySession = createMemo(() => props.presentation === "responses" ? responseSession(props.activeSession()) : props.activeSession());
+  return <MessageWindowContent {...props} activeSession={displaySession} />;
+}
+
+function MessageWindowContent(props: MessageWindowProps) {
   let listEl: HTMLDivElement | undefined;
   let searchInputEl: HTMLInputElement | undefined;
   let boundSessionId: string | null = null;
@@ -287,7 +296,8 @@ export default function MessageWindow(props: MessageWindowProps) {
       if (pre) {
         const code = pre.querySelector("code");
         const text = (code ?? pre).textContent ?? "";
-        navigator.clipboard.writeText(text).then(() => {
+        void copyText(text).then((ok) => {
+          if (!ok) return;
           copyBtn.textContent = "✓";
           setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
         });
@@ -334,7 +344,7 @@ export default function MessageWindow(props: MessageWindowProps) {
   });
 
   return (
-    <div class="flex-1 flex flex-col min-h-0 relative" style={{ "background-color": "transparent" }}>
+    <div class="flex-1 flex flex-col min-h-0 min-w-0 relative" classList={{ "is-responses": props.presentation === "responses" }} style={{ "background-color": "transparent" }}>
       <Show when={searchOpen()}>
         <div class="message-search-bar absolute top-2 right-3 flex items-center gap-1.5 rounded-xl border theme-border theme-panel shadow-lg backdrop-blur-md px-2 py-1.5">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 theme-muted">
@@ -393,6 +403,7 @@ export default function MessageWindow(props: MessageWindowProps) {
           <p class="text-[11px] theme-muted mb-3">
             Ready to assist with your codebase. Type instructions below.
           </p>
+          <Show when={props.presentation !== "responses"}>
           <div class="w-full rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-2.5 text-left space-y-1.5">
             <div class="flex items-center justify-between text-[11px]">
               <span class="theme-muted">Role</span>
@@ -416,6 +427,7 @@ export default function MessageWindow(props: MessageWindowProps) {
               </div>
             </Show>
           </div>
+          </Show>
         </div>
       </Show>
       <For each={filteredMessages()}>
@@ -507,7 +519,7 @@ export default function MessageWindow(props: MessageWindowProps) {
             </div>
             );
           }
-          const hasContent = !!msg.text?.trim() || (msg.segments && msg.segments.length > 0) || (msg.toolCalls && msg.toolCalls.length > 0);
+          const hasContent = !!msg.text?.trim() || (msg.images?.length ?? 0) > 0 || (msg.segments && msg.segments.length > 0) || (msg.toolCalls && msg.toolCalls.length > 0);
           if (!hasContent) return null;
 
           const effectiveSegments = createMemo(() => {
@@ -569,6 +581,7 @@ export default function MessageWindow(props: MessageWindowProps) {
                     </div>
                   )}
                 </Show>
+                <For each={msg.images}>{(img) => <AgentBlockRenderer block={{ kind: "image", ...img }} renderText={renderMd} />}</For>
                 <Show when={msg.thoughtText && !(effectiveSegments() ?? []).some((segment) => segment.kind === "thought")}>
                   <AgentBlockRenderer
                     block={{ kind: "thought", text: msg.thoughtText! }}

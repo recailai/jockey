@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Companion HTTP regression</title>
+    <script>
+      // Reproduce the capabilities of LAN HTTP while keeping the test server on loopback.
+      Object.defineProperty(Crypto.prototype, "randomUUID", { value: undefined, configurable: true });
+      Object.defineProperty(Navigator.prototype, "clipboard", { value: undefined, configurable: true });
+      document.documentElement.setAttribute("data-theme", "dark");
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/companion/main.tsx"></script>
+  </body>
+</html>

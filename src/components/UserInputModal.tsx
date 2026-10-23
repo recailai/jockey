@@ -1,8 +1,8 @@
-import { For, Show, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, on } from "solid-js";
 import { MessageCircleQuestion } from "lucide-solid";
 import type { Accessor } from "solid-js";
 import type { AppSession, AppUserInputQuestion } from "./types";
-import { Button, Dialog, DialogContent, Input } from "./ui";
+import { Alert, Button, Dialog, DialogContent, Input, RowButton } from "./ui";
 import { assistantApi } from "../lib/tauriApi";
 
 /**
@@ -13,12 +13,15 @@ import { assistantApi } from "../lib/tauriApi";
 export default function UserInputModal(props: {
   activeSession: Accessor<AppSession | null>;
   patchActiveSession: (patch: Partial<AppSession>) => void;
+  onDefer?: () => void;
 }) {
   const [picked, setPicked] = createSignal<Record<string, string[]>>({});
   const [other, setOther] = createSignal<Record<string, string>>({});
   const [submitting, setSubmitting] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
 
   const request = createMemo(() => props.activeSession()?.pendingUserInput?.[0] ?? null);
+  createEffect(on(() => request()?.requestId, () => { setPicked({}); setOther({}); setError(null); }));
 
   const answerFor = (q: AppUserInputQuestion): string[] => {
     const free = (other()[q.id] ?? "").trim();
@@ -50,12 +53,14 @@ export default function UserInputModal(props: {
 
   const dismiss = (answers: Record<string, string[]> | null) => {
     const req = request();
-    if (!req) return;
+    if (!req || submitting()) return;
+    const sid = props.activeSession()?.id;
     setSubmitting(true);
+    setError(null);
     void assistantApi
       .respondUserInput(req.requestId, answers)
-      .catch(() => {})
-      .finally(() => {
+      .then(() => {
+        if (props.activeSession()?.id !== sid) return;
         props.patchActiveSession({
           pendingUserInput: (props.activeSession()?.pendingUserInput ?? []).filter(
             (q) => q.requestId !== req.requestId,
@@ -63,8 +68,9 @@ export default function UserInputModal(props: {
         });
         setPicked({});
         setOther({});
-        setSubmitting(false);
-      });
+      })
+      .catch((e) => setError(`Could not submit answer: ${String(e)}`))
+      .finally(() => setSubmitting(false));
   };
 
   const submit = () => {
@@ -76,13 +82,14 @@ export default function UserInputModal(props: {
   };
 
   return (
-    <Dialog open={request() !== null} onOpenChange={(open) => { if (!open) dismiss(null); }}>
+    <Dialog open={request() !== null} onOpenChange={(open) => { if (!open && !submitting()) { if (props.onDefer) props.onDefer(); else dismiss(null); } }}>
       <DialogContent
         title={request()?.title ?? "Agent needs your input"}
         description={undefined}
-        icon={<MessageCircleQuestion size={20} class="text-blue-500" />}
+        icon={<MessageCircleQuestion size={20} class="text-[var(--ui-state-info-text)]" />}
       >
         <div class="mt-3 max-h-[60vh] space-y-4 overflow-auto">
+          <Show when={error()}><Alert tone="danger">{error()}</Alert></Show>
           <For each={request()?.questions ?? []}>
             {(q) => (
               <div class="space-y-2">
@@ -96,12 +103,12 @@ export default function UserInputModal(props: {
                   <div class="space-y-1">
                     <For each={q.options}>
                       {(opt) => (
-                        <button
-                          type="button"
+                        <RowButton
+                          disabled={submitting()}
                           onClick={() => choose(q, opt.value)}
                           class="flex w-full items-start gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-colors"
                           classList={{
-                            "border-blue-500 bg-blue-500/10": (picked()[q.id] ?? []).includes(opt.value),
+                            "border-[var(--ui-accent)] bg-[var(--ui-accent-soft)]": (picked()[q.id] ?? []).includes(opt.value),
                             "theme-border hover:bg-[var(--ui-row-hover)]": !(picked()[q.id] ?? []).includes(opt.value),
                           }}
                         >
@@ -111,7 +118,7 @@ export default function UserInputModal(props: {
                               <span class="block text-[10px] theme-muted">{opt.description}</span>
                             </Show>
                           </span>
-                        </button>
+                        </RowButton>
                       )}
                     </For>
                   </div>
@@ -135,7 +142,8 @@ export default function UserInputModal(props: {
         </div>
 
         <div class="mt-4 flex justify-end gap-2 border-t border-[var(--ui-border)] pt-3">
-          <Button variant="secondary" size="md" class="text-xs" onClick={() => dismiss(null)}>
+          <Show when={props.onDefer}><Button variant="ghost" disabled={submitting()} onClick={() => props.onDefer?.()}>Later</Button></Show>
+          <Button variant="secondary" size="md" class="text-xs" disabled={submitting()} onClick={() => dismiss(null)}>
             Skip
           </Button>
           <Button size="md" class="text-xs" disabled={!complete() || submitting()} onClick={submit}>

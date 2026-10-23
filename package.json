@@ -15,6 +15,7 @@
     "build": "vite build && pnpm build:companion",
     "build:companion": "vite build --config vite.companion.config.ts",
     "preview": "vite preview",
+    "test:remote": "node --experimental-strip-types --test tests/remote-transport.test.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

@@ -464,6 +464,8 @@ impl Transcript {
         let mut msg = json!({
             "id": id,
             "roleName": self.stream_role,
+            "messageType": "assistant",
+            "purpose": "response",
             "text": normalize_newlines(final_reply.unwrap_or(&self.text)),
             "at": at,
         });
@@ -528,6 +530,8 @@ impl Transcript {
                         let mut msg = json!({
                             "id": msg_id,
                             "roleName": role,
+                            "messageType": "assistant",
+                            "purpose": "response",
                             "text": normalize_newlines(&r.reply),
                             "at": at,
                         });

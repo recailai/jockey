@@ -243,6 +243,7 @@ pub(crate) struct SessionSummary {
     pub(crate) closed_at: Option<i64>,
     pub(crate) message_count: usize,
     pub(crate) preview: Option<String>,
+    pub(crate) last_error: Option<String>,
     pub(crate) running: bool,
     /// The provider conversation is being driven outside Jockey (engine::watch).
     pub(crate) external_active: bool,

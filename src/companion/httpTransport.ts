@@ -94,17 +94,27 @@ export function createHttpTransport(initialToken: string): HttpTransport {
   const resyncs = new Set<() => void>();
 
   const api = async <T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> => {
-    const res = await fetch(`/api${path}`, {
-      method: init?.method ?? (init?.body === undefined ? "GET" : "POST"),
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...(init?.body === undefined ? {} : { "Content-Type": "application/json" }),
-      },
-      body: init?.body === undefined ? undefined : JSON.stringify(init.body),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30_000);
+    let res: Response;
+    try {
+      res = await fetch(`/api${path}`, {
+        signal: controller.signal,
+        method: init?.method ?? (init?.body === undefined ? "GET" : "POST"),
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(init?.body === undefined ? {} : { "Content-Type": "application/json" }),
+        },
+        body: init?.body === undefined ? undefined : JSON.stringify(init.body),
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
     if (res.status === 401) {
       clearToken();
       token = "";
+      source?.close();
+      source = null;
       unauthorized();
       throw new UnauthorizedError();
     }
@@ -179,6 +189,8 @@ export function createHttpTransport(initialToken: string): HttpTransport {
         const rows = await api<RawSummary[]>(`/sessions${q({ projectId: a.projectId })}`);
         return rows.map(summaryToRaw) as T;
       }
+      case "list_session_summaries_cmd":
+        return api(`/sessions${a.closed ? "/closed" : ""}${q({ projectId: a.projectId })}`);
       case "list_closed_app_sessions": {
         const rows = await api<RawSummary[]>("/sessions/closed");
         return rows.map(summaryToRaw) as T;
@@ -264,6 +276,10 @@ export function createHttpTransport(initialToken: string): HttpTransport {
     return () => {
       set.delete(handler as Handler);
       if (set.size === 0) handlers.delete(event);
+      if (handlers.size === 0) {
+        source?.close();
+        source = null;
+      }
     };
   };
 

@@ -2,6 +2,7 @@ import { For, Show, createSignal } from "solid-js";
 import { Plus, Trash2 } from "lucide-solid";
 import type { CustomWorkspaceApp } from "../../lib/uiPrefs";
 import { BUILTIN_WORKSPACE_APPS } from "../../lib/workspaceApps";
+import { createClientId } from "../../lib/clientId";
 import IdeAppIcon from "../IdeAppIcon";
 import { Button, Input, Panel, PanelBody, RowButton } from "../ui";
 
@@ -23,7 +24,7 @@ export default function CustomAppsSettings(props: CustomAppsSettingsProps) {
     props.onChange([
       ...props.apps,
       {
-        id: crypto.randomUUID(),
+        id: createClientId(),
         label,
         appName,
         ...(bundleId ? { bundleId } : {}),

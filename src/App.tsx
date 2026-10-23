@@ -65,6 +65,7 @@ import { destroySessionTerminal, updateTerminalThemes } from "./lib/terminalRunt
 import { useProjects } from "./hooks/useProjects";
 import ProjectModal from "./components/ProjectModal";
 import ImportSessionsModal from "./components/ImportSessionsModal";
+import ControlCenter from "./components/ControlCenter";
 import type { Project, RawSession } from "./lib/tauriApi";
 
 export default function App() {
@@ -84,6 +85,7 @@ export default function App() {
   const [showProjectModal, setShowProjectModal] = createSignal(false);
   const [importProject, setImportProject] = createSignal<Project | null>(null);
   const [importOpen, setImportOpen] = createSignal(false);
+  const [showControlCenter, setShowControlCenter] = createSignal(false);
   const [importScope, setImportScope] = createSignal<"project" | "all">("project");
 
   const {
@@ -1049,6 +1051,27 @@ export default function App() {
 
   return (
     <AppShell
+      showControlCenter={showControlCenter()}
+      onToggleControlCenter={() => setShowControlCenter((v) => !v)}
+      controlCenter={
+        <ControlCenter
+          projects={projects}
+          onOpenChat={(id) => { setShowControlCenter(false); void openExistingSession(id); }}
+          onSend={async (id, text) => {
+            const existing = sessions.find((s) => s.id === id);
+            if (!existing || existing.historyLoaded === false) {
+              const [raw] = await appSessionApi.getMany([id]);
+              if (!raw) throw new Error("Session not found");
+              const full = { ...sessionFromRaw(raw), historyLoaded: true };
+              if (existing) updateSession(id, full);
+              else setSessions((prev) => [...prev, full]);
+            }
+            return sendRaw(text, false, id);
+          }}
+          onStop={(id) => engineApi.cancel(id)}
+          onBrowseSessions={() => { setShowControlCenter(false); setLeftSidebarOpenInternal(true); }}
+        />
+      }
       showSettings={showSettings()}
       settings={
         <Suspense fallback={<div class="h-dvh theme-bg" />}>
