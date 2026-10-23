@@ -45,10 +45,7 @@ pub(crate) use native::codex_admin::{
 pub(crate) use native::{
     reclaim_idle_native_sessions, rollback_live_codex_thread, shutdown_native_sessions,
 };
-pub use prewarm::{
-    prewarm_role, prewarm_role_with_session_id, refresh_role_config_defs,
-    refresh_role_config_defs_with,
-};
+pub use prewarm::{prewarm_role, refresh_role_config_defs_with};
 pub use session_cmds::{
     cancel_session, reconnect_session, reset_session, set_config_option, set_mode, steer_session,
     sync_role_mode,

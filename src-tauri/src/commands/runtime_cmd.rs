@@ -327,8 +327,7 @@ pub(crate) async fn respond_permission(
             acpsdk::PermissionOptionId::from(option_id),
         ))
     };
-    acp::respond_to_permission(&request_id, outcome);
-    Ok(())
+    acp::respond_to_permission(&request_id, outcome)
 }
 
 #[tauri::command]
@@ -592,6 +591,5 @@ pub(crate) fn respond_user_input_cmd(
     request_id: String,
     answers: Option<std::collections::HashMap<String, Vec<String>>>,
 ) -> Result<(), String> {
-    crate::acp::respond_to_user_input(&request_id, answers);
-    Ok(())
+    crate::acp::respond_to_user_input(&request_id, answers)
 }

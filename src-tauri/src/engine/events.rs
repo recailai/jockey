@@ -19,6 +19,7 @@ pub(crate) const QUEUE_CHANGED: &str = "queue/changed";
 pub(crate) const MESSAGE_ADDED: &str = "message/added";
 pub(crate) const SESSION_CHANGED: &str = "session/changed";
 pub(crate) const PROJECT_CHANGED: &str = "project/changed";
+pub(crate) const PERMISSION_UPDATE: &str = "permission_update";
 
 /// Every engine event, for forwarders that relay all of them (the web gateway).
 pub(crate) const ALL: &[&str] = &[
@@ -29,6 +30,7 @@ pub(crate) const ALL: &[&str] = &[
     MESSAGE_ADDED,
     SESSION_CHANGED,
     PROJECT_CHANGED,
+    PERMISSION_UPDATE,
 ];
 
 static APP: OnceLock<AppHandle> = OnceLock::new();

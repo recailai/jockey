@@ -103,22 +103,47 @@ pub(crate) fn insert_permission(request_id: String, pending: PendingPermission) 
     permission_requests().insert(request_id, pending);
 }
 
-pub fn respond_to_permission(request_id: &str, outcome: acp::RequestPermissionOutcome) {
-    if let Some((_, pending)) = permission_requests().remove(request_id) {
-        if let acp::RequestPermissionOutcome::Selected(selected) = &outcome {
-            let option_id = selected.option_id.to_string();
-            if pending
-                .allow_always_option_ids
-                .iter()
-                .any(|id| id == &option_id)
-            {
-                if let Ok(mut cache) = approval_cache().lock() {
-                    cache.insert(pending.cache_key.clone(), option_id);
-                }
-            }
+pub fn respond_to_permission(
+    request_id: &str,
+    outcome: acp::RequestPermissionOutcome,
+) -> Result<(), String> {
+    if let acp::RequestPermissionOutcome::Selected(selected) = &outcome {
+        let pending = permission_requests()
+            .get(request_id)
+            .ok_or("This approval has expired or was already handled.")?;
+        let option_id = selected.option_id.to_string();
+        if !pending
+            .options
+            .iter()
+            .any(|option| option["optionId"].as_str() == Some(option_id.as_str()))
+        {
+            return Err("Unknown approval option.".into());
         }
-        let _ = pending.tx.send(outcome);
     }
+    let (_, pending) = permission_requests()
+        .remove(request_id)
+        .ok_or("This approval has expired or was already handled.")?;
+    let remembered = match &outcome {
+        acp::RequestPermissionOutcome::Selected(selected) => {
+            let id = selected.option_id.to_string();
+            pending.allow_always_option_ids.contains(&id).then_some(id)
+        }
+        _ => None,
+    };
+    let delivered = pending.tx.send(outcome).is_ok();
+    crate::engine::events::emit(
+        "permission_update",
+        serde_json::json!({ "appSessionId": pending.app_session_id, "requestId": request_id }),
+    );
+    if !delivered {
+        return Err("The agent is no longer waiting for this approval.".into());
+    }
+    if let Some(id) = remembered {
+        if let Ok(mut cache) = approval_cache().lock() {
+            cache.insert(pending.cache_key, id);
+        }
+    }
+    Ok(())
 }
 
 /// Answers to a structured `UserInputRequest`, keyed by question id.
@@ -185,9 +210,22 @@ pub fn list_pending_prompts(app_session_id: Option<&str>) -> PendingPrompts {
 
 /// `None` means the user dismissed the form; the adapter decides what that means for its
 /// protocol (Codex treats it as no answers).
-pub fn respond_to_user_input(request_id: &str, answers: Option<UserInputAnswers>) {
-    if let Some((_, pending)) = user_input_requests().remove(request_id) {
-        let _ = pending.tx.send(answers);
+pub fn respond_to_user_input(
+    request_id: &str,
+    answers: Option<UserInputAnswers>,
+) -> Result<(), String> {
+    let (_, pending) = user_input_requests()
+        .remove(request_id)
+        .ok_or("This question has expired or was already answered.")?;
+    let delivered = pending.tx.send(answers).is_ok();
+    crate::engine::events::emit(
+        "permission_update",
+        serde_json::json!({ "appSessionId": pending.info.app_session_id, "requestId": request_id }),
+    );
+    if delivered {
+        Ok(())
+    } else {
+        Err("The agent is no longer waiting for this answer.".into())
     }
 }
 
@@ -211,6 +249,22 @@ pub(crate) fn cancel_permissions_for(runtime_key: &str, role_name: &str, app_ses
             let _ = pending.tx.send(acp::RequestPermissionOutcome::Cancelled);
         }
     }
+    // Questions block the same session as approvals; cancelling one agent must
+    // release its forms without dismissing questions from other sessions.
+    let questions: Vec<String> = user_input_requests()
+        .iter()
+        .filter(|entry| {
+            entry.info.app_session_id == app_session_id && entry.info.role_name == role_name
+        })
+        .map(|entry| entry.key().clone())
+        .collect();
+    for request_id in questions {
+        let _ = respond_to_user_input(&request_id, None);
+    }
+    crate::engine::events::emit(
+        "permission_update",
+        serde_json::json!({ "appSessionId": app_session_id }),
+    );
 }
 
 /// Drop every outstanding form. Called alongside permission cancellation so a session
@@ -221,7 +275,7 @@ pub(crate) fn cancel_all_user_input() {
         .map(|entry| entry.key().clone())
         .collect();
     for id in ids {
-        respond_to_user_input(&id, None);
+        let _ = respond_to_user_input(&id, None);
     }
 }
 
@@ -245,6 +299,71 @@ pub(crate) fn cancel_all_permissions() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelling_a_session_releases_only_its_questions() {
+        let (a_tx, mut a_rx) = oneshot::channel();
+        let (b_tx, mut b_rx) = oneshot::channel();
+        for (id, sid, tx) in [
+            ("cancel-question-a", "cancel-session-a", a_tx),
+            ("cancel-question-b", "cancel-session-b", b_tx),
+        ] {
+            insert_user_input(
+                PendingUserInputInfo {
+                    request_id: id.into(),
+                    role_name: "r".into(),
+                    app_session_id: sid.into(),
+                    title: None,
+                    blocking: true,
+                    questions: vec![],
+                },
+                tx,
+            );
+        }
+        cancel_permissions_for("mock", "r", "cancel-session-a");
+        assert_eq!(a_rx.try_recv().unwrap(), None);
+        assert!(matches!(
+            b_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        respond_to_user_input("cancel-question-b", None).unwrap();
+    }
+
+    #[test]
+    fn decisions_reject_stale_options_and_disconnected_agents() {
+        let (tx, rx) = oneshot::channel();
+        insert_permission(
+            "decision-contract".into(),
+            PendingPermission {
+                runtime_key: "mock".into(),
+                role_name: "r".into(),
+                app_session_id: "decision-test".into(),
+                cache_key: "decision-contract-cache".into(),
+                allow_always_option_ids: vec!["always".into()],
+                delta_tx: None,
+                tx,
+                title: None,
+                description: None,
+                options: vec![serde_json::json!({ "optionId": "always" })],
+            },
+        );
+        let selected = |id: &str| {
+            acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                acp::PermissionOptionId::from(id.to_owned()),
+            ))
+        };
+        assert!(respond_to_permission("decision-contract", selected("unknown")).is_err());
+        assert!(permission_requests().contains_key("decision-contract"));
+        drop(rx);
+        assert!(respond_to_permission("decision-contract", selected("always")).is_err());
+        assert!(cached_approval("decision-contract-cache").is_none());
+        assert!(respond_to_permission(
+            "decision-contract",
+            acp::RequestPermissionOutcome::Cancelled
+        )
+        .is_err());
+        assert!(respond_to_user_input("missing-question", None).is_err());
+    }
 
     #[test]
     fn pending_prompts_snapshot_filters_by_session_and_clears_on_respond() {
@@ -284,14 +403,14 @@ mod tests {
         assert!(s2.permissions.is_empty());
         assert_eq!(s2.user_inputs[0].request_id, "snap-ask-b");
         let all = list_pending_prompts(None);
-        assert!(all.permissions.iter().any(|p| p.request_id == "snap-perm-a"));
+        assert!(all
+            .permissions
+            .iter()
+            .any(|p| p.request_id == "snap-perm-a"));
         assert!(all.user_inputs.iter().any(|u| u.request_id == "snap-ask-b"));
 
-        respond_to_user_input("snap-ask-b", None);
-        respond_to_permission(
-            "snap-perm-a",
-            acp::RequestPermissionOutcome::Cancelled,
-        );
+        respond_to_user_input("snap-ask-b", None).unwrap();
+        respond_to_permission("snap-perm-a", acp::RequestPermissionOutcome::Cancelled).unwrap();
         assert!(list_pending_prompts(Some("snap-s2")).user_inputs.is_empty());
         assert!(list_pending_prompts(Some("snap-s1")).permissions.is_empty());
     }

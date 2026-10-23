@@ -60,3 +60,19 @@ Partner chat uses the shared `MessageWindow` with `presentation="responses"`. It
 - 390px iframe fixture for phone layout, inline approvals and long-press quick message. Browser interaction checks cover new session → send → streamed result, quick send, batch allow-once with result counts, response-only legacy chat, and failed approval retaining the request.
 
 The gateway embeds `dist-companion` when the Rust app is compiled. Refreshing a phone cannot update an already-running binary; rebuild and restart the desktop service to serve these changes. Physical-phone keyboard/safe-area behavior and live CLI approvals still require device validation.
+
+## Follow-up: production and runtime audit
+
+The installed phone page revealed an additional production-only cause: Tailwind's companion build root excluded shared `src/components` sources. The compiled CSS lacked `.items-end`, `.justify-end` and other chat utilities, although the development fixture looked correct. `src/index.css` now explicitly includes the shared source tree; `tests/companion-bundle.test.mjs` checks the actual compiled CSS.
+
+The GUI inherited an open-file soft limit of 256, causing Claude to exit before a result. Startup now raises only Jockey's soft limit to 8192 (bounded by the existing hard limit); children inherit it. No system-wide launchd settings change. A subprocess test starts at 256 and verifies both the raised limit and shell-child inheritance. Historical-session startup prewarming and the periodic all-open-session configuration refresh were removed. Installed CLI discovery and on-demand configuration discovery remain; merely listing historical sessions must not create provider conversations.
+
+Additional corrections to the control-center paths:
+
+- HTTP session creation preserves the chosen runtime, profile and client ID. Session updates no longer silently discard title/runtime/profile/cwd; role-only changes still use engine persona routing.
+- Machine-wide imports preserve actual transcripts and newly created projects in the same result shape as desktop IPC. Opening chat loads complete history instead of silently truncating at 200 messages.
+- The phone agent/persona picker supports available agents, waits for acknowledgement, reports failure and blocks changes during an active turn.
+- Drafts follow their session; a failed send cannot restore text into a different conversation. Reopening chat refreshes its persisted history, and an idle authoritative snapshot clears a stale live state after a missed finish event.
+- Permission responses reject unknown options, duplicate/expired requests and disconnected receivers. Remembered approvals are cached only after delivery. Structured answers also report expired/disconnected requests. Resolution emits a shared pending-update event to desktop and SSE clients.
+
+The retained layering is host UI → typed operation adapter → engine session/turn/queue services → runtime adapters. Agent and model administration still has some native-command coupling; replacing the Tauri host is not necessary to deliver the project/session/decision workflow. Future cross-agent work should submit through the same engine with explicit session/role targets and reuse the decision queue, rather than add another transcript writer or permission implementation.

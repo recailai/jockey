@@ -12,6 +12,7 @@ mod git;
 pub mod importer;
 pub mod jockey_mcp;
 mod parser;
+mod resource_limits;
 mod runtime_kind;
 mod runtime_profile;
 mod types;
@@ -23,14 +24,12 @@ pub mod web_gateway;
 pub use acp::permission_bridge_main;
 
 use dashmap::DashMap;
-use rusqlite::OptionalExtension;
-use std::collections::HashSet;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 
 use assistant::refresh_assistant_catalog;
-use db::{init_db, seed_default_dynamic_catalog, with_db, DbPool};
+use db::{init_db, seed_default_dynamic_catalog, DbPool};
 use types::*;
 
 pub(crate) fn now_ms() -> i64 {
@@ -76,6 +75,7 @@ pub(crate) fn clip_text(input: &str, max_chars: usize) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    resource_limits::prepare();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -156,156 +156,11 @@ pub fn run() {
                 }
             });
 
-            // Load the most recent open session's current active role only.
-            let app_state: &AppState = app.state::<AppState>().inner();
-            let recent_active_session: Option<(String, String, String, Option<String>)> =
-                with_db(app_state, |conn| {
-                    conn.query_row(
-                        "SELECT s.id,
-                                s.active_role,
-                                COALESCE(sr.runtime_kind, roles.runtime_kind, s.runtime_kind),
-                                sr.acp_session_id
-                         FROM app_sessions s
-                         LEFT JOIN app_session_roles sr
-                           ON sr.app_session_id = s.id
-                          AND sr.role_name = s.active_role
-                         LEFT JOIN roles
-                           ON roles.role_name = s.active_role
-                         WHERE s.closed_at IS NULL
-                           AND trim(COALESCE(sr.runtime_kind, roles.runtime_kind, s.runtime_kind, '')) <> ''
-                         ORDER BY s.last_active_at DESC
-                         LIMIT 1",
-                        [],
-                        |row| {
-                            Ok((
-                                row.get::<_, String>(0)?,
-                                row.get::<_, String>(1)?,
-                                row.get::<_, String>(2)?,
-                                row.get::<_, Option<String>>(3)?,
-                            ))
-                        },
-                    )
-                    .optional()
-                    .map_err(|e| e.to_string())
-                })
-                .unwrap_or(None);
-
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                // Probing every CLI install (interactive-shell env, `--help` runs) takes
-                // seconds; done in setup it held the window blank. In the background it also
-                // warms the adapter cache before the first turn needs it.
-                let startup_available_runtimes: HashSet<String> =
-                    tokio::task::spawn_blocking(refresh_assistant_catalog)
-                        .await
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|a| a.available)
-                        .map(|a| a.key)
-                        .collect();
-                let Some((app_session_id, role_name, runtime_kind, resume_sid)) =
-                    recent_active_session
-                else {
-                    return;
-                };
-                if runtime_kind == "mock" || !startup_available_runtimes.contains(&runtime_kind) {
-                    return;
-                }
-                let cwd = {
-                    let state_ref = app_handle.state::<AppState>();
-                    crate::db::app_session::get_app_session_cwd(state_ref.inner(), &app_session_id)
-                        .unwrap_or_else(default_chat_cwd)
-                };
-                let state_ref = app_handle.state::<AppState>();
-                let app_state_inner: &AppState = state_ref.inner();
-                let tmp = app_state_inner.clone_refs();
-                acp::prewarm_role_with_session_id(
-                    &runtime_kind,
-                    &role_name,
-                    &cwd,
-                    resume_sid,
-                    &tmp,
-                    &app_session_id,
-                )
-                .await;
+            // Discover installed CLIs without opening historical provider sessions. Runtime
+            // configuration is fetched on demand by the active session or role editor.
+            tauri::async_runtime::spawn(async {
+                let _ = tokio::task::spawn_blocking(refresh_assistant_catalog).await;
             });
-
-            // Background config refresh: only refresh the currently active role for
-            // each open session, and use a cadence longer than idle reclaim so
-            // refreshes do not keep adapter subprocesses permanently resident.
-            {
-                let app_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(900));
-                    interval.tick().await; // skip immediate first tick
-                    loop {
-                        interval.tick().await;
-                        // Current availability, not a startup snapshot (the startup probe now
-                        // runs in the background, and installs change while the app is open).
-                        let refresh_available_runtimes: HashSet<String> =
-                            tokio::task::spawn_blocking(crate::assistant::cached_assistant_catalog)
-                                .await
-                                .unwrap_or_default()
-                                .into_iter()
-                                .filter(|a| a.available)
-                                .map(|a| a.key)
-                                .collect();
-                        let state_ref = app_handle.state::<AppState>();
-                        let app_state: &AppState = state_ref.inner();
-                        let session_roles: Vec<(String, String, String)> = with_db(app_state, |conn| {
-                            let mut stmt = conn.prepare(
-                                "SELECT s.id,
-                                        s.active_role,
-                                        COALESCE(sr.runtime_kind, roles.runtime_kind, s.runtime_kind)
-                                 FROM app_sessions s
-                                 LEFT JOIN app_session_roles sr
-                                   ON sr.app_session_id = s.id
-                                  AND sr.role_name = s.active_role
-                                 LEFT JOIN roles
-                                   ON roles.role_name = s.active_role
-                                 WHERE s.closed_at IS NULL
-                                   AND trim(COALESCE(sr.runtime_kind, roles.runtime_kind, s.runtime_kind, '')) <> ''",
-                            ).map_err(|e| e.to_string())?;
-                            let rows = stmt.query_map([], |row| {
-                                Ok((
-                                    row.get::<_, String>(0)?,
-                                    row.get::<_, String>(1)?,
-                                    row.get::<_, String>(2)?,
-                                ))
-                            }).map_err(|e| e.to_string())?;
-                            Ok(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
-                        }).unwrap_or_else(|e| { eprintln!("[refresh] list session roles error: {e}"); vec![] });
-
-                        let refresh_sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
-                        let mut refresh_tasks = tokio::task::JoinSet::new();
-                        let refresh_timeout = std::time::Duration::from_secs(120);
-                        for (session_id, role_name, runtime_kind) in session_roles {
-                            if runtime_kind == "mock" || !refresh_available_runtimes.contains(&runtime_kind) {
-                                continue;
-                            }
-                            let tmp = app_state.clone_refs();
-                            let sid_clone = session_id.clone();
-                            let rn_clone = role_name.clone();
-                            let rk_clone = runtime_kind.clone();
-                            let permit = refresh_sem.clone().acquire_owned().await.ok();
-                            refresh_tasks.spawn(async move {
-                                let _permit = permit;
-                                let cwd = crate::db::app_session::get_app_session_cwd(&tmp, &sid_clone)
-                                    .unwrap_or_else(resolve_chat_cwd);
-                                let refresh = acp::refresh_role_config_defs(
-                                    &rk_clone,
-                                    &rn_clone,
-                                    &cwd,
-                                    &tmp,
-                                );
-                                let _ = tokio::time::timeout(refresh_timeout, refresh).await;
-                            });
-                        }
-
-                        while refresh_tasks.join_next().await.is_some() {}
-                    }
-                });
-            }
 
             #[cfg(debug_assertions)]
             {

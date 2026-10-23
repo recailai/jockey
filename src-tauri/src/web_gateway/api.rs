@@ -42,6 +42,7 @@ pub(super) fn router(ctx: ServerContext) -> Router {
         .route("/sessions/:id/reopen", post(session_reopen))
         .route("/sessions/:id/close", post(session_close))
         .route("/sessions/:id/role", post(session_select_role))
+        .route("/sessions/:id/update", post(session_update))
         .route("/sessions/:id/live", get(session_live))
         .route("/sessions/:id/reconnect", post(session_reconnect))
         .route("/sessions/:id/reset", post(session_reset))
@@ -344,18 +345,18 @@ struct ImportAllBody {
 async fn import_cli_sessions(
     State(ctx): State<ServerContext>,
     Json(body): Json<ImportAllBody>,
-) -> ApiResult<Vec<SessionSummary>> {
+) -> ApiResult<Value> {
     if body.source_ids.is_empty() {
         return Err(bad_request("请选择要导入的会话"));
     }
     let state = ctx.app.state::<AppState>();
-    let (imported, _) = engine_sessions::import_cli_sessions(&state, body.source_ids)
-        .await
-        .map_err(bad_request)?;
-    let ids: Vec<String> = imported.into_iter().map(|s| s.id).collect();
-    crate::db::app_session::list_session_summaries(&state, None, false, Some(&ids))
-        .map(Json)
-        .map_err(internal)
+    let (sessions, created_projects) =
+        engine_sessions::import_cli_sessions(&state, body.source_ids)
+            .await
+            .map_err(bad_request)?;
+    Ok(Json(
+        json!({ "sessions": sessions, "createdProjects": created_projects }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -368,7 +369,7 @@ async fn import_sessions(
     State(ctx): State<ServerContext>,
     Path(project_id): Path<String>,
     Json(body): Json<ImportBody>,
-) -> ApiResult<Vec<SessionSummary>> {
+) -> ApiResult<Vec<AppSession>> {
     if body.external_session_ids.is_empty() {
         return Err(bad_request("请选择要导入的会话"));
     }
@@ -377,10 +378,7 @@ async fn import_sessions(
         engine_sessions::import_sessions(&state, &project_id, Some(body.external_session_ids))
             .await
             .map_err(bad_request)?;
-    let ids: Vec<String> = imported.into_iter().map(|s| s.id).collect();
-    crate::db::app_session::list_session_summaries(&state, None, false, Some(&ids))
-        .map(Json)
-        .map_err(internal)
+    Ok(Json(imported))
 }
 
 // ---------------------------------------------------------------------------
@@ -466,6 +464,9 @@ fn summary_of(state: &AppState, id: &str) -> Result<SessionSummary, ApiError> {
 struct CreateSessionBody {
     project_id: Option<String>,
     title: Option<String>,
+    runtime_kind: Option<String>,
+    runtime_profile_id: Option<String>,
+    id: Option<String>,
 }
 
 async fn create_session(
@@ -478,9 +479,9 @@ async fn create_session(
         engine_sessions::NewSession {
             title: body.title.as_deref(),
             project_id: body.project_id.as_deref(),
-            runtime_kind: None,
-            runtime_profile_id: None,
-            id: None,
+            runtime_kind: body.runtime_kind.as_deref(),
+            runtime_profile_id: body.runtime_profile_id.as_deref(),
+            id: body.id.as_deref(),
         },
     )
     .await
@@ -555,6 +556,16 @@ async fn session_select_role(
     let state = ctx.app.state::<AppState>();
     engine_sessions::select_role(&state, &id, body.role.trim()).map_err(bad_request)?;
     summary_of(&state, &id).map(Json)
+}
+
+async fn session_update(
+    State(ctx): State<ServerContext>,
+    Path(id): Path<String>,
+    Json(body): Json<crate::types::AppSessionUpdate>,
+) -> ApiResult<Value> {
+    engine_sessions::update_session(&ctx.app.state::<AppState>(), &id, body)
+        .map_err(bad_request)?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 /// The running turn as it would be persisted now, for a client that opened mid-turn.

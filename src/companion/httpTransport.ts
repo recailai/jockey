@@ -176,14 +176,12 @@ export function createHttpTransport(initialToken: string): HttpTransport {
       case "scan_all_importable_sessions_cmd":
         return api(`/importable${q({ refresh: a.forceRefresh ? "true" : undefined })}`);
       case "import_cli_sessions_cmd": {
-        const summaries = await api<RawSummary[]>("/import", { body: { sourceIds: a.sourceIds } });
-        return { sessions: summaries.map(summaryToRaw), createdProjects: [] } as T;
+        return api("/import", { body: { sourceIds: a.sourceIds } });
       }
       case "import_project_sessions_cmd": {
-        const summaries = await api<RawSummary[]>(`/projects/${enc(a.projectId)}/import`, {
+        return api(`/projects/${enc(a.projectId)}/import`, {
           body: { externalSessionIds: a.externalSessionIds ?? [] },
         });
-        return summaries.map(summaryToRaw) as T;
       }
       case "list_app_sessions": {
         const rows = await api<RawSummary[]>(`/sessions${q({ projectId: a.projectId })}`);
@@ -196,16 +194,19 @@ export function createHttpTransport(initialToken: string): HttpTransport {
         return rows.map(summaryToRaw) as T;
       }
       case "get_app_sessions":
-        return Promise.all((a.ids as string[]).map((id) => api(`/sessions/${enc(id)}?tail=200`))) as Promise<T>;
+        return Promise.all((a.ids as string[]).map((id) => api(`/sessions/${enc(id)}`))) as Promise<T>;
       case "create_app_session":
-        return api("/sessions", { body: { title: a.title, projectId: a.projectId } });
+        return api("/sessions", { body: a });
       case "reopen_app_session": {
         await api(`/sessions/${enc(a.id)}/reopen`, { body: {} });
-        return api(`/sessions/${enc(a.id)}?tail=200`);
+        return api(`/sessions/${enc(a.id)}`);
       }
       case "update_app_session": {
-        const role = (a.update as { activeRole?: string }).activeRole;
-        if (role) await api(`/sessions/${enc(a.id)}/role`, { body: { role } });
+        if (Object.keys(a.update).length === 1 && a.update.activeRole) {
+          await api(`/sessions/${enc(a.id)}/role`, { body: { role: a.update.activeRole } });
+        } else {
+          await api(`/sessions/${enc(a.id)}/update`, { body: a.update });
+        }
         return undefined as T;
       }
       case "delete_app_session":

@@ -104,7 +104,11 @@ async fn send_prewarm(
         return Some(rx);
     }
     let mut env = adapter.env;
-    if let Some(text) = opts.system_prompt.as_deref().filter(|t| !t.trim().is_empty()) {
+    if let Some(text) = opts
+        .system_prompt
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+    {
         env.push((
             super::cold_start::ACP_SYSTEM_PROMPT_ENV.to_string(),
             text.trim().to_string(),
@@ -112,7 +116,11 @@ async fn send_prewarm(
     }
     let mut mcp_servers = opts.mcp_servers;
     if let Some(app_session_id) = opts.app_session_id.filter(|id| !id.trim().is_empty()) {
-        crate::jockey_mcp::binding::bind_jockey_servers(&mut mcp_servers, app_session_id, opts.role_name);
+        crate::jockey_mcp::binding::bind_jockey_servers(
+            &mut mcp_servers,
+            app_session_id,
+            opts.role_name,
+        );
     }
     let _ = worker_tx().send(WorkerMsg::Prewarm {
         runtime_key: adapter.runtime_key,
@@ -191,9 +199,12 @@ struct ConfigPrewarmRequest<'a> {
 
 async fn prewarm_config_impl(req: ConfigPrewarmRequest<'_>) -> (Vec<Value>, Vec<String>) {
     let runtime_key = normalize_runtime_key(req.runtime_kind).unwrap_or(req.runtime_kind);
-    let session_project_id = req.state.zip(req.app_session_id).and_then(|(s, app_session_id)| {
-        crate::db::app_session::get_app_session_project_id(s, app_session_id)
-    });
+    let session_project_id = req
+        .state
+        .zip(req.app_session_id)
+        .and_then(|(s, app_session_id)| {
+            crate::db::app_session::get_app_session_project_id(s, app_session_id)
+        });
     let project_id = session_project_id.as_deref().or(req.project_id);
     let mcp_servers = req
         .state
@@ -212,9 +223,9 @@ async fn prewarm_config_impl(req: ConfigPrewarmRequest<'_>) -> (Vec<Value>, Vec<
         force_refresh: req.force_refresh,
         want_session_id: req.persist_cli_id,
         launch_env,
-        system_prompt: req
-            .state
-            .and_then(|s| crate::chat::prompt_builder::role_instructions(s, req.role_name, project_id)),
+        system_prompt: req.state.and_then(|s| {
+            crate::chat::prompt_builder::role_instructions(s, req.role_name, project_id)
+        }),
     })
     .await
     else {
@@ -317,55 +328,4 @@ pub async fn refresh_role_config_defs_with(
         persist_cli_id: false,
     })
     .await
-}
-
-/// Reuses the discovered catalog when there is one. This is the hot path (every persona and
-/// agent switch); use `refresh_role_config_defs_with(.., true)` for an explicit refresh.
-pub async fn refresh_role_config_defs(
-    runtime_kind: &str,
-    role_name: &str,
-    cwd: &str,
-    state: &AppState,
-) -> (Vec<Value>, Vec<String>) {
-    refresh_role_config_defs_with(runtime_kind, role_name, cwd, state, None, false).await
-}
-
-/// Prewarm with an explicit session ID (used when resuming a known session).
-pub async fn prewarm_role_with_session_id(
-    runtime_kind: &str,
-    role_name: &str,
-    cwd: &str,
-    resume_session_id: Option<String>,
-    state: &AppState,
-    app_session_id: &str,
-) {
-    let runtime_key = normalize_runtime_key(runtime_kind).unwrap_or(runtime_kind);
-    let project_id = crate::db::app_session::get_app_session_project_id(state, app_session_id);
-    let mcp_servers = load_role_mcp_servers(state, role_name, project_id.as_deref(), runtime_kind);
-    let launch_env = role_launch_env(Some(state), role_name, project_id.as_deref(), runtime_kind);
-    let Some(rx) = send_prewarm(PrewarmOpts {
-        runtime_kind,
-        role_name,
-        cwd,
-        resume_session_id,
-        app_session_id: Some(app_session_id),
-        mcp_servers,
-        role_mode: None,
-        role_config_options: vec![],
-        force_refresh: false,
-        want_session_id: true,
-        launch_env,
-        system_prompt: crate::chat::prompt_builder::role_instructions(
-            state,
-            role_name,
-            project_id.as_deref(),
-        ),
-    })
-    .await
-    else {
-        return;
-    };
-    if let Ok((_, _modes, sid)) = rx.await {
-        persist_prewarm_result(state, app_session_id, runtime_key, role_name, &sid);
-    }
 }

@@ -104,3 +104,24 @@ test("SSE closes on logout and when the last consumer unmounts", async (t) => {
   offOther();
   assert.equal(streams[1].closed, true);
 });
+
+test("HTTP session operations retain runtime selection, updates, imports and full history", async (t) => {
+  const requests = [];
+  const imported = { sessions: [{ id: "imported", messages: [{ roleName: "user", text: "history" }] }], createdProjects: [{ id: "new-project" }] };
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    requests.push({ url, body: init.body && JSON.parse(init.body) });
+    return Response.json(url === "/api/import" ? imported : { id: "s1" });
+  });
+  const transport = createHttpTransport("test-token");
+  const creation = { title: "Session_1", projectId: "p1", runtimeKind: "codex-cli", runtimeProfileId: "codex", id: "client-id" };
+  await transport.call("create_app_session", creation);
+  assert.deepEqual(requests.at(-1), { url: "/api/sessions", body: creation });
+  const update = { runtimeKind: "pi-cli", runtimeProfileId: "pi", title: "Renamed" };
+  await transport.call("update_app_session", { id: "s1", update });
+  assert.deepEqual(requests.at(-1), { url: "/api/sessions/s1/update", body: update });
+  await transport.call("update_app_session", { id: "s1", update: { activeRole: "Reviewer" } });
+  assert.deepEqual(requests.at(-1), { url: "/api/sessions/s1/role", body: { role: "Reviewer" } });
+  assert.deepEqual(await transport.call("import_cli_sessions_cmd", { sourceIds: ["source"] }), imported);
+  await transport.call("get_app_sessions", { ids: ["s1"] });
+  assert.equal(requests.at(-1).url, "/api/sessions/s1");
+});

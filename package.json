@@ -16,7 +16,8 @@
     "build:companion": "vite build --config vite.companion.config.ts",
     "preview": "vite preview",
     "test:remote": "node --experimental-strip-types --test tests/remote-transport.test.mjs",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:companion:bundle": "vite build --config vite.companion.config.ts && node --test tests/companion-bundle.test.mjs"
   },
   "dependencies": {
     "@kobalte/core": "^0.13.13",

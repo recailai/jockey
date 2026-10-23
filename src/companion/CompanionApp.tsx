@@ -126,6 +126,12 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
   const [roleOpen, setRoleOpen] = createSignal(false);
   const [closeOpen, setCloseOpen] = createSignal(false);
   const [browseSessions, setBrowseSessions] = createSignal(false);
+  const drafts = new Map<string, RichNode[]>();
+  const [richNodes, setRichNodes] = createSignal<RichNode[]>([]);
+  createEffect(on(activeSessionId, (sid, previous) => {
+    if (previous) drafts.set(previous, richNodes());
+    setRichNodes(sid ? drafts.get(sid) ?? [] : []);
+  }));
   let browseResolver: ((path: string | null) => void) | null = null;
 
   const refreshSummaries = async () => {
@@ -160,6 +166,7 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
   };
 
   const loadSession = async (id: string) => {
+    const streamToken = acceptingStreams.get(id);
     const [raw] = await appSessionApi.getMany([id]);
     if (!raw) throw new Error("session not found");
     const session = sessionFromRaw(raw);
@@ -174,12 +181,18 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
         cwd: session.cwd,
       });
     }
+    const running = (raw as RawSession & { running?: boolean }).running;
+    if (running === false && acceptingStreams.get(id) === streamToken) {
+      acceptingStreams.delete(id);
+      clearSessionStream(id);
+      updateSession(id, { submitting: false, turnPhase: "idle", status: "idle" });
+    }
     await refreshQueue(id);
   };
 
   const openSession = async (id: string) => {
     try {
-      if (getSessionIndex(id) === -1) await loadSession(id);
+      await loadSession(id);
       window.history.pushState({ chat: id }, "");
       setActiveSessionId(id);
     } catch (e) {
@@ -226,7 +239,10 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
     let disposed = false;
     const track = (p: Promise<UnlistenFn>) => void p.then((h) => (disposed ? h() : handlers.push(h)));
 
-    const onPop = () => setActiveSessionId(null);
+    const onPop = () => {
+      const sid = window.history.state?.chat;
+      setActiveSessionId(typeof sid === "string" && getSessionIndex(sid) !== -1 ? sid : null);
+    };
     window.addEventListener("popstate", onPop);
 
     void refreshProjects();
@@ -323,17 +339,20 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
     void openSession(raw.id);
   };
 
-  const [richNodes, setRichNodes] = createSignal<RichNode[]>([]);
   const noTimer = { current: null as number | null };
   const handleSend = async (e: SubmitEvent) => {
     e.preventDefault();
     const nodes = richNodes();
+    const sid = activeSessionId();
     const text = getPlainText(nodes).trim();
     const attachments = nodes.filter(isImageNode).map((n) => n.img);
     if (!text && attachments.length === 0) return;
     setRichNodes([]);
-    const sent = await sendRaw(text, false, null, attachments.length ? attachments : undefined);
-    if (!sent && richNodes().length === 0) setRichNodes(nodes);
+    const sent = await sendRaw(text, false, sid, attachments.length ? attachments : undefined);
+    if (!sent && sid) {
+      if (activeSessionId() === sid && richNodes().length === 0) setRichNodes(nodes);
+      else if (activeSessionId() !== sid && !drafts.get(sid)?.length) drafts.set(sid, nodes);
+    }
   };
 
   const queuedCount = () => activeSession()?.queuedItems.filter((i) => i.status === "queued").length ?? 0;
@@ -358,6 +377,7 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
       await loadSession(sid);
     } catch (e) {
       showToast(`Could not switch persona: ${String(e)}`);
+      throw e;
     }
   };
 
@@ -427,7 +447,7 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
                   <Show when={session().externalActive}><Badge tone="info">terminal</Badge></Show>
                 </div>
               </div>
-              <Pill onClick={() => setRoleOpen(true)} title="Switch persona">@{session().activeRole || DEFAULT_ROLE_ALIAS}</Pill>
+              <Pill onClick={() => setRoleOpen(true)} title="Choose agent & persona">{activeAssistant()?.label ?? session().runtimeKind ?? "Agent"} · @{session().activeRole || DEFAULT_ROLE_ALIAS}</Pill>
               <Show when={session().submitting}>
                 <IconButton title="Stop" aria-label="Stop" onClick={() => void cancelCurrentRun()}>
                   <Square size={16} />
@@ -494,7 +514,16 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
         open={roleOpen()}
         projectId={activeSession()?.projectId ?? null}
         activeRole={activeSession()?.activeRole ?? DEFAULT_ROLE_ALIAS}
-        onPick={(role) => void pickRole(role)}
+        assistants={assistants()}
+        runtimeKind={activeSession()?.runtimeKind ?? null}
+        disabled={activeSession()?.submitting ?? false}
+        onPickRuntime={async (agent) => {
+          const sid = activeSessionId();
+          if (!sid) throw new Error("Open a session first.");
+          await appSessionApi.update(sid, { runtimeKind: agent.key, runtimeProfileId: agent.profileId });
+          await loadSession(sid);
+        }}
+        onPick={pickRole}
         onClose={() => setRoleOpen(false)}
       />
       <ConfirmDialog

@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createResource, createSignal } from "solid-js";
 import { ArrowUp, Folder, GitBranch } from "lucide-solid";
-import type { SessionSummary } from "../components/types";
+import type { AssistantRuntime, SessionSummary } from "../components/types";
 import type { Project, RawSession } from "../lib/tauriApi";
 import { call } from "../lib/transport";
 import { appSessionApi, roleApi } from "../lib/tauriApi";
@@ -141,9 +141,24 @@ export function RolePickerDialog(props: {
   open: boolean;
   projectId: string | null;
   activeRole: string;
-  onPick: (roleName: string) => void;
+  assistants: AssistantRuntime[];
+  runtimeKind: string | null;
+  disabled: boolean;
+  onPickRuntime: (runtime: AssistantRuntime) => Promise<void>;
+  onPick: (roleName: string) => Promise<void>;
   onClose: () => void;
 }) {
+  const [busy, setBusy] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
+  createEffect(() => { if (props.open) setError(null); });
+  const select = async (action: () => Promise<void>) => {
+    if (busy() || props.disabled) return;
+    setBusy(true);
+    setError(null);
+    try { await action(); props.onClose(); }
+    catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  };
   const [rows] = createResource(
     () => (props.open ? (props.projectId ?? "") : null),
     (projectId) => roleApi.list(projectId || undefined),
@@ -151,12 +166,22 @@ export function RolePickerDialog(props: {
   return (
     <Dialog open={props.open} onOpenChange={(o) => { if (!o) props.onClose(); }}>
       <DialogContent
-        title="Switch persona"
-        description="Later messages go to this persona and its configured engine. A single message can also use @name."
+        title="Agent & persona"
+        description="Choose the agent for this session, or a persona and its configured agent. Changes apply to the next message."
       >
         <DialogBody class="max-h-[60dvh] space-y-1 overflow-y-auto">
+          <Show when={error()}><Alert tone="danger">{error()}</Alert></Show>
+          <Show when={props.disabled}><Alert tone="info">Stop the current turn before changing its agent.</Alert></Show>
+          <h3 class="text-xs theme-muted">Agent</h3>
+          <For each={props.assistants.filter((a) => a.available)}>{(agent) => (
+            <RowButton active={agent.key === props.runtimeKind} disabled={busy() || props.disabled} onClick={() => void select(() => props.onPickRuntime(agent))}>
+              <span class="flex w-full items-center gap-2"><span class="min-w-0 flex-1 truncate">{agent.label}</span><Show when={agent.key === props.runtimeKind}><Badge tone="success">current</Badge></Show></span>
+            </RowButton>
+          )}</For>
+          <h3 class="pt-3 text-xs theme-muted">Persona</h3>
           <AsyncContent
-            state={rows.loading ? "loading" : (rows()?.length ?? 0) === 0 ? "empty" : "ready"}
+            state={rows.loading ? "loading" : rows.error ? "error" : (rows()?.length ?? 0) === 0 ? "empty" : "ready"}
+            error={String(rows.error ?? "")}
             emptyTitle="No personas"
             emptyDescription="Create one on the desktop."
           >
@@ -164,7 +189,8 @@ export function RolePickerDialog(props: {
               {(r) => (
                 <RowButton
                   active={r.roleName.toLowerCase() === props.activeRole.toLowerCase()}
-                  onClick={() => { props.onPick(r.roleName); props.onClose(); }}
+                  disabled={busy() || props.disabled}
+                  onClick={() => void select(() => props.onPick(r.roleName))}
                 >
                   <span class="flex w-full items-center gap-2 text-left">
                     <span class="min-w-0 flex-1">

@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@source "./";
 
 /* ─── Theme tokens ────────────────────────────────────────────────────────────
    Single source of truth for the Jockey UI primitives and shell.
