@@ -379,11 +379,30 @@ fn ensure_all_catalog(state: &AppState, force_refresh: bool) -> Result<(), Strin
 /// The project a working directory belongs to: the one rooted exactly there, else the one with
 /// the deepest root containing it. `None` means a project has to be created.
 pub(crate) fn resolve_project<'a>(projects: &'a [Project], cwd: &str) -> Option<&'a Project> {
-    let cwd = Path::new(cwd);
-    projects
-        .iter()
-        .filter(|p| cwd.starts_with(&p.root_path))
-        .max_by_key(|p| Path::new(&p.root_path).components().count())
+    let deepest = |dir: &Path| {
+        projects
+            .iter()
+            .filter(|p| dir.starts_with(&p.root_path))
+            .max_by_key(|p| Path::new(&p.root_path).components().count())
+    };
+    deepest(Path::new(cwd)).or_else(|| worktree_main_repo(cwd).and_then(|main| deepest(&main)))
+}
+
+/// The main checkout a git worktree belongs to. Codex (and other agents) run forks and parallel
+/// tasks in worktrees outside the project (`~/.codex/worktrees/<id>/<repo>`); their `.git` file
+/// points back at `<main>/.git/worktrees/<name>`, which is what ties them to the project.
+pub(crate) fn worktree_main_repo(cwd: &str) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(Path::new(cwd).join(".git")).ok()?;
+    let gitdir = text.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim();
+    let (main_git, _) = gitdir.split_once("/.git/worktrees/")?;
+    Some(PathBuf::from(main_git))
+}
+
+/// Whether a session recorded in `cwd` belongs to the project rooted at `project_root`,
+/// counting sub-directories and worktrees of that project.
+pub(crate) fn cwd_in_project(cwd: &str, project_root: &str) -> bool {
+    Path::new(cwd).starts_with(project_root)
+        || worktree_main_repo(cwd).is_some_and(|main| main.starts_with(project_root))
 }
 
 fn project_name_for(cwd: &str) -> String {
@@ -730,6 +749,25 @@ mod tests {
         );
         assert!(resolve_project(&projects, "/w/app-two").is_none());
         assert!(resolve_project(&projects, "/elsewhere").is_none());
+    }
+
+    #[test]
+    fn worktree_sessions_belong_to_their_main_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("flower");
+        let wt = dir.path().join("worktrees").join("077c").join("flower");
+        std::fs::create_dir_all(main.join(".git").join("worktrees").join("flower")).unwrap();
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(
+            wt.join(".git"),
+            format!("gitdir: {}/.git/worktrees/flower\n", main.display()),
+        )
+        .unwrap();
+        let (wt, main) = (wt.to_str().unwrap(), main.to_str().unwrap());
+        assert!(cwd_in_project(wt, main));
+        assert!(!cwd_in_project(main, wt));
+        let projects = vec![project("flower", main)];
+        assert_eq!(resolve_project(&projects, wt).unwrap().id, "flower");
     }
 
     #[test]

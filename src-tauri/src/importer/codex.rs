@@ -32,15 +32,37 @@ fn sessions_root() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".codex").join("sessions"))
 }
 
+/// Codex injects context as user items wrapped in one tag (`<environment_context>…`,
+/// `<codex_internal_context …>…`, `<external_codex_apps_open_page>…`); new kinds keep
+/// appearing, so any message that is a single tag-wrapped block is treated as injected.
+fn is_injected_block(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix('<') else {
+        return false;
+    };
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_lowercase() || *c == '_' || *c == '-')
+        .collect();
+    !name.is_empty() && text.trim_end().ends_with(&format!("</{name}>"))
+}
+
 fn clean_codex_user_text(text: &str) -> Option<String> {
     let trimmed = text.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || is_injected_block(trimmed) {
         return None;
+    }
+    // Attachments are listed first; the user's own words follow this heading.
+    if trimmed.starts_with("# Files mentioned by the user:") {
+        return trimmed
+            .split_once("## My request for Codex:")
+            .map(|(_, request)| request.trim().to_string())
+            .filter(|request| !request.is_empty());
     }
     if trimmed.starts_with("<recommended_plugins>")
         || trimmed.starts_with("# AGENTS.md")
         || trimmed.starts_with("<environment_context>")
         || trimmed.starts_with("<context>")
+        || trimmed.starts_with("<codex_internal_context")
     {
         return None;
     }
@@ -66,6 +88,7 @@ fn scan_file(path: &Path, project_cwd: Option<&str>) -> Option<DiscoveredSession
     let file = File::open(path).ok()?;
     let mut session_id = None;
     let mut cwd = None;
+    let mut forked = false;
     let mut title = None;
     let mut turn_count = 0;
 
@@ -79,11 +102,26 @@ fn scan_file(path: &Path, project_cwd: Option<&str>) -> Option<DiscoveredSession
         };
         if value.get("type").and_then(Value::as_str) == Some("session_meta") {
             let payload = value.get("payload")?;
+            // Sub-agent rollouts (the guardian that reviews approvals, spawned agents) are not
+            // conversations the user can resume; they share the parent's `session_id`, so
+            // listing them made each one replace its parent, and a fork vanished behind them.
+            if payload
+                .get("source")
+                .and_then(|s| s.get("subagent"))
+                .is_some()
+            {
+                return None;
+            }
+            // `id` is the thread itself; `session_id` names the conversation group it belongs to.
             session_id = payload
-                .get("session_id")
-                .or_else(|| payload.get("id"))
+                .get("id")
+                .or_else(|| payload.get("session_id"))
                 .and_then(Value::as_str)
                 .map(ToString::to_string);
+            forked = payload
+                .get("forked_from_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.is_empty());
             cwd = payload
                 .get("cwd")
                 .and_then(Value::as_str)
@@ -106,7 +144,7 @@ fn scan_file(path: &Path, project_cwd: Option<&str>) -> Option<DiscoveredSession
 
     let cwd = cwd?;
     // Sessions started in a sub-directory of the project belong to it too.
-    if project_cwd.is_some_and(|root| !std::path::Path::new(&cwd).starts_with(root)) {
+    if project_cwd.is_some_and(|root| !super::cwd_in_project(&cwd, root)) {
         return None;
     }
     let turns = count_codex_session_turns(path).max(turn_count);
@@ -121,7 +159,12 @@ fn scan_file(path: &Path, project_cwd: Option<&str>) -> Option<DiscoveredSession
         session_id: session_id.clone(),
         file_path: path.to_path_buf(),
         cwd,
-        title: title.unwrap_or_else(|| format!("Codex_{}", short_id(&session_id))),
+        title: match (title, forked) {
+            (Some(t), true) => format!("[Fork] {t}"),
+            (Some(t), false) => t,
+            (None, true) => format!("Codex_fork_{}", short_id(&session_id)),
+            (None, false) => format!("Codex_{}", short_id(&session_id)),
+        },
         created_at: last_active_at,
         last_active_at,
         turn_count: turns,
@@ -274,6 +317,22 @@ mod tests {
 
         let env_ctx = "<environment_context>\n<cwd>/path</cwd>\n</environment_context>";
         assert_eq!(clean_codex_user_text(env_ctx), None);
+
+        let page =
+            r#"<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>"#;
+        assert_eq!(clean_codex_user_text(page), None);
+        let goal =
+            "<codex_internal_context source=\"goal\">\nkeep going\n</codex_internal_context>";
+        assert_eq!(clean_codex_user_text(goal), None);
+        let attached = "# Files mentioned by the user:\n\n## shot.png: /tmp/shot.png\nImage attachment: true\n\n## My request for Codex:\n看下这个布局";
+        assert_eq!(
+            clean_codex_user_text(attached),
+            Some("看下这个布局".to_string())
+        );
+        assert_eq!(
+            clean_codex_user_text("<div> is a tag I want explained"),
+            Some("<div> is a tag I want explained".to_string())
+        );
     }
 
     #[test]
@@ -326,6 +385,35 @@ mod tests {
         assert_eq!(msgs[0].content, "重构完成。104 个测试通过");
         assert_eq!(msgs[1].role_name, "Developer");
         assert_eq!(msgs[1].content, "很好！");
+    }
+
+    #[test]
+    fn subagent_rollouts_are_skipped_and_forks_keep_their_own_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let user = r#"{"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":"ship it"}]}}"#;
+        let write = |name: &str, meta: String| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, format!("{meta}\n{user}\n")).unwrap();
+            path
+        };
+        let fork = write(
+            "fork.jsonl",
+            format!(
+                r#"{{"type":"session_meta","payload":{{"id":"child","session_id":"child","forked_from_id":"root","source":"vscode","cwd":"{cwd}"}}}}"#
+            ),
+        );
+        let guardian = write(
+            "guardian.jsonl",
+            format!(
+                r#"{{"type":"session_meta","payload":{{"id":"g1","session_id":"child","parent_thread_id":"child","source":{{"subagent":{{"other":"guardian"}}}},"cwd":"{cwd}"}}}}"#
+            ),
+        );
+        let root = canonical_path(cwd);
+        let found = scan_file(&fork, Some(&root)).expect("fork listed");
+        assert_eq!(found.session_id, "child");
+        assert_eq!(found.title, "[Fork] ship it");
+        assert!(scan_file(&guardian, Some(&root)).is_none());
     }
 
     #[test]
