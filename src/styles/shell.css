@@ -4,6 +4,645 @@
    status through StatusDot, radii from --ui-radius-* only.
 ──────────────────────────────────────────────────────────────────────────── */
 
+/* ── Shell legacy: rules carried over from index.css in their original order; the
+   restyle further down overrides what it redefines. ── */
+.settings-page {
+  display: flex;
+  background: var(--ui-bg);
+}
+
+.settings-nav {
+  width: 320px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--ui-border);
+  background: var(--ui-sidebar-bg);
+}
+
+.settings-back {
+  gap: 8px;
+  margin: 0 12px;
+  padding: 0 9px;
+  font-size: 12.5px;
+}
+
+.settings-back span {
+  display: inline-flex;
+  align-items: center;
+  line-height: 18px;
+}
+
+.settings-nav-row {
+  gap: 8px;
+  padding: 0 9px;
+  font-size: 12.5px;
+}
+
+.settings-nav-row span {
+  display: inline-flex;
+  align-items: center;
+  line-height: 18px;
+}
+
+.settings-main {
+  min-width: 0;
+  flex: 1;
+  overflow: auto;
+  background: var(--ui-bg);
+}
+
+.settings-content {
+  width: min(880px, calc(100vw - 420px));
+  margin: 0 auto;
+  padding: 88px 0 64px;
+}
+
+.settings-title {
+  color: var(--ui-text);
+  font-size: 24px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.settings-section {
+  margin-top: 42px;
+}
+
+.settings-section-heading {
+  margin-bottom: 14px;
+  color: var(--ui-text);
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.settings-workmode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.settings-workmode-card {
+  display: flex;
+  min-height: 300px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-surface);
+  padding: 28px;
+  color: var(--ui-text);
+  text-align: center;
+}
+
+.settings-workmode-card.is-active {
+  background: var(--ui-control-bg);
+  border-color: var(--ui-border-strong);
+  box-shadow: var(--ui-shadow-control);
+}
+
+.settings-workmode-card > strong {
+  margin-top: 22px;
+  font-size: 15px;
+}
+
+.settings-workmode-card > span {
+  color: var(--ui-muted);
+  font-size: 13px;
+}
+
+.settings-workmode-preview {
+  position: relative;
+  display: grid;
+  width: 286px;
+  height: 170px;
+  grid-template-columns: 64px 1fr 98px;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-row);
+  background: var(--ui-surface);
+  opacity: 0.82;
+}
+
+.settings-workmode-preview.muted {
+  grid-template-columns: 64px 1fr;
+}
+
+.settings-radio {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--ui-border-strong);
+  border-radius: 999px;
+}
+
+.settings-card-list {
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--ui-card-bg);
+}
+
+.settings-card-list-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+
+.settings-toggle-row,
+.settings-runtime-row {
+  min-height: 54px;
+  justify-content: flex-start;
+  gap: var(--ui-space-3);
+  padding: 10px var(--ui-space-3);
+  background: transparent;
+}
+
+.settings-toggle-row *,
+.settings-runtime-row * {
+  line-height: 1.25;
+}
+
+.settings-runtime-row:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.settings-theme-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-theme-card {
+  display: grid;
+  min-height: 118px;
+  grid-template-columns: 42px 1fr;
+  align-content: center;
+  gap: 4px 14px;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-surface);
+  padding: 18px;
+  text-align: left;
+}
+
+.settings-theme-card:hover,
+.settings-theme-card.is-active {
+  border-color: var(--ui-border-strong);
+  background: var(--ui-control-bg);
+  box-shadow: var(--ui-shadow-control);
+}
+
+.settings-theme-card strong {
+  font-size: 14px;
+}
+
+.settings-theme-card > span:last-child {
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+.theme-swatch {
+  grid-row: span 2;
+  display: flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px var(--ui-border);
+}
+
+.theme-swatch span {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+}
+
+.settings-runtime-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
+
+.settings-runtime-dot.is-online {
+  background: var(--ui-state-success-text);
+}
+
+.settings-runtime-dot.is-offline {
+  background: var(--ui-state-danger-text);
+}
+
+.settings-empty {
+  display: flex;
+  min-height: 120px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 1px dashed var(--ui-border);
+  border-radius: var(--radius-row);
+  color: var(--ui-muted);
+  font-size: 13px;
+}
+
+.settings-management-panel {
+  height: min(680px, calc(100vh - 250px));
+  min-height: 460px;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-surface);
+}
+
+.settings-management-panel .rounded-lg,
+.settings-management-panel .rounded-md,
+.settings-management-panel .rounded {
+  border-radius: var(--radius-row);
+}
+
+.settings-management-panel input,
+.settings-management-panel textarea {
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+}
+
+.settings-management-panel input:focus,
+.settings-management-panel textarea:focus {
+  border-color: var(--ui-border-strong);
+  box-shadow: 0 0 0 3px var(--ui-focus-ring);
+}
+
+.settings-management-panel button {
+  line-height: 1;
+}
+
+.settings-management-panel .theme-surface,
+.settings-management-panel .bg-\[var\(--ui-surface-muted\)\] {
+  background: var(--ui-surface);
+}
+
+.settings-management-panel .hover\:bg-\[var\(--ui-surface-muted\)\]:hover,
+.settings-management-panel .hover\:bg-\[var\(--ui-accent-soft\)\]:hover {
+  background: var(--ui-row-hover);
+}
+
+.session-chip-strip {
+  display: flex;
+  min-width: 0;
+  max-width: min(68vw, 1080px);
+  flex: 1 1 360px;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  padding: 2px 4px;
+  scrollbar-width: none;
+}
+
+.session-chip-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.session-chip {
+  display: inline-flex;
+  height: 28px;
+  min-width: var(--session-chip-min-width, 64px);
+  max-width: var(--session-chip-max-width, 220px);
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  padding: 0 10px;
+  color: var(--ui-muted);
+  font-size: 12px;
+  font-weight: 500;
+  outline: none;
+  box-shadow: none;
+  user-select: none;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.session-chip:hover {
+  border: 0;
+  background: color-mix(in srgb, var(--ui-text) 6%, transparent);
+  color: var(--ui-text);
+}
+
+.session-chip > .truncate {
+  min-width: 0;
+  flex: 1 1 auto;
+  max-width: calc(var(--session-chip-max-width, 240px) - 36px);
+  line-height: 18px;
+}
+
+.session-chip.is-active {
+  border: 0;
+  background: color-mix(in srgb, var(--ui-text) 9%, transparent);
+  color: var(--ui-text);
+  box-shadow: none;
+}
+
+.session-chip.is-active .ui-status-dot {
+  background: currentColor;
+}
+
+.session-chip-close {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  border-radius: 5px;
+  color: currentColor;
+  opacity: 0.45;
+}
+
+.session-chip.is-active .session-chip-close,
+.session-chip-close:focus-visible {
+  opacity: 0.7;
+}
+
+.session-chip-close:hover {
+  background: color-mix(in srgb, currentColor, transparent 88%);
+  opacity: 1;
+}
+
+.session-chip-add {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ui-muted);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.session-chip-add:hover {
+  background: color-mix(in srgb, var(--ui-text) 7%, transparent);
+  color: var(--ui-text);
+}
+
+.settings-page {
+  background: var(--ui-bg);
+}
+
+.settings-nav {
+  width: 300px;
+  box-sizing: border-box;
+  border-right: 1px solid var(--ui-border);
+  background: var(--ui-sidebar-bg);
+}
+
+.settings-nav > .h-\[54px\] {
+  height: var(--mac-titlebar-height);
+  flex-shrink: 0;
+}
+
+.settings-back,
+.settings-nav-row {
+  min-height: 32px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.settings-content {
+  width: min(900px, calc(100vw - 380px));
+  padding: 72px 0 64px;
+}
+
+.settings-title {
+  font-size: 26px;
+  font-weight: 650;
+}
+
+.settings-section {
+  margin-top: 32px;
+}
+
+.settings-section-heading {
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+
+.settings-section-lead {
+  margin: -4px 0 12px;
+  max-width: 720px;
+  color: var(--ui-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.settings-section-lead code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.settings-custom-app-row {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.settings-custom-app-row.is-readonly {
+  opacity: 0.92;
+}
+
+.settings-custom-app-row:not(.is-readonly):hover {
+  border-color: var(--ui-border);
+  background: var(--ui-row-hover);
+}
+
+.settings-custom-app-remove {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.settings-custom-app-form {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.settings-custom-app-input {
+  height: 36px;
+  border-radius: 9px;
+  font-size: 13px;
+}
+
+.settings-custom-app-add {
+  justify-self: start;
+  gap: 6px;
+}
+
+.settings-workmode-card,
+.settings-theme-card,
+.settings-card-list,
+.settings-management-panel {
+  border-color: var(--ui-border);
+  border-radius: 14px;
+  background: var(--ui-card-bg);
+  box-shadow: var(--ui-shadow-control);
+}
+
+.settings-workmode-card {
+  min-height: 220px;
+}
+
+.settings-workmode-preview {
+  width: 236px;
+  height: 136px;
+}
+
+.settings-toggle-row,
+.settings-runtime-row {
+  min-height: 54px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+}
+
+.settings-toggle-row:hover,
+.settings-runtime-row:hover {
+  border-color: var(--ui-border);
+  background: var(--ui-row-hover);
+}
+
+.settings-management-panel {
+  background: var(--ui-card-bg);
+}
+
+.session-topbar {
+  position: relative;
+  z-index: var(--z-sticky);
+  display: flex;
+  box-sizing: border-box;
+  height: var(--mac-titlebar-height);
+  min-height: var(--mac-titlebar-height);
+  flex-shrink: 0;
+  align-items: center;
+  border-bottom: 1px solid var(--ui-chrome-separator);
+  background: var(--ui-topbar-bg);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+}
+
+.session-topbar-content {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 var(--mac-safe-left);
+}
+
+.session-topbar-nav,
+.session-topbar-dock-tabs {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+}
+
+.session-topbar-divider {
+  width: 1px;
+  height: 16px;
+  flex-shrink: 0;
+  background: var(--ui-chrome-separator);
+}
+
+.session-topbar-action.jui-toolbar-button,
+.session-topbar-dock-tab.jui-toolbar-button {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--ui-muted);
+}
+
+.session-topbar-action.jui-toolbar-button:hover:not(:disabled),
+.session-topbar-action.jui-toolbar-button.is-active,
+.session-topbar-action.jui-toolbar-button[data-expanded],
+.session-topbar-dock-tab.jui-toolbar-button:hover:not(:disabled),
+.session-topbar-dock-tab.jui-toolbar-button.is-active {
+  border: 0;
+  background: color-mix(in srgb, var(--ui-text) 7%, transparent);
+  box-shadow: none;
+  color: var(--ui-text);
+}
+
+.session-topbar-drag {
+  flex: 1 1 48px;
+  min-width: 24px;
+  height: 100%;
+  align-self: stretch;
+}
+
+.session-topbar-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+  padding: 0 12px 0 4px;
+}
+
+.session-chip-rename-input {
+  min-width: 0;
+  flex: 1;
+  border-bottom: 1px solid var(--ui-border-strong);
+  background: transparent;
+  color: var(--ui-text);
+  font-size: 12.5px;
+  font-weight: 500;
+  outline: none;
+}
+
+.session-chip {
+  max-width: var(--session-chip-max-width);
+  border: 0;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.session-chip:hover {
+  border: 0;
+  background: color-mix(in srgb, var(--ui-text) 6%, transparent);
+}
+
+.session-chip.is-active {
+  border: 0;
+  background: color-mix(in srgb, var(--ui-text) 9%, transparent);
+  box-shadow: none;
+}
+
+.session-chip-add {
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ui-text) 5%, transparent);
+}
+
+.session-chip-add:hover {
+  background: color-mix(in srgb, var(--ui-text) 9%, transparent);
+}
+
+
 /* ── Sidebar ─────────────────────────────────────────────────────────────── */
 .sidebar-shell {
   display: flex;

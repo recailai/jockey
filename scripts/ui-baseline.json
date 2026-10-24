@@ -1,9 +1,9 @@
 {
   "offScaleRadius": {
     "src/components/catalog/catalog.css": 2,
-    "src/components/controlCenter.css": 2,
-    "src/index.css": 41,
-    "src/styles/design-system.css": 17
+    "src/index.css": 34,
+    "src/styles/design-system.css": 17,
+    "src/styles/shell.css": 7
   },
   "rawButton": {
     "src/companion/SessionList.tsx": 2,
