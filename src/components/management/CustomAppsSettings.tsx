@@ -47,7 +47,9 @@ export default function CustomAppsSettings(props: CustomAppsSettingsProps) {
                   <IdeAppIcon target={app.target} />
                   <div class="min-w-0 flex-1">
                     <div class="text-[14px] font-medium theme-text">{app.label}</div>
-                    <div class="truncate text-[12px] theme-muted">{app.appName}</div>
+                    <Show when={app.appName !== app.label}>
+                      <div class="truncate text-[12px] theme-muted">{app.appName}</div>
+                    </Show>
                   </div>
                 </div>
               )}
@@ -67,7 +69,9 @@ export default function CustomAppsSettings(props: CustomAppsSettingsProps) {
                     <IdeAppIcon target={`custom:${app.id}`} />
                     <div class="min-w-0 flex-1">
                       <div class="text-[14px] font-medium theme-text">{app.label}</div>
+                      <Show when={app.appName !== app.label}>
                       <div class="truncate text-[12px] theme-muted">{app.appName}</div>
+                    </Show>
                       <Show when={app.bundleId}>
                         <div class="truncate font-mono text-[10px] theme-muted">{app.bundleId}</div>
                       </Show>
