@@ -83,19 +83,25 @@ export const projectApi = {
   get: (id: string) => call<Project | null>("get_project_cmd", { id }),
   create: (name: string, rootPath: string) => call<Project>("create_project_cmd", { name, rootPath }),
   remove: (id: string) => call<void>("delete_project_cmd", { id }),
-  /** What could be imported, without importing it. Backs the import picker. */
-  scanImportable: (projectId: string, forceRefresh = false) =>
-    call<ImportableSession[]>("scan_importable_sessions_cmd", { projectId, forceRefresh }),
+  /** What could be imported, without importing it. Backs the import picker. `preferCache`
+   *  returns the last scan whatever its age, so the picker can show it and revalidate. */
+  scanImportable: (projectId: string, opts: ImportableScan = {}) =>
+    call<ImportableCatalog>("scan_importable_sessions_cmd", { projectId, ...opts }),
   /** Omit `externalSessionIds` to import every transcript found. */
   importSessions: (projectId: string, externalSessionIds?: string[]) =>
     call<RawSession[]>("import_project_sessions_cmd", { projectId, externalSessionIds }),
   /** Every CLI session on the machine, each annotated with the project it would land in. */
-  scanAllImportable: (forceRefresh = false) =>
-    call<ImportableSession[]>("scan_all_importable_sessions_cmd", { forceRefresh }),
+  scanAllImportable: (opts: ImportableScan = {}) =>
+    call<ImportableCatalog>("scan_all_importable_sessions_cmd", { ...opts }),
   /** Import from the all-directories list; projects are resolved (or created) per cwd. */
   importCliSessions: (sourceIds: string[]) =>
     call<{ sessions: RawSession[]; createdProjects: Project[] }>("import_cli_sessions_cmd", { sourceIds }),
 };
+
+export type ImportableScan = { forceRefresh?: boolean; preferCache?: boolean };
+
+/** Importable sessions and when that list was scanned (null: never). */
+export type ImportableCatalog = { sessions: ImportableSession[]; scannedAt: number | null };
 
 export type ImportableSession = {
   sourceId: string;

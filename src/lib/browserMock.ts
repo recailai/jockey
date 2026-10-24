@@ -207,7 +207,7 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
         }
         case "scan_importable_sessions_cmd":
         case "scan_all_importable_sessions_cmd": {
-          return [];
+          return { sessions: [], scannedAt: Date.now() };
         }
         case "import_cli_sessions_cmd": {
           return { sessions: [], createdProjects: [] };

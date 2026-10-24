@@ -25,11 +25,15 @@ pub(crate) fn scan_importable_sessions_cmd(
     state: State<'_, AppState>,
     project_id: String,
     force_refresh: Option<bool>,
-) -> Result<Vec<crate::importer::ImportableSession>, String> {
+    prefer_cache: Option<bool>,
+) -> Result<crate::importer::ImportableCatalog, String> {
     crate::importer::scan_importable_sessions_internal(
         get_state(&state),
         &project_id,
-        force_refresh.unwrap_or(false),
+        crate::importer::CatalogRead::from_flags(
+            force_refresh.unwrap_or(false),
+            prefer_cache.unwrap_or(false),
+        ),
     )
 }
 
@@ -38,9 +42,13 @@ pub(crate) fn scan_importable_sessions_cmd(
 pub(crate) fn scan_all_importable_sessions_cmd(
     state: State<'_, AppState>,
     force_refresh: Option<bool>,
-) -> Result<Vec<crate::importer::ImportableSession>, String> {
+    prefer_cache: Option<bool>,
+) -> Result<crate::importer::ImportableCatalog, String> {
     crate::importer::scan_all_importable_sessions_internal(
         get_state(&state),
-        force_refresh.unwrap_or(false),
+        crate::importer::CatalogRead::from_flags(
+            force_refresh.unwrap_or(false),
+            prefer_cache.unwrap_or(false),
+        ),
     )
 }

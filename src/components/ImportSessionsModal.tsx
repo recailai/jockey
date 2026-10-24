@@ -18,7 +18,14 @@ import {
 } from "./ui";
 import type { AsyncContentState } from "./ui";
 import { fmtDate, fmtRelative } from "../lib/formatHelpers";
-import { projectApi, type ImportableSession, type Project, type RawSession } from "../lib/tauriApi";
+import {
+  projectApi,
+  type ImportableCatalog,
+  type ImportableScan,
+  type ImportableSession,
+  type Project,
+  type RawSession,
+} from "../lib/tauriApi";
 
 export type ImportScope = "project" | "all";
 
@@ -38,6 +45,9 @@ const AGENTS = ["Claude Code", "Codex", "Pi", "Antigravity", "DeepSeek Harness"]
 const shortenPath = (path: string) => path.replace(/^(\/Users|\/home)\/[^/]+/, "~");
 
 type Group = { cwd: string; rows: ImportableSession[]; projectName: string | null | undefined };
+
+/** A cached list younger than this is shown as is; an older one is shown and rescanned. */
+const REVALIDATE_AFTER_MS = 30_000;
 
 export default function ImportSessionsModal(props: ImportSessionsModalProps) {
   const [scope, setScope] = createSignal<ImportScope>("project");
@@ -67,15 +77,29 @@ export default function ImportSessionsModal(props: ImportSessionsModalProps) {
     ),
   );
 
+  const [rescanning, setRescanning] = createSignal(false);
+  const scan = (key: { scope: ImportScope; projectId: string | null }, opts: ImportableScan) =>
+    key.scope === "all"
+      ? projectApi.scanAllImportable(opts)
+      : key.projectId
+        ? projectApi.scanImportable(key.projectId, opts)
+        : Promise.resolve<ImportableCatalog>({ sessions: [], scannedAt: null });
+  const currentKey = () => ({ scope: scope(), projectId: props.project?.id ?? null });
+
+  // The last scan shows at once; a stale one is rescanned behind it (stale-while-revalidate).
+  // Scanning lists every adapter's sessions, which can take seconds.
   const [scanned, { mutate }] = createResource(
-    () => (props.open ? { scope: scope(), projectId: props.project?.id ?? null } : null),
+    () => (props.open ? currentKey() : null),
     async (key): Promise<ImportableSession[]> => {
       setSelected(new Set<string>());
       setScanError(null);
       setCursor(0);
       try {
-        if (key.scope === "all") return await projectApi.scanAllImportable();
-        return key.projectId ? await projectApi.scanImportable(key.projectId) : [];
+        const catalog = await scan(key, { preferCache: true });
+        if (catalog.scannedAt === null || Date.now() - catalog.scannedAt > REVALIDATE_AFTER_MS) {
+          void refresh(true);
+        }
+        return catalog.sessions;
       } catch (e) {
         setScanError(`Could not scan CLI sessions: ${String(e)}`);
         return [];
@@ -83,20 +107,25 @@ export default function ImportSessionsModal(props: ImportSessionsModalProps) {
     },
   );
 
-  const refresh = async () => {
-    if (scanned.loading) return;
-    setSelected(new Set<string>());
+  /** `revalidating`: started by the initial load itself, which is still settling. */
+  const refresh = async (revalidating = false) => {
+    if ((!revalidating && scanned.loading) || rescanning()) return;
+    const key = currentKey();
+    setRescanning(true);
     setScanError(null);
     try {
-      const rows =
-        scope() === "all"
-          ? await projectApi.scanAllImportable(true)
-          : props.project
-            ? await projectApi.scanImportable(props.project.id, true)
-            : [];
-      mutate(rows);
+      const { sessions } = await scan(key, { forceRefresh: true });
+      // The scope may have changed while scanning; that scope loads its own list.
+      if (key.scope !== scope() || key.projectId !== (props.project?.id ?? null)) return;
+      const ids = new Set(sessions.filter((r) => !r.imported).map((r) => r.sourceId));
+      setSelected((prev) => new Set([...prev].filter((id) => ids.has(id))));
+      mutate(sessions);
     } catch (e) {
-      setScanError(String(e));
+      // A failed rescan keeps the list already shown.
+      if ((scanned() ?? []).length > 0) setError(`Could not rescan: ${String(e)}`);
+      else setScanError(String(e));
+    } finally {
+      setRescanning(false);
     }
   };
 
@@ -343,8 +372,14 @@ export default function ImportSessionsModal(props: ImportSessionsModalProps) {
                 onInput={(e) => setQuery(e.currentTarget.value)}
               />
             </div>
-            <IconButton title="Rescan" aria-label="Rescan" onClick={() => void refresh()} disabled={scanned.loading}>
-              <RefreshCw size={14} />
+            <IconButton
+              title="Rescan"
+              aria-label="Rescan"
+              aria-busy={rescanning()}
+              onClick={() => void refresh()}
+              disabled={scanned.loading || rescanning()}
+            >
+              <RefreshCw size={14} classList={{ "animate-spin": rescanning() }} />
             </IconButton>
           </div>
 

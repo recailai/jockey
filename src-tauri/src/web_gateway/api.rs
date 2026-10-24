@@ -305,20 +305,26 @@ async fn list_dirs(
 #[serde(rename_all = "camelCase")]
 struct ImportableQuery {
     refresh: Option<bool>,
+    cached: Option<bool>,
+}
+
+impl ImportableQuery {
+    fn read(&self) -> crate::importer::CatalogRead {
+        crate::importer::CatalogRead::from_flags(
+            self.refresh.unwrap_or(false),
+            self.cached.unwrap_or(false),
+        )
+    }
 }
 
 async fn list_importable(
     State(ctx): State<ServerContext>,
     Path(project_id): Path<String>,
     Query(q): Query<ImportableQuery>,
-) -> ApiResult<Vec<crate::importer::ImportableSession>> {
+) -> ApiResult<crate::importer::ImportableCatalog> {
     let state = ctx.app.state::<AppState>().clone_refs();
     tokio::task::spawn_blocking(move || {
-        crate::importer::scan_importable_sessions_internal(
-            &state,
-            &project_id,
-            q.refresh.unwrap_or(false),
-        )
+        crate::importer::scan_importable_sessions_internal(&state, &project_id, q.read())
     })
     .await
     .map_err(internal)?
@@ -329,10 +335,10 @@ async fn list_importable(
 async fn list_all_importable(
     State(ctx): State<ServerContext>,
     Query(q): Query<ImportableQuery>,
-) -> ApiResult<Vec<crate::importer::ImportableSession>> {
+) -> ApiResult<crate::importer::ImportableCatalog> {
     let state = ctx.app.state::<AppState>().clone_refs();
     tokio::task::spawn_blocking(move || {
-        crate::importer::scan_all_importable_sessions_internal(&state, q.refresh.unwrap_or(false))
+        crate::importer::scan_all_importable_sessions_internal(&state, q.read())
     })
     .await
     .map_err(internal)?

@@ -175,16 +175,56 @@ pub(crate) fn parser_for(runtime_kind: &str) -> Option<fn(&Path) -> Vec<ParsedIm
     }
 }
 
-fn catalog_is_fresh(state: &AppState, project_id: &str) -> Result<bool, String> {
-    let newest = crate::db::with_db(state, |conn| {
+fn catalog_scanned_at(state: &AppState, project_id: &str) -> Result<Option<i64>, String> {
+    crate::db::with_db(state, |conn| {
         conn.query_row(
             "SELECT max(scanned_at) FROM import_session_catalog_scans WHERE project_id = ?1",
             params![project_id],
             |row| row.get::<_, Option<i64>>(0),
         )
         .map_err(|e| e.to_string())
-    })?;
-    Ok(newest.is_some_and(|at| crate::now_ms().saturating_sub(at) < CATALOG_FRESH_FOR_MS))
+    })
+}
+
+fn catalog_is_fresh(state: &AppState, project_id: &str) -> Result<bool, String> {
+    Ok(catalog_scanned_at(state, project_id)?
+        .is_some_and(|at| crate::now_ms().saturating_sub(at) < CATALOG_FRESH_FOR_MS))
+}
+
+/// How the import dialog wants the catalog: a rescan, or whatever was scanned last (the
+/// dialog shows it at once and revalidates in the background), or the usual 5-minute rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CatalogRead {
+    Force,
+    PreferCache,
+    Fresh,
+}
+
+impl CatalogRead {
+    pub(crate) fn from_flags(force_refresh: bool, prefer_cache: bool) -> Self {
+        match (force_refresh, prefer_cache) {
+            (true, _) => Self::Force,
+            (false, true) => Self::PreferCache,
+            (false, false) => Self::Fresh,
+        }
+    }
+
+    fn needs_scan(self, state: &AppState, scope: &str) -> Result<bool, String> {
+        Ok(match self {
+            Self::Force => true,
+            Self::PreferCache => catalog_scanned_at(state, scope)?.is_none(),
+            Self::Fresh => !catalog_is_fresh(state, scope)?,
+        })
+    }
+}
+
+/// The importable sessions and when they were scanned, so the dialog can tell a cached list
+/// from a fresh one.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportableCatalog {
+    pub(crate) sessions: Vec<ImportableSession>,
+    pub(crate) scanned_at: Option<i64>,
 }
 
 fn replace_catalog(
@@ -353,37 +393,39 @@ fn importable_from(
 pub(crate) fn scan_importable_sessions_internal(
     state: &AppState,
     project_id: &str,
-    force_refresh: bool,
-) -> Result<Vec<ImportableSession>, String> {
+    read: CatalogRead,
+) -> Result<ImportableCatalog, String> {
     let project = get_project_internal(state, project_id)?
         .ok_or_else(|| format!("project not found: {project_id}"))?;
-    if force_refresh || !catalog_is_fresh(state, project_id)? {
+    if read.needs_scan(state, project_id)? {
         refresh_catalog(state, project_id, &project.root_path)?;
     }
     let target = (project.id.clone(), project.name.clone());
-    Ok(importable_from(
-        state,
-        cached_sessions(state, project_id)?,
-        |_| Some(target.clone()),
-    ))
+    Ok(ImportableCatalog {
+        sessions: importable_from(state, cached_sessions(state, project_id)?, |_| {
+            Some(target.clone())
+        }),
+        scanned_at: catalog_scanned_at(state, project_id)?,
+    })
 }
 
 /// Every CLI session on the machine, each annotated with the project it would be imported into.
 pub(crate) fn scan_all_importable_sessions_internal(
     state: &AppState,
-    force_refresh: bool,
-) -> Result<Vec<ImportableSession>, String> {
-    ensure_all_catalog(state, force_refresh)?;
+    read: CatalogRead,
+) -> Result<ImportableCatalog, String> {
+    ensure_all_catalog(state, read)?;
     let projects = crate::db::project::list_projects_internal(state)?;
-    Ok(importable_from(
-        state,
-        cached_sessions(state, ALL_SCOPE)?,
-        |cwd| resolve_project(&projects, cwd).map(|p| (p.id.clone(), p.name.clone())),
-    ))
+    Ok(ImportableCatalog {
+        sessions: importable_from(state, cached_sessions(state, ALL_SCOPE)?, |cwd| {
+            resolve_project(&projects, cwd).map(|p| (p.id.clone(), p.name.clone()))
+        }),
+        scanned_at: catalog_scanned_at(state, ALL_SCOPE)?,
+    })
 }
 
-fn ensure_all_catalog(state: &AppState, force_refresh: bool) -> Result<(), String> {
-    if force_refresh || !catalog_is_fresh(state, ALL_SCOPE)? {
+fn ensure_all_catalog(state: &AppState, read: CatalogRead) -> Result<(), String> {
+    if read.needs_scan(state, ALL_SCOPE)? {
         replace_catalog(state, ALL_SCOPE, &scan_all_sessions())?;
     }
     Ok(())
@@ -652,7 +694,7 @@ pub(crate) fn import_cli_sessions_internal(
     state: &AppState,
     source_ids: &[String],
 ) -> Result<CliImport, String> {
-    ensure_all_catalog(state, false)?;
+    ensure_all_catalog(state, CatalogRead::Fresh)?;
     let selected: HashSet<&str> = source_ids.iter().map(String::as_str).collect();
     let mut projects = crate::db::project::list_projects_internal(state)?;
     let mut created_projects = Vec::new();
@@ -831,7 +873,9 @@ mod tests {
         }
         replace_catalog(&state, ALL_SCOPE, &sessions).unwrap();
 
-        let listed = scan_all_importable_sessions_internal(&state, false).unwrap();
+        let listed = scan_all_importable_sessions_internal(&state, CatalogRead::Fresh)
+            .unwrap()
+            .sessions;
         let by_id = |id: &str| listed.iter().find(|s| s.external_session_id == id).unwrap();
         assert_eq!(
             by_id("s1").project_id.as_deref(),
@@ -860,9 +904,33 @@ mod tests {
             Some(result.created_projects[0].id.clone())
         );
 
-        let again = scan_all_importable_sessions_internal(&state, false).unwrap();
+        let again = scan_all_importable_sessions_internal(&state, CatalogRead::Fresh)
+            .unwrap()
+            .sessions;
         assert!(again
             .iter()
             .all(|s| s.imported && s.app_session_id.is_some()));
+    }
+
+    #[test]
+    fn catalog_reads_scan_only_when_their_rule_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(&dir);
+        assert!(CatalogRead::PreferCache
+            .needs_scan(&state, ALL_SCOPE)
+            .unwrap());
+        assert!(CatalogRead::Fresh.needs_scan(&state, ALL_SCOPE).unwrap());
+        replace_catalog(&state, ALL_SCOPE, &[]).unwrap();
+        assert!(!CatalogRead::PreferCache
+            .needs_scan(&state, ALL_SCOPE)
+            .unwrap());
+        assert!(!CatalogRead::Fresh.needs_scan(&state, ALL_SCOPE).unwrap());
+        assert!(CatalogRead::Force.needs_scan(&state, ALL_SCOPE).unwrap());
+        assert!(catalog_scanned_at(&state, ALL_SCOPE).unwrap().is_some());
+        assert_eq!(CatalogRead::from_flags(true, true), CatalogRead::Force);
+        assert_eq!(
+            CatalogRead::from_flags(false, true),
+            CatalogRead::PreferCache
+        );
     }
 }
