@@ -117,12 +117,10 @@ export function RulesTab() {
 
       <DetailPane
         title={selectedId() ? (isNew() ? "New Rule" : selectedRule()?.name ?? "Rule") : undefined}
-        subtitle={selectedId() ? (isNew() ? "Configure new rule prompt" : (selectedRule()?.description ?? undefined)) : undefined}
+        subtitle={selectedId() ? (isNew() ? undefined : (selectedRule()?.description ?? undefined)) : undefined}
         empty={!selectedId()}
         emptyFallback={
-          <div class="flex flex-1 items-center justify-center text-xs theme-muted">
-            Select a rule from the left or create a new one
-          </div>
+          <div class="flex flex-1" />
         }
         actions={
           <Show when={selectedId()}>

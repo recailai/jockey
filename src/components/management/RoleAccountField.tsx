@@ -52,14 +52,7 @@ export function RoleAccountField(props: { roleId: string; runtimeKind: string })
       <FieldRow label="Account">
         <div class="flex w-full flex-col gap-1">
           <InlineSelect value={selected()} options={options()} onChange={(v) => void choose(v)} />
-          <Show
-            when={error()}
-            fallback={
-              <span class="text-[10px] theme-muted">
-                Applies from the next turn. Add accounts under Settings → Agent accounts.
-              </span>
-            }
-          >
+          <Show when={error()}>
             <span class="text-[10px] text-[var(--ui-state-danger-text)]">{error()}</span>
           </Show>
         </div>

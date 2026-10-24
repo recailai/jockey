@@ -18,7 +18,7 @@ import {
   valuesForModel,
   type RuntimeOption,
 } from "../../lib/runtimeOptions";
-import { Alert, Badge, Button, ContextMenuSurface, ContextMenuItem, ContextMenuSeparator, EmptyState, IconButton, Pill, RowButton } from "../ui";
+import { Badge, Button, ContextMenuSurface, ContextMenuItem, ContextMenuSeparator, EmptyState, IconButton, Pill, RowButton } from "../ui";
 
 function ToggleField(props: { label: string; on: boolean; onChange: (on: boolean) => void }) {
   return (
@@ -774,7 +774,7 @@ export function RolesTab(props: {
         </div>
         <div class="flex-1 overflow-y-auto space-y-0.5 py-1">
           <Show when={filteredRoles().length === 0}>
-          <EmptyState icon="◎" title="No roles" description={roleFilter() === "project" ? "No roles configured for this project" : "Create your first role"} />
+          <EmptyState icon="◎" title="No roles" />
           </Show>
           <For each={filteredRoles()}>
             {(role) => {
@@ -925,13 +925,10 @@ export function RolesTab(props: {
                   <TextInput
                     value={cPrompt()}
                     onInput={setCPrompt}
-                    placeholder="Optional override. Leave empty to use agent's native system prompt and project rules (CLAUDE.md, AGENTS.md)..."
+                    placeholder="Agent default"
                     multiline
                     rows={3}
                   />
-                  <span class="text-[10px] theme-muted">
-                    Leave empty to keep the agent's own system prompt and repository instructions.
-                  </span>
                 </div>
               </FieldRow>
               <FieldRow label="Model">
@@ -1094,33 +1091,6 @@ export function RolesTab(props: {
                   </div>
                 </div>
 
-                {/* Helpful Role Scope Guidance Banner */}
-                <Show when={!role().projectId && props.currentProject?.()}>
-                  {(proj) => (
-                    <Alert
-                      tone="warning"
-                      class="text-xs"
-                      icon={<Globe size={15} />}
-                      action={{ label: `Copy to ${proj().name}`, onClick: () => void copyRoleToProject(role(), proj()) }}
-                    >
-                      <strong>Global Role:</strong> Shared across all projects. To customize settings specifically for <strong>{proj().name}</strong>, click "Copy to {proj().name}".
-                    </Alert>
-                  )}
-                </Show>
-
-                <Show when={role().projectId}>
-                  <Alert tone="info" class="text-xs" icon={<FolderGit2 size={15} />}>
-                      {isProjectOverride(role()) ? (
-                        <>
-                          <strong>Project Override:</strong> This role overrides the global <strong>{role().roleName}</strong> role for <strong>{props.currentProject?.()?.name ?? "this project"}</strong>. Click "Revert to Global" to return to the global settings.
-                        </>
-                      ) : (
-                        <>
-                          <strong>Project Role:</strong> Configured specifically for <strong>{props.currentProject?.()?.name ?? "this project"}</strong>. Sessions in this project use this role instead of global fallbacks.
-                        </>
-                      )}
-                  </Alert>
-                </Show>
                 <Show when={deleteError()}>
                   <div class="management-error-box font-mono">
                     {deleteError()}
@@ -1170,7 +1140,6 @@ export function RolesTab(props: {
                       <Show when={!!eName().trim() && !/^[A-Za-z0-9_-]+$/.test(eName().trim())}>
                         <span class="font-mono text-[9px] text-[var(--ui-state-danger-text)]">only letters, numbers, - and _ (no spaces)</span>
                       </Show>
-                      <span class="text-[10px] theme-muted">Renaming keeps this role's settings and existing session bindings.</span>
                     </div>
                   </FieldRow>
                   <RoleAccountField roleId={role().id} runtimeKind={role().runtimeKind} />
@@ -1179,13 +1148,10 @@ export function RolesTab(props: {
                       <TextInput
                         value={ePrompt()}
                         onInput={setEPrompt}
-                        placeholder="Optional override. Leave empty to use agent's native system prompt and project rules (CLAUDE.md, AGENTS.md)..."
+                        placeholder="Agent default"
                         multiline
                         rows={3}
                       />
-                      <span class="text-[10px] theme-muted">
-                        Leave empty to keep the agent's own system prompt and repository instructions.
-                      </span>
                     </div>
                   </FieldRow>
                   <FieldRow label="Model">
@@ -1308,7 +1274,7 @@ export function RolesTab(props: {
 
         {/* Empty state */}
         <Show when={!creating() && !editingRole()}>
-          <EmptyState icon="◎" title="Select a role" description="Or create a new one" />
+          <EmptyState icon="◎" title="Select a role" />
         </Show>
       </div>
 

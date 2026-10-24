@@ -143,7 +143,7 @@ export default function ControlCenter(props: ControlCenterProps) {
 
   return (
     <main class="control-center">
-      <header class="control-center-header"><strong>Jockey</strong><span>Control center</span>{props.headerActions}<IconButton title="Refresh" aria-label="Refresh control center" onClick={() => void data.refresh()}><RefreshCw size={17} /></IconButton></header>
+      <header class="control-center-header"><strong>Jockey</strong>{props.headerActions}<IconButton title="Refresh" aria-label="Refresh control center" onClick={() => void data.refresh()}><RefreshCw size={17} /></IconButton></header>
       <div class="control-center-scroll">
         <div class="control-center-column">
         <div class="control-center-intro">
@@ -155,15 +155,14 @@ export default function ControlCenter(props: ControlCenterProps) {
           </div>
         </div>
         <Show when={data.error() || actionError()}><Alert tone="danger">{data.error() || actionError()} <Button variant="ghost" onClick={() => { setActionError(null); void data.refresh(); }}>Retry</Button></Alert></Show>
-        <Show when={batchable().length > 1}><div class="control-center-batch"><Button variant="secondary" disabled={batching() || individualBusy() > 0 || !!data.error()} onClick={() => void allowAllOnce()}>{batching() ? "Submitting decisions…" : `Allow all once (${batchable().length})`}</Button><span>Across all projects · one-time permissions only</span></div></Show>
+        <Show when={batchable().length > 1}><div class="control-center-batch"><Button variant="secondary" disabled={batching() || individualBusy() > 0 || !!data.error()} onClick={() => void allowAllOnce()}>{batching() ? "Submitting decisions…" : `Allow all once (${batchable().length})`}</Button></div></Show>
         <Show when={batchResult()}><p class="control-center-batch-result" role="status">{batchResult()}</p></Show>
-        <AsyncContent state={data.loading() ? "loading" : data.sessions().length === 0 ? "empty" : "ready"} emptyTitle="No active sessions" emptyDescription="Open a session to give an agent work.">
+        <AsyncContent state={data.loading() ? "loading" : data.sessions().length === 0 ? "empty" : "ready"} emptyTitle="No active sessions">
           <Show when={attention().length}><section class="control-center-section"><h2>Needs you <Badge tone="warning">{attention().length}</Badge></h2><For each={attention()}>{(s) => row(s, true)}</For></section></Show>
           <Show when={working().length}><section class="control-center-section"><h2>In progress <Badge tone="info">{working().length}</Badge></h2><For each={working()}>{(s) => row(s)}</For></section></Show>
           <Show when={recent().length}><section class="control-center-section"><h2>Recent sessions</h2><For each={recent()}>{(s) => row(s)}</For></section></Show>
         </AsyncContent>
         <Button variant="secondary" class="control-center-browse" onClick={props.onBrowseSessions}>All projects & sessions</Button>
-        <p class="control-center-hint">Hold a session for a quick message.</p>
         </div>
       </div>
       <Show when={chosen()}>
@@ -183,7 +182,6 @@ export default function ControlCenter(props: ControlCenterProps) {
             }).catch((err) => setActionError(String(err))).finally(() => setSending(false));
           }}>
             <DialogBody><Show when={actionError()}><Alert tone="danger">{actionError()}</Alert></Show><Textarea class="control-center-message" aria-label="Quick message" placeholder="Give a direction or ask for an update…" value={text()} onInput={(e) => setText(e.currentTarget.value)} rows={4} />
-              <p class="control-center-hint">A working agent will receive this through its input queue.</p>
             </DialogBody>
             <DialogFooter><Button variant="secondary" disabled={sending()} onClick={() => setQuick(null)}>Cancel</Button><Button type="submit" disabled={!text().trim() || sending()}>{sending() ? "Sending…" : "Send message"}</Button></DialogFooter>
           </form>

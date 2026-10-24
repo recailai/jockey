@@ -104,7 +104,6 @@ export default function SessionList(props: SessionListProps) {
           error={props.error()}
           onRetry={props.onRefresh}
           emptyTitle="No projects yet"
-          emptyDescription="Add a project folder from this machine to start a session."
         >
           <div class="flex flex-col gap-2 p-3">
             <For each={props.projects()}>

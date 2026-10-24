@@ -57,14 +57,6 @@ export function RemoteCompanionTab() {
 
   return (
     <div class="space-y-6">
-      <div>
-        <h2 class="settings-section-heading">Remote Web Companion</h2>
-        <p class="mt-1 text-[13px] theme-muted leading-relaxed">
-          在家里电脑开启轻量 Web 伴侣口子。在外通过 Tailscale
-          或局域网，手机浏览器即可直接发送指令、查看 Agent 进度并进行一键审批。
-        </p>
-      </div>
-
       {/* Main Switch Card */}
       <Panel class="settings-card-list">
         <PanelBody class="settings-card-list-body">
@@ -79,9 +71,6 @@ export function RemoteCompanionTab() {
                   </Badge>
                 </Show>
               </div>
-              <p class="mt-1 text-[13px] leading-relaxed theme-muted">
-                开启后，Jockey 将在本地启动轻量 Web 服务，无需安装手机 App，用 Safari / Chrome 打开即可使用。
-              </p>
             </div>
             <UiSwitch
               checked={status()?.running ?? false}
@@ -241,7 +230,7 @@ export function RemoteCompanionTab() {
               </Button>
             </div>
             <p class="text-[12px] theme-muted">
-              所有连入的浏览器都会校验此 Token，重启 App 后保持不变。重新生成会立即让旧链接失效并断开已连接的设备。
+              重新生成会让旧链接失效并断开已连接的设备。
             </p>
             <div class="flex items-center justify-between rounded-lg border border-[var(--ui-border)] bg-[var(--ui-bg)] px-3 py-2">
               <span class="font-mono text-[13px] theme-text">

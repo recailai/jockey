@@ -390,7 +390,6 @@ function MessageWindowContent(props: MessageWindowProps) {
       <Show when={visibleMessages().length === 0 && !props.activeSession()?.streamingMessage && !searchQuery()}>
         <div class="chat-empty">
           <h3 class="chat-empty-title">{props.activeSession()?.title ?? "Session"}</h3>
-          <p class="chat-empty-text">Ready when you are. Describe the change or ask a question below.</p>
           <Show when={props.presentation !== "responses"}>
             <dl class="chat-empty-facts">
               <div><dt>Role</dt><dd>@{props.activeSession()?.activeRole ?? "Developer"}</dd></div>

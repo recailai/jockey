@@ -635,7 +635,6 @@ export default function ComposerContextFooter(props: ComposerContextFooterProps)
         <DialogContent
           class="run-action-modal"
           title="Edit action"
-          description="Update the command that runs from the toolbar"
           icon={<Play size={22} />}
         >
             <label class="run-action-label mt-9">Name</label>
@@ -670,7 +669,6 @@ export default function ComposerContextFooter(props: ComposerContextFooterProps)
         <DialogContent
           class="git-branch-modal"
           title="Create branch"
-          description="Create and switch to a new branch in this AppSession"
           icon={<GitBranchPlus size={22} />}
         >
           <form
@@ -703,7 +701,6 @@ export default function ComposerContextFooter(props: ComposerContextFooterProps)
         <DialogContent
           class="git-flow-modal"
           title={effectiveGitFlowStep() === "pr" ? "Ship your branch" : "Commit your changes"}
-          description="Review the git action before sending it to the terminal"
           icon={renderGitPrimaryIcon(effectiveGitFlowStep() === "pr" ? "pr" : effectiveGitFlowStep() === "push" ? "push" : "commit", false)}
         >
           <div class="git-flow-stack">

@@ -39,7 +39,6 @@ export default function CustomAppsSettings(props: CustomAppsSettingsProps) {
     <>
       <div class="settings-section">
         <h2 class="settings-section-heading">Built-in apps</h2>
-        <p class="settings-section-lead">Available in the composer “Open in” menu.</p>
         <Panel class="settings-card-list">
           <PanelBody class="settings-card-list-body">
             <For each={BUILTIN_WORKSPACE_APPS}>
@@ -59,10 +58,6 @@ export default function CustomAppsSettings(props: CustomAppsSettingsProps) {
 
       <div class="settings-section">
         <h2 class="settings-section-heading">Custom apps</h2>
-        <p class="settings-section-lead">
-          Add other macOS apps by their <code>.app</code> name (used with <code>open -a</code>).
-          Bundle ID is optional and helps load the correct icon.
-        </p>
         <Panel class="settings-card-list">
           <PanelBody class="settings-card-list-body">
             <Show when={props.apps.length > 0}>

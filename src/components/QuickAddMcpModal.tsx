@@ -92,7 +92,6 @@ export default function QuickAddMcpModal(props: Props) {
       <DialogContent
         class="quick-add-mcp-dialog"
         title="Add MCP Server"
-        description="Create a global MCP server and optionally enable it for this role"
       >
             <div class="space-y-3 overflow-y-auto max-h-[70vh]">
               <FieldRow label="Name">

@@ -111,7 +111,7 @@ export function SkillRegistryTab(props: {
           {(skill) => (
             <MasterItem
               title={skill.name}
-              subtitle={skill.description || "No description"}
+              subtitle={skill.description || undefined}
               active={selectedId() === skill.id && !creating()}
               onClick={() => {
                 setSelectedId(skill.id);
@@ -142,9 +142,7 @@ export function SkillRegistryTab(props: {
         }
         empty={!creating() && !editing() && !selected()}
         emptyFallback={
-          <div class="flex flex-1 items-center justify-center text-xs theme-muted">
-            Select a skill or create a new one
-          </div>
+          <div class="flex flex-1" />
         }
         actions={
           <Show

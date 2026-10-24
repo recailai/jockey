@@ -547,7 +547,7 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
       <ConfirmDialog
         open={closeOpen()}
         title="Close this session?"
-        description="You can restore it later from the project's History."
+        description="Restorable from History."
         confirmText="Close session"
         onConfirm={() => void closeActiveSession()}
         onClose={() => setCloseOpen(false)}

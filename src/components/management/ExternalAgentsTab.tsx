@@ -79,7 +79,6 @@ export function ExternalAgentsTab() {
       <div class="flex items-center justify-between">
         <div>
           <h2 class="text-[13px] font-bold theme-text">External Agents</h2>
-          <p class="text-[11px] theme-muted mt-0.5">Detected agent runtimes available on this machine</p>
         </div>
         <button
           onClick={() => void refresh()}
@@ -138,9 +137,7 @@ export function ExternalAgentsTab() {
       </For>
 
       <div class="rounded-lg border theme-border bg-[var(--ui-panel-2)] px-4 py-3 text-[10.5px] theme-muted leading-relaxed">
-        Runtimes are tied to installed binaries. To add a new runtime, install the corresponding CLI tool
-        (e.g. <span class="font-mono runtime-color-claude">claude</span>, <span class="font-mono runtime-color-antigravity">agy</span>,{" "}
-        <span class="font-mono runtime-color-codex">codex</span>) and click Refresh.
+        Install a CLI, then Refresh.
       </div>
 
       <div class="rounded-xl border theme-border theme-surface px-4 py-3 space-y-2">

@@ -115,7 +115,6 @@ export default function SessionErrorBanner(props: Props) {
                 variant="ghost"
                 size="sm"
                 onClick={dismiss}
-                title="Dismiss"
               >
                 Dismiss
               </Button>

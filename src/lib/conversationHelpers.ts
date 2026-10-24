@@ -13,4 +13,3 @@ export function hasConversationContent(session: AppSession | null | undefined): 
 }
 
 export const CONVERSATION_HERO_TITLE = "What should we work on?";
-export const CONVERSATION_HERO_SUBTITLE = "Start a conversation or open files and diffs from the side panels.";

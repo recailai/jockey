@@ -34,7 +34,7 @@ export function TokenGate(props: { onSubmit: (token: string) => void }) {
         <div>
           <h1 class="text-lg font-semibold">Connect to Jockey</h1>
           <p class="mt-1 text-xs theme-muted">
-            Paste the access token from Settings, Remote Companion on your desktop.
+            Desktop → Settings → Remote Companion
           </p>
         </div>
         <FormField label="Access token">
@@ -105,7 +105,6 @@ export function ClosedSessionsDialog(props: {
     <Dialog open={props.project !== null} onOpenChange={(o) => { if (!o) props.onClose(); }}>
       <DialogContent
         title={`History · ${props.project?.name ?? ""}`}
-        description="Closed sessions. Restore one to continue the conversation."
       >
         <DialogBody class="max-h-[60dvh] space-y-2 overflow-y-auto">
           <Show when={error()}><Alert tone="danger">{error()}</Alert></Show>
@@ -167,7 +166,6 @@ export function RolePickerDialog(props: {
     <Dialog open={props.open} onOpenChange={(o) => { if (!o) props.onClose(); }}>
       <DialogContent
         title="Agent & persona"
-        description="Choose the agent for this session, or a persona and its configured agent. Changes apply to the next message."
       >
         <DialogBody class="max-h-[60dvh] space-y-1 overflow-y-auto">
           <Show when={error()}><Alert tone="danger">{error()}</Alert></Show>
@@ -245,7 +243,6 @@ export function DirectoryBrowserDialog(props: {
             state={listing.loading ? "loading" : listing.error ? "error" : (listing()?.entries.length ?? 0) === 0 ? "empty" : "ready"}
             error={String(listing.error ?? "")}
             emptyTitle="No subfolders"
-            emptyDescription="You can still use this folder."
           >
             <For each={listing()?.entries}>
               {(entry) => (

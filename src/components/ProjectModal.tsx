@@ -68,7 +68,6 @@ export default function ProjectModal(props: ProjectModalProps) {
     <Dialog open={props.open} onOpenChange={(open) => { if (!open) props.onClose(); }}>
       <DialogContent
         title="Add Project"
-        description="Import your local repository and CLI agent sessions"
         icon={<FolderPlus size={20} class="text-[var(--ui-accent)]" />}
       >
         <form onSubmit={handleSubmit}>

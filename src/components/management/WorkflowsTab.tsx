@@ -82,7 +82,7 @@ export function WorkflowsTab(props: { roles: Role[]; onError?: (message: string)
             <p class="p-4 font-mono text-[10px] theme-muted">Loading…</p>
           </Show>
           <Show when={!loading() && workflows().length === 0}>
-            <EmptyState icon="⬡" title="No automations" description="Create your first automation" />
+            <EmptyState icon="⬡" title="No automations" />
           </Show>
           <For each={workflows()}>
             {(wf) => (
@@ -204,7 +204,7 @@ export function WorkflowsTab(props: { roles: Role[]; onError?: (message: string)
         </Show>
 
         <Show when={!creating() && !selected()}>
-          <EmptyState icon="⬡" title="Select an automation" description="Or create a new one" />
+          <EmptyState icon="⬡" title="Select an automation" />
         </Show>
       </div>
     </div>

@@ -1,7 +1,7 @@
 import { Show, Suspense, createEffect, createMemo, lazy, onCleanup } from "solid-js";
 import type { Accessor, JSX } from "solid-js";
 import type { AppSession } from "./types";
-import { hasConversationContent, CONVERSATION_HERO_TITLE, CONVERSATION_HERO_SUBTITLE } from "../lib/conversationHelpers";
+import { hasConversationContent, CONVERSATION_HERO_TITLE } from "../lib/conversationHelpers";
 import { loadUiPrefs } from "../lib/uiPrefs";
 import { useResize } from "../lib/useResize";
 import { closeAllPreviewTabs, closeOtherPreviewTabs, closePreviewTab, setActivePreviewTab } from "../lib/previewTabs";
@@ -102,7 +102,6 @@ export default function ConversationCanvas(props: ConversationCanvasProps) {
           <div class="conversation-hero">
             <div class="conversation-hero-copy">
               <h1 class="conversation-hero-title">{CONVERSATION_HERO_TITLE}</h1>
-              <p class="conversation-hero-subtitle">{CONVERSATION_HERO_SUBTITLE}</p>
               <Show when={props.activeSession()?.cwd}>
                 {(cwd) => <p class="conversation-hero-cwd">{cwd()}</p>}
               </Show>

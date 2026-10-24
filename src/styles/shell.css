@@ -433,18 +433,7 @@
   font-size: 14px;
 }
 
-.settings-section-lead {
-  margin: -4px 0 12px;
-  max-width: 720px;
-  color: var(--ui-muted);
-  font-size: 13px;
-  line-height: 1.5;
-}
 
-.settings-section-lead code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-}
 
 .settings-custom-app-row {
   display: flex;
@@ -821,7 +810,6 @@
 .settings-title { color: var(--ui-text); font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
 .settings-section { margin-top: 28px; }
 .settings-section-heading { margin-bottom: 10px; color: var(--ui-text); font-size: 13px; font-weight: 600; }
-.settings-section-lead { color: var(--ui-muted); font-size: 13px; }
 
 /* Cards: elevation, not borders. */
 .settings-workmode-card,

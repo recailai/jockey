@@ -127,7 +127,7 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
         </div>
         <div class="flex-1 overflow-y-auto space-y-0.5 py-1">
           <Show when={entries().length === 0}>
-            <EmptyState icon="◈" title="No MCP servers" description="Add an MCP server to the registry" />
+            <EmptyState icon="◈" title="No MCP servers" />
           </Show>
           <For each={entries()}>
             {(entry) => (
@@ -280,7 +280,7 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
         </Show>
 
         <Show when={!creating() && !selected()}>
-          <EmptyState icon="◈" title="Select an MCP server" description="Or add a new one to the registry" />
+          <EmptyState icon="◈" title="Select an MCP server" />
         </Show>
       </div>
     </div>

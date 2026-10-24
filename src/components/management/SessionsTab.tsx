@@ -450,7 +450,7 @@ export function SessionsTab(props: {
       {/* Detail pane */}
       <div class="flex-1 overflow-y-auto p-5">
         <Show when={selected()} fallback={
-          <EmptyState icon="◫" title="Select a session" description="Click a session to inspect it. Archived sessions can be restored with Restore or a double-click." />
+          <EmptyState icon="◫" title="Select a session" />
         }>
           {(s) => (
             <div class="space-y-5">

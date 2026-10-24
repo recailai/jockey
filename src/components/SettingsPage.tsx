@@ -92,7 +92,7 @@ const NAV: Array<{ id: SettingsTab; label: string; icon: typeof Settings }> = [
 
 function ToggleRow(props: {
   title: string;
-  description: string;
+  description?: string;
   enabled: boolean;
   onChange: (enabled: boolean) => void;
 }) {
@@ -100,7 +100,9 @@ function ToggleRow(props: {
     <div class="settings-toggle-row jui-row-button">
       <div class="min-w-0">
         <div class="text-[14px] font-medium theme-text">{props.title}</div>
-        <p class="mt-1 max-w-[720px] text-[13px] leading-relaxed theme-muted">{props.description}</p>
+        <Show when={props.description}>
+          <p class="mt-1 max-w-[720px] text-[13px] leading-relaxed theme-muted">{props.description}</p>
+        </Show>
       </div>
       <UiSwitch checked={props.enabled} onChange={props.onChange} />
     </div>
@@ -175,7 +177,6 @@ export default function SettingsPage(props: SettingsPageProps) {
                       </div>
                     </div>
                     <strong>For coding</strong>
-                    <span>More technical responses and control</span>
                     <Show when={prefs().workMode === "coding"} fallback={<span class="settings-radio" />}>
                       <CheckCircle2 size={22} />
                     </Show>
@@ -195,21 +196,11 @@ export default function SettingsPage(props: SettingsPageProps) {
                       </div>
                     </div>
                     <strong>For everyday work</strong>
-                    <span>Same power, less technical detail</span>
                     <Show when={prefs().workMode === "everyday"} fallback={<span class="settings-radio" />}>
                       <CheckCircle2 size={22} />
                     </Show>
                   </button>
                 </div>
-              </div>
-              <div class="settings-section">
-                <h2 class="settings-section-heading">Permissions</h2>
-                <Panel class="settings-card-list">
-                  <PanelBody class="settings-card-list-body">
-                  <p class="text-sm theme-text">Agent permission requests appear in the control center for approval or rejection.</p>
-                  <p class="mt-2 text-xs theme-muted">Approve directly on a request card, or allow all waiting one-time requests together.</p>
-                  </PanelBody>
-                </Panel>
               </div>
               <CustomAppsSettings
                 apps={prefs().customWorkspaceApps}
@@ -243,7 +234,6 @@ export default function SettingsPage(props: SettingsPageProps) {
                           <span style={{ "background-color": theme.accent }} />
                         </span>
                         <strong>{theme.label}</strong>
-                        <span>{theme.description}</span>
                       </button>
                     )}
                   </For>
@@ -319,13 +309,11 @@ export default function SettingsPage(props: SettingsPageProps) {
                   <PanelBody class="settings-card-list-body">
                   <ToggleRow
                     title="Show branch state"
-                    description="Display branch and dirty state in the workspace toolbar."
                     enabled={prefs().showBranchState}
                     onChange={(enabled) => patchPrefs({ showBranchState: enabled })}
                   />
                   <ToggleRow
                     title="Open diffs in the main work area"
-                    description="Keep file and diff preview wide above the conversation."
                     enabled={prefs().openDiffsInMain}
                     onChange={(enabled) => patchPrefs({ openDiffsInMain: enabled })}
                   />

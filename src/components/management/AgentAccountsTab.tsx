@@ -283,9 +283,7 @@ export function AgentAccountsTab() {
     <div class="flex flex-col gap-4 p-5">
       <div class="flex items-start justify-between gap-4">
         <p class="max-w-[640px] text-[13px] leading-relaxed theme-muted">
-          Run roles under different agent accounts. Each CLI keeps its own login as the default; accounts added
-          here live beside it, so adding or removing one never signs you out. Pick an account per role in the
-          role editor.
+          Adding or removing an account never signs out your CLI.
         </p>
         <Button size="sm" variant="outline" disabled={busy()} onClick={() => void refresh()}>
           <RefreshCw size={12} classList={{ "animate-spin": busy() }} /> Refresh

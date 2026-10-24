@@ -311,7 +311,6 @@ export default function ImportSessionsModal(props: ImportSessionsModalProps) {
       <DialogContent
         class="max-w-[720px]"
         title="Import CLI Sessions"
-        description="Bring conversations from Claude Code, Codex, Pi, Antigravity and DeepSeek Harness into Jockey"
         icon={<DownloadCloud size={20} class="text-[var(--ui-accent)]" />}
       >
         <DialogBody class="space-y-3" onKeyDown={onKeyDown}>
@@ -384,13 +383,6 @@ export default function ImportSessionsModal(props: ImportSessionsModalProps) {
                 </div>
               }
               emptyTitle={(scanned() ?? []).length === 0 ? "No CLI sessions found" : "Nothing matches"}
-              emptyDescription={
-                (scanned() ?? []).length === 0
-                  ? scope() === "all"
-                    ? "No Claude Code, Codex, Pi or Antigravity conversations were found on this machine."
-                    : "No CLI sessions were found for this project directory."
-                  : "Adjust the search or filters, or show already imported sessions."
-              }
             >
               <Show when={flat()} fallback={<div class="divide-y divide-[var(--ui-border)]"><For each={filtered()}>{renderRow}</For></div>}>
                 <For each={groups()}>
