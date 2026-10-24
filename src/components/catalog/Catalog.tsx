@@ -23,10 +23,20 @@ import {
 import { SESSION_STATUS_LOOK } from "../ui/status-badge";
 import type { SessionStatus } from "../../lib/sessionStatus";
 import { useTheme } from "../../lib/useTheme";
+import { ToolCallGroup } from "../ToolCallGroup";
+import type { AppToolCall } from "../types";
 import "./catalog.css";
 
 const TONES = ["neutral", "info", "success", "warning", "danger"] as const;
 const STATUSES = Object.keys(SESSION_STATUS_LOOK) as SessionStatus[];
+
+const tool = (id: string, title: string, kind: string, status: string): AppToolCall => ({ toolCallId: id, title, kind, status });
+const TOOL_SAMPLES: { label: string; tools: AppToolCall[]; streaming?: boolean }[] = [
+  { label: "Finished group", tools: [tool("a", "Read src/lib/theme.ts", "read", "completed"), tool("b", "pnpm build", "execute", "completed"), tool("c", "Edit src/index.css", "edit", "completed")] },
+  { label: "Single call", tools: [tool("d", "cargo test --manifest-path src-tauri/Cargo.toml", "execute", "completed")] },
+  { label: "Running", tools: [tool("e", "Read src/App.tsx", "read", "completed"), tool("f", "pnpm lint:ui", "execute", "running")], streaming: true },
+  { label: "With a failure", tools: [tool("g", "git push", "execute", "failed"), tool("h", "git status", "execute", "completed")] },
+];
 
 function Section(props: { title: string; note?: string; children: JSX.Element }) {
   return (
@@ -96,6 +106,17 @@ export default function Catalog() {
           <div class="catalog-frame catalog-frame-phone"><SessionListSample /></div>
           <div class="catalog-frame catalog-frame-panel"><SessionListSample /></div>
         </div>
+      </Section>
+
+      <Section title="Agent tool groups" note="Collapsed process detail between replies. Clean runs show a quiet check; only exceptions get a badge.">
+        <For each={TOOL_SAMPLES}>
+          {(sample) => (
+            <div>
+              <p class="catalog-note">{sample.label}</p>
+              <ToolCallGroup tools={sample.tools} streaming={!!sample.streaming} />
+            </div>
+          )}
+        </For>
       </Section>
 
       <Section title="Buttons">

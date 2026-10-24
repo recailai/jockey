@@ -31,10 +31,14 @@ test("partner presentation keeps responses and decisions but removes process det
   assert.equal(mixed.segments.length, 2);
   const permission = { requestId: "p1" };
   const question = { requestId: "q1" };
-  const session = { messages: [mixed, { ...base, id: "live" }], submitting: true, streamingMessage: { id: "live" }, pendingPermissions: [permission], pendingUserInput: [question], thoughtText: "Thinking", streamSegments: [{}], currentPlan: [{}], usage: { costUsd: 3 } };
+  const session = { messages: [mixed, { ...base, id: "live" }], submitting: true, streamingMessage: { id: "live", roleName: "Developer", text: "Reading the store so far" }, toolCalls: { t1: { toolCallId: "t1", title: "Read file", status: "completed" }, t2: { toolCallId: "t2", title: "Run tests", status: "running" } }, pendingPermissions: [permission], pendingUserInput: [question], thoughtText: "Thinking", streamSegments: [{}], currentPlan: [{}], usage: { costUsd: 3 } };
   const view = responseSession(session);
-  assert.equal(view.messages.length, 1);
-  assert.equal(view.streamingMessage, null);
+  assert.equal(view.messages.length, 1, "the live checkpoint row is shown once, as the stream");
+  assert.equal(view.streamingMessage.text, "Reading the store so far", "a running turn keeps its streamed reply visible");
+  assert.deepEqual(view.toolCalls, {});
+  assert.deepEqual(view.streamSegments, []);
+  assert.equal(view.agentState, "Run tests…");
+  assert.equal(responseSession({ ...session, submitting: false }).streamingMessage, null);
   assert.equal(view.usage, null);
   assert.equal(view.currentPlan, null);
   assert.deepEqual(view.pendingPermissions, [permission]);

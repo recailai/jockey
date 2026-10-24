@@ -14,3 +14,11 @@ export const fmtRelative = (ts: number): string => {
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
   return `${Math.floor(diff / 86_400_000)}d ago`;
 };
+
+/**
+ * Session names are space-free identifiers (`fix_the_login_page`) so they work in mentions
+ * and terminals; reading surfaces show them with spaces.
+ */
+export function displayTitle(title: string): string {
+  return title.replace(/_+/g, " ").trim() || title;
+}

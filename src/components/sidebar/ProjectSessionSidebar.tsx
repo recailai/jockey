@@ -423,11 +423,12 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
       </div>
 
       {/* ── Footer ── */}
-      <div class="p-2 border-t theme-border flex items-center justify-between text-xs bg-[var(--ui-surface-muted)]">
-        <div class="flex items-center gap-1">
+      <div class="sidebar-footer">
+        <div class="flex min-w-0 items-center gap-0.5">
           <Button
             variant="ghost"
             size="sm"
+            class="sidebar-footer-button"
             onClick={() => props.onOpenSettings("roles")}
             title="Configure Roles"
           >
@@ -437,6 +438,7 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
           <Button
             variant="ghost"
             size="sm"
+            class="sidebar-footer-button"
             onClick={() => props.onOpenSettings("sessions")}
             title="Closed Sessions (Recycle Bin)"
           >
@@ -446,6 +448,7 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
           <Button
             variant="ghost"
             size="sm"
+            class="sidebar-footer-button"
             onClick={() => props.onOpenSettings("general")}
             title="Settings (⌘,)"
           >
@@ -453,7 +456,6 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
             <span>Settings</span>
           </Button>
         </div>
-        <span class="text-[9.5px] font-mono theme-muted pr-1 opacity-60">⌘B</span>
       </div>
       {/* ── Project Context Menu ── */}
       <Show when={projectContextMenu()}>

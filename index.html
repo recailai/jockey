@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="/favicon.png" />
-    <meta name="theme-color" content="#09090b" />
+    <meta name="theme-color" content="#0e0e11" />
     <script>
       (() => {
         const key = "jockey.ui.theme";
@@ -15,14 +15,14 @@
         document.documentElement.setAttribute("data-theme", theme);
         const meta = document.querySelector('meta[name="theme-color"]');
         if (meta) {
-          meta.setAttribute("content", theme === "light" ? "#f8fafc" : "#09090b");
+          meta.setAttribute("content", theme === "light" ? "#f8fafc" : "#0e0e11");
         }
       })();
     </script>
     <style>
       :root {
         color-scheme: dark light;
-        --boot-bg: #09090b;
+        --boot-bg: #0e0e11;
         --boot-text: #ededed;
       }
       :root[data-theme="light"] {
@@ -30,7 +30,7 @@
         --boot-text: #0f172a;
       }
       :root[data-theme="dark"] {
-        --boot-bg: #09090b;
+        --boot-bg: #0e0e11;
         --boot-text: #ededed;
       }
       @media (prefers-color-scheme: light) {

@@ -1,4 +1,5 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { Check, ChevronDown } from "lucide-solid";
 import { isRejectOption, needsGenericDeny, visiblePermissionOptions } from "../lib/permissionOptions";
 import type { AppPermission, AppToolCall, TerminalEntry } from "./types";
 import { DiffViewer } from "./DiffViewer";
@@ -7,7 +8,7 @@ import type { DiffHunk } from "../lib/diffParser";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { Badge, Button, Switch as UiSwitch } from "./ui";
+import { Badge, Button, StateDot, Switch as UiSwitch } from "./ui";
 import { ProviderEventGroup } from "./ProviderEventGroup";
 import { renderMd } from "../lib/markdown";
 
@@ -445,8 +446,6 @@ export function ToolCallGroup(props: {
     if (hasPendingPermission()) setExpanded(true);
   });
 
-  const count = () => tools().length;
-  const lastTool = () => tools()[tools().length - 1];
   const statusCounts = createMemo(() => {
     let success = 0, error = 0;
     for (const t of tools()) {
@@ -465,55 +464,51 @@ export function ToolCallGroup(props: {
     return tools().length - 1;
   });
 
-  const groupSummaryLabel = createMemo(() => {
-    if (tools().length === 0) return "execution";
+  // Title says what happened; detail is secondary context. Exceptions (approval, failures) get
+  // a badge on the right; a clean run needs no badge at all.
+  const groupSummary = createMemo((): { title: string; detail?: string } => {
+    if (tools().length === 0) return { title: "Execution" };
     if (tools().length === 1) {
       const display = formatToolDisplay(tools()[0], props.cwd);
-      return `${display.actionLabel}: ${display.targetSummary}`;
+      return { title: display.actionLabel, detail: display.targetSummary };
     }
     const categories = Array.from(
       new Set(tools().map((t) => formatToolDisplay(t, props.cwd).categoryBadge)),
     );
-    return `Ran ${tools().length} tools (${categories.join(", ")})`;
+    return { title: `Ran ${tools().length} tools`, detail: categories.join(", ") };
   });
 
   return (
     <div class="tool-call-card" classList={{ "needs-approval": hasPendingPermission() }}>
       <button
         class="tool-call-summary select-none"
+        aria-expanded={expanded()}
         onClick={() => setExpanded(v => !v)}
       >
-        <span class={`ui-tool-status-dot ${tcStatusDot(lastTool()?.status ?? "pending", props.streaming)}`} />
-        <span class="theme-text font-mono tracking-tight font-medium truncate max-w-[340px]">
-          {groupSummaryLabel()}
+        <span class="tool-call-summary-icon" aria-hidden="true">
+          <Switch fallback={<Check size={13} stroke-width={2.25} />}>
+            <Match when={hasPendingPermission()}><StateDot state="warning" size={8} /></Match>
+            <Match when={props.streaming && statusCounts().pending > 0}><StateDot state="ongoing" size={10} /></Match>
+            <Match when={statusCounts().error > 0}><StateDot state="error" size={8} /></Match>
+          </Switch>
         </span>
-        <span class="flex items-center gap-1.5 ml-auto">
-          <Show when={hasPendingPermission()}>
-            <span class="tool-summary-badge is-warning">
-              <span class="ui-tool-status-dot ui-tool-status-warning animate-pulse" />
-              approval
-            </span>
+        <span class="tool-call-summary-label">
+          <span class="tool-call-summary-title">{groupSummary().title}</span>
+          <Show when={groupSummary().detail}>
+            <span class="tool-call-summary-detail">{groupSummary().detail}</span>
           </Show>
-          <Show when={statusCounts().success > 0}>
-            <span class="tool-summary-badge is-success">
-              <span class="ui-tool-status-dot ui-tool-status-success" />
-              {statusCounts().success}
-            </span>
+        </span>
+        <span class="flex items-center gap-1.5 ml-auto shrink-0">
+          <Show when={hasPendingPermission()}>
+            <Badge tone="warning">Approval needed</Badge>
           </Show>
           <Show when={statusCounts().error > 0}>
-            <span class="tool-summary-badge is-danger">
-              <span class="ui-tool-status-dot ui-tool-status-danger" />
-              {statusCounts().error}
-            </span>
+            <Badge tone="danger">{statusCounts().error} failed</Badge>
           </Show>
-          <Show when={statusCounts().pending > 0 && !hasPendingPermission()}>
-            <span class="tool-summary-badge" classList={{ "is-warning": props.streaming }} title={props.streaming ? undefined : "Never finished"}>
-              <span class="ui-tool-status-dot" classList={{ "ui-tool-status-warning animate-pulse": props.streaming, "ui-tool-status-idle": !props.streaming }} />
-              {statusCounts().pending}
-            </span>
+          <Show when={statusCounts().pending > 0 && !props.streaming && !hasPendingPermission()}>
+            <Badge tone="neutral" title="These calls never reported a result">{statusCounts().pending} unfinished</Badge>
           </Show>
-          <Badge class="ml-1">{count()} {count() === 1 ? "call" : "calls"}</Badge>
-          <svg class={`w-3 h-3 theme-muted transition-transform duration-150 ${expanded() ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+          <ChevronDown size={13} class="theme-muted transition-transform duration-150" classList={{ "rotate-180": expanded() }} />
         </span>
       </button>
       <Show when={expanded()}>

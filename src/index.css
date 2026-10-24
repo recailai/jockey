@@ -176,7 +176,8 @@
 
 :root,
 :root[data-theme="dark"] {
-  --ui-bg: #09090b;
+  /* Lifted from near-black (#09090b): cards on the old values were indistinguishable from the page. */
+  --ui-bg: #0e0e11;
   /* State tones were light-only, so every Badge/Alert tone rendered uncoloured in dark. */
   --ui-state-success-bg: rgba(34, 197, 94, 0.14);
   --ui-state-success-text: #4ade80;
@@ -192,11 +193,11 @@
   --ui-destructive-bg: #dc2626;
   --ui-destructive-text: #ffffff;
   --ui-foreground: #f4f4f5;
-  --ui-surface: #0f0f12;
-  --ui-surface-muted: #18181b;
-  --ui-panel: rgba(15, 15, 18, 0.92);
+  --ui-surface: #16161a;
+  --ui-surface-muted: #1e1e23;
+  --ui-panel: rgba(22, 22, 26, 0.94);
   --ui-panel-2: rgba(255, 255, 255, 0.06);
-  --ui-card-bg: #101013;
+  --ui-card-bg: #16161a;
   --ui-card-text: #f4f4f5;
   --ui-popover-bg: #18181b;
   --ui-popover-text: #f4f4f5;
@@ -204,7 +205,7 @@
   --ui-muted-text: #a1a1aa;
   --ui-secondary-bg: #18181b;
   --ui-secondary-text: #f4f4f5;
-  --ui-border: rgba(255, 255, 255, 0.09);
+  --ui-border: rgba(255, 255, 255, 0.1);
   --ui-border-subtle: color-mix(in srgb, var(--ui-border) 70%, transparent);
   --ui-border-strong: rgba(255, 255, 255, 0.15);
   --ui-terminal-selection: color-mix(in srgb, var(--ui-accent) 18%, var(--ui-terminal-bg));
@@ -224,14 +225,14 @@
   --ui-selection: rgba(255, 255, 255, 0.075);
   --ui-row-hover: rgba(255, 255, 255, 0.075);
   --ui-row-active: rgba(255, 255, 255, 0.10);
-  --ui-sidebar-bg: #0f0f12;
+  --ui-sidebar-bg: #121215;
   --ui-sidebar-panel: #0f0f12;
   --ui-sidebar-hover: rgba(255, 255, 255, 0.075);
   --ui-sidebar-active: #18181b;
   --ui-sidebar-active-border: rgba(255, 255, 255, 0.16);
   --ui-sidebar-border: rgba(255, 255, 255, 0.11);
-  --ui-topbar-bg: rgba(9, 9, 11, 0.84);
-  --ui-main-bg: #09090b;
+  --ui-topbar-bg: rgba(14, 14, 17, 0.86);
+  --ui-main-bg: #0e0e11;
   --ui-preview-bg: #09090b;
   --ui-composer-bg: #141416;
   --ui-dock-card-bg: #18181b;
@@ -2839,17 +2840,18 @@ pre:hover .jui-code-copy,
   opacity: 0.4;
 }
 
+/* Tool groups are process detail between replies: quiet when collapsed, so a long turn reads
+   as text with collapsible steps rather than a wall of cards. */
 .tool-call-card {
   overflow: hidden;
-  border: 1px solid var(--ui-border);
+  border: 1px solid var(--ui-border-subtle);
   border-radius: var(--radius-card);
   background: var(--ui-panel);
-  box-shadow: var(--ui-shadow-control);
   margin: 6px 0;
 }
 .tool-call-summary {
   display: flex;
-  min-height: var(--ui-control-height-lg);
+  min-height: 34px;
   width: 100%;
   align-items: center;
   gap: var(--ui-space-2);
@@ -2859,6 +2861,36 @@ pre:hover .jui-code-copy,
 }
 .tool-call-summary:hover {
   background: var(--ui-row-hover);
+}
+.tool-call-summary-icon {
+  display: inline-flex;
+  width: 14px;
+  flex: 0 0 14px;
+  align-items: center;
+  justify-content: center;
+  color: var(--ui-state-success-text);
+}
+.tool-call-summary-label {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.tool-call-summary-title {
+  flex-shrink: 0;
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--ui-text);
+}
+.tool-call-summary-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--ui-muted);
 }
 .tool-call-list {
   border-top: 1px solid var(--ui-border);
@@ -5769,3 +5801,8 @@ pre:hover .jui-code-copy,
   content-visibility: auto;
   contain-intrinsic-size: auto 160px;
 }
+
+/* Sidebar footer: three compact ghost buttons that must fit the narrowest sidebar width. */
+.sidebar-footer { display: flex; align-items: center; min-width: 0; padding: 6px 8px; border-top: 1px solid var(--ui-border); background: var(--ui-surface-muted); }
+.sidebar-footer-button.jui-button { height: 26px; gap: 5px; padding: 0 7px; font-size: 11.5px; color: var(--ui-muted); white-space: nowrap; }
+.sidebar-footer-button.jui-button:hover:not(:disabled) { color: var(--ui-text); }

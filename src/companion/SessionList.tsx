@@ -3,7 +3,7 @@ import type { JSX } from "solid-js";
 import { ArrowLeft, ChevronRight, FolderPlus, History, Plus, RefreshCw, DownloadCloud } from "lucide-solid";
 import type { SessionSummary } from "../components/types";
 import type { Project } from "../lib/tauriApi";
-import { fmtRelative } from "../lib/formatHelpers";
+import { displayTitle, fmtRelative } from "../lib/formatHelpers";
 import { AsyncContent, Badge, Button, IconButton, RowButton, StatusBadge, StatusDot } from "../components/ui";
 import { sessionStatus } from "../lib/sessionStatus";
 
@@ -42,7 +42,7 @@ function SessionRow(props: { session: SessionSummary; onOpen: (id: string) => vo
       <span class="flex w-full min-w-0 flex-col gap-0.5 text-left">
         <span class="flex items-center gap-2">
           <StatusDot status={status()} />
-          <span class="min-w-0 flex-1 truncate text-sm font-medium">{s().title}</span>
+          <span class="min-w-0 flex-1 truncate text-sm font-medium">{displayTitle(s().title)}</span>
           <span class="shrink-0 text-[11px] theme-muted">{fmtRelative(s().lastActiveAt)}</span>
         </span>
         <Show when={s().preview}>

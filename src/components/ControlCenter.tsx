@@ -1,14 +1,14 @@
 import { For, Show, createMemo, createSignal, onCleanup } from "solid-js";
 import type { JSX } from "solid-js";
-import { ArrowUpRight, MessageSquare, RefreshCw, Square } from "lucide-solid";
+import { MessageSquare, RefreshCw, Square } from "lucide-solid";
 import type { Project } from "../lib/tauriApi";
 import { assistantApi } from "../lib/tauriApi";
 import { allowOnceOption } from "../lib/permissionOptions";
 import type { SessionSummary } from "./types";
 import { useControlCenter } from "../hooks/useControlCenter";
 import { makeDefaultSession } from "../lib/sessionHelpers";
-import { fmtRelative } from "../lib/formatHelpers";
-import { Alert, AsyncContent, Badge, Button, Dialog, DialogBody, DialogContent, DialogFooter, IconButton, RowButton, StatusBadge, Textarea } from "./ui";
+import { displayTitle, fmtRelative } from "../lib/formatHelpers";
+import { Alert, AsyncContent, Badge, Button, Dialog, DialogBody, DialogContent, DialogFooter, IconButton, RowButton, StatusBadge, StatusDot, Textarea } from "./ui";
 import { sessionStatus } from "../lib/sessionStatus";
 import { PermissionModal } from "./PermissionModal";
 import UserInputModal from "./UserInputModal";
@@ -84,11 +84,19 @@ export default function ControlCenter(props: ControlCenterProps) {
   const cancelHold = () => clearTimeout(hold);
   onCleanup(cancelHold);
 
+  const statusOf = (s: SessionSummary) => sessionStatus({
+    running: s.running,
+    externalActive: s.externalActive,
+    error: s.lastError,
+    pendingPermissions: pendingFor(s.id).permissions.length,
+    pendingUserInputs: pendingFor(s.id).userInputs.length,
+  });
+
   const row = (s: SessionSummary, decision = false) => {
     const panelSession = createMemo(() => ({ ...makeDefaultSession(s.title), id: s.id,
       pendingPermissions: pendingFor(s.id).permissions, pendingUserInput: pendingFor(s.id).userInputs }));
     return (
-    <div class="control-center-row" classList={{ "has-stop": s.running }}>
+    <div class="control-center-row">
       <RowButton
         class="control-center-session"
         onPointerDown={(e) => {
@@ -104,19 +112,16 @@ export default function ControlCenter(props: ControlCenterProps) {
         onContextMenu={(e) => { e.preventDefault(); cancelHold(); held = true; openQuick(s); }}
         onClick={() => { if (held) { held = false; return; } props.onOpenChat(s.id); }}
       >
-        <span class="control-center-row-meta"><span>{projectName(s)} · @{s.activeRole}</span><span>{fmtRelative(s.lastActiveAt)}</span></span>
-        <span class="control-center-row-title">{s.title}</span>
+        <span class="control-center-row-meta">
+          <StatusDot status={statusOf(s)} />
+          <span class="control-center-row-where">{projectName(s)} · @{s.activeRole}</span>
+          <span class="control-center-row-time">{fmtRelative(s.lastActiveAt)}</span>
+        </span>
+        <span class="control-center-row-title">{displayTitle(s.title)}</span>
         <Show when={decision && !pendingFor(s.id).permissions.length}><span class="control-center-row-preview">{pendingFor(s.id).userInputs[0]?.title ?? s.lastError ?? "Your answer is needed"}</span></Show>
-        <Show when={!pendingFor(s.id).permissions.length}><span class="control-center-row-status">
-          <StatusBadge status={sessionStatus({
-            running: s.running,
-            externalActive: s.externalActive,
-            error: s.lastError,
-            pendingPermissions: pendingFor(s.id).permissions.length,
-            pendingUserInputs: pendingFor(s.id).userInputs.length,
-          })} />
-          <span>View chat <ArrowUpRight size={12} /></span>
-        </span></Show>
+        <Show when={!pendingFor(s.id).permissions.length && statusOf(s) !== "idle"}>
+          <span class="control-center-row-status"><StatusBadge status={statusOf(s)} /></span>
+        </Show>
       </RowButton>
       <div class="control-center-row-actions">
         <IconButton title="Quick message" aria-label={`Quick message: ${s.title}`} onClick={() => openQuick(s)}><MessageSquare size={16} /></IconButton>
@@ -141,13 +146,20 @@ export default function ControlCenter(props: ControlCenterProps) {
       <header class="control-center-header"><strong>Jockey</strong><span>Control center</span>{props.headerActions}<IconButton title="Refresh" aria-label="Refresh control center" onClick={() => void data.refresh()}><RefreshCw size={17} /></IconButton></header>
       <div class="control-center-scroll">
         <div class="control-center-column">
-        <div class="control-center-intro"><span>YOUR AGENTS</span><h1>{data.loading() ? "Connecting to your agents…" : data.error() ? "Connection needs attention." : decisionCount() ? `${decisionCount()} decision${decisionCount() === 1 ? "" : "s"} waiting.` : attention().length ? "Your agents need attention." : "You’re all caught up."}</h1><p>{working().length} working · {data.sessions().length} open sessions</p></div>
+        <div class="control-center-intro">
+          <h1>{data.loading() ? "Connecting to your agents…" : data.error() ? "Connection needs attention" : decisionCount() ? `${decisionCount()} decision${decisionCount() === 1 ? "" : "s"} waiting` : attention().length ? "Your agents need attention" : "You’re all caught up"}</h1>
+          <div class="control-center-stats" role="list">
+            <div class="control-center-stat" role="listitem" data-tone={attention().length ? "warning" : undefined}><strong>{attention().length}</strong><span>Need you</span></div>
+            <div class="control-center-stat" role="listitem" data-tone={working().length ? "info" : undefined}><strong>{working().length}</strong><span>Working</span></div>
+            <div class="control-center-stat" role="listitem"><strong>{data.sessions().length}</strong><span>Open</span></div>
+          </div>
+        </div>
         <Show when={data.error() || actionError()}><Alert tone="danger">{data.error() || actionError()} <Button variant="ghost" onClick={() => { setActionError(null); void data.refresh(); }}>Retry</Button></Alert></Show>
         <Show when={batchable().length > 1}><div class="control-center-batch"><Button variant="secondary" disabled={batching() || individualBusy() > 0 || !!data.error()} onClick={() => void allowAllOnce()}>{batching() ? "Submitting decisions…" : `Allow all once (${batchable().length})`}</Button><span>Across all projects · one-time permissions only</span></div></Show>
         <Show when={batchResult()}><p class="control-center-batch-result" role="status">{batchResult()}</p></Show>
         <AsyncContent state={data.loading() ? "loading" : data.sessions().length === 0 ? "empty" : "ready"} emptyTitle="No active sessions" emptyDescription="Open a session to give an agent work.">
           <Show when={attention().length}><section class="control-center-section"><h2>Needs you <Badge tone="warning">{attention().length}</Badge></h2><For each={attention()}>{(s) => row(s, true)}</For></section></Show>
-          <Show when={working().length}><section class="control-center-section"><h2>In progress <span>{working().length}</span></h2><For each={working()}>{(s) => row(s)}</For></section></Show>
+          <Show when={working().length}><section class="control-center-section"><h2>In progress <Badge tone="info">{working().length}</Badge></h2><For each={working()}>{(s) => row(s)}</For></section></Show>
           <Show when={recent().length}><section class="control-center-section"><h2>Recent sessions</h2><For each={recent()}>{(s) => row(s)}</For></section></Show>
         </AsyncContent>
         <Button variant="secondary" class="control-center-browse" onClick={props.onBrowseSessions}>All projects & sessions</Button>

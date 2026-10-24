@@ -70,7 +70,9 @@ function PermissionsQueue(props: PermissionModalProps) {
       <div class="flex flex-wrap gap-2">
         <For each={opts()}>{(opt) => (
           <Button
-            variant={isRejectOption(opt) ? "destructive" : "secondary"}
+            // Rejecting is not destructive (nothing is lost), so it is outlined; filled red stays
+            // reserved for deletes. The first allow option is the expected answer and leads.
+            variant={isRejectOption(opt) ? "outline" : opt === opts().find((o) => !isRejectOption(o)) ? "primary" : "secondary"}
             size="sm"
             disabled={submitting() || props.disabled}
             onClick={() => void respond(opt.optionId)}
@@ -80,7 +82,7 @@ function PermissionsQueue(props: PermissionModalProps) {
         )}</For>
         <Show when={needsGenericDeny(current().options)}>
           <Button
-            variant="destructive"
+            variant="outline"
             size="sm"
             disabled={submitting() || props.disabled}
             onClick={() => void respond("", true)}
