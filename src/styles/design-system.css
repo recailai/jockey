@@ -9,6 +9,10 @@
    Radii come from --ui-radius-* only (4/8/12/16/20/28).
 ──────────────────────────────────────────────────────────────────────────── */
 
+/* Globals sit in Tailwind's base layer; primitives in its components layer. Anything
+   unlayered (index.css view and context classes) and Tailwind utilities therefore override a
+   primitive, which is what a context class on a primitive is for. */
+@layer base {
 html { font-family: var(--ui-font-sans); -webkit-font-smoothing: antialiased; }
 ::selection { background: var(--ui-selection); }
 
@@ -20,6 +24,1435 @@ html { font-family: var(--ui-font-sans); -webkit-font-smoothing: antialiased; }
 }
 html[data-input-modality="pointer"] :where(button, a, [role="button"], [role="tab"], [role="menuitem"], [role="option"], [tabindex]):focus-visible {
   outline: none;
+}
+}
+
+@layer components {
+/* Structural rules carried over from index.css in their original order (layout, sizing and
+   parts the restyle below does not redefine). */
+.jui-button,
+.jui-icon-button,
+.jui-toolbar-button,
+.jui-row-button,
+.jui-dropdown-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ui-space-2);
+  line-height: var(--ui-line-height-control);
+  text-align: left;
+  outline: none;
+  user-select: none;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+}
+
+.jui-button:focus-visible,
+.jui-icon-button:focus-visible,
+.jui-toolbar-button:focus-visible,
+.jui-row-button:focus-visible,
+.jui-dropdown-item:focus-visible,
+.jui-field:focus,
+.jui-field:focus-within {
+  border-color: var(--ui-ring);
+  box-shadow: 0 0 0 2px var(--ui-ring);
+}
+
+.jui-button {
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: var(--ui-accent);
+  color: var(--ui-accent-text);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow: var(--ui-shadow-control);
+}
+
+.jui-button-sm { height: var(--ui-control-height-sm); padding: 0 10px; font-size: 12px; }
+
+.jui-button-md { height: var(--ui-control-height-md); padding: 0 12px; }
+
+.jui-button-lg {
+  height: calc(var(--ui-control-height-md) + 8px);
+  padding: 0 16px;
+}
+
+.jui-button:hover:not(:disabled) { opacity: 0.92; }
+
+.jui-button:disabled { cursor: default; opacity: 0.5; }
+
+.jui-button-primary,
+.jui-button-default { background: var(--ui-accent); color: var(--ui-accent-text); border-color: var(--ui-accent); }
+
+.jui-button-secondary { background: var(--ui-secondary-bg); color: var(--ui-secondary-text); border-color: transparent; box-shadow: none; }
+
+.jui-button-outline { background: var(--ui-bg); color: var(--ui-text); border-color: var(--ui-input-border); box-shadow: var(--ui-shadow-control); }
+
+.jui-button-ghost { background: transparent; border-color: transparent; color: var(--ui-text); box-shadow: none; }
+
+.jui-button-destructive,
+.jui-button-danger { background: var(--ui-destructive-bg); color: var(--ui-destructive-text); border-color: var(--ui-destructive-bg); }
+
+.jui-button-secondary:hover:not(:disabled),
+.jui-button-outline:hover:not(:disabled),
+.jui-button-ghost:hover:not(:disabled) {
+  background: var(--ui-control-hover);
+  opacity: 1;
+}
+
+.jui-icon-button,
+.jui-toolbar-button {
+  position: relative;
+  width: var(--ui-control-height-md);
+  height: var(--ui-control-height-md);
+  min-width: var(--ui-control-height-md);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  color: var(--ui-muted);
+  background: transparent;
+}
+
+.jui-icon-button-sm {
+  width: var(--ui-control-height-sm);
+  height: var(--ui-control-height-sm);
+  min-width: var(--ui-control-height-sm);
+}
+
+.jui-icon-button:hover:not(:disabled),
+.jui-icon-button.is-active,
+.jui-toolbar-button:hover:not(:disabled),
+.jui-toolbar-button.is-active {
+  background: var(--ui-control-hover);
+  border-color: var(--ui-border);
+  color: var(--ui-text);
+}
+
+.jui-icon-button-outline,
+.jui-toolbar-button-outline {
+  border-color: var(--ui-input-border);
+  background: var(--ui-bg);
+}
+
+.jui-icon-button-default,
+.jui-toolbar-button-default {
+  border-color: var(--ui-border);
+  background: var(--ui-control-bg);
+}
+
+.jui-row-button {
+  width: 100%;
+  min-height: var(--ui-control-height-md);
+  justify-content: flex-start;
+  border: 1px solid transparent;
+  border-radius: var(--radius-row);
+  padding: 0 10px;
+  color: var(--ui-text);
+  font-size: var(--ui-font-size-sm);
+  font-weight: 520;
+}
+
+.jui-row-button:hover:not(:disabled),
+.jui-row-button.is-active {
+  background: var(--ui-row-hover);
+  border-color: var(--ui-border);
+}
+
+.jui-badge {
+  display: inline-flex;
+  min-height: 18px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 10.5px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.jui-badge-neutral { background: var(--ui-state-muted-bg); color: var(--ui-state-muted-text); }
+
+.jui-badge-success { background: var(--ui-state-success-bg); color: var(--ui-state-success-text); }
+
+.jui-badge-warning { background: var(--ui-state-warning-bg); color: var(--ui-state-warning-text); }
+
+.jui-badge-danger { background: var(--ui-state-danger-bg); color: var(--ui-state-danger-text); }
+
+.jui-badge-info { background: var(--ui-state-info-bg); color: var(--ui-state-info-text); }
+
+.jui-badge-outline { background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 35%, transparent); }
+
+.jui-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  opacity: 0;
+  cursor: pointer;
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  background: var(--ui-panel-2, var(--ui-popover-bg));
+  padding: 2px 7px;
+  color: var(--ui-muted);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  line-height: 16px;
+  transition: opacity 120ms ease, color 120ms ease, background-color 120ms ease, border-color 120ms ease;
+  z-index: 10;
+}
+
+.jui-code-copy:hover {
+  border-color: var(--ui-border-strong);
+  background: var(--ui-control-hover);
+  color: var(--ui-text);
+}
+
+.jui-field {
+  width: 100%;
+  min-height: var(--ui-control-height-lg);
+  border: 1px solid var(--ui-input-border);
+  border-radius: var(--radius-row);
+  background: var(--ui-input-bg);
+  color: var(--ui-text);
+  outline: none;
+  padding: 0 12px;
+  font-size: var(--ui-font-size-md);
+  line-height: var(--ui-line-height-control);
+}
+
+.jui-textarea {
+  min-height: 180px;
+  resize: vertical;
+  padding: 12px 14px;
+  line-height: var(--ui-line-height-body);
+}
+
+.jui-field.is-error {
+  border-color: var(--ui-state-danger-text);
+}
+
+.jui-field.is-error:focus {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-state-danger-text) 25%, transparent);
+}
+
+.jui-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.jui-form-field-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.jui-form-field-label {
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--ui-text);
+}
+
+.jui-form-field-hint {
+  font-size: 11px;
+  color: var(--ui-muted);
+}
+
+.jui-form-field-action {
+  font-size: 11px;
+  color: var(--ui-accent);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.jui-form-field-control {
+  width: 100%;
+}
+
+.jui-form-field-description {
+  font-size: 11.5px;
+  color: var(--ui-muted);
+  line-height: 1.35;
+}
+
+.jui-form-field-error {
+  font-size: 11.5px;
+  color: var(--ui-state-danger-text);
+  line-height: 1.35;
+}
+
+.jui-panel {
+  min-height: 0;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-card);
+  background: var(--ui-card-bg);
+  color: var(--ui-text);
+  overflow: hidden;
+}
+
+.jui-panel-header {
+  display: flex;
+  min-height: var(--ui-panel-header-height);
+  align-items: center;
+  gap: var(--ui-space-2);
+  border-bottom: 1px solid var(--ui-border);
+  padding: 0 var(--ui-space-4);
+}
+
+.jui-panel-body {
+  min-height: 0;
+  padding: var(--ui-space-3);
+}
+
+.jui-dropdown-content {
+  z-index: var(--z-dropdown);
+  min-width: 178px;
+  max-width: min(360px, calc(100vw - 24px));
+  max-height: min(460px, calc(100vh - 24px));
+  overflow: auto;
+  border: 1px solid var(--ui-chrome-separator);
+  border-radius: 12px;
+  background: var(--ui-popover-bg);
+  box-shadow: var(--ui-shadow-popover);
+  padding: 6px;
+  color: var(--ui-popover-text);
+}
+
+.jui-context-menu {
+  position: fixed;
+}
+
+.jui-role-menu {
+  width: 320px;
+}
+
+.jui-agent-menu {
+  width: 288px;
+}
+
+.jui-dropdown-subcontent {
+  min-width: 210px;
+}
+
+.jui-dropdown-subtrigger[data-expanded] {
+  background: var(--ui-row-hover);
+}
+
+.jui-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.jui-agent-row-label {
+  flex: 0 0 auto;
+  color: var(--ui-muted);
+  font-size: var(--ui-font-size-sm);
+  font-weight: 560;
+}
+
+.jui-agent-row-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ui-text);
+  font-size: var(--ui-font-size-sm);
+}
+
+.jui-agent-row-value.is-unset {
+  color: var(--ui-muted);
+}
+
+.jui-agent-row-chevron {
+  flex: 0 0 auto;
+  color: var(--ui-muted);
+}
+
+.jui-agent-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 9px 8px;
+  border-bottom: 1px solid var(--ui-chrome-separator);
+  margin-bottom: 4px;
+}
+
+.jui-agent-header-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ui-font-size-sm);
+  font-weight: 640;
+}
+
+.jui-agent-header-key {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--ui-muted);
+  font-family: var(--ui-font-mono, ui-monospace, monospace);
+  font-size: 10px;
+}
+
+.jui-agent-toggle {
+  margin-left: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  width: 26px;
+  height: 15px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--ui-chrome-separator);
+  transition: background 120ms ease;
+}
+
+.jui-agent-toggle::after {
+  content: "";
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  background: var(--ui-popover-bg);
+  transition: transform 120ms ease;
+}
+
+.jui-agent-toggle.is-on {
+  background: var(--ui-state-accent-bg, #d97706);
+}
+
+.jui-agent-toggle.is-on::after {
+  transform: translateX(11px);
+}
+
+.jui-agent-value-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.jui-agent-value-blurb {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--ui-muted);
+  font-size: 10px;
+}
+
+.jui-agent-value-key {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--ui-muted);
+  font-family: var(--ui-font-mono, ui-monospace, monospace);
+  font-size: 10px;
+}
+
+.jui-run-action-menu {
+  width: 260px;
+}
+
+.jui-ide-open-menu {
+  min-width: 250px;
+  padding: 10px;
+}
+
+.jui-git-actions-menu {
+  min-width: 178px;
+}
+
+.jui-dropdown-item {
+  width: 100%;
+  min-height: var(--ui-control-height-md);
+  justify-content: flex-start;
+  border-radius: var(--radius-control);
+  padding: 0 9px;
+  color: var(--ui-text);
+  font-size: var(--ui-font-size-sm);
+  font-weight: 520;
+  white-space: nowrap;
+}
+
+.jui-dropdown-item:hover,
+.jui-dropdown-item:focus,
+.jui-dropdown-item[data-highlighted],
+.jui-dropdown-item.is-active {
+  background: var(--ui-row-hover);
+}
+
+.jui-dropdown-item[data-disabled] {
+  cursor: default;
+  color: var(--ui-muted);
+  opacity: 0.48;
+}
+
+.jui-dropdown-item.is-destructive {
+  color: var(--ui-state-danger-text);
+}
+
+.jui-dropdown-item-icon {
+  display: inline-flex;
+  width: 14px;
+  min-width: 14px;
+  align-items: center;
+  justify-content: center;
+  color: var(--ui-muted);
+}
+
+.jui-dropdown-label {
+  padding: 5px 9px 7px;
+  color: var(--ui-muted);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.jui-dropdown-description {
+  margin: 2px 9px 6px 30px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ui-muted);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+}
+
+.jui-dropdown-separator {
+  height: 1px;
+  margin: 5px 6px;
+  background: var(--ui-border);
+}
+
+.jui-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 180;
+  background: rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(2px);
+}
+
+.jui-dialog-content {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  z-index: 181;
+  width: min(520px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  transform: translate(-50%, -50%);
+  overflow: auto;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-popover-bg);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
+  padding: 24px;
+  color: var(--ui-text);
+  outline: none;
+}
+
+.jui-dialog-top {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+}
+
+.jui-dialog-icon {
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--ui-control-bg);
+  color: var(--ui-text);
+}
+
+.jui-dialog-heading {
+  margin-top: 18px;
+}
+
+.jui-dialog-title {
+  color: var(--ui-text);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.1;
+}
+
+.jui-dialog-description {
+  margin-top: 7px;
+  color: var(--ui-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.jui-dialog-body {
+  margin-top: 16px;
+  margin-bottom: 20px;
+}
+
+.jui-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ui-border);
+}
+
+.jui-tooltip {
+  z-index: 250;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  background: var(--ui-popover-bg);
+  box-shadow: var(--ui-shadow-popover);
+  padding: 5px 7px;
+  color: var(--ui-text);
+  font-size: 11px;
+}
+
+.jui-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.jui-switch-control {
+  display: inline-flex;
+  width: 36px;
+  height: 20px;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--ui-control-hover);
+  padding: 2px;
+  transition: background-color 120ms ease;
+}
+
+.jui-switch-control[data-checked] {
+  background: var(--ui-accent);
+}
+
+.jui-switch-thumb {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--ui-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  transform: translateX(0);
+  transition: transform 120ms ease;
+}
+
+.jui-switch-thumb[data-checked] {
+  transform: translateX(16px);
+}
+
+.jui-switch-label {
+  color: var(--ui-text);
+  font-size: var(--ui-font-size-sm);
+  line-height: var(--ui-line-height-control);
+}
+
+.jui-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 550;
+  line-height: 1;
+  white-space: nowrap;
+  background: var(--ui-surface-muted);
+  color: var(--ui-muted);
+  border: 1px solid var(--ui-border);
+  transition: all 120ms ease;
+  user-select: none;
+}
+
+.jui-pill-interactive {
+  cursor: pointer;
+}
+
+.jui-pill-interactive:hover:not(:disabled) {
+  background: var(--ui-control-hover);
+  color: var(--ui-text);
+  border-color: var(--ui-border-strong);
+}
+
+.jui-pill.is-active {
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent);
+  border-color: color-mix(in srgb, var(--ui-accent) 25%, transparent);
+}
+
+.jui-pill.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.jui-state-dot {
+  display: inline-block;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.jui-state-dot-idle {
+  background: var(--ui-state-muted-text);
+  opacity: 0.45;
+}
+
+.jui-state-dot-done {
+  background: var(--ui-state-success-text);
+}
+
+.jui-state-dot-warning {
+  background: var(--ui-state-warning-text);
+}
+
+.jui-state-dot-error {
+  background: var(--ui-state-danger-text);
+}
+
+.jui-status-dot { display: inline-flex; align-items: center; flex-shrink: 0; }
+
+.jui-status-badge { gap: 5px; white-space: nowrap; }
+
+.jui-status-badge .jui-state-dot-matrix .jui-state-dot-cell { fill: currentColor; }
+
+.jui-state-dot-matrix {
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.jui-state-dot-cell {
+  fill: var(--ui-accent);
+  opacity: 0.2;
+  animation: jui-state-dot-blink 1s ease-in-out infinite alternate;
+}
+
+@keyframes jui-state-dot-blink {
+  0% { opacity: 0.15; }
+  100% { opacity: 1; }
+}
+
+.jui-checkbox {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.jui-checkbox.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.jui-checkbox-input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.jui-checkbox-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border-radius: 4px;
+  border: 1px solid var(--ui-input-border);
+  background: var(--ui-input-bg);
+  color: var(--ui-accent-text);
+  flex-shrink: 0;
+  transition: all 120ms ease;
+}
+
+.jui-checkbox:hover .jui-checkbox-control:not(:disabled) {
+  border-color: var(--ui-border-strong);
+}
+
+.jui-checkbox-control[data-checked],
+.jui-checkbox-control[data-indeterminate] {
+  background: var(--ui-accent);
+  border-color: var(--ui-accent);
+}
+
+.jui-checkbox-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.jui-checkbox-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.jui-checkbox-label {
+  font-size: 13px;
+  color: var(--ui-text);
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.jui-checkbox-description {
+  font-size: 11.5px;
+  color: var(--ui-muted);
+  line-height: 1.3;
+}
+
+.jui-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.jui-alert-icon {
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+
+.jui-alert-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.jui-alert-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+
+.jui-alert-body {
+  font-size: 12px;
+  opacity: 0.92;
+}
+
+.jui-alert-action {
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.jui-alert-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-radius: 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 120ms ease;
+  flex-shrink: 0;
+}
+
+.jui-alert-close:hover {
+  opacity: 1;
+}
+
+.jui-alert-neutral {
+  background: var(--ui-state-muted-bg);
+  border-color: color-mix(in srgb, var(--ui-state-muted-text) 20%, transparent);
+  color: var(--ui-state-muted-text);
+}
+
+.jui-alert-info {
+  background: var(--ui-state-info-bg);
+  border-color: color-mix(in srgb, var(--ui-state-info-text) 25%, transparent);
+  color: var(--ui-state-info-text);
+}
+
+.jui-alert-success {
+  background: var(--ui-state-success-bg);
+  border-color: color-mix(in srgb, var(--ui-state-success-text) 25%, transparent);
+  color: var(--ui-state-success-text);
+}
+
+.jui-alert-warning {
+  background: var(--ui-state-warning-bg);
+  border-color: color-mix(in srgb, var(--ui-state-warning-text) 25%, transparent);
+  color: var(--ui-state-warning-text);
+}
+
+.jui-alert-danger {
+  background: var(--ui-state-danger-bg);
+  border-color: color-mix(in srgb, var(--ui-state-danger-text) 25%, transparent);
+  color: var(--ui-state-danger-text);
+}
+
+.jui-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 32px 16px;
+  margin: auto;
+  max-width: 360px;
+}
+
+.jui-empty-state-icon {
+  margin-bottom: 12px;
+  color: var(--ui-muted);
+}
+
+.jui-empty-state-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ui-text);
+  margin-bottom: 4px;
+}
+
+.jui-empty-state-description {
+  font-size: 12px;
+  color: var(--ui-muted);
+  line-height: 1.4;
+}
+
+.jui-master-detail {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ui-bg);
+}
+
+.jui-master-pane {
+  display: flex;
+  flex-direction: column;
+  width: 280px;
+  min-width: 240px;
+  max-width: 360px;
+  height: 100%;
+  border-right: 1px solid var(--ui-border);
+  background: var(--ui-surface-muted);
+  flex-shrink: 0;
+}
+
+.jui-master-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ui-border);
+  min-height: 40px;
+}
+
+.jui-master-pane-title {
+  font-size: 12px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ui-muted);
+}
+
+.jui-master-pane-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.jui-master-pane-search-icon {
+  position: absolute;
+  left: 18px;
+  color: var(--ui-muted);
+  pointer-events: none;
+}
+
+.jui-master-pane-search-input {
+  width: 100%;
+  height: 28px;
+  padding: 0 10px 0 26px;
+  border-radius: 6px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-input-bg);
+  color: var(--ui-text);
+  font-size: 12px;
+  outline: none;
+}
+
+.jui-master-pane-search-input:focus {
+  border-color: var(--ui-border-strong);
+}
+
+.jui-master-pane-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.jui-master-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 100ms ease;
+  user-select: none;
+}
+
+.jui-master-item:hover {
+  background: var(--ui-row-hover);
+}
+
+.jui-master-item.is-active {
+  background: var(--ui-accent-soft);
+  border-color: color-mix(in srgb, var(--ui-accent) 20%, transparent);
+}
+
+.jui-master-item-title {
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--ui-text);
+  line-height: 1.25;
+}
+
+.jui-master-item-subtitle {
+  font-size: 11px;
+  color: var(--ui-muted);
+  line-height: 1.25;
+  margin-top: 2px;
+}
+
+.jui-master-item-delete {
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.jui-master-item:hover .jui-master-item-delete {
+  opacity: 0.75;
+}
+
+.jui-master-item-delete:hover {
+  opacity: 1 !important;
+  color: var(--ui-state-danger-text);
+}
+
+.jui-detail-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background: var(--ui-bg);
+  overflow-y: auto;
+}
+
+.jui-detail-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--ui-border);
+  min-height: 52px;
+  flex-shrink: 0;
+}
+
+.jui-detail-pane-title {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--ui-text);
+}
+
+.jui-detail-pane-subtitle {
+  font-size: 12px;
+  color: var(--ui-muted);
+  margin-top: 2px;
+}
+
+.jui-detail-pane-body {
+  flex: 1;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.jui-popup-select-card {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 40;
+  max-height: 320px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: 12px;
+  background: var(--ui-popover-bg);
+  box-shadow: var(--ui-shadow-popover);
+  overflow: hidden;
+}
+
+.jui-popup-select-header {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--ui-border);
+  background: var(--ui-bg-subtle);
+}
+
+.jui-popup-select-search-icon {
+  color: var(--ui-text-muted);
+  flex-shrink: 0;
+}
+
+.jui-popup-select-search {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 13px;
+  color: var(--ui-text);
+}
+
+.jui-popup-select-hint {
+  font-size: 10px;
+  color: var(--ui-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+}
+
+.jui-popup-select-viewport {
+  overflow-y: auto;
+  padding: 4px;
+  max-height: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.jui-popup-select-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  font-size: 12px;
+  color: var(--ui-text-muted);
+}
+
+.jui-popup-select-status.is-error {
+  color: var(--ui-state-danger-text);
+}
+
+.jui-popup-select-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: var(--ui-space-2);
+  padding: 6px 10px;
+  border-radius: var(--radius-control);
+  text-align: left;
+  font-size: 13px;
+  color: var(--ui-text);
+  transition: background-color 100ms ease;
+  cursor: pointer;
+}
+
+.jui-popup-select-row:hover,
+.jui-popup-select-row.is-active {
+  background: var(--ui-row-hover);
+}
+
+.jui-popup-select-row-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.jui-popup-select-label {
+  font-weight: 500;
+}
+
+.jui-popup-select-detail {
+  margin-left: 8px;
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--ui-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jui-popup-select-check {
+  margin-left: auto;
+  color: var(--ui-primary);
+  flex-shrink: 0;
+}
+
+.jui-button {
+  height: var(--ui-control-height-md);
+  border-radius: var(--radius-control);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.jui-button-lg {
+  height: 36px;
+  border-radius: 10px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+
+.jui-button-default,
+.jui-button-primary {
+  border-color: var(--ui-accent);
+  background: var(--ui-accent);
+  color: var(--ui-accent-text);
+}
+
+.jui-button-secondary {
+  border-color: transparent;
+  background: var(--ui-secondary-bg);
+  color: var(--ui-secondary-text);
+}
+
+.jui-button-outline {
+  border-color: var(--ui-input-border);
+  background: var(--ui-control-bg);
+  color: var(--ui-text);
+}
+
+.jui-button-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ui-text);
+}
+
+.jui-icon-button,
+.jui-toolbar-button {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  border-radius: 8px;
+}
+
+.jui-icon-button-sm {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+}
+
+.jui-icon-button:hover:not(:disabled),
+.jui-icon-button.is-active,
+.jui-toolbar-button:hover:not(:disabled),
+.jui-toolbar-button.is-active {
+  border-color: var(--ui-border);
+  background: var(--ui-row-hover);
+  color: var(--ui-text);
+}
+
+.jui-row-button {
+  min-height: 32px;
+  border-radius: 10px;
+  padding: 0 10px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.jui-row-button:hover:not(:disabled),
+.jui-row-button.is-active {
+  border-color: var(--ui-border);
+  background: var(--ui-sidebar-active);
+  box-shadow: var(--ui-shadow-control);
+}
+
+.jui-list-row {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 0 8px;
+  color: var(--ui-text);
+  font-size: 12.5px;
+  line-height: 18px;
+  outline: none;
+  user-select: none;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, opacity 120ms ease;
+}
+
+.jui-list-row:hover,
+.jui-list-row.is-active {
+  border-color: var(--ui-border);
+  background: var(--ui-row-hover);
+}
+
+.jui-list-row.is-disabled {
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+.jui-split-button {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: var(--ui-surface);
+  box-shadow: var(--ui-shadow-control);
+}
+
+.jui-split-button-main,
+.jui-split-button-trigger {
+  display: inline-flex;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  color: var(--ui-text);
+  outline: none;
+}
+
+.jui-split-button-main:hover:not(:disabled),
+.jui-split-button-trigger:hover:not(:disabled),
+.jui-split-button-main:focus-visible,
+.jui-split-button-trigger:focus-visible {
+  background: var(--ui-row-hover);
+}
+
+.jui-split-button-main:disabled,
+.jui-split-button-trigger:disabled {
+  opacity: 0.55;
+}
+
+.jui-split-button-trigger {
+  border-left: 1px solid var(--ui-border);
+  color: var(--ui-muted);
+}
+
+.jui-field {
+  min-height: calc(var(--ui-control-height-md) + 2px);
+  border-color: var(--ui-input-border);
+  border-radius: 10px;
+  background: var(--ui-input-bg);
+  font-size: 13px;
+}
+
+.jui-textarea {
+  min-height: 132px;
+  padding: 10px 12px;
+}
+
+.jui-dropdown-content,
+.jui-context-menu {
+  border-color: var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-popover-bg);
+  box-shadow: var(--ui-shadow-popover);
+  padding: 5px;
+}
+
+.jui-dropdown-item {
+  min-height: var(--ui-control-height-md);
+  border-radius: 8px;
+  padding: 0 8px;
+  font-size: 12.5px;
+}
+
+.jui-dialog-content {
+  border-radius: 14px;
+  background: var(--ui-popover-bg);
+  padding: 22px;
+  box-shadow: var(--ui-shadow-floating);
+}
+
+.jui-dialog-heading {
+  margin-top: 0;
+}
+
+.jui-dialog-title {
+  font-size: 16px;
+}
+
+.jui-dialog-description {
+  font-size: 12.5px;
+}
+
+.jui-panel-header-action {
+  color: var(--ui-muted);
+}
+
+.jui-empty-state {
+  display: flex;
+  min-height: 112px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 24px;
+  color: var(--ui-muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.jui-tabs-list,
+.jui-segmented {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: var(--ui-muted-bg);
+  padding: 2px;
+}
+
+.jui-tabs-trigger,
+.jui-segment {
+  display: inline-flex;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+.jui-tabs-trigger:hover,
+.jui-tabs-trigger[data-selected],
+.jui-segment:hover,
+.jui-segment.is-active {
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  box-shadow: var(--ui-shadow-control);
 }
 
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
@@ -353,6 +1786,7 @@ html[data-input-modality="pointer"] :where(button, a, [role="button"], [role="ta
   animation: jui-shimmer 1.6s linear infinite;
 }
 @keyframes jui-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
