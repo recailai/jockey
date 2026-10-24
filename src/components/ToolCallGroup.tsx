@@ -182,26 +182,6 @@ type ToolCallItemProps = {
   onRejectHunk?: (rejectPrompt: string) => void;
 };
 
-function categoryBadgeTone(category: string): "neutral" | "success" | "warning" | "danger" | "info" {
-  switch (category) {
-    case "shell":
-      return "warning";
-    case "read":
-      return "info";
-    case "edit":
-    case "write":
-      return "success";
-    case "search":
-      return "info";
-    case "fetch":
-      return "info";
-    case "task":
-      return "warning";
-    default:
-      return "neutral";
-  }
-}
-
 /** Pretty JSON for display. Computed on demand: tool payloads can be large, and the stored
  *  message carries only the raw values (the `*Json` mirrors are a live-only legacy). */
 const prettyJson = (value: unknown): string | undefined => {
@@ -251,30 +231,24 @@ function ToolCallItem(props: ToolCallItemProps) {
       class="tool-call-item group/tc"
       classList={{ "needs-approval": showPermission() }}
     >
-      <summary class="tool-call-item-summary select-none flex items-center gap-2 py-1.5 px-3">
+      <summary class="tool-call-item-summary select-none">
         <span class={`ui-tool-status-dot shrink-0 ${tcStatusDot(tc().status, props.live)}`} />
-        
-        {/* Canonical action badge */}
-        <Badge
-          tone={categoryBadgeTone(displayInfo().category)}
-          variant="outline"
-          class="font-mono text-[9px] font-semibold uppercase px-1.5 py-0.5 shrink-0"
-        >
+        <span class="tool-call-item-kind" data-category={displayInfo().category}>
           {displayInfo().categoryBadge}
-        </Badge>
+        </span>
 
         {/* Concise target summary (file path / command / query), plus the exact
             command as a secondary line when the provider also sent a human
             description (e.g. Claude's Bash `description` field). */}
         <span class="min-w-0 flex-1 flex flex-col justify-center leading-tight">
           <span
-            class="theme-text font-mono text-[11px] tracking-tight truncate"
+            class="tool-call-item-target truncate"
             title={displayInfo().targetSummary || tc().title || tc().toolCallId}
           >
             {displayInfo().targetSummary || tc().title || tc().toolCallId}
           </span>
           <Show when={displayInfo().secondaryInfo}>
-            <span class="theme-muted font-mono text-[9.5px] tracking-tight truncate opacity-70" title={displayInfo().secondaryInfo}>
+            <span class="tool-call-item-secondary truncate" title={displayInfo().secondaryInfo}>
               {displayInfo().secondaryInfo}
             </span>
           </Show>
@@ -479,18 +453,22 @@ export function ToolCallGroup(props: {
   });
 
   return (
-    <div class="tool-call-card" classList={{ "needs-approval": hasPendingPermission() }}>
+    <div class="tool-call-card" classList={{ "needs-approval": hasPendingPermission(), "is-open": expanded() }}>
       <button
         class="tool-call-summary select-none"
         aria-expanded={expanded()}
         onClick={() => setExpanded(v => !v)}
       >
+        {/* Status at rest; on hover the slot cross-fades to the disclosure chevron. */}
         <span class="tool-call-summary-icon" aria-hidden="true">
-          <Switch fallback={<Check size={13} stroke-width={2.25} />}>
-            <Match when={hasPendingPermission()}><StateDot state="warning" size={8} /></Match>
-            <Match when={props.streaming && statusCounts().pending > 0}><StateDot state="ongoing" size={10} /></Match>
-            <Match when={statusCounts().error > 0}><StateDot state="error" size={8} /></Match>
-          </Switch>
+          <span class="tool-call-summary-status">
+            <Switch fallback={<Check size={13} stroke-width={2.25} />}>
+              <Match when={hasPendingPermission()}><StateDot state="warning" size={10} /></Match>
+              <Match when={props.streaming && statusCounts().pending > 0}><StateDot state="ongoing" size={11} /></Match>
+              <Match when={statusCounts().error > 0}><StateDot state="error" size={10} /></Match>
+            </Switch>
+          </span>
+          <ChevronDown size={13} class="tool-call-summary-chevron" />
         </span>
         <span class="tool-call-summary-label">
           <span class="tool-call-summary-title">{groupSummary().title}</span>
@@ -508,11 +486,10 @@ export function ToolCallGroup(props: {
           <Show when={statusCounts().pending > 0 && !props.streaming && !hasPendingPermission()}>
             <Badge tone="neutral" title="These calls never reported a result">{statusCounts().pending} unfinished</Badge>
           </Show>
-          <ChevronDown size={13} class="theme-muted transition-transform duration-150" classList={{ "rotate-180": expanded() }} />
         </span>
       </button>
       <Show when={expanded()}>
-        <div class="tool-call-list space-y-1">
+        <div class="tool-call-list">
           <For each={groupItems()}>{(item, itemIndex) => {
             const toolIndex = () =>
               groupItems()
