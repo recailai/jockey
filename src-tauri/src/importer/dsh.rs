@@ -7,7 +7,8 @@
 //! dsh's ACP adapter lists sessions without titles or times and cannot replay them
 //! (`session/resume` only), so history comes from here, as for Claude, Codex and Pi.
 
-use super::{DiscoveredSession, ParsedImportedMessage};
+use super::tail::{Acc, Item, Outcome, Reduce, Unit};
+use super::DiscoveredSession;
 use serde_json::Value;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -165,14 +166,6 @@ fn user_text(line: &Value) -> Option<String> {
     non_empty(text_blocks(data.get("content")?))
 }
 
-/// The model's visible reply in one step; reasoning and tool calls are not part of it.
-fn assistant_text(line: &Value) -> Option<String> {
-    if event_type(line) != "assistant/message" {
-        return None;
-    }
-    non_empty(text_blocks(line.pointer("/data/message/content")?))
-}
-
 fn text_blocks(content: &Value) -> String {
     match content {
         Value::String(text) => text.trim().to_string(),
@@ -238,37 +231,116 @@ fn summarize(lines: &[Value], path: &Path, project_cwd: Option<&str>) -> Option<
     })
 }
 
-/// One message per user input and per step that said something. Steps are not merged into
-/// one reply per turn: the log is appended to while the session runs, and a message that
-/// never changes once written keeps external sync append-only.
-pub(crate) fn parse_dsh_session_messages(path: &Path) -> Vec<ParsedImportedMessage> {
-    messages(&read_lines(path), modified_at(path))
+/// Groups dsh events into Jockey-shaped items: `turn/start` .. `turn/end` is one assistant
+/// message holding the turn's visible text, reasoning and tool calls; user input and the
+/// agent's inbox are separate rows. Each record is its own zstd frame, so a sync resumes at a
+/// frame boundary. The streaming `*-chunks` events are ignored: `assistant/message` carries the
+/// finished step.
+pub(crate) struct DshReducer {
+    acc: Acc,
 }
 
-fn messages(lines: &[Value], fallback_time: i64) -> Vec<ParsedImportedMessage> {
-    if lines.first().and_then(header).is_none() {
-        return Vec::new();
+impl DshReducer {
+    pub(crate) fn new(role: String) -> Self {
+        Self {
+            acc: Acc::new(role),
+        }
     }
-    let mut out = Vec::new();
-    let mut last_time = fallback_time;
-    for line in lines {
-        let (role_name, content) = if let Some(text) = user_text(line) {
-            ("user", text)
-        } else if let Some(text) = assistant_text(line) {
-            ("Developer", text)
-        } else {
-            continue;
+
+    fn assistant(&mut self, data: &Value) {
+        let Some(blocks) = data.pointer("/message/content").and_then(Value::as_array) else {
+            return;
         };
-        // Strictly increasing, so messages written in the same millisecond keep their order.
-        let created_at = event_time(line).unwrap_or(last_time).max(last_time + 1);
-        last_time = created_at;
-        out.push(ParsedImportedMessage {
-            role_name: role_name.to_string(),
-            content,
-            created_at,
-        });
+        for block in blocks {
+            match block.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    if let Some(text) = block.get("text").and_then(Value::as_str) {
+                        self.acc.text(text);
+                    }
+                }
+                Some("reasoning") => {
+                    if let Some(text) = block.get("text").and_then(Value::as_str) {
+                        self.acc.thought(text);
+                    }
+                }
+                Some("tool-call") => self.tool_call(block, "id", "arguments"),
+                _ => {}
+            }
+        }
     }
-    out
+
+    fn tool_call(&mut self, block: &Value, id_key: &str, args_key: &str) {
+        let Some(id) = block.get(id_key).and_then(Value::as_str) else {
+            return;
+        };
+        let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
+        let input = match block.get(args_key) {
+            Some(Value::String(args)) => {
+                serde_json::from_str(args).unwrap_or_else(|_| Value::String(args.clone()))
+            }
+            Some(other) => other.clone(),
+            None => Value::Null,
+        };
+        self.acc.tool_call(id, name, &input, None);
+    }
+}
+
+impl Reduce for DshReducer {
+    fn feed(&mut self, unit: &Unit) {
+        let line = &unit.value;
+        let at = self.acc.stamp(event_time(line));
+        let seq = line
+            .get("seq")
+            .and_then(Value::as_u64)
+            .map_or_else(|| format!("o{}", unit.start), |n| n.to_string());
+        let data = line.get("data").unwrap_or(&Value::Null);
+        match event_type(line) {
+            "turn/start" => {
+                self.acc.close_turn();
+                self.acc.open_turn(format!("t:{seq}"), unit.start, at);
+                self.acc.running = Some(true);
+            }
+            "turn/end" => {
+                self.acc.close_turn();
+                self.acc.running = Some(false);
+            }
+            "user/message" => {
+                if let Some(text) = user_text(line) {
+                    self.acc
+                        .push(Item::plain(format!("u:{seq}"), "user", text, at));
+                }
+            }
+            "assistant/message" => {
+                self.acc.ensure_turn(|| format!("t:{seq}"), unit.start, at);
+                self.assistant(data);
+            }
+            "tool/call" => {
+                if self.acc.has_turn() {
+                    self.tool_call(data, "callId", "arguments");
+                }
+            }
+            "tool/result" => {
+                if let Some(blocks) = data.pointer("/message/content").and_then(Value::as_array) {
+                    for block in blocks {
+                        let Some(id) = block.get("toolCallId").and_then(Value::as_str) else {
+                            continue;
+                        };
+                        let is_error = block.get("isError").and_then(Value::as_bool) == Some(true);
+                        self.acc.tool_result(
+                            id,
+                            block.get("content").unwrap_or(&Value::Null),
+                            is_error,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn finish(self: Box<Self>, consumed: u64, stale: bool) -> Outcome {
+        self.acc.finish(consumed, stale)
+    }
 }
 
 fn canonical_path(path: &str) -> String {
@@ -325,12 +397,6 @@ mod tests {
         }})
     }
 
-    fn assistant(blocks: Value, time: i64) -> Value {
-        json!({ "type": "assistant/message", "time": time, "data": {
-            "message": { "role": "assistant", "content": blocks }
-        }})
-    }
-
     fn turn() -> Value {
         json!({ "type": "turn/start", "time": 1, "data": { "turn": 1 } })
     }
@@ -379,33 +445,114 @@ mod tests {
         assert!(summarize(&[head(json!({}))], Path::new("/x"), None).is_none());
     }
 
+    fn frame(payload: &[u8]) -> Vec<u8> {
+        let mut f = vec![0x28, 0xB5, 0x2F, 0xFD, 0x20, payload.len() as u8];
+        let size = (payload.len() as u32) << 3 | 1; // last block, raw
+        f.extend_from_slice(&size.to_le_bytes()[..3]);
+        f.extend_from_slice(payload);
+        f
+    }
+
+    fn frames(lines: &[Value]) -> Vec<Vec<u8>> {
+        lines
+            .iter()
+            .map(|l| frame(format!("{l}\n").as_bytes()))
+            .collect()
+    }
+
+    fn event(seq: u64, kind: &str, time: i64, data: Value) -> Value {
+        json!({ "type": kind, "seq": seq, "time": time, "data": data })
+    }
+
     #[test]
-    fn messages_keep_user_input_and_visible_replies_in_order() {
+    fn turns_group_into_one_message_and_sync_resumes_per_frame() {
         let lines = vec![
             head(json!({})),
-            user("runtime-context", "cwd: /w/app", 110),
-            user("user", "Fix it", 120),
-            assistant(
-                json!([{ "type": "reasoning", "text": "hmm" }, { "type": "tool-call" }]),
-                130,
+            event(1, "turn/start", 100, json!({ "turn": 1 })),
+            event(
+                2,
+                "user/message",
+                110,
+                json!({ "role": "user", "source": { "kind": "runtime-context" },
+                "content": [{ "type": "text", "text": "cwd" }] }),
             ),
-            assistant(json!([{ "type": "text", "text": "Done." }]), 130),
-            user("user", "Thanks", 125),
+            event(
+                3,
+                "user/message",
+                120,
+                json!({ "role": "user", "source": { "kind": "user" },
+                "content": [{ "type": "text", "text": "Fix it" }] }),
+            ),
+            event(
+                4,
+                "assistant/message",
+                130,
+                json!({ "message": { "content": [
+                { "type": "reasoning", "text": "hmm" },
+                { "type": "text", "text": "Checking." },
+                { "type": "tool-call", "id": "c1", "name": "bash", "arguments": { "command": "ls" } }] } }),
+            ),
+            event(5, "assistant/chunk", 131, json!({})),
+            event(
+                6,
+                "tool/result",
+                140,
+                json!({ "message": { "content": [
+                { "type": "tool-result", "toolCallId": "c1", "content": "a.txt", "isError": false }] } }),
+            ),
         ];
-        let got = messages(&lines, 0);
-        let roles: Vec<_> = got
-            .iter()
-            .map(|m| (m.role_name.as_str(), m.content.as_str()))
-            .collect();
+        let mut bytes: Vec<u8> = frames(&lines).concat();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.v4.jsonl.zstd");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let read = |from: u64| {
+            crate::importer::tail::read("dsh-cli", "Developer", &path, from, false)
+                .unwrap()
+                .unwrap()
+        };
+        let out = read(0);
+        assert_eq!(out.items.len(), 1, "only the user's own input is a row");
+        assert_eq!(out.items[0].text, "Fix it");
+        assert_eq!(out.running, Some(true));
+        let open = out.open.as_ref().expect("turn still open");
+        assert_eq!(open.text, "Checking.");
         assert_eq!(
-            roles,
-            [
-                ("user", "Fix it"),
-                ("Developer", "Done."),
-                ("user", "Thanks")
-            ]
+            out.commit,
+            frames(&lines[..1]).concat().len() as u64,
+            "resumes at the turn start"
         );
-        assert!(got.windows(2).all(|w| w[0].created_at < w[1].created_at));
+
+        // The turn ends, and a torn frame follows: only whole frames are consumed.
+        let tail = frames(&[
+            event(
+                7,
+                "assistant/message",
+                150,
+                json!({ "message": { "content": [{ "type": "text", "text": "Done." }] } }),
+            ),
+            event(
+                8,
+                "turn/end",
+                160,
+                json!({ "turn": 1, "reason": { "kind": "completed" } }),
+            ),
+        ]);
+        bytes.extend(tail.concat());
+        let mut torn = frame(b"{\"type\":\"turn/start\"}\n");
+        torn.truncate(torn.len() - 3);
+        let whole = bytes.len() as u64;
+        bytes.extend(torn);
+        std::fs::write(&path, &bytes).unwrap();
+        let out = read(frames(&lines[..1]).concat().len() as u64);
+        assert!(out.open.is_none());
+        assert_eq!(out.running, Some(false));
+        let turn = out.items.iter().find(|i| i.msg.is_some()).unwrap();
+        assert_eq!(turn.text, "Checking.\n\nDone.");
+        let msg = turn.msg.as_ref().unwrap();
+        assert_eq!(msg["toolCalls"][0]["status"], "completed");
+        assert_eq!(msg["toolCalls"][0]["rawOutput"], "a.txt");
+        assert_eq!(out.commit, whole);
     }
 
     #[test]

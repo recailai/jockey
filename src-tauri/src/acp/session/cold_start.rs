@@ -222,6 +222,10 @@ pub(crate) async fn cold_start(spec: ColdStartSpec) -> Result<LiveConnection, St
                         .terminal(true)
                         .subagents(acp::SubagentCapabilities::new())
                         .plan(acp::PlanCapabilities::new())
+                        .elicitation(
+                            acp::ElicitationCapabilities::new()
+                                .form(acp::ElicitationFormCapabilities::new()),
+                        )
                         .meta(acp::Meta::from_iter([(
                             "terminal_output".to_string(),
                             true.into(),

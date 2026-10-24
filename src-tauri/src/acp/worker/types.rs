@@ -138,6 +138,17 @@ pub enum AcpEvent {
         /// Row of the sub-agent that raised the request, so the UI can attach it there.
         #[serde(skip_serializing_if = "Option::is_none")]
         parent_id: Option<String>,
+        /// The tool call asking, so the UI can attach the prompt to its row.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_call_id: Option<String>,
+        /// ACP tool kind (`switch_mode` for plan approval).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_kind: Option<String>,
+        /// Tool call content, e.g. the plan text of a plan approval.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content: Option<Vec<Value>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        raw_input: Option<Value>,
     },
     ModeUpdate {
         mode_id: String,

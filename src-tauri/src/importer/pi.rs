@@ -1,4 +1,5 @@
-use super::{DiscoveredSession, ParsedImportedMessage};
+use super::tail::{parse_iso_ms, Acc, Item, Outcome, Reduce, Unit};
+use super::DiscoveredSession;
 use serde_json::Value;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -131,44 +132,124 @@ fn count_pi_session_turns(path: &Path) -> usize {
         .count()
 }
 
-pub(crate) fn parse_pi_session_messages(path: &Path) -> Vec<ParsedImportedMessage> {
-    let Ok(file) = File::open(path) else {
-        return Vec::new();
-    };
-    let mut messages = Vec::new();
-    let mut created_at = modified_at(path);
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
-        let Ok(value) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        let Some((role, text)) = message_text(&value) else {
-            continue;
-        };
-        let role_name = match role {
-            "user" => "user",
-            "assistant" => "Developer",
-            _ => continue,
-        };
-        let final_text = if role == "user" {
-            let Some(clean) = clean_pi_user_text(&text) else {
-                continue;
-            };
-            clean
-        } else {
-            let trimmed = text.trim().to_string();
-            if trimmed.is_empty() {
-                continue;
-            }
-            trimmed
-        };
-        created_at += 50;
-        messages.push(ParsedImportedMessage {
-            role_name: role_name.to_string(),
-            content: final_text,
-            created_at,
-        });
+/// Groups Pi session entries into Jockey-shaped items. A Pi assistant message arrives whole
+/// with a `stopReason`: `toolUse` means the turn continues with the tool results that follow,
+/// anything else (`stop`, `length`, `error`, `aborted`) ends it.
+pub(crate) struct PiReducer {
+    acc: Acc,
+}
+
+impl PiReducer {
+    pub(crate) fn new(role: String) -> Self {
+        Self {
+            acc: Acc::new(role),
+        }
     }
-    messages
+
+    fn assistant(&mut self, unit: &Unit, message: &Value, at: i64) {
+        let id = unit
+            .value
+            .get("id")
+            .and_then(Value::as_str)
+            .map_or_else(|| format!("o{}", unit.start), str::to_string);
+        self.acc.ensure_turn(|| format!("t:{id}"), unit.start, at);
+        match message.get("content") {
+            Some(Value::String(text)) => self.acc.text(text),
+            Some(Value::Array(blocks)) => {
+                for block in blocks {
+                    match block.get("type").and_then(Value::as_str) {
+                        Some("text") => {
+                            if let Some(text) = block.get("text").and_then(Value::as_str) {
+                                self.acc.text(text);
+                            }
+                        }
+                        Some("thinking") => {
+                            if let Some(text) = block.get("thinking").and_then(Value::as_str) {
+                                self.acc.thought(text);
+                            }
+                        }
+                        Some("toolCall") => {
+                            if let Some(tool_id) = block.get("id").and_then(Value::as_str) {
+                                let name =
+                                    block.get("name").and_then(Value::as_str).unwrap_or("tool");
+                                self.acc.tool_call(
+                                    tool_id,
+                                    name,
+                                    block.get("arguments").unwrap_or(&Value::Null),
+                                    None,
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+        let stop = message.get("stopReason").and_then(Value::as_str);
+        if stop == Some("error") {
+            if let Some(error) = message.get("errorMessage").and_then(Value::as_str) {
+                self.acc.text(&format!("Error: {error}"));
+            }
+        }
+        match stop {
+            Some("toolUse") | None => self.acc.running = Some(true),
+            Some(_) => {
+                self.acc.close_turn();
+                self.acc.running = Some(false);
+            }
+        }
+    }
+}
+
+impl Reduce for PiReducer {
+    fn feed(&mut self, unit: &Unit) {
+        let entry = &unit.value;
+        let at = self.acc.stamp(
+            entry
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(parse_iso_ms),
+        );
+        if entry.get("type").and_then(Value::as_str) != Some("message") {
+            return;
+        }
+        let Some(message) = entry.get("message") else {
+            return;
+        };
+        match message.get("role").and_then(Value::as_str) {
+            Some("user") => {
+                let text = message.get("content").map(content_text).unwrap_or_default();
+                if let Some(clean) = clean_pi_user_text(&text) {
+                    self.acc.close_turn();
+                    let id = entry
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map_or_else(|| format!("o{}", unit.start), str::to_string);
+                    self.acc
+                        .push(Item::plain(format!("u:{id}"), "user", clean, at));
+                    self.acc.running = Some(true);
+                }
+            }
+            Some("assistant") => self.assistant(unit, message, at),
+            Some("toolResult") => {
+                if let Some(id) = message.get("toolCallId").and_then(Value::as_str) {
+                    let is_error = message.get("isError").and_then(Value::as_bool) == Some(true);
+                    self.acc.tool_result(
+                        id,
+                        message.get("content").unwrap_or(&Value::Null),
+                        is_error,
+                    );
+                }
+                self.acc.running = Some(true);
+            }
+            _ => {}
+        }
+    }
+
+    fn finish(self: Box<Self>, consumed: u64, stale: bool) -> Outcome {
+        self.acc.finish(consumed, stale)
+    }
 }
 
 fn message_text(value: &Value) -> Option<(&str, String)> {
@@ -240,4 +321,57 @@ fn short_title(text: &str) -> String {
 
 fn short_id(id: &str) -> &str {
     &id[..id.len().min(8)]
+}
+
+#[cfg(test)]
+mod reducer_tests {
+    use serde_json::json;
+
+    #[test]
+    fn a_tool_using_turn_is_one_message_that_ends_on_its_stop_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pi.jsonl");
+        let lines = [
+            json!({"type":"session","id":"s","cwd":"/w","timestamp":"2026-08-26T12:00:00.000Z"}),
+            json!({"type":"message","id":"m1","timestamp":"2026-08-26T12:00:01.000Z",
+                "message":{"role":"user","content":[{"type":"text","text":"count files"}]}}),
+            json!({"type":"message","id":"m2","timestamp":"2026-08-26T12:00:02.000Z",
+                "message":{"role":"assistant","stopReason":"toolUse","content":[
+                    {"type":"thinking","thinking":"plan"},
+                    {"type":"text","text":"Counting."},
+                    {"type":"toolCall","id":"tc1","name":"bash","arguments":{"command":"ls | wc -l"}}]}}),
+            json!({"type":"message","id":"m3","timestamp":"2026-08-26T12:00:03.000Z",
+                "message":{"role":"toolResult","toolCallId":"tc1","toolName":"bash","isError":false,
+                    "content":[{"type":"text","text":"3"}]}}),
+        ];
+        let write = |n: usize| {
+            let text: String = lines[..n].iter().map(|l| format!("{l}\n")).collect();
+            std::fs::write(&path, text).unwrap();
+            crate::importer::tail::read("pi-cli", "Developer", &path, 0, false)
+                .unwrap()
+                .unwrap()
+        };
+        let mid = write(4);
+        assert_eq!(mid.items.len(), 1);
+        assert!(mid.open.is_some());
+        assert_eq!(mid.running, Some(true));
+
+        let mut all = lines.to_vec();
+        all.push(json!({"type":"message","id":"m4","timestamp":"2026-08-26T12:00:04.000Z",
+            "message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"Three."}]}}));
+        let text: String = all.iter().map(|l| format!("{l}\n")).collect();
+        std::fs::write(&path, text).unwrap();
+        let done = crate::importer::tail::read("pi-cli", "Developer", &path, 0, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(done.running, Some(false));
+        assert!(done.open.is_none());
+        let turn = &done.items[1];
+        assert_eq!(turn.id, "t:m2");
+        assert_eq!(turn.text, "Counting.\n\nThree.");
+        let msg = turn.msg.as_ref().unwrap();
+        assert_eq!(msg["toolCalls"][0]["rawOutput"], "3");
+        assert_eq!(msg["toolCalls"][0]["status"], "completed");
+        assert_eq!(msg["thoughtText"], "plan");
+    }
 }

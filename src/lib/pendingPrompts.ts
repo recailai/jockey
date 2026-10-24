@@ -1,5 +1,6 @@
 import type { AppSession } from "../components/types";
 import { assistantApi } from "./tauriApi";
+import { normalizePermissionOptions } from "./permissionOptions";
 
 type Deps = {
   getSessionIndex: (id: string) => number;
@@ -28,7 +29,7 @@ export async function hydratePendingPrompts(
     if (getSessionIndex(p.appSessionId) === -1) continue;
     mutateSession(p.appSessionId, (s) => {
       if (!(s.pendingPermissions ?? []).some((x) => x.requestId === p.requestId)) {
-        s.pendingPermissions = [...(s.pendingPermissions ?? []), p];
+        s.pendingPermissions = [...(s.pendingPermissions ?? []), { ...p, options: normalizePermissionOptions(p.options) }];
       }
     });
   }

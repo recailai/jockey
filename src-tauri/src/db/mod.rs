@@ -27,7 +27,7 @@ use tauri::State;
 
 /// Bump when a new one-shot data migration is added below. Table and column creation stay
 /// unconditional (they are idempotent); only data rewrites are gated on this.
-const SCHEMA_VERSION: i64 = 18;
+const SCHEMA_VERSION: i64 = 19;
 
 fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
     if !is_safe_identifier(table) || !is_safe_identifier(column) {
@@ -373,6 +373,21 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
         "app_session_role_runtime_configs",
         "transcript_cursor",
         "INTEGER",
+    )?;
+    // Byte position in the provider transcript (engine::watch / importer::sync): the offset
+    // after the last fully-imported line and a fingerprint of the file around it. Replaces the
+    // entry-count `transcript_cursor`, which is only read to migrate old bindings.
+    ensure_column(
+        conn,
+        "app_session_role_runtime_configs",
+        "transcript_offset",
+        "INTEGER",
+    )?;
+    ensure_column(
+        conn,
+        "app_session_role_runtime_configs",
+        "transcript_fingerprint",
+        "TEXT",
     )?;
     ensure_column(conn, "app_session_roles", "runtime_profile_id", "TEXT")?;
     ensure_column(conn, "app_session_roles", "model_override", "TEXT")?;
@@ -882,6 +897,28 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
 
     if from_version < 18 {
         legacy_cleanup::migrate(conn)?;
+    }
+
+    if from_version < 19 {
+        // Closing a session used to erase its provider handle, so imported sessions stopped
+        // following their conversation. The imported id is still on the session row.
+        let ids: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id FROM app_sessions
+                     WHERE external_session_id IS NOT NULL AND trim(external_session_id) <> ''",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?
+                .filter_map(Result::ok)
+                .collect();
+            rows
+        };
+        for id in ids {
+            app_session_role::rebind_from_external(conn, &id)?;
+        }
     }
 
     // Only stamped once everything above succeeded, so a failed migration is retried on the

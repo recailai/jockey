@@ -382,6 +382,10 @@ pub(crate) fn save_cli_id_on(
            -- A different provider conversation starts from its own beginning.
            transcript_cursor = CASE WHEN acp_session_id IS excluded.acp_session_id
                                     THEN transcript_cursor ELSE NULL END,
+           transcript_offset = CASE WHEN acp_session_id IS excluded.acp_session_id
+                                    THEN transcript_offset ELSE NULL END,
+           transcript_fingerprint = CASE WHEN acp_session_id IS excluded.acp_session_id
+                                    THEN transcript_fingerprint ELSE NULL END,
            acp_session_id = excluded.acp_session_id,
            runtime_profile_id = excluded.runtime_profile_id,
            updated_at = excluded.updated_at",
@@ -459,7 +463,102 @@ pub(crate) struct ProviderConversation {
     pub(crate) role_name: String,
     pub(crate) runtime_kind: String,
     pub(crate) provider_id: String,
-    pub(crate) cursor: Option<usize>,
+    /// Where reading the provider transcript resumes: the byte offset after the last
+    /// fully-imported line plus a fingerprint of the file around it. `None` until the first
+    /// sync (or for a binding that predates byte positions).
+    pub(crate) position: Option<TranscriptPosition>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct TranscriptPosition {
+    pub(crate) offset: u64,
+    pub(crate) fingerprint: String,
+}
+
+fn query_conversations(
+    conn: &rusqlite::Connection,
+    app_session_id: Option<&str>,
+) -> Result<Vec<(String, ProviderConversation)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT app_session_id, role_name, runtime_kind, acp_session_id,
+                    transcript_offset, transcript_fingerprint
+             FROM app_session_role_runtime_configs
+             WHERE (?1 IS NULL OR app_session_id = ?1)
+               AND acp_session_id IS NOT NULL AND acp_session_id != ''",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![app_session_id], |row| {
+            let offset = row.get::<_, Option<i64>>(4)?;
+            let fingerprint = row.get::<_, Option<String>>(5)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                ProviderConversation {
+                    role_name: row.get(1)?,
+                    runtime_kind: row.get(2)?,
+                    provider_id: row.get(3)?,
+                    position: offset.zip(fingerprint).map(|(o, f)| TranscriptPosition {
+                        offset: o.max(0) as u64,
+                        fingerprint: f,
+                    }),
+                },
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut rows = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    // A legacy alias row (e.g. `claude-native`) can still hold the handle its canonical
+    // successor took over; following both imports the same transcript twice.
+    let is_canonical = |c: &ProviderConversation| {
+        crate::runtime_kind::RuntimeKind::from_str(&c.runtime_kind)
+            .is_some_and(|k| k.runtime_key() == c.runtime_kind)
+    };
+    rows.sort_by_key(|(_, c)| !is_canonical(c));
+    let mut seen = std::collections::HashSet::new();
+    rows.retain(|(sid, c)| seen.insert((sid.clone(), c.role_name.clone(), c.provider_id.clone())));
+    Ok(rows)
+}
+
+/// Gives a session that was imported (it has an `external_session_id`) but lost its provider
+/// handle the binding back. Closing a session used to erase the handle; the imported id is the
+/// authoritative record of which provider conversation the session follows. A no-op when the
+/// session already has a handle for its engine. Returns whether a binding was written.
+pub(crate) fn rebind_from_external(
+    conn: &rusqlite::Connection,
+    app_session_id: &str,
+) -> Result<bool, String> {
+    let row: Option<(Option<String>, Option<String>, String)> = conn
+        .query_row(
+            "SELECT external_session_id, runtime_kind, active_role FROM app_sessions WHERE id = ?1",
+            params![app_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some((Some(external), Some(runtime), role)) = row else {
+        return Ok(false);
+    };
+    if external.trim().is_empty() || runtime.trim().is_empty() {
+        return Ok(false);
+    }
+    let canonical = crate::runtime_kind::RuntimeKind::from_str(&runtime)
+        .map_or(runtime.clone(), |k| k.runtime_key().to_string());
+    let bound: i64 = conn
+        .query_row(
+            "SELECT count(1) FROM app_session_role_runtime_configs
+             WHERE app_session_id = ?1 AND role_name = ?2
+               AND acp_session_id IS NOT NULL AND trim(acp_session_id) <> ''",
+            params![app_session_id, role],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if bound > 0 {
+        return Ok(false);
+    }
+    save_cli_id_on(conn, app_session_id, &canonical, &role, &external)?;
+    Ok(true)
 }
 
 pub(crate) fn list_provider_conversations(
@@ -467,54 +566,62 @@ pub(crate) fn list_provider_conversations(
     app_session_id: &str,
 ) -> Result<Vec<ProviderConversation>, String> {
     with_db(state, |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT role_name, runtime_kind, acp_session_id, transcript_cursor
-                 FROM app_session_role_runtime_configs
-                 WHERE app_session_id = ?1 AND acp_session_id IS NOT NULL AND acp_session_id != ''",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(params![app_session_id], |row| {
-                Ok(ProviderConversation {
-                    role_name: row.get(0)?,
-                    runtime_kind: row.get(1)?,
-                    provider_id: row.get(2)?,
-                    cursor: row.get::<_, Option<i64>>(3)?.map(|c| c.max(0) as usize),
-                })
-            })
-            .map_err(|e| e.to_string())?;
-        let mut rows = rows
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?;
-        // A legacy alias row (e.g. `claude-native`) can still hold the handle its canonical
-        // successor took over; following both imports the same transcript twice.
-        let is_canonical = |c: &ProviderConversation| {
-            crate::runtime_kind::RuntimeKind::from_str(&c.runtime_kind)
-                .is_some_and(|k| k.runtime_key() == c.runtime_kind)
-        };
-        rows.sort_by_key(|c| !is_canonical(c));
-        let mut seen = std::collections::HashSet::new();
-        rows.retain(|c| seen.insert((c.role_name.clone(), c.provider_id.clone())));
-        Ok(rows)
+        let mut rows = query_conversations(conn, Some(app_session_id))?;
+        if rows.is_empty() && rebind_from_external(conn, app_session_id)? {
+            rows = query_conversations(conn, Some(app_session_id))?;
+        }
+        Ok(rows.into_iter().map(|(_, c)| c).collect())
     })
 }
 
-/// Only advances the cursor of the conversation it was read for: if the persona has moved to a
-/// different provider conversation since, the stale write is dropped.
-pub(crate) fn set_transcript_cursor(
+/// Every provider conversation of every session, open or closed (the background sync's work
+/// list).
+pub(crate) fn list_all_provider_conversations(
+    state: &AppState,
+) -> Result<Vec<(String, ProviderConversation)>, String> {
+    with_db(state, |conn| {
+        let unbound: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT s.id FROM app_sessions s
+                     WHERE s.external_session_id IS NOT NULL AND trim(s.external_session_id) <> ''
+                       AND NOT EXISTS (
+                         SELECT 1 FROM app_session_role_runtime_configs c
+                         WHERE c.app_session_id = s.id
+                           AND c.acp_session_id IS NOT NULL AND trim(c.acp_session_id) <> '')",
+                )
+                .map_err(|e| e.to_string())?;
+            let ids = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?
+                .filter_map(Result::ok)
+                .collect();
+            ids
+        };
+        for id in unbound {
+            rebind_from_external(conn, &id)?;
+        }
+        query_conversations(conn, None)
+    })
+}
+
+/// Only advances the position of the conversation it was read for: if the persona has moved to
+/// a different provider conversation since, the stale write is dropped.
+pub(crate) fn set_transcript_position(
     state: &AppState,
     app_session_id: &str,
     conversation: &ProviderConversation,
-    cursor: usize,
+    position: &TranscriptPosition,
 ) -> Result<(), String> {
     with_db(state, |conn| {
         conn.execute(
-            "UPDATE app_session_role_runtime_configs SET transcript_cursor = ?1
-             WHERE app_session_id = ?2 AND role_name = ?3 AND runtime_kind = ?4
-               AND acp_session_id = ?5",
+            "UPDATE app_session_role_runtime_configs
+             SET transcript_offset = ?1, transcript_fingerprint = ?2
+             WHERE app_session_id = ?3 AND role_name = ?4 AND runtime_kind = ?5
+               AND acp_session_id = ?6",
             params![
-                cursor as i64,
+                position.offset as i64,
+                position.fingerprint,
                 app_session_id,
                 conversation.role_name,
                 conversation.runtime_kind,
@@ -536,9 +643,19 @@ pub(crate) fn clear_app_session_role_cli_id(
         return Err("app session id required".to_string());
     }
     with_db(state, |conn| {
+        // An explicit reset detaches the conversation for good, including the imported id the
+        // binding would otherwise be restored from (`rebind_from_external`).
+        conn.execute(
+            "UPDATE app_sessions SET external_session_id = NULL
+             WHERE id = ?1 AND external_session_id IN (
+               SELECT acp_session_id FROM app_session_role_runtime_configs
+               WHERE app_session_id = ?1 AND role_name = ?2 AND runtime_kind = ?3)",
+            params![app_session_id, role_name, runtime_key],
+        )
+        .map_err(|e| e.to_string())?;
         conn.execute(
             "UPDATE app_session_role_runtime_configs
-             SET acp_session_id = NULL
+             SET acp_session_id = NULL, transcript_offset = NULL, transcript_fingerprint = NULL
              WHERE app_session_id = ?1 AND role_name = ?2 AND runtime_kind = ?3",
             params![app_session_id, role_name, runtime_key],
         )
@@ -553,4 +670,159 @@ pub(crate) fn clear_app_session_role_cli_id(
         .map_err(|e| e.to_string())?;
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::*;
+    use crate::db::app_session::{
+        close_app_session_internal, reopen_app_session_internal, upsert_imported_session,
+    };
+    use crate::db::{init_db, DbPool};
+
+    fn test_state(dir: &tempfile::TempDir) -> AppState {
+        let pool = DbPool::new(dir.path().join("t.sqlite3"), 2, "PRAGMA foreign_keys = ON;")
+            .expect("pool");
+        init_db(&pool.get().expect("conn")).expect("init");
+        AppState {
+            db: pool,
+            role_cache: std::sync::Arc::new(dashmap::DashMap::new()),
+        }
+    }
+
+    fn imported(state: &AppState) -> String {
+        let session =
+            upsert_imported_session(state, None, "imported", "/w", "claude-code", "ext-1", 1, 1)
+                .unwrap();
+        save_app_session_role_cli_id(state, &session.id, "claude-code", "Developer", "ext-1")
+            .unwrap();
+        session.id
+    }
+
+    fn handles(state: &AppState, sid: &str) -> Vec<String> {
+        list_provider_conversations(state, sid)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.provider_id)
+            .collect()
+    }
+
+    #[test]
+    fn closing_keeps_the_binding_and_a_wiped_one_is_restored_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(&dir);
+        let sid = imported(&state);
+        // Closing only marks the row; the slot cleanup it schedules never touches the handle.
+        close_app_session_internal(&state, &sid).unwrap();
+        assert_eq!(handles(&state, &sid), ["ext-1"]);
+
+        // What the old close did: the handle is gone, the imported id is not.
+        with_db(&state, |conn| {
+            conn.execute(
+                "UPDATE app_session_role_runtime_configs SET acp_session_id = ''",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute("UPDATE app_session_roles SET acp_session_id = NULL", [])
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert_eq!(
+            handles(&state, &sid),
+            ["ext-1"],
+            "listing falls back to the imported id"
+        );
+
+        with_db(&state, |conn| {
+            conn.execute(
+                "UPDATE app_session_role_runtime_configs SET acp_session_id = NULL",
+                [],
+            )
+            .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        reopen_app_session_internal(&state, &sid).unwrap();
+        assert_eq!(
+            load_app_session_role_cli_id(&state, &sid, "claude-code", "Developer").as_deref(),
+            Some("ext-1"),
+            "reopen rebinds"
+        );
+    }
+
+    #[test]
+    fn an_explicit_reset_detaches_the_conversation_for_good() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(&dir);
+        let sid = imported(&state);
+        clear_app_session_role_cli_id(&state, &sid, "Developer", "claude-code").unwrap();
+        assert!(handles(&state, &sid).is_empty());
+    }
+
+    #[test]
+    fn the_repair_migration_restores_bindings_of_closed_imports() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(&dir);
+        let sid = imported(&state);
+        with_db(&state, |conn| {
+            conn.execute(
+                "UPDATE app_session_role_runtime_configs SET acp_session_id = ''",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.pragma_update(None, "user_version", 18)
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        // The unbound, closed session is repaired by the one-time migration at startup.
+        with_db(&state, init_db).unwrap();
+        let bound: i64 = with_db(&state, |conn| {
+            conn.query_row(
+                "SELECT count(1) FROM app_session_role_runtime_configs
+                 WHERE app_session_id = ?1 AND acp_session_id = 'ext-1'",
+                [&sid],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert_eq!(bound, 1);
+        let version: i64 = with_db(&state, |conn| {
+            conn.query_row("PRAGMA user_version", [], |r| r.get(0))
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert_eq!(version, 19);
+    }
+
+    #[test]
+    fn a_new_provider_handle_resets_the_transcript_position() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(&dir);
+        let sid = imported(&state);
+        let conversation = list_provider_conversations(&state, &sid)
+            .unwrap()
+            .pop()
+            .unwrap();
+        set_transcript_position(
+            &state,
+            &sid,
+            &conversation,
+            &TranscriptPosition {
+                offset: 10,
+                fingerprint: "f".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            list_provider_conversations(&state, &sid).unwrap()[0]
+                .position
+                .as_ref()
+                .map(|p| p.offset),
+            Some(10)
+        );
+        save_app_session_role_cli_id(&state, &sid, "claude-code", "Developer", "other").unwrap();
+        assert!(list_provider_conversations(&state, &sid).unwrap()[0]
+            .position
+            .is_none());
+    }
 }

@@ -17,7 +17,7 @@ import { assistantApi, engineApi } from "../lib/tauriApi";
 import { openExternal } from "../lib/transport";
 import { copyText } from "../lib/clipboard";
 import { responseSession } from "../lib/messagePresentation";
-import { Badge, Button, ContextMenuItem, ContextMenuSurface, StateDot } from "./ui";
+import { Badge, Button, ContextMenuItem, ContextMenuSurface, Pill, StateDot } from "./ui";
 import { Check, Copy } from "lucide-solid";
 
 /** Failed turns are persisted as `event` rows with the id `<turnId>:error`; background task
@@ -196,6 +196,13 @@ function MessageWindowContent(props: MessageWindowProps) {
   const [queueCollapsed, setQueueCollapsed] = createSignal(true);
   const [searchOpen, setSearchOpen] = createSignal(false);
   const [searchQuery, setSearchQuery] = createSignal("");
+  const modeName = () => {
+    const session = props.activeSession();
+    const id = session?.currentMode;
+    if (!id) return null;
+    const listed = session?.agentModes?.find((m) => m.id === id)?.title;
+    return listed || id.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_]+/g, " ").replace(/^./, (c) => c.toUpperCase());
+  };
   const lastGroupIsTools = createMemo(() => {
     const groups = collectToolGroups(props.activeSession()?.streamSegments ?? []);
     return groups[groups.length - 1]?.kind === "tools";
@@ -528,9 +535,6 @@ function MessageWindowContent(props: MessageWindowProps) {
                     {msg.roleName || props.activeSession()?.activeRole || "Assistant"}
                   </span>
                   <span class="chat-time">{fmt(msg.at)}</span>
-                  <Show when={props.activeSession()?.currentMode}>
-                    <span class="message-mode-badge">{props.activeSession()?.currentMode}</span>
-                  </Show>
                 </div>
                 <Show when={effectiveSegments()} fallback={
                   <div class="agent-message-card">
@@ -673,9 +677,13 @@ function MessageWindowContent(props: MessageWindowProps) {
         />
       </Show>
       <UserInputModal
+        inline
         activeSession={props.activeSession}
         patchActiveSession={props.patchActiveSession}
       />
+      <Show when={modeName()}>
+        <div class="session-mode-line"><Pill>{modeName()}</Pill></div>
+      </Show>
       <CapabilityGate capabilities={props.runtimeCapabilities?.()} capability="usage">
         <SessionTelemetry activeSession={props.activeSession} capabilities={props.runtimeCapabilities} />
       </CapabilityGate>

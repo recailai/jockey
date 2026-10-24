@@ -1,4 +1,5 @@
-use super::{DiscoveredSession, ParsedImportedMessage};
+use super::tail::{parse_iso_ms, Acc, Item, Outcome, Reduce, Unit};
+use super::DiscoveredSession;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -343,132 +344,249 @@ fn inspect_claude_session(path: &Path, session_id: &str) -> Option<(String, usiz
     Some((title, user_turns + assistant_turns))
 }
 
-pub(crate) fn parse_claude_session_messages(path: &Path) -> Vec<ParsedImportedMessage> {
-    let Ok(file) = File::open(path) else {
-        return Vec::new();
-    };
-    let reader = BufReader::new(file);
-    let mut messages = Vec::new();
-    let base_time = crate::now_ms();
-    let mut offset = 0i64;
+/// Entries that never carry conversation content, rejected before JSON parsing: the API
+/// request mirrors are by far the largest lines in a transcript. Their `"type":"..."` appears
+/// unescaped only at the top level, so message text can never match.
+pub(crate) fn skip_line(line: &[u8]) -> bool {
+    const SKIPPED: [&[u8]; 3] = [
+        b"\"type\":\"api-request",
+        b"\"type\":\"attachment\"",
+        b"\"type\":\"file-history",
+    ];
+    SKIPPED
+        .iter()
+        .any(|needle| line.windows(needle.len()).any(|w| w == *needle))
+}
 
-    for line in reader.lines() {
-        let Ok(line) = line else { continue };
-        let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
+/// Groups Claude Code entries into Jockey-shaped items. Claude writes one entry per content
+/// block, repeating the message's `stop_reason` on each of them, so a turn is closed by the
+/// entry that carries the reply (not a thinking block that precedes it), by the CLI's
+/// `turn_duration` marker, by an interruption, or by the next prompt.
+pub(crate) struct ClaudeReducer {
+    acc: Acc,
+}
 
-        if val.get("isMeta").and_then(|m| m.as_bool()) == Some(true)
-            || val.get("isCompactSummary").and_then(|m| m.as_bool()) == Some(true)
-        {
-            continue;
-        }
-
-        let entry_type = val.get("type").and_then(|t| t.as_str()).unwrap_or_default();
-        offset += 50;
-        let timestamp_ms = base_time + offset;
-
-        if entry_type == "user" {
-            if let Some(msg) = val.get("message") {
-                let mut user_text = String::new();
-                if let Some(content_str) = msg.get("content").and_then(|c| c.as_str()) {
-                    user_text.push_str(content_str);
-                } else if let Some(content_arr) = msg.get("content").and_then(|c| c.as_array()) {
-                    for block in content_arr {
-                        if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                            if let Some(txt) = block.get("text").and_then(|t| t.as_str()) {
-                                user_text.push_str(txt);
-                            }
-                        }
-                    }
-                }
-
-                if let Some(summary) = task_notification_event(&val, &user_text) {
-                    messages.push(ParsedImportedMessage {
-                        role_name: "event".to_string(),
-                        content: summary,
-                        created_at: timestamp_ms,
-                    });
-                } else if let Some(cleaned) = clean_claude_user_text(&user_text) {
-                    messages.push(ParsedImportedMessage {
-                        role_name: "user".to_string(),
-                        content: cleaned,
-                        created_at: timestamp_ms,
-                    });
-                }
-            }
-        } else if entry_type == "assistant" {
-            if let Some(msg) = val.get("message") {
-                let mut assistant_parts = Vec::new();
-                if let Some(content_str) = msg.get("content").and_then(|c| c.as_str()) {
-                    assistant_parts.push(content_str.to_string());
-                } else if let Some(content_arr) = msg.get("content").and_then(|c| c.as_array()) {
-                    for block in content_arr {
-                        let block_type = block
-                            .get("type")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or_default();
-                        if block_type == "text" {
-                            if let Some(txt) = block.get("text").and_then(|t| t.as_str()) {
-                                let trimmed = txt.trim();
-                                if !trimmed.is_empty() {
-                                    assistant_parts.push(trimmed.to_string());
-                                }
-                            }
-                        } else if block_type == "tool_use" {
-                            let tool_name =
-                                block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
-                            let command_hint = block
-                                .pointer("/input/command")
-                                .and_then(|c| c.as_str())
-                                .or_else(|| {
-                                    block.pointer("/input/description").and_then(|c| c.as_str())
-                                })
-                                .unwrap_or("");
-                            if !command_hint.is_empty() {
-                                assistant_parts.push(format!("`{tool_name}`: {command_hint}"));
-                            }
-                        }
-                    }
-                }
-
-                let assistant_text = assistant_parts.join("\n\n").trim().to_string();
-                if !assistant_text.is_empty() {
-                    messages.push(ParsedImportedMessage {
-                        role_name: "Developer".to_string(),
-                        content: assistant_text,
-                        created_at: timestamp_ms,
-                    });
-                }
-            }
+impl ClaudeReducer {
+    pub(crate) fn new(role: String) -> Self {
+        Self {
+            acc: Acc::new(role),
         }
     }
 
-    messages
+    fn text_of(content: Option<&serde_json::Value>) -> String {
+        match content {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Array(blocks)) => blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                .collect::<String>(),
+            _ => String::new(),
+        }
+    }
+
+    fn user(&mut self, unit: &Unit, at: i64) {
+        let entry = &unit.value;
+        if entry.get("isMeta").and_then(|m| m.as_bool()) == Some(true)
+            || entry.get("isCompactSummary").and_then(|m| m.as_bool()) == Some(true)
+        {
+            return;
+        }
+        let content = entry.pointer("/message/content");
+        let mut had_result = false;
+        if let Some(blocks) = content.and_then(|c| c.as_array()) {
+            for block in blocks {
+                if block.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+                    continue;
+                }
+                had_result = true;
+                if let Some(id) = block.get("tool_use_id").and_then(|i| i.as_str()) {
+                    let is_error = block.get("is_error").and_then(|e| e.as_bool()) == Some(true);
+                    self.acc.tool_result(
+                        id,
+                        block.get("content").unwrap_or(&serde_json::Value::Null),
+                        is_error,
+                    );
+                }
+            }
+        }
+        if had_result {
+            self.acc.running = Some(true);
+            return;
+        }
+        let text = Self::text_of(content);
+        let id = entry_id(entry, unit.start);
+        if let Some(summary) = task_notification_event(entry, &text) {
+            self.acc
+                .push(Item::plain(format!("e:{id}"), "event", summary, at));
+            self.acc.running = Some(true);
+            return;
+        }
+        if text.trim().starts_with("[Request interrupted by user") {
+            self.acc.close_turn();
+            self.acc.running = Some(false);
+            return;
+        }
+        if let Some(cleaned) = clean_claude_user_text(&text) {
+            self.acc.close_turn();
+            self.acc
+                .push(Item::plain(format!("u:{id}"), "user", cleaned, at));
+            self.acc.running = Some(true);
+        }
+    }
+
+    fn assistant(&mut self, unit: &Unit, at: i64) {
+        let entry = &unit.value;
+        let Some(message) = entry.get("message") else {
+            return;
+        };
+        let id = entry_id(entry, unit.start);
+        self.acc.ensure_turn(|| format!("t:{id}"), unit.start, at);
+        let mut only_thinking = true;
+        match message.get("content") {
+            Some(serde_json::Value::String(text)) => {
+                only_thinking = false;
+                self.acc.text(text);
+            }
+            Some(serde_json::Value::Array(blocks)) => {
+                for block in blocks {
+                    let kind = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    if kind != "thinking" && kind != "redacted_thinking" {
+                        only_thinking = false;
+                    }
+                    match kind {
+                        "text" => {
+                            if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                self.acc.text(text);
+                            }
+                        }
+                        "thinking" => {
+                            if let Some(text) = block.get("thinking").and_then(|t| t.as_str()) {
+                                self.acc.thought(text);
+                            }
+                        }
+                        "tool_use" => {
+                            if let Some(tool_id) = block.get("id").and_then(|i| i.as_str()) {
+                                let name =
+                                    block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                                self.acc.tool_call(
+                                    tool_id,
+                                    name,
+                                    block.get("input").unwrap_or(&serde_json::Value::Null),
+                                    None,
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+        let finished = matches!(
+            message.get("stop_reason").and_then(|s| s.as_str()),
+            Some(reason) if reason != "tool_use" && reason != "pause_turn"
+        );
+        if finished && !only_thinking {
+            self.acc.close_turn();
+            self.acc.running = Some(false);
+        } else {
+            self.acc.running = Some(true);
+        }
+    }
+}
+
+fn entry_id(entry: &serde_json::Value, offset: u64) -> String {
+    entry
+        .get("uuid")
+        .and_then(|u| u.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("o{offset}"))
+}
+
+impl Reduce for ClaudeReducer {
+    fn feed(&mut self, unit: &Unit) {
+        let entry = &unit.value;
+        let at = self.acc.stamp(
+            entry
+                .get("timestamp")
+                .and_then(|t| t.as_str())
+                .and_then(parse_iso_ms),
+        );
+        if entry.get("isSidechain").and_then(|s| s.as_bool()) == Some(true) {
+            return;
+        }
+        match entry.get("type").and_then(|t| t.as_str()) {
+            Some("user") => self.user(unit, at),
+            Some("assistant") => self.assistant(unit, at),
+            Some("system")
+                if entry.get("subtype").and_then(|s| s.as_str()) == Some("turn_duration") =>
+            {
+                self.acc.close_turn();
+                self.acc.running = Some(false);
+            }
+            _ => {}
+        }
+    }
+
+    fn finish(self: Box<Self>, consumed: u64, stale: bool) -> Outcome {
+        self.acc.finish(consumed, stale)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn task_notifications_become_event_rows_not_user_messages() {
+    fn run(lines: &[serde_json::Value]) -> Outcome {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("sess.jsonl");
-        let note = "<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n<summary>Agent &quot;x&quot; done</summary>\n</task-notification>";
-        let flagged = serde_json::json!({"type":"user","origin":{"kind":"task-notification"},
-            "message":{"role":"user","content":note}});
-        let bare = serde_json::json!({"type":"user","message":{"role":"user","content":note}});
-        let human = serde_json::json!({"type":"user","origin":{"kind":"human"},
-            "message":{"role":"user","content":"go on"}});
-        std::fs::write(&path, format!("{flagged}\n{bare}\n{human}\n")).expect("write fixture");
-        let msgs = parse_claude_session_messages(&path);
-        let rows: Vec<(&str, &str)> = msgs
+        let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        std::fs::write(&path, text).expect("write fixture");
+        crate::importer::tail::read("claude-code", "Developer", &path, 0, false)
+            .unwrap()
+            .unwrap()
+    }
+
+    fn rows(out: &Outcome) -> Vec<(&str, &str)> {
+        out.items
             .iter()
-            .map(|m| (m.role_name.as_str(), m.content.as_str()))
-            .collect();
+            .map(|m| (m.role.as_str(), m.text.as_str()))
+            .collect()
+    }
+
+    fn user_entry(uuid: &str, text: &str, ts: &str) -> serde_json::Value {
+        serde_json::json!({"type":"user","uuid":uuid,"timestamp":ts,"origin":{"kind":"human"},
+            "message":{"role":"user","content":text}})
+    }
+
+    fn assistant_entry(
+        uuid: &str,
+        stop: &str,
+        blocks: serde_json::Value,
+        ts: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({"type":"assistant","uuid":uuid,"timestamp":ts,
+            "message":{"role":"assistant","id":"msg_1","stop_reason":stop,"content":blocks}})
+    }
+
+    fn tool_result(uuid: &str, tool_id: &str, text: &str, ts: &str) -> serde_json::Value {
+        serde_json::json!({"type":"user","uuid":uuid,"timestamp":ts,"message":{"role":"user",
+            "content":[{"type":"tool_result","tool_use_id":tool_id,"content":text}]}})
+    }
+
+    #[test]
+    fn task_notifications_become_event_rows_not_user_messages() {
+        let note = "<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n<summary>Agent &quot;x&quot; done</summary>\n</task-notification>";
+        let flagged = serde_json::json!({"type":"user","uuid":"n1","origin":{"kind":"task-notification"},
+            "message":{"role":"user","content":note}});
+        let bare =
+            serde_json::json!({"type":"user","uuid":"n2","message":{"role":"user","content":note}});
+        let human = serde_json::json!({"type":"user","uuid":"h1","origin":{"kind":"human"},
+            "message":{"role":"user","content":"go on"}});
+        let out = run(&[flagged, bare, human]);
         assert_eq!(
-            rows,
+            rows(&out),
             vec![
                 ("event", "Background task completed: Agent \"x\" done"),
                 ("event", "Background task completed: Agent \"x\" done"),
@@ -476,6 +594,161 @@ mod tests {
             ]
         );
         assert!(clean_claude_user_text(note).is_none());
+    }
+
+    #[test]
+    fn a_turn_becomes_one_message_with_tool_segments_and_ends_on_the_reply() {
+        let out = run(&[
+            user_entry("u1", "list files", "2026-10-20T00:00:00.000Z"),
+            serde_json::json!({"type":"attachment","uuid":"x"}),
+            assistant_entry(
+                "a1",
+                "tool_use",
+                serde_json::json!([{"type":"thinking","thinking":"hmm"}]),
+                "2026-10-20T00:00:01.000Z",
+            ),
+            assistant_entry(
+                "a2",
+                "tool_use",
+                serde_json::json!([{"type":"text","text":"Looking."},
+                {"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"ls","description":"List files"}}]),
+                "2026-10-20T00:00:02.000Z",
+            ),
+            tool_result("r1", "tu1", "a.txt", "2026-10-20T00:00:03.000Z"),
+            assistant_entry(
+                "a3",
+                "end_turn",
+                serde_json::json!([{"type":"text","text":"Done: a.txt"}]),
+                "2026-10-20T00:00:04.000Z",
+            ),
+        ]);
+        assert_eq!(out.items.len(), 2);
+        assert!(out.open.is_none());
+        assert_eq!(out.running, Some(false));
+        let turn = &out.items[1];
+        assert_eq!(turn.id, "t:a1");
+        assert_eq!(turn.text, "Looking.\n\nDone: a.txt");
+        let msg = turn.msg.as_ref().unwrap();
+        let kinds: Vec<_> = msg["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["thought", "text", "tool", "text"]);
+        let tc = &msg["toolCalls"][0];
+        assert_eq!(tc["toolName"], "Bash");
+        assert_eq!(tc["kind"], "execute");
+        assert_eq!(tc["status"], "completed");
+        assert_eq!(tc["rawOutput"], "a.txt");
+        assert_eq!(tc["title"], "List files");
+        assert_eq!(msg["thoughtText"], "hmm");
+    }
+
+    #[test]
+    fn an_unfinished_turn_is_held_back_and_resumes_from_its_start() {
+        let lines = [
+            user_entry("u1", "run it", "2026-10-20T00:00:00.000Z"),
+            assistant_entry(
+                "a1",
+                "tool_use",
+                serde_json::json!([
+                {"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 100"}}]),
+                "2026-10-20T00:00:01.000Z",
+            ),
+        ];
+        let out = run(&lines);
+        assert_eq!(rows(&out), vec![("user", "run it")]);
+        assert_eq!(out.running, Some(true));
+        let open = out.open.as_ref().expect("live preview");
+        assert_eq!(open.id, "t:a1");
+        // The next read starts at the open turn, not at the end of the file.
+        let first_line = format!("{}\n", lines[0]).len() as u64;
+        assert_eq!(out.commit, first_line);
+    }
+
+    #[test]
+    fn a_thinking_block_marked_end_turn_does_not_close_the_turn_before_the_reply() {
+        let out = run(&[
+            user_entry("u1", "hi", "2026-10-20T00:00:00.000Z"),
+            assistant_entry(
+                "a1",
+                "end_turn",
+                serde_json::json!([{"type":"thinking","thinking":"x"}]),
+                "2026-10-20T00:00:01.000Z",
+            ),
+        ]);
+        assert_eq!(out.items.len(), 1);
+        assert!(out.open.is_some());
+        assert_eq!(out.running, Some(true));
+    }
+
+    #[test]
+    fn interruptions_and_turn_duration_end_a_turn_and_settle_its_tools() {
+        let out = run(&[
+            user_entry("u1", "go", "2026-10-20T00:00:00.000Z"),
+            assistant_entry(
+                "a1",
+                "tool_use",
+                serde_json::json!([
+                {"type":"tool_use","id":"tu1","name":"Read","input":{"file_path":"/a"}}]),
+                "2026-10-20T00:00:01.000Z",
+            ),
+            user_entry(
+                "u2",
+                "[Request interrupted by user for tool use]",
+                "2026-10-20T00:00:02.000Z",
+            ),
+        ]);
+        assert_eq!(out.items.len(), 2, "no row for the interruption marker");
+        assert_eq!(
+            out.items[1].msg.as_ref().unwrap()["toolCalls"][0]["status"],
+            "interrupted"
+        );
+        assert_eq!(out.running, Some(false));
+
+        let done = run(&[
+            user_entry("u1", "go", "2026-10-20T00:00:00.000Z"),
+            assistant_entry(
+                "a1",
+                "end_turn",
+                serde_json::json!([{"type":"thinking","thinking":"x"}]),
+                "2026-10-20T00:00:01.000Z",
+            ),
+            serde_json::json!({"type":"system","subtype":"turn_duration","uuid":"s1"}),
+        ]);
+        assert!(done.open.is_none());
+        assert_eq!(done.running, Some(false));
+    }
+
+    #[test]
+    fn sidechains_and_noise_entries_are_ignored_and_ids_are_stable() {
+        let lines = [
+            serde_json::json!({"type":"queue-operation","operation":"enqueue"}),
+            user_entry("u1", "hi", "2026-10-20T00:00:00.000Z"),
+            serde_json::json!({"type":"assistant","uuid":"side","isSidechain":true,"message":{"stop_reason":"end_turn","content":[{"type":"text","text":"child"}]}}),
+            assistant_entry(
+                "a1",
+                "end_turn",
+                serde_json::json!([{"type":"text","text":"hello"}]),
+                "2026-10-20T00:00:01.000Z",
+            ),
+        ];
+        let first = run(&lines);
+        let again = run(&lines);
+        let ids = |o: &Outcome| o.items.iter().map(|i| i.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&first), ["u:u1", "t:a1"]);
+        assert_eq!(ids(&first), ids(&again));
+        assert_eq!(first.items[1].text, "hello");
+    }
+
+    #[test]
+    fn skip_filter_only_matches_top_level_mirror_entries() {
+        assert!(skip_line(br#"{"type":"api-request-blob","hash":"x"}"#));
+        assert!(skip_line(br#"{"type":"attachment","uuid":"x"}"#));
+        assert!(!skip_line(
+            br#"{"type":"user","message":{"content":"say \"type\":\"api-request\""}}"#
+        ));
     }
 
     #[test]
@@ -512,13 +785,6 @@ mod tests {
     fn test_encode_and_scan() {
         let encoded = encode_claude_project_dir("/Users/sexy/Documents/GitHub/arise-ops");
         assert_eq!(encoded, "-Users-sexy-Documents-GitHub-arise-ops");
-        let sessions = scan_claude_sessions("/Users/sexy/Documents/GitHub/arise-ops");
-        println!("Scanned sessions: {:?}", sessions);
-        if let Some(first) = sessions.first() {
-            let msgs = parse_claude_session_messages(&first.file_path);
-            println!("Parsed messages count: {}", msgs.len());
-            assert!(!msgs.is_empty(), "Should parse messages from session file");
-        }
     }
 
     #[test]

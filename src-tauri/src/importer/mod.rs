@@ -3,6 +3,8 @@ pub(crate) mod claude;
 pub(crate) mod codex;
 pub(crate) mod dsh;
 pub(crate) mod pi;
+pub(crate) mod sync;
+pub(crate) mod tail;
 
 use crate::db::app_session_role::save_app_session_role_cli_id;
 use crate::db::project::get_project_internal;
@@ -15,13 +17,6 @@ use std::path::{Path, PathBuf};
 const CATALOG_FRESH_FOR_MS: i64 = 5 * 60 * 1000;
 /// Catalog scope for the machine-wide scan. Not a project id, so it never collides with one.
 const ALL_SCOPE: &str = "*all*";
-
-#[derive(Debug, Clone)]
-pub(crate) struct ParsedImportedMessage {
-    pub(crate) role_name: String,
-    pub(crate) content: String,
-    pub(crate) created_at: i64,
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct DiscoveredSession {
@@ -163,16 +158,6 @@ fn deduplicate_sessions(sessions: Vec<DiscoveredSession>) -> Vec<DiscoveredSessi
         }
     }
     unique.into_values().collect()
-}
-
-pub(crate) fn parser_for(runtime_kind: &str) -> Option<fn(&Path) -> Vec<ParsedImportedMessage>> {
-    match runtime_kind {
-        "claude-code" | "claude-native" => Some(claude::parse_claude_session_messages),
-        "codex-cli" => Some(codex::parse_codex_session_messages),
-        "pi-cli" => Some(pi::parse_pi_session_messages),
-        "dsh-cli" => Some(dsh::parse_dsh_session_messages),
-        _ => None,
-    }
 }
 
 fn catalog_scanned_at(state: &AppState, project_id: &str) -> Result<Option<i64>, String> {
@@ -469,37 +454,97 @@ fn project_name_for(cwd: &str) -> String {
         .to_string()
 }
 
-/// Import the selected transcripts. `only` is the set of external session ids the user picked;
-/// `None` means every transcript found, which is what the old sync-everything button did.
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+}
+
+/// The directories provider transcripts live under (the ones that exist), for the file watcher.
+pub(crate) fn transcript_roots() -> Vec<PathBuf> {
+    let Some(home) = home_dir() else {
+        return Vec::new();
+    };
+    let claude = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".claude"))
+        .join("projects");
+    [
+        Some(claude),
+        Some(home.join(".codex").join("sessions")),
+        Some(home.join(".pi").join("agent").join("sessions")),
+        dsh::sessions_root(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|root| root.is_dir())
+    .collect()
+}
+
 /// Where a provider keeps the transcript of conversation `provider_id`, if it is on disk.
 pub(crate) fn locate_transcript(runtime_kind: &str, provider_id: &str) -> Option<PathBuf> {
-    let home = PathBuf::from(std::env::var_os("HOME")?);
-    let file_named = |root: PathBuf| {
+    locate_many(&[(runtime_kind.to_string(), provider_id.to_string())])
+        .into_values()
+        .next()
+}
+
+/// Transcript paths for many conversations at once, walking each provider's root a single
+/// time instead of once per conversation.
+pub(crate) fn locate_many(wanted: &[(String, String)]) -> HashMap<(String, String), PathBuf> {
+    let mut found = HashMap::new();
+    let Some(home) = home_dir() else {
+        return found;
+    };
+    let walk = |root: PathBuf| {
         let mut files = Vec::new();
         codex::collect_jsonl_files(&root, &mut files);
-        files.into_iter().find(|f| {
-            f.file_stem()
-                .and_then(|s| s.to_str())
-                .is_some_and(|s| s.contains(provider_id))
-        })
+        files
     };
-    match runtime_kind {
-        "claude-code" | "claude-native" => {
-            let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".claude"));
-            // One directory per working directory; the file is named after the session id.
-            std::fs::read_dir(config_dir.join("projects"))
-                .ok()?
-                .flatten()
-                .map(|dir| dir.path().join(format!("{provider_id}.jsonl")))
-                .find(|path| path.is_file())
+    let mut codex_files: Option<Vec<PathBuf>> = None;
+    let mut pi_files: Option<Vec<PathBuf>> = None;
+    let by_stem = |files: &[PathBuf], id: &str| {
+        files
+            .iter()
+            .find(|f| {
+                f.file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.contains(id))
+            })
+            .cloned()
+    };
+    for (runtime, id) in wanted {
+        let path = match runtime.as_str() {
+            "claude-code" | "claude-native" => {
+                let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home.join(".claude"));
+                // One directory per working directory; the file is named after the session id.
+                std::fs::read_dir(config_dir.join("projects"))
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|dir| dir.path().join(format!("{id}.jsonl")))
+                    .find(|path| path.is_file())
+            }
+            "codex-cli" => {
+                let files =
+                    codex_files.get_or_insert_with(|| walk(home.join(".codex").join("sessions")));
+                by_stem(files, id)
+            }
+            "pi-cli" => {
+                let files = pi_files
+                    .get_or_insert_with(|| walk(home.join(".pi").join("agent").join("sessions")));
+                by_stem(files, id)
+            }
+            "dsh-cli" => dsh::locate(id),
+            _ => None,
+        };
+        if let Some(path) = path {
+            found.insert((runtime.clone(), id.clone()), path);
         }
-        "codex-cli" => file_named(home.join(".codex").join("sessions")),
-        "pi-cli" => file_named(home.join(".pi").join("agent").join("sessions")),
-        "dsh-cli" => dsh::locate(provider_id),
-        _ => None,
     }
+    found
 }
 
 /// Keyed by the canonical runtime so a conversation reached under a legacy alias keeps the
@@ -508,94 +553,6 @@ pub(crate) fn transcript_id_prefix(runtime_kind: &str, provider_id: &str) -> Str
     let runtime = crate::runtime_kind::RuntimeKind::from_str(runtime_kind)
         .map_or(runtime_kind, |k| k.runtime_key());
     format!("import:{runtime}:{provider_id}")
-}
-
-/// Where to start reading a transcript the session has no cursor for yet. A session whose
-/// newest message came from this transcript (a fresh or untouched import) continues after its
-/// imported rows. Otherwise Jockey itself has been writing to the conversation and its own
-/// record already covers the transcript, so reading starts at the end.
-fn baseline_cursor(
-    state: &AppState,
-    session_id: &str,
-    id_prefix: &str,
-    transcript_len: usize,
-) -> Result<usize, String> {
-    let (all, imported) =
-        crate::db::app_session::imported_message_counts(state, session_id, id_prefix)?;
-    if all == 0 {
-        return Ok(0);
-    }
-    let last = crate::db::app_session::last_message_client_id(state, session_id)?;
-    if imported > 0 && last.is_some_and(|id| id.starts_with(&format!("{id_prefix}:"))) {
-        return Ok(imported as usize);
-    }
-    Ok(transcript_len)
-}
-
-/// Add the transcript entries past the conversation's cursor to the session and advance the
-/// cursor. Returns the messages that were added, shaped like engine messages.
-pub(crate) fn sync_transcript(
-    state: &AppState,
-    session_id: &str,
-    conversation: &crate::db::app_session_role::ProviderConversation,
-    path: &Path,
-) -> Result<Vec<serde_json::Value>, String> {
-    let Some(parse) = parser_for(&conversation.runtime_kind) else {
-        return Ok(Vec::new());
-    };
-    let parsed = parse(path);
-    let prefix = transcript_id_prefix(&conversation.runtime_kind, &conversation.provider_id);
-    let cursor = match conversation.cursor {
-        Some(cursor) => cursor,
-        None => baseline_cursor(state, session_id, &prefix, parsed.len())?,
-    };
-    // A transcript shorter than the cursor was rewritten (compaction, manual edit); start
-    // following it from its new end rather than re-importing it.
-    let start = cursor.min(parsed.len());
-    let new: Vec<(String, String, i64)> = parsed[start..]
-        .iter()
-        .map(|m| (m.role_name.clone(), m.content.clone(), m.created_at))
-        .collect();
-    let added =
-        crate::db::app_session::insert_imported_messages(state, session_id, &prefix, start, &new)?;
-    if conversation.cursor != Some(parsed.len()) {
-        crate::db::app_session_role::set_transcript_cursor(
-            state,
-            session_id,
-            conversation,
-            parsed.len(),
-        )?;
-    }
-    Ok(added
-        .into_iter()
-        .map(|pos| {
-            let (role_name, text, at) = &new[pos];
-            serde_json::json!({
-                "id": format!("{prefix}:{}", start + pos),
-                "roleName": role_name,
-                "text": text,
-                "at": at,
-            })
-        })
-        .collect())
-}
-
-/// Record that everything now in the transcript is already in the session — called after a
-/// turn Jockey ran, whose entries the engine recorded itself.
-pub(crate) fn mark_transcript_read(
-    state: &AppState,
-    session_id: &str,
-    conversation: &crate::db::app_session_role::ProviderConversation,
-    path: &Path,
-) -> Result<(), String> {
-    let Some(parse) = parser_for(&conversation.runtime_kind) else {
-        return Ok(());
-    };
-    let len = parse(path).len();
-    if conversation.cursor == Some(len) {
-        return Ok(());
-    }
-    crate::db::app_session_role::set_transcript_cursor(state, session_id, conversation, len)
 }
 
 /// Bring one discovered conversation into `project_id`; returns the Jockey session holding it.
@@ -638,8 +595,8 @@ fn import_one(
         &session.session_id,
     );
 
-    // Same path the session watcher uses: only transcript entries past the conversation's
-    // cursor are added, so turns Jockey itself ran are never imported a second time.
+    // Same path the background sync uses: only what the conversation's byte position has not
+    // covered is added, so turns Jockey itself ran are never imported a second time.
     // Propagate rather than swallow: a silent failure here would return the session as if
     // fully imported while it actually has zero messages.
     let conversation =
@@ -651,7 +608,14 @@ fn import_one(
     // An ACP-only conversation has no transcript here; the binding alone lets the next turn
     // resume it with `session/load`, and its history stays with the agent.
     if let Some(conversation) = conversation.filter(|_| !session.file_path.as_os_str().is_empty()) {
-        sync_transcript(state, &app_sess.id, &conversation, &session.file_path)?;
+        sync::sync_binding(
+            state,
+            &app_sess.id,
+            &conversation,
+            &session.file_path,
+            &sync::SyncCtx::default(),
+        )?;
+        crate::engine::watch::schedule_sync(&app_sess.id);
     }
     Ok(app_sess.id)
 }

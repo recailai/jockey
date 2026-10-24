@@ -3,7 +3,7 @@ import type { JSX } from "solid-js";
 import { MessageSquare, RefreshCw, Square } from "lucide-solid";
 import type { Project } from "../lib/tauriApi";
 import { assistantApi } from "../lib/tauriApi";
-import { allowOnceOption } from "../lib/permissionOptions";
+import { allowOnceOption, isPlanApproval } from "../lib/permissionOptions";
 import type { SessionSummary } from "./types";
 import { useControlCenter } from "../hooks/useControlCenter";
 import { makeDefaultSession } from "../lib/sessionHelpers";
@@ -38,6 +38,7 @@ export default function ControlCenter(props: ControlCenterProps) {
   const [individualBusy, setIndividualBusy] = createSignal(0);
   const [batchResult, setBatchResult] = createSignal<string | null>(null);
   const batchable = createMemo(() => data.pending().permissions.flatMap((permission) => {
+    if (isPlanApproval(permission)) return [];
     const option = allowOnceOption(permission.options);
     return option ? [{ requestId: permission.requestId, optionId: option.optionId }] : [];
   }));
@@ -168,7 +169,7 @@ export default function ControlCenter(props: ControlCenterProps) {
         </div>
       </div>
       <Show when={chosen()}>
-        <UserInputModal activeSession={chosen} onDefer={() => setSelected(null)} patchActiveSession={() => { setSelected(null); void data.refresh(); }} />
+        <UserInputModal activeSession={chosen} onChatAbout={(() => { const id = selected(); return () => { const target = data.sessions().find((x) => x.id === id); if (target) openQuick(target); }; })()} onDefer={() => setSelected(null)} patchActiveSession={() => { setSelected(null); void data.refresh(); }} />
       </Show>
       <Dialog open={!!quick()} onOpenChange={(o) => { if (!o && !sending()) setQuick(null); }}>
         <DialogContent title="Quick message" description={quick()?.title}>

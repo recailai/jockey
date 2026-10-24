@@ -1,5 +1,4 @@
 use crate::acp;
-use crate::db::app_session_role::clear_app_session_role_cli_id;
 use crate::db::{get_state, in_tx, with_db};
 use crate::runtime_profile;
 use crate::types::*;
@@ -586,68 +585,6 @@ pub(crate) fn save_app_message(
     )
 }
 
-/// Insert transcript messages under deterministic ids (`{id_prefix}:{index}`). Re-importing the
-/// same transcript only adds entries it has not seen, and two concurrent imports cannot double
-/// it (uq_app_session_messages_session_client_id). One transaction, not one fsync per row.
-/// Insert transcript entries `start_index..` under deterministic ids `{id_prefix}:{index}`.
-/// Returns the positions (within `messages`) that were new; already-present ids are skipped.
-pub(crate) fn insert_imported_messages(
-    state: &AppState,
-    session_id: &str,
-    id_prefix: &str,
-    start_index: usize,
-    messages: &[(String, String, i64)],
-) -> Result<Vec<usize>, String> {
-    if messages.is_empty() {
-        return Ok(Vec::new());
-    }
-    with_db(state, |conn| {
-        in_tx(conn, |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "INSERT INTO app_session_messages (session_id, client_id, role_name, content, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5)
-                     ON CONFLICT(session_id, client_id) WHERE client_id IS NOT NULL DO NOTHING",
-                )
-                .map_err(|e| e.to_string())?;
-            let mut added = Vec::new();
-            for (pos, (role_name, content, created_at)) in messages.iter().enumerate() {
-                let inserted = stmt
-                    .execute(params![
-                        session_id,
-                        format!("{id_prefix}:{}", start_index + pos),
-                        role_name,
-                        content,
-                        created_at
-                    ])
-                    .map_err(|e| e.to_string())?;
-                if inserted > 0 {
-                    added.push(pos);
-                }
-            }
-            Ok(added)
-        })
-    })
-}
-
-/// Client id of the session's newest message, if it has one.
-pub(crate) fn last_message_client_id(
-    state: &AppState,
-    session_id: &str,
-) -> Result<Option<String>, String> {
-    with_db(state, |conn| {
-        conn.query_row(
-            "SELECT client_id FROM app_session_messages WHERE session_id = ?1
-             ORDER BY id DESC LIMIT 1",
-            params![session_id],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .optional()
-        .map(Option::flatten)
-        .map_err(|e| e.to_string())
-    })
-}
-
 /// Messages a session holds: `(all, imported-with-ids)`. A session imported before transcript
 /// rows carried ids has messages but none with the import prefix.
 pub(crate) fn imported_message_counts(
@@ -661,6 +598,102 @@ pub(crate) fn imported_message_counts(
              FROM app_session_messages WHERE session_id = ?1",
             params![session_id, id_prefix],
             |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| e.to_string())
+    })
+}
+
+/// One transcript item to store: a user prompt, an event row, or a whole assistant turn
+/// (`content_type = json` with the same payload the engine writes for its own turns).
+#[derive(Clone)]
+pub(crate) struct ImportRow {
+    pub(crate) client_id: String,
+    pub(crate) role_name: String,
+    pub(crate) content: String,
+    pub(crate) content_type: Option<&'static str>,
+    pub(crate) payload: Option<String>,
+    pub(crate) created_at: i64,
+}
+
+/// Store imported rows under their provider-native ids. Rows already present are left alone
+/// (the unique index makes a repeated or overlapping import a no-op); returns, per input row,
+/// whether it was new. `replace_legacy_prefix` first deletes the positional rows
+/// (`{prefix}:{index}`) an older importer wrote, in the same transaction, so upgrading a
+/// pure import to turn-shaped rows never shows both.
+pub(crate) fn insert_import_rows(
+    state: &AppState,
+    session_id: &str,
+    rows: &[ImportRow],
+    replace_legacy_prefix: Option<&str>,
+) -> Result<Vec<bool>, String> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    with_db(state, |conn| {
+        in_tx(conn, |conn| {
+            if let Some(prefix) = replace_legacy_prefix {
+                conn.execute(
+                    "DELETE FROM app_session_messages
+                     WHERE session_id = ?1 AND client_id LIKE ?2 || ':%'
+                       AND substr(client_id, length(?2) + 2) <> ''
+                       AND substr(client_id, length(?2) + 2) NOT GLOB '*[^0-9]*'",
+                    params![session_id, prefix],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            let mut stmt = conn
+                .prepare(
+                    "INSERT INTO app_session_messages
+                       (session_id, client_id, role_name, content, content_type, payload, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                     ON CONFLICT(session_id, client_id) WHERE client_id IS NOT NULL DO NOTHING",
+                )
+                .map_err(|e| e.to_string())?;
+            let mut added = Vec::with_capacity(rows.len());
+            let mut newest = 0i64;
+            for row in rows {
+                let inserted = stmt
+                    .execute(params![
+                        session_id,
+                        row.client_id,
+                        row.role_name,
+                        row.content,
+                        row.content_type.unwrap_or("text"),
+                        row.payload,
+                        row.created_at
+                    ])
+                    .map_err(|e| e.to_string())?;
+                if inserted > 0 {
+                    newest = newest.max(row.created_at);
+                }
+                added.push(inserted > 0);
+            }
+            drop(stmt);
+            if newest > 0 {
+                // A session that moved in the terminal moves up the list; never down.
+                conn.execute(
+                    "UPDATE app_sessions SET last_active_at = max(last_active_at, ?1) WHERE id = ?2",
+                    params![newest, session_id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            Ok(added)
+        })
+    })
+}
+
+/// The latest moment the session is known to have recorded anything: its newest message or
+/// its `last_active_at`, whichever is later. A Jockey turn's row keeps the time of its first
+/// checkpoint while the turn runs on, but every save bumps `last_active_at`, so the pair
+/// bounds the turn's end.
+pub(crate) fn newest_message_at(state: &AppState, session_id: &str) -> Result<i64, String> {
+    with_db(state, |conn| {
+        conn.query_row(
+            "SELECT max(
+               coalesce((SELECT max(created_at) FROM app_session_messages WHERE session_id = ?1), 0),
+               coalesce((SELECT last_active_at FROM app_sessions WHERE id = ?1), 0))",
+            params![session_id],
+            |row| row.get(0),
         )
         .map_err(|e| e.to_string())
     })
@@ -1001,8 +1034,10 @@ fn schedule_session_role_cleanup(state: AppState, session_id: String, keep_activ
             if active_role.as_deref() == Some(role_name.as_str()) {
                 continue;
             }
+            // Only the warm process goes. The provider handle stays: it is what the session
+            // resumes from when reopened and what the background sync follows while it is
+            // closed. Only an explicit reset (`reset_acp_session`) drops it.
             let _ = acp::reset_session(&runtime_kind, &role_name, Some(&session_id)).await;
-            let _ = clear_app_session_role_cli_id(&state, &session_id, &role_name, &runtime_kind);
         }
     });
 }
@@ -1105,6 +1140,7 @@ pub(crate) fn reopen_app_session_internal(
             params![now, &id],
         )
         .map_err(|e| e.to_string())?;
+        crate::db::app_session_role::rebind_from_external(conn, &id)?;
         let session = conn
             .query_row(
                 "SELECT id, title, active_role, runtime_kind, runtime_profile_id, cwd, project_id, external_session_id, created_at, last_active_at, closed_at
@@ -1183,40 +1219,81 @@ mod tests {
         assert!(rows[0].last_error.is_none());
     }
 
+    fn row(id: &str, at: i64) -> ImportRow {
+        ImportRow {
+            client_id: id.to_string(),
+            role_name: "user".into(),
+            content: id.to_string(),
+            content_type: None,
+            payload: None,
+            created_at: at,
+        }
+    }
+
     #[test]
-    fn reimport_appends_only_new_transcript_entries() {
+    fn reimport_appends_only_rows_with_new_ids() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = test_state(&dir);
         let session = create_app_session_internal(&state, Some("s"), None, None, None, None)
             .expect("create session");
-        let msg = |n: usize| ("user".to_string(), format!("m{n}"), n as i64);
-        let first: Vec<_> = (0..3).map(msg).collect();
+        let first = [row("import:x:1:u:a", 1), row("import:x:1:t:b", 2)];
         assert_eq!(
-            insert_imported_messages(&state, &session.id, "import:x:1", 0, &first)
-                .unwrap()
-                .len(),
-            3
+            insert_import_rows(&state, &session.id, &first, None).unwrap(),
+            [true, true]
         );
-        // The CLI wrote two more entries since; a re-import adds exactly those.
-        let longer: Vec<_> = (0..5).map(msg).collect();
+        let more = [first[0].clone(), first[1].clone(), row("import:x:1:u:c", 3)];
         assert_eq!(
-            insert_imported_messages(&state, &session.id, "import:x:1", 0, &longer).unwrap(),
-            vec![3, 4]
-        );
-        assert!(
-            insert_imported_messages(&state, &session.id, "import:x:1", 0, &longer)
-                .unwrap()
-                .is_empty()
-        );
-        // Continuing from a cursor keeps the transcript positions as ids.
-        assert_eq!(
-            insert_imported_messages(&state, &session.id, "import:x:1", 5, &[msg(5)]).unwrap(),
-            vec![0]
+            insert_import_rows(&state, &session.id, &more, None).unwrap(),
+            [false, false, true]
         );
         assert_eq!(
             imported_message_counts(&state, &session.id, "import:x:1").unwrap(),
-            (6, 6)
+            (3, 3)
         );
+        assert!(newest_message_at(&state, &session.id).unwrap() >= 3);
+    }
+
+    #[test]
+    fn upgrading_replaces_positional_rows_but_keeps_everything_else() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(&dir);
+        let session = create_app_session_internal(&state, Some("s"), None, None, None, None)
+            .expect("create session");
+        insert_import_rows(
+            &state,
+            &session.id,
+            &[
+                row("import:x:1:0", 1),
+                row("import:x:1:1", 2),
+                row("import:x:1:u:keep", 3),
+            ],
+            None,
+        )
+        .unwrap();
+        save_app_message_internal(&state, &session.id, Some("own"), "user", "mine", None, None)
+            .unwrap();
+        insert_import_rows(
+            &state,
+            &session.id,
+            &[row("import:x:1:t:new", 4)],
+            Some("import:x:1"),
+        )
+        .unwrap();
+        let ids: Vec<String> = with_db(&state, |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT client_id FROM app_session_messages WHERE session_id = ?1 ORDER BY id",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![&session.id], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?
+                .filter_map(Result::ok)
+                .collect();
+            Ok(rows)
+        })
+        .unwrap();
+        assert_eq!(ids, ["import:x:1:u:keep", "own", "import:x:1:t:new"]);
     }
 
     #[test]

@@ -7,53 +7,111 @@ extensions below (Codex shared daemon, sequenced frames) remain design. Builds o
 
 ## As built
 
-The requirement is read-only following with eventual consistency, plus a running state. That
-admits a much smaller mechanism than the full model below, so the implementation picks the
-cheapest option that is exact at the end of every turn:
+The requirement is read-only following with eventual consistency, plus a running state, for
+every provider conversation a session is bound to, open or closed. The implementation picks the
+cheapest mechanisms that are exact at the end of every turn.
 
 | Concern | Options weighed | Chosen |
 | --- | --- | --- |
-| View joins a running Jockey turn | (a) sequence every frame (`rev`) through an engine publisher, clients dedupe; (b) clients poll the checkpoint; (c) **notify, then pull**: a tiny `turn/progress { turnId, rev }` while someone watches, late joiners fetch the in-memory snapshot | (c): no change to the ~8 adapter emit sites or to the desktop's live path, ≤ 1 s staleness, and `turn/finished` already makes the record exact. (a) stays the upgrade path if sub-second fidelity for late joiners is ever needed. |
-| Provider conversation driven elsewhere | (a) join the vendor owner (Codex daemon); (b) OS file watcher (`notify`); (c) **stat the transcripts of watched sessions once a second** and import appended entries through the importer | (c): no new dependency, works for Claude, Codex and Pi alike, costs one `stat` per watched conversation per second. (a) gives live frames for Codex but changes how turns run; (b) saves a second of latency at the cost of a dependency. |
-| Running state | (a) per-adapter process detection; (b) **transcript growth with no Jockey turn running** | (b): `externalActive` in session summaries, true for 8 s after the transcript last grew. |
+| View joins a running Jockey turn | (a) sequence every frame (`rev`) through an engine publisher; (b) clients poll the checkpoint; (c) **notify, then pull**: a tiny `turn/progress { turnId, rev }`, late joiners fetch the in-memory snapshot | (c), unchanged. |
+| Provider conversation driven elsewhere | (a) join the vendor owner (Codex daemon); (b) **OS file watcher (`notify`) on the transcript roots, debounced**, with a stat sweep as fallback and a startup sweep; (c) stat only the shown session | (b)+sweep for *all* bound sessions, so the sidebar and the phone companion stay current without anyone focusing a session. (a) changes how turns run. |
+| Where reading resumes | (a) entry count over a re-parsed projection (the old `transcript_cursor`); (b) **byte offset + fingerprint per binding** | (b): only appended bytes are read; a 40 MB Claude transcript is never re-parsed per change. |
+| Shape of an imported turn | (a) one message per transcript entry; (b) **one assistant message per provider turn, in the payload `TurnRecorder` writes** | (b): text, thought and tool calls (title, kind, status, raw input/output, bounded) render exactly like a turn Jockey ran. Built with the engine's own `Transcript` reducer. |
+| In-progress external turn | (a) persist and update in place; (b) **hold until the end marker, serve a live preview** | (b): stored messages stay immutable and appends stay append-safe. The preview is served through the live-turn pull (`engine::watch::live_turn`, `turn/progress`) and settled with `turn/finished` carrying the stored message. |
+| Running state | (a) recent-write window; (b) **the provider's own turn markers** | (b), with a time window only for a runtime that has no markers. |
 
-Pieces:
+### Bindings
 
-- `engine::watch` — refcounted `watch` / `unwatch` per session (desktop: the shown session;
-  web: the SSE `focus`, released when the connection drops). One loop per watched session,
-  stopped when the count reaches zero; nothing runs for unwatched sessions.
-- `turns::{live_rev, live_turn}` — the running turn's revision and snapshot, read under the
-  turn lock; `get_live_turn` (Tauri) and `GET /api/sessions/:id/live` (web) expose it, and
-  `watch_session` returns it so a view opened mid-turn renders immediately.
-- Transcript cursor — `app_session_role_runtime_configs.transcript_cursor` counts the
-  provider transcript entries already reflected in the session. `importer::sync_transcript`
-  adds only entries past it, under the importer's deterministic ids, so importing and
-  watching share one idempotent path. A conversation without a cursor starts after its
-  imported rows if its newest message is one of them, otherwise at the transcript's end. A new
-  provider id resets the cursor.
-- Own-write invariant — `turns::begin` marks the session as being written by Jockey (the
-  watcher skips it); 2 s after the turn ends `importer::mark_transcript_read` moves the cursor
-  to the transcript's end, so neither the watcher nor a re-import records Jockey's own turn
-  twice. This also fixes re-import duplicating turns Jockey ran on an imported session.
-- After importing external entries the provider slot is discarded, so the next Jockey turn
-  resumes from the provider's record instead of a warm process that missed those turns.
-- `submit` refuses input while `externalActive` (resuming a conversation another process is
-  mid-turn in interleaves both, per the Claude Code docs).
-- Views: desktop `engineEvents.ts` (`turn/progress` → `adoptLiveTurn`, ignoring turns it saw
-  finish) and a spinner titled "Running outside Jockey" on the session chip; web
-  the companion page renders snapshots instead of raw frames when it did not see the turn start,
-  and shows 终端运行中.
+A binding is a row of `app_session_role_runtime_configs`: `acp_session_id` (the provider
+handle) plus `transcript_offset` / `transcript_fingerprint`. Closing a session no longer erases
+the handle (only the warm process is released); only the explicit `reset_acp_session` drops it,
+and it also detaches the imported id so the binding is not restored behind the user's back.
+`reopen_app_session` rebinds from `app_sessions.external_session_id` when the handle is missing,
+`list_provider_conversations` falls back to the same id, and schema v19 repairs sessions that an
+older close left with an imported id but no handle.
 
-Verified end to end through the gateway (claude-native): a client subscribing 4 s into a
-turn received `turn/progress` and the snapshot, then the persisted record; a terminal
-`claude -p --resume <id>` run while watched produced `externalActive` within a second, both
-of its messages as `message/added`, a refused submit, and `externalActive` false 8 s after
-it ended; the next Jockey turn answered from the terminal's turn (slot discarded), and its
-own entries were not re-imported.
+### Reading a transcript (`importer::tail`, `importer::sync`)
 
-Not covered: imported messages are text-only (the importer's projection: no tool cards or
-thoughts); a conversation driven elsewhere *before* Jockey first watched it is only picked up
-if its newest stored message came from the transcript.
+- **Position.** `offset` is the end of the last fully handled line (zstd frame for dsh). The
+  fingerprint is a hash of the file's first bytes (inside the handled region) and of the 128
+  bytes before `offset`. A sync verifies it with two small reads; a shrunk file or a mismatch
+  triggers a full reconcile from byte 0 instead of jumping to the end. The ids make that safe.
+  A fingerprint cannot see an edit in the middle of a long file; transcripts are append-only,
+  so that is accepted.
+- **Torn writes.** A trailing partial line (or zstd frame) is not consumed; the next read
+  starts at its beginning. A complete line that does not parse is stepped over.
+- **Ids.** Provider-native, so they survive parser changes: `import:{runtime}:{provider
+  id}:u:<uuid>` for a prompt, `:t:<first assistant entry uuid>` for a turn, `:e:<uuid>` for a
+  task-notification event (Codex: `t:<turn_id>`, Pi: entry ids, dsh: event `seq`). The unique
+  index `(session_id, client_id)` makes any re-read idempotent.
+- **Turns.** Each reducer groups entries into prompts, events and turns:
+  - Claude: one entry per content block; `stop_reason` is repeated on each block of a message,
+    so a turn closes on the entry that carries the reply (a thinking block marked `end_turn`
+    does not close it), on `system/turn_duration`, on `[Request interrupted by user]`, or on
+    the next prompt. Sidechain entries are dropped (never part of the parent's reply). The
+    request mirrors (`api-request*`), attachments and bookkeeping entries are skipped before
+    JSON parsing.
+  - Codex: `task_started` .. `task_complete` / `turn_aborted`; marker-less old rollouts are
+    stored whole. Pi: assistant `stopReason` (`toolUse` continues). dsh: `turn/start` ..
+    `turn/end`, one frame per record.
+  - A tool without a result when its turn closes is shown as interrupted.
+- **Open turn.** The reducer reports where the open turn starts; the next read begins there
+  (bounded by the turn, not the file) and the turn is stored only when it closes. A turn
+  without an end marker in a file quiet for 10 minutes is stored as finished.
+
+### Migrating existing sessions
+
+A binding without a byte position (everything imported before this change) is migrated on
+its first sync. Mapping the old entry count to a byte offset would mean re-running the old
+projections, so instead:
+- a session holding nothing but imported rows is **upgraded**: its positional rows
+  (`…:<index>`) are replaced, in one transaction, by turn-shaped rows read from the start of the
+  transcript (tool calls included);
+- a session Jockey also wrote to keeps its rows; transcript items no newer than the session's
+  latest recorded activity (its newest message or `last_active_at`, plus 5 s) are treated as
+  already covered (imported, or Jockey's own turns, which the transcript records too) and
+  newer ones are imported. That time is an upper bound of what the old cursor covered, because
+  old imports were stamped at import time and every Jockey save bumps `last_active_at`.
+
+### Own writes
+
+Jockey's turns also appear in the provider's transcript. `turns::begin` opens an *own
+window* (`start`, `end` once the turn finishes) and the sync skips transcript items inside it
+(with 0.5 s lead and 3 s trail for the CLI's flush), instead of moving the cursor to the end
+after the turn. Syncing continues during a Jockey turn, at most every 5 s (each read re-reads
+the turn in progress); entries written outside the window by someone else are imported and
+discard the warm provider slot, so the next Jockey turn resumes from the provider's record. A
+sync runs once after the settle time. `submit` still refuses input while `externalActive`.
+
+### Running state
+
+Per binding, the last marker the reducer saw: running while a turn is open (prompt, tool
+result, `stop_reason: tool_use`, `task_started`, `turn/start`), idle at the end marker.
+`externalActive` is true while any binding is running, but a marker only counts while the
+file was written within the last 10 minutes (a crashed CLI leaves its last marker behind, and
+this state refuses input), and never while a Jockey turn runs or just ended. A runtime
+without markers falls back to "transcript grew in the last 8 s". Changes are announced with
+`session/changed`.
+
+### Pieces
+
+- `engine::watch::start` (called at setup): the manager. Jobs: file events (debounced 300 ms),
+  a 30 s stat sweep (also re-evaluates running state, since a trust window can lapse without a
+  file event), a startup sweep over every binding, and `schedule_sync` (after an import or a
+  Jockey turn). Roots: `~/.claude/projects` (or `$CLAUDE_CONFIG_DIR`), `~/.codex/sessions`,
+  `~/.pi/agent/sessions`, `~/.dsh/sessions` (or `$DSH_HOME`). If the OS watcher cannot start,
+  the sweep alone keeps everything current.
+- `engine::watch::{watch, unwatch}`: refcounted, per shown session (desktop: the shown
+  session; web: the SSE `focus`); one loop announces a Jockey turn's `turn/progress` and keeps a
+  1 s sync for the open session.
+- `turns::{live_rev, live_turn}` plus `watch::live_turn`, which falls back to the external
+  turn's preview; served by `get_live_turn`, `watch_session` and `GET /api/sessions/:id/live`.
+- Events: `message/added` for stored items, `turn/progress` for the preview,
+  `turn/finished` (with the stored message) when an announced external turn ends,
+  `session/changed` for summary and running-state changes.
+
+Not covered: Antigravity and custom ACP runtimes have no transcript reader. Codex's shared
+daemon and sequenced frames below remain design.
 
 ## Requirements
 

@@ -1,5 +1,6 @@
-use super::{DiscoveredSession, ParsedImportedMessage};
-use serde_json::Value;
+use super::tail::{parse_iso_ms, tool_kind, Acc, Item, Outcome, Reduce, Unit};
+use super::DiscoveredSession;
+use serde_json::{json, Value};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -192,44 +193,160 @@ fn count_codex_session_turns(path: &Path) -> usize {
         .count()
 }
 
-pub(crate) fn parse_codex_session_messages(path: &Path) -> Vec<ParsedImportedMessage> {
-    let Ok(file) = File::open(path) else {
-        return Vec::new();
-    };
-    let mut messages = Vec::new();
-    let mut created_at = modified_at(path);
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
-        let Ok(value) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        let Some((role, text)) = response_text(&value) else {
-            continue;
-        };
-        let role_name = match role {
-            "user" => "user",
-            "assistant" => "Developer",
-            _ => continue,
-        };
-        let final_text = if role == "user" {
-            let Some(clean) = clean_codex_user_text(&text) else {
-                continue;
-            };
-            clean
-        } else {
-            let trimmed = text.trim().to_string();
-            if trimmed.is_empty() {
-                continue;
-            }
-            trimmed
-        };
-        created_at += 50;
-        messages.push(ParsedImportedMessage {
-            role_name: role_name.to_string(),
-            content: final_text,
-            created_at,
-        });
+/// Groups Codex rollout items into Jockey-shaped items. `task_started` / `task_complete` /
+/// `turn_aborted` delimit a turn; rollouts from before those markers existed are closed at the
+/// end of what was read, and a user message ends a marker-less turn.
+pub(crate) struct CodexReducer {
+    acc: Acc,
+    markers: bool,
+}
+
+impl CodexReducer {
+    pub(crate) fn new(role: String) -> Self {
+        Self {
+            acc: Acc::new(role),
+            markers: false,
+        }
     }
-    messages
+
+    fn response_item(&mut self, unit: &Unit, payload: &Value, at: i64) {
+        // Older rollouts carry no `type` on message items.
+        let kind = payload.get("type").and_then(Value::as_str).unwrap_or(
+            if payload.get("role").is_some() {
+                "message"
+            } else {
+                ""
+            },
+        );
+        let lazy_turn = |acc: &mut Acc| {
+            acc.ensure_turn(|| format!("t:o{}", unit.start), unit.start, at);
+        };
+        match kind {
+            "message" => {
+                let role = payload.get("role").and_then(Value::as_str).unwrap_or("");
+                let text = payload.get("content").map(content_text).unwrap_or_default();
+                match role {
+                    "user" => {
+                        let Some(clean) = clean_codex_user_text(&text) else {
+                            return;
+                        };
+                        if !self.markers {
+                            self.acc.close_turn();
+                        }
+                        let id = unit
+                            .value
+                            .get("ordinal")
+                            .and_then(Value::as_u64)
+                            .map_or_else(|| format!("o{}", unit.start), |n| n.to_string());
+                        self.acc
+                            .push(Item::plain(format!("u:{id}"), "user", clean, at));
+                    }
+                    "assistant" => {
+                        lazy_turn(&mut self.acc);
+                        self.acc.text(&text);
+                    }
+                    _ => {}
+                }
+            }
+            "reasoning" => {
+                let summary = payload
+                    .get("summary")
+                    .and_then(Value::as_array)
+                    .map(|parts| {
+                        parts
+                            .iter()
+                            .filter_map(|p| p.get("text").and_then(Value::as_str))
+                            .collect::<Vec<_>>()
+                            .join("\n\n")
+                    })
+                    .unwrap_or_default();
+                if !summary.trim().is_empty() {
+                    lazy_turn(&mut self.acc);
+                    self.acc.thought(&summary);
+                }
+            }
+            "function_call" | "custom_tool_call" | "local_shell_call" => {
+                let Some(call_id) = payload.get("call_id").and_then(Value::as_str) else {
+                    return;
+                };
+                let name = payload.get("name").and_then(Value::as_str).unwrap_or(
+                    if kind == "local_shell_call" {
+                        "shell"
+                    } else {
+                        "tool"
+                    },
+                );
+                let input = match payload.get("arguments").and_then(Value::as_str) {
+                    Some(args) => {
+                        serde_json::from_str(args).unwrap_or_else(|_| json!({ "input": args }))
+                    }
+                    None => match payload.get("input").and_then(Value::as_str) {
+                        Some(code) if tool_kind(name) == "execute" => json!({ "command": code }),
+                        Some(code) => json!({ "input": code }),
+                        None => payload.get("action").cloned().unwrap_or(Value::Null),
+                    },
+                };
+                lazy_turn(&mut self.acc);
+                self.acc.tool_call(call_id, name, &input, None);
+            }
+            "function_call_output" | "custom_tool_call_output" => {
+                if let Some(call_id) = payload.get("call_id").and_then(Value::as_str) {
+                    self.acc.tool_result(
+                        call_id,
+                        payload.get("output").unwrap_or(&Value::Null),
+                        false,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Reduce for CodexReducer {
+    fn feed(&mut self, unit: &Unit) {
+        let at = self.acc.stamp(
+            unit.value
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(parse_iso_ms),
+        );
+        let Some(payload) = unit.value.get("payload") else {
+            return;
+        };
+        match unit.value.get("type").and_then(Value::as_str) {
+            Some("event_msg") => match payload.get("type").and_then(Value::as_str) {
+                Some("task_started") => {
+                    self.markers = true;
+                    self.acc.close_turn();
+                    let id = payload
+                        .get("turn_id")
+                        .and_then(Value::as_str)
+                        .map_or_else(|| format!("o{}", unit.start), str::to_string);
+                    self.acc.open_turn(format!("t:{id}"), unit.start, at);
+                    self.acc.running = Some(true);
+                }
+                Some("task_complete") => {
+                    self.markers = true;
+                    self.acc.close_turn();
+                    self.acc.running = Some(false);
+                }
+                Some("turn_aborted") => {
+                    self.markers = true;
+                    self.acc.close_turn();
+                    self.acc.running = Some(false);
+                }
+                _ => {}
+            },
+            Some("response_item") => self.response_item(unit, payload, at),
+            _ => {}
+        }
+    }
+
+    fn finish(self: Box<Self>, consumed: u64, stale: bool) -> Outcome {
+        let close = stale || !self.markers;
+        self.acc.finish(consumed, close)
+    }
 }
 
 fn response_text(value: &Value) -> Option<(&str, String)> {
@@ -306,6 +423,7 @@ fn short_id(id: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn filters_out_recommended_plugins_system_injection() {
@@ -379,12 +497,90 @@ mod tests {
         assert_eq!(session.title, "重构完成。104 个测试通过");
         assert_eq!(session.turn_count, 2);
 
-        let msgs = parse_codex_session_messages(&path);
-        assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0].role_name, "user");
-        assert_eq!(msgs[0].content, "重构完成。104 个测试通过");
-        assert_eq!(msgs[1].role_name, "Developer");
-        assert_eq!(msgs[1].content, "很好！");
+        let out = crate::importer::tail::read("codex-cli", "Developer", &path, 0, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.items.len(), 2);
+        assert_eq!(out.items[0].role, "user");
+        assert_eq!(out.items[0].text, "重构完成。104 个测试通过");
+        assert_eq!(out.items[1].role, "Developer");
+        assert_eq!(out.items[1].text, "很好！");
+        assert!(out.open.is_none(), "a marker-less rollout is stored whole");
+    }
+
+    #[test]
+    fn marked_turns_group_into_one_message_with_their_tool_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let line = |ts: &str, kind: &str, payload: serde_json::Value| {
+            format!(
+                "{}\n",
+                json!({ "timestamp": ts, "type": kind, "payload": payload })
+            )
+        };
+        let mut text = String::new();
+        text += &line(
+            "2026-10-21T12:12:00.000Z",
+            "event_msg",
+            json!({"type":"task_started","turn_id":"T1"}),
+        );
+        text += &line(
+            "2026-10-21T12:12:01.000Z",
+            "response_item",
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"list files"}]}),
+        );
+        text += &line(
+            "2026-10-21T12:12:02.000Z",
+            "response_item",
+            json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"Running ls."}]}),
+        );
+        text += &line(
+            "2026-10-21T12:12:03.000Z",
+            "response_item",
+            json!({"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":\"ls\"}"}),
+        );
+        text += &line(
+            "2026-10-21T12:12:04.000Z",
+            "response_item",
+            json!({"type":"function_call_output","call_id":"c1","output":[{"type":"input_text","text":"a.txt"}]}),
+        );
+        std::fs::write(&path, &text).unwrap();
+        let read = || {
+            crate::importer::tail::read("codex-cli", "Developer", &path, 0, false)
+                .unwrap()
+                .unwrap()
+        };
+        let open = read();
+        assert_eq!(
+            open.items.len(),
+            1,
+            "the prompt; the turn waits for task_complete"
+        );
+        assert_eq!(open.running, Some(true));
+        assert!(open.open.is_some());
+
+        text += &line(
+            "2026-10-21T12:12:05.000Z",
+            "response_item",
+            json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"Only a.txt."}]}),
+        );
+        text += &line(
+            "2026-10-21T12:12:06.000Z",
+            "event_msg",
+            json!({"type":"task_complete","turn_id":"T1"}),
+        );
+        std::fs::write(&path, &text).unwrap();
+        let done = read();
+        assert_eq!(done.running, Some(false));
+        assert!(done.open.is_none());
+        let turn = &done.items[1];
+        assert_eq!(turn.id, "t:T1");
+        assert_eq!(turn.text, "Running ls.\n\nOnly a.txt.");
+        let tc = &turn.msg.as_ref().unwrap()["toolCalls"][0];
+        assert_eq!(tc["kind"], "execute");
+        assert_eq!(tc["rawInput"]["command"], "ls");
+        assert_eq!(tc["rawOutput"], "a.txt");
+        assert_eq!(tc["status"], "completed");
     }
 
     #[test]

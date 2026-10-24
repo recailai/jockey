@@ -134,6 +134,7 @@ pub fn run() {
             });
 
             app.manage(state);
+            engine::watch::start(app.handle().clone());
 
             let (death_tx, mut death_rx) = tokio::sync::mpsc::unbounded_channel::<acp::ConnectionDeathEvent>();
             acp::set_death_event_sender(death_tx);

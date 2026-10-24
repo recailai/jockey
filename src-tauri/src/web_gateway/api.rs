@@ -580,7 +580,7 @@ async fn session_update(
 
 /// The running turn as it would be persisted now, for a client that opened mid-turn.
 async fn session_live(Path(id): Path<String>) -> Json<Value> {
-    Json(crate::engine::turns::live_turn(&id).unwrap_or(Value::Null))
+    Json(crate::engine::watch::live_turn(&id).unwrap_or(Value::Null))
 }
 
 #[derive(Deserialize)]

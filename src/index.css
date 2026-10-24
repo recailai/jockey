@@ -2289,8 +2289,7 @@ pre {
 .event-row-success .system-event-mark {
   color: var(--ui-state-success-text);
 }
-.system-event-count,
-.message-mode-badge {
+.system-event-count {
   display: inline-flex;
   min-width: 20px;
   align-items: center;
@@ -2305,10 +2304,74 @@ pre {
   font-weight: 650;
   line-height: 16px;
 }
-.message-mode-badge {
-  border-radius: 7px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+.session-mode-line {
+  margin: 6px 0;
+}
+.permission-plan {
+  max-height: 16rem;
+  overflow: auto;
+  margin: 0 0 8px;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  background: var(--ui-panel-2);
+  padding: 8px 10px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.permission-body { min-width: 0; max-width: 100%; }
+.permission-option-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.permission-option-list .permission-option {
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+  height: auto;
+  min-height: 32px;
+  white-space: normal;
+}
+.permission-option.has-description {
+  flex-direction: column;
+  align-items: flex-start;
+  height: auto;
+  white-space: normal;
+  text-align: left;
+}
+.permission-option-description {
+  font-size: 10.5px;
+  font-weight: 400;
+  opacity: 0.75;
+}
+.user-input-tabs { max-width: 100%; overflow-x: auto; }
+.user-input-option {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  gap: 8px;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  text-align: left;
+}
+.user-input-option:hover { background: var(--ui-row-hover); }
+.user-input-option.is-selected {
+  border-color: var(--ui-accent);
+  background: var(--ui-accent-soft);
+}
+.user-input-preview {
+  max-height: 10rem;
+  overflow: auto;
+  margin-top: 6px;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  background: var(--ui-panel-2);
+  padding: 6px 8px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .queued-status-dot {
   display: inline-block;

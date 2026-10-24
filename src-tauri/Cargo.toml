@@ -50,6 +50,7 @@ which = "8"
 axum = { version = "0.7", features = ["macros"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 ruzstd = "0.9.1"
+notify = "8"
 
 
 [dev-dependencies]

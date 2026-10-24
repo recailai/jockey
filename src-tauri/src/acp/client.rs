@@ -5,9 +5,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use super::worker::elicitation::{build_content, map_form};
 use super::worker::{
-    cached_approval, insert_permission, AcpEvent, ConfigStateCell, DeltaSlot, ModeStateCell,
-    PendingPermission,
+    cached_approval, insert_permission, insert_user_input, AcpEvent, ConfigStateCell, DeltaSlot,
+    ModeStateCell, PendingPermission, PendingUserInputInfo, UserInputOutcome,
 };
 
 pub(super) const RAW_PAYLOAD_LIMIT: usize = 64 * 1024;
@@ -269,6 +270,7 @@ impl JockeyUiClient {
                 request_permission,
                 acp::RequestPermissionResponse
             ),
+            "elicitation/create" => self.create_elicitation(params).await,
             "fs/read_text_file" => {
                 dispatch!(
                     acp::ReadTextFileRequest,
@@ -320,7 +322,17 @@ impl JockeyUiClient {
         args: acp::RequestPermissionRequest,
     ) -> acp::Result<acp::RequestPermissionResponse> {
         self.validate_session(&args.session_id)?;
-        if self.auto_approve {
+        let tool_kind = args
+            .tool_call
+            .fields
+            .kind
+            .as_ref()
+            .and_then(|k| serde_json::to_value(k).ok())
+            .and_then(|v| v.as_str().map(str::to_string));
+        // Approving a plan is a decision about that plan and picks how the session continues
+        // (mode, fresh context): never auto-answered and never remembered.
+        let is_plan_approval = tool_kind.as_deref() == Some("switch_mode");
+        if self.auto_approve && !is_plan_approval {
             let option = args
                 .options
                 .iter()
@@ -343,13 +355,23 @@ impl JockeyUiClient {
         }
 
         let cache_key = permission_cache_key(&args);
-        if let Some(option_id) = cached_approval(&cache_key) {
-            return Ok(acp::RequestPermissionResponse::new(
-                acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
-                    acp::PermissionOptionId::from(option_id),
-                )),
-            ));
+        if !is_plan_approval {
+            if let Some(option_id) = cached_approval(&cache_key) {
+                return Ok(acp::RequestPermissionResponse::new(
+                    acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                        acp::PermissionOptionId::from(option_id),
+                    )),
+                ));
+            }
         }
+        let tool_call_id = Some(args.tool_call.tool_call_id.to_string());
+        let content: Option<Vec<Value>> = args.tool_call.fields.content.as_ref().map(|items| {
+            items
+                .iter()
+                .filter_map(|c| serde_json::to_value(c).ok())
+                .collect()
+        });
+        let raw_input = cap_raw(args.tool_call.fields.raw_input.clone());
 
         let request_id = uuid::Uuid::new_v4().to_string();
         let parent_id = {
@@ -367,6 +389,10 @@ impl JockeyUiClient {
                 .iter()
                 .map(|o| serde_json::to_value(o).unwrap_or(json!({})))
                 .collect(),
+            tool_call_id: tool_call_id.clone(),
+            tool_kind: tool_kind.clone(),
+            content: content.clone(),
+            raw_input: raw_input.clone(),
         };
         let permission_delta_tx = self
             .delta_slot
@@ -386,7 +412,9 @@ impl JockeyUiClient {
         let allow_always_option_ids = args
             .options
             .iter()
-            .filter(|o| matches!(o.kind, acp::PermissionOptionKind::AllowAlways))
+            .filter(|o| {
+                !is_plan_approval && matches!(o.kind, acp::PermissionOptionKind::AllowAlways)
+            })
             .map(|o| o.option_id.to_string())
             .collect();
         let perm_title = args
@@ -413,6 +441,10 @@ impl JockeyUiClient {
                 title: Some(perm_title),
                 description: None,
                 options: perm_options,
+                tool_call_id,
+                kind: tool_kind,
+                content,
+                raw_input,
             },
         );
         // No deadline: answered by the user, or resolved as cancelled when the turn is cancelled
@@ -434,6 +466,68 @@ impl JockeyUiClient {
                 ))
             }
         }
+    }
+
+    /// `elicitation/create`: an agent-side question form (Claude's AskUserQuestion, Codex's
+    /// request-user-input, MCP elicitations). Blocks like a permission prompt: no deadline,
+    /// resolved by the user, or cancelled with the turn, session or sub-agent.
+    async fn create_elicitation(&self, params: Value) -> acp::Result<Value> {
+        let invalid = |msg: String| acp::Error::new(acp::ErrorCode::InvalidParams.into(), msg);
+        let session_id = params
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(|s| acp::SessionId::from(s.to_string()));
+        if let Some(sid) = &session_id {
+            self.validate_session(sid)?;
+        }
+        if params.get("mode").and_then(Value::as_str) != Some("form") {
+            return Ok(json!({ "action": "decline" }));
+        }
+        let form = map_form(&params).map_err(invalid)?;
+        let request_id = uuid::Uuid::new_v4().to_string();
+        if let Some(sid) = &session_id {
+            self.subagents
+                .borrow_mut()
+                .track_permission(&sid.0, &request_id);
+        }
+        let delta_tx = self
+            .delta_slot
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().cloned());
+        let event = AcpEvent::UserInputRequest {
+            request_id: request_id.clone(),
+            title: form.title.clone(),
+            blocking: true,
+            questions: form.questions.clone(),
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        insert_user_input(
+            PendingUserInputInfo {
+                request_id: request_id.clone(),
+                role_name: self.role_name.clone(),
+                app_session_id: self.app_session_id.clone(),
+                title: form.title.clone(),
+                blocking: true,
+                questions: form.questions.clone(),
+            },
+            tx,
+            delta_tx.clone(),
+            form.fields.clone(),
+        );
+        if let Some(tx) = &delta_tx {
+            let _ = tx.try_send(event);
+        }
+        let outcome = rx.await.unwrap_or(UserInputOutcome::Cancelled);
+        Ok(match outcome {
+            UserInputOutcome::Answered(answers) => {
+                let content = build_content(&form.fields, &answers)
+                    .map_err(|e| acp::Error::new(acp::ErrorCode::InternalError.into(), e))?;
+                json!({ "action": "accept", "content": content })
+            }
+            UserInputOutcome::Declined => json!({ "action": "decline" }),
+            UserInputOutcome::Cancelled => json!({ "action": "cancel" }),
+        })
     }
 
     pub(crate) async fn session_notification(
@@ -968,5 +1062,50 @@ mod notification_tests {
         assert!(
             matches!(rx.try_recv().unwrap(), AcpEvent::TextDelta { text } if text == "new response")
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn elicitation_blocks_until_answered_and_maps_the_reply() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let client = Rc::new(JockeyUiClient {
+            delta_slot: Arc::new(Mutex::new(Some(tx))),
+            auto_approve: false,
+            runtime_key: "claude-code".into(),
+            role_name: "Developer".into(),
+            app_session_id: "elicit-app".into(),
+            expected_session_id: Arc::new(Mutex::new(Some(acp::SessionId::from("s")))),
+            mode_state: Rc::new(RefCell::new(None)),
+            config_state: Rc::new(RefCell::new(vec![])),
+            terminals: Rc::new(RefCell::new(HashMap::new())),
+            subagents: Default::default(),
+            tool_activity: Default::default(),
+        });
+        let params = json!({ "mode": "form", "sessionId": "s", "message": "Pick",
+            "requestedSchema": { "type": "object", "properties": {
+                "question_0": { "type": "string", "oneOf": [{ "const": "a", "title": "a" }] } } } });
+        let local = tokio::task::LocalSet::new();
+        let call = {
+            let client = client.clone();
+            local.spawn_local(
+                async move { client.dispatch_request("elicitation/create", params).await },
+            )
+        };
+        local
+            .run_until(async {
+                let request_id = loop {
+                    if let Ok(AcpEvent::UserInputRequest { request_id, .. }) = rx.try_recv() {
+                        break request_id;
+                    }
+                    tokio::task::yield_now().await;
+                };
+                let answers = HashMap::from([("question_0".to_string(), vec!["a".to_string()])]);
+                super::super::worker::respond_to_user_input(&request_id, Some(answers)).unwrap();
+                let reply = call.await.unwrap().unwrap();
+                assert_eq!(
+                    reply,
+                    json!({ "action": "accept", "content": { "question_0": "a" } })
+                );
+            })
+            .await;
     }
 }

@@ -81,8 +81,7 @@ pub(crate) fn list_session_summaries_cmd(
     )?;
     for row in &mut rows {
         row.running = super::turns::is_busy(&row.id);
-        row.external_active = super::watch::is_external_active(&row.id)
-            || (row.closed_at.is_some() && super::watch::provider_recently_written(state, &row.id));
+        row.external_active = super::watch::is_external_active(&row.id);
     }
     Ok(rows)
 }
@@ -111,7 +110,7 @@ pub(crate) fn watch_session(app: tauri::AppHandle, id: String) -> Option<serde_j
         }
         return super::watch::watch(&app, &id);
     }
-    super::turns::live_turn(&id)
+    super::watch::live_turn(&id)
 }
 
 #[tauri::command]
@@ -132,7 +131,7 @@ fn desktop_watch() -> &'static std::sync::Mutex<Option<String>> {
 /// The running turn as it would be persisted now: `{ turnId, rev, message }`.
 #[tauri::command]
 pub(crate) fn get_live_turn(id: String) -> Option<serde_json::Value> {
-    super::turns::live_turn(&id)
+    super::watch::live_turn(&id)
 }
 
 #[tauri::command]

@@ -59,7 +59,7 @@ export type AppUsage = {
   costUsd: number | null;
 };
 export type AppNotice = { id: string; level: string; code: string | null; text: string; at: number };
-export type AppUserInputOption = { value: string; label: string; description?: string | null };
+export type AppUserInputOption = { value: string; label: string; description?: string | null; preview?: string | null };
 export type AppUserInputQuestion = {
   id: string;
   header?: string | null;
@@ -68,6 +68,9 @@ export type AppUserInputQuestion = {
   allowOther: boolean;
   secret: boolean;
   multi: boolean;
+  /** Absent means required; forms from Claude mark nothing required. */
+  required?: boolean;
+  inputType?: "number" | null;
 };
 /** A structured question set from the agent. Unlike a permission this is not allow/deny. */
 export type AppUserInputRequest = {
@@ -76,7 +79,19 @@ export type AppUserInputRequest = {
   blocking: boolean;
   questions: AppUserInputQuestion[];
 };
-export type AppPermission = { requestId: string; /** Tool row that asked, when the backend says. */ toolCallId?: string | null; title: string; description: string | null; options: Array<{ optionId: string; title?: string; kind?: string }> };
+export type AppPermission = {
+  requestId: string;
+  /** Tool row that asked, when the backend says. */
+  toolCallId?: string | null;
+  title: string;
+  description: string | null;
+  options: Array<{ optionId: string; title?: string | null; kind?: string | null; description?: string | null }>;
+  /** `switch_mode` marks a plan approval. */
+  toolKind?: string | null;
+  /** Tool call content; for a plan approval this holds the plan text. */
+  content?: unknown[] | null;
+  rawInput?: unknown;
+};
 export type AgentBlock =
   | { kind: "text"; text: string; roleName?: string }
   | { kind: "thought"; text: string; channel?: "raw" | "summary"; roleName?: string }

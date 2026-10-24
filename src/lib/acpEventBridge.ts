@@ -1,3 +1,4 @@
+import { normalizePermissionOptions } from "./permissionOptions";
 import type {
   AcpDeltaEvent,
   AcpStreamEvent,
@@ -425,11 +426,13 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
         mutateSession(sid, (s) => {
           const next: AppPermission = {
             requestId: event.requestId!,
-            toolCallId: event.toolCallId ?? event.parentId ?? null,
+            toolCallId: event.parentId ?? event.toolCallId ?? null,
             title: event.title ?? "Permission Required",
             description: event.description ?? null,
-            options:
-              (event.options as Array<{ optionId: string; title?: string; kind?: string }>) ?? [],
+            options: normalizePermissionOptions(event.options),
+            toolKind: event.toolKind ?? null,
+            content: (event.content as unknown[] | undefined) ?? null,
+            rawInput: event.rawInput,
           };
           const existing = s.pendingPermissions?.findIndex((p) => p.requestId === next.requestId);
           if (existing !== undefined && existing >= 0) {
@@ -447,6 +450,9 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
         mutateSession(sid, (s) => {
           s.pendingPermissions = (s.pendingPermissions ?? []).filter(
             (p) => p.requestId !== event.requestId,
+          );
+          s.pendingUserInput = (s.pendingUserInput ?? []).filter(
+            (q) => q.requestId !== event.requestId,
           );
         });
       }

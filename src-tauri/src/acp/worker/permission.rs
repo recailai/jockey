@@ -19,11 +19,23 @@ pub(crate) struct PendingPermission {
     pub(crate) title: Option<String>,
     pub(crate) description: Option<String>,
     pub(crate) options: Vec<serde_json::Value>,
+    pub(crate) tool_call_id: Option<String>,
+    pub(crate) kind: Option<String>,
+    pub(crate) content: Option<Vec<serde_json::Value>>,
+    pub(crate) raw_input: Option<serde_json::Value>,
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingPermissionInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_input: Option<serde_json::Value>,
     pub request_id: String,
     pub runtime_key: String,
     pub role_name: String,
@@ -39,6 +51,10 @@ pub fn list_pending_permissions() -> Vec<PendingPermissionInfo> {
         .map(|entry| {
             let (req_id, p) = entry.pair();
             PendingPermissionInfo {
+                tool_call_id: p.tool_call_id.clone(),
+                tool_kind: p.kind.clone(),
+                content: p.content.clone(),
+                raw_input: p.raw_input.clone(),
                 request_id: req_id.clone(),
                 runtime_key: p.runtime_key.clone(),
                 role_name: p.role_name.clone(),
@@ -162,9 +178,19 @@ pub struct PendingUserInputInfo {
     pub questions: Vec<serde_json::Value>,
 }
 
+/// How a form was resolved. `Declined` is the user skipping it; `Cancelled` aborts the
+/// agent's tool call (turn or session cancelled, connection gone).
+pub(crate) enum UserInputOutcome {
+    Answered(UserInputAnswers),
+    Declined,
+    Cancelled,
+}
+
 struct PendingUserInput {
-    tx: oneshot::Sender<Option<UserInputAnswers>>,
+    tx: oneshot::Sender<UserInputOutcome>,
     info: PendingUserInputInfo,
+    delta_tx: Option<mpsc::Sender<AcpEvent>>,
+    fields: Vec<super::elicitation::FieldSpec>,
 }
 
 static USER_INPUT_REQUESTS: OnceLock<DashMap<String, PendingUserInput>> = OnceLock::new();
@@ -173,12 +199,21 @@ fn user_input_requests() -> &'static DashMap<String, PendingUserInput> {
     USER_INPUT_REQUESTS.get_or_init(DashMap::new)
 }
 
-#[cfg(test)]
 pub(crate) fn insert_user_input(
     info: PendingUserInputInfo,
-    tx: oneshot::Sender<Option<UserInputAnswers>>,
+    tx: oneshot::Sender<UserInputOutcome>,
+    delta_tx: Option<mpsc::Sender<AcpEvent>>,
+    fields: Vec<super::elicitation::FieldSpec>,
 ) {
-    user_input_requests().insert(info.request_id.clone(), PendingUserInput { tx, info });
+    user_input_requests().insert(
+        info.request_id.clone(),
+        PendingUserInput {
+            tx,
+            info,
+            delta_tx,
+            fields,
+        },
+    );
 }
 
 #[derive(serde::Serialize, Clone, Debug, Default)]
@@ -209,16 +244,42 @@ pub fn list_pending_prompts(app_session_id: Option<&str>) -> PendingPrompts {
     }
 }
 
-/// `None` means the user dismissed the form; the adapter decides what that means for its
-/// protocol (Codex treats it as no answers).
+/// `None` means the user skipped the form (the adapter is told "declined"). Answers are
+/// validated against the form's field types before the agent is released, so a bad value
+/// is reported to the user and the form stays pending.
 pub fn respond_to_user_input(
     request_id: &str,
     answers: Option<UserInputAnswers>,
 ) -> Result<(), String> {
+    if let Some(answers) = &answers {
+        let pending = user_input_requests()
+            .get(request_id)
+            .ok_or("This question has expired or was already answered.")?;
+        super::elicitation::build_content(&pending.fields, answers)?;
+    }
+    let outcome = match answers {
+        Some(answers) => UserInputOutcome::Answered(answers),
+        None => UserInputOutcome::Declined,
+    };
+    finish_user_input(request_id, outcome, false)
+}
+
+fn finish_user_input(
+    request_id: &str,
+    outcome: UserInputOutcome,
+    notify_expired: bool,
+) -> Result<(), String> {
     let (_, pending) = user_input_requests()
         .remove(request_id)
         .ok_or("This question has expired or was already answered.")?;
-    let delivered = pending.tx.send(answers).is_ok();
+    if notify_expired {
+        if let Some(delta_tx) = &pending.delta_tx {
+            let _ = delta_tx.try_send(AcpEvent::PermissionExpired {
+                request_id: request_id.to_string(),
+            });
+        }
+    }
+    let delivered = pending.tx.send(outcome).is_ok();
     crate::engine::events::emit(
         "permission_update",
         serde_json::json!({ "appSessionId": pending.info.app_session_id, "requestId": request_id }),
@@ -228,6 +289,20 @@ pub fn respond_to_user_input(
     } else {
         Err("The agent is no longer waiting for this answer.".into())
     }
+}
+
+/// Resolves one pending approval or question as cancelled, telling the UI to drop it.
+/// Used when a sub-agent is stopped.
+pub(crate) fn cancel_request(request_id: &str) {
+    if let Some((_, pending)) = permission_requests().remove(request_id) {
+        if let Some(delta_tx) = &pending.delta_tx {
+            let _ = delta_tx.try_send(AcpEvent::PermissionExpired {
+                request_id: request_id.to_string(),
+            });
+        }
+        let _ = pending.tx.send(acp::RequestPermissionOutcome::Cancelled);
+    }
+    let _ = finish_user_input(request_id, UserInputOutcome::Cancelled, true);
 }
 
 /// Whether the slot has a permission prompt waiting on the user.
@@ -273,7 +348,7 @@ pub(crate) fn cancel_permissions_for(runtime_key: &str, role_name: &str, app_ses
         .map(|entry| entry.key().clone())
         .collect();
     for request_id in questions {
-        let _ = respond_to_user_input(&request_id, None);
+        let _ = finish_user_input(&request_id, UserInputOutcome::Cancelled, true);
     }
     crate::engine::events::emit(
         "permission_update",
@@ -289,7 +364,7 @@ pub(crate) fn cancel_all_user_input() {
         .map(|entry| entry.key().clone())
         .collect();
     for id in ids {
-        let _ = respond_to_user_input(&id, None);
+        let _ = finish_user_input(&id, UserInputOutcome::Cancelled, true);
     }
 }
 
@@ -332,10 +407,15 @@ mod tests {
                     questions: vec![],
                 },
                 tx,
+                None,
+                vec![],
             );
         }
         cancel_permissions_for("mock", "r", "cancel-session-a");
-        assert_eq!(a_rx.try_recv().unwrap(), None);
+        assert!(matches!(
+            a_rx.try_recv().unwrap(),
+            UserInputOutcome::Cancelled
+        ));
         assert!(matches!(
             b_rx.try_recv(),
             Err(oneshot::error::TryRecvError::Empty)
@@ -359,6 +439,10 @@ mod tests {
                 title: None,
                 description: None,
                 options: vec![serde_json::json!({ "optionId": "always" })],
+                tool_call_id: None,
+                kind: None,
+                content: None,
+                raw_input: None,
             },
         );
         let selected = |id: &str| {
@@ -395,6 +479,10 @@ mod tests {
                 title: Some("Run".into()),
                 description: None,
                 options: vec![],
+                tool_call_id: None,
+                kind: None,
+                content: None,
+                raw_input: None,
             },
         );
         let (utx, _urx) = oneshot::channel();
@@ -408,6 +496,8 @@ mod tests {
                 questions: vec![serde_json::json!({ "id": "q" })],
             },
             utx,
+            None,
+            vec![],
         );
 
         let s1 = list_pending_prompts(Some("snap-s1"));

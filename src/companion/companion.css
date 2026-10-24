@@ -70,7 +70,8 @@
   .companion-host .jui-dialog-footer { flex-wrap: wrap; }
   .companion-host .jui-button,
   .companion-host .jui-icon-button,
-  .companion-host .jui-row-button { min-height: 44px; }
+  .companion-host .jui-row-button,
+  .companion-host .jui-tabs-trigger { min-height: 44px; }
   .companion-host .jui-icon-button { min-width: 44px; flex-shrink: 0; }
   .companion-header { gap: 4px; padding-inline: 8px; }
   .companion-header .jui-pill { max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

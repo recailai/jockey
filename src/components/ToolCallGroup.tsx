@@ -1,6 +1,6 @@
 import { For, Match, Show, Switch, createContext, createEffect, createMemo, createSignal, onCleanup, onMount, useContext } from "solid-js";
 import { Check, ChevronDown, Square } from "lucide-solid";
-import { isRejectOption, needsGenericDeny, visiblePermissionOptions } from "../lib/permissionOptions";
+import { PermissionBody } from "./PermissionModal";
 import type { AppPermission, AppToolCall, TerminalEntry } from "./types";
 import { DiffViewer } from "./DiffViewer";
 import { parseDiff, isDiffLike, hunkToRejectPrompt } from "../lib/diffParser";
@@ -8,7 +8,7 @@ import type { DiffHunk } from "../lib/diffParser";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { Badge, Button, IconButton, StateDot, Switch as UiSwitch } from "./ui";
+import { Badge, IconButton, StateDot } from "./ui";
 import { ProviderEventGroup } from "./ProviderEventGroup";
 import { renderMd } from "../lib/markdown";
 import { buildToolTree, type ToolCallGroupItem } from "../lib/toolGroups";
@@ -261,11 +261,7 @@ function ToolCallItem(props: ToolCallItemProps) {
     return isAgent() && typeof input?.prompt === "string" ? input.prompt : null;
   };
 
-  const [remember, setRemember] = createSignal(false);
   const displayInfo = createMemo(() => formatToolDisplay(tc(), tree.cwd));
-
-  const hasRememberableOptions = () =>
-    !!inlinePermission()?.options.some((o) => o.kind === "allow_always");
 
   return (
     <details
@@ -321,50 +317,13 @@ function ToolCallItem(props: ToolCallItemProps) {
         </Show>
       </summary>
       <Show when={showPermission()}>
-        {(_) => {
-          const perm = () => inlinePermission()!;
-          const opts = () => {
-            const all = perm().options;
-            return visiblePermissionOptions(all, remember());
-          };
-          return (
-            <div class="tool-permission-block">
-              <div class="mb-1 text-[11px] font-semibold text-[var(--ui-state-warning-text)]">{perm().title}</div>
-              <Show when={perm().description}>
-                <p class="mb-2 text-[10.5px] theme-muted">{perm().description}</p>
-              </Show>
-              <div class="flex flex-wrap gap-2">
-                <For each={opts()}>{(opt) => (
-                  <Button
-                    variant={isRejectOption(opt) ? "destructive" : "secondary"}
-                    size="sm"
-                    onClick={(e) => { e.preventDefault(); tree.onApprove?.(opt.optionId); }}
-                  >
-                    {opt.title ?? opt.optionId}
-                  </Button>
-                )}</For>
-                <Show when={needsGenericDeny(perm().options)}>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={(e) => { e.preventDefault(); tree.onDeny?.(); }}
-                  >
-                    Deny
-                  </Button>
-                </Show>
-              </div>
-              <Show when={hasRememberableOptions()}>
-                <label class="mt-2 flex items-center gap-1.5 cursor-pointer select-none w-fit">
-                  <UiSwitch
-                    checked={remember()}
-                    onChange={setRemember}
-                  />
-                  <span class="text-[10px] theme-muted">Remember my choice</span>
-                </label>
-              </Show>
-            </div>
-          );
-        }}
+        <div class="tool-permission-block">
+          <PermissionBody
+            permission={inlinePermission()!}
+            onChoose={(id) => tree.onApprove?.(id)}
+            onDeny={() => tree.onDeny?.()}
+          />
+        </div>
       </Show>
       <Show when={terminalEntry()}>
         <TerminalView entry={terminalEntry()!} />

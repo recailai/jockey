@@ -225,6 +225,9 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
         }
         case "list_pending_prompts_cmd":
           return { permissions: [], userInputs: [] };
+        case "respond_user_input_cmd":
+        case "respond_permission":
+          return null;
         case "list_closed_app_sessions": {
           const list = getStorage<MockSession[]>(STORAGE_KEY_SESSIONS, []);
           return list.filter((s: { closedAt?: number | null }) => !!s.closedAt);

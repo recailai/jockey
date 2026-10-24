@@ -1,7 +1,8 @@
 import { For, Show, createSignal } from "solid-js";
-import { isRejectOption, needsGenericDeny, visiblePermissionOptions } from "../lib/permissionOptions";
+import { canRememberChoice, isPlanApproval, isRejectOption, needsGenericDeny, planMarkdown, visiblePermissionOptions } from "../lib/permissionOptions";
+import { renderMd } from "../lib/markdown";
 import type { Accessor } from "solid-js";
-import type { AppSession } from "./types";
+import type { AppPermission, AppSession } from "./types";
 import { assistantApi } from "../lib/tauriApi";
 import { Alert, Button, Panel, Switch as UiSwitch } from "./ui";
 
@@ -21,18 +22,74 @@ export function PermissionModal(props: PermissionModalProps) {
   );
 }
 
-function PermissionsQueue(props: PermissionModalProps) {
+/** One approval: title, the plan for a plan approval, and the agent's options. Shared by the
+ *  conversation card, the tool row and the control center so they cannot drift apart. */
+export function PermissionBody(props: {
+  permission: AppPermission;
+  disabled?: boolean;
+  /** Compact surfaces (control center, phone) have no room for the Remember switch. */
+  compact?: boolean;
+  onChoose: (optionId: string) => void;
+  onDeny: () => void;
+}) {
   const [remember, setRemember] = createSignal(false);
+  const plan = () => isPlanApproval(props.permission);
+  const planText = () => (plan() ? planMarkdown(props.permission) : null);
+  const opts = () => visiblePermissionOptions(props.permission.options, remember(), plan());
+  const lead = () => opts().find((o) => !isRejectOption(o));
+  return (
+    <div class="permission-body">
+      <div class="mb-1 text-xs font-semibold text-[var(--ui-state-warning-text)]">{props.permission.title}</div>
+      <Show when={planText()}>
+        {(text) => <div class="permission-plan md-prose" innerHTML={renderMd(text())} />}
+      </Show>
+      <Show when={props.permission.description}>
+        <Show when={props.compact} fallback={<p class="mb-2 text-xs theme-muted">{props.permission.description}</p>}>
+          <details class="mb-2 text-xs theme-muted"><summary class="cursor-pointer">Operation details</summary><p class="mt-2">{props.permission.description}</p></details>
+        </Show>
+      </Show>
+      <div classList={{ "permission-option-list": plan(), "flex flex-wrap gap-2": !plan() }}>
+        <For each={opts()}>{(opt) => (
+          <Button
+            // Rejecting is not destructive (nothing is lost), so it is outlined; filled red stays
+            // reserved for deletes. The first allow option is the expected answer and leads.
+            variant={isRejectOption(opt) ? "outline" : opt === lead() ? "primary" : "secondary"}
+            size="sm"
+            class={opt.description ? "permission-option has-description" : "permission-option"}
+            disabled={props.disabled}
+            onClick={(e) => { e.preventDefault(); props.onChoose(opt.optionId); }}
+          >
+            <span class="permission-option-label">{opt.title ?? opt.optionId}</span>
+            <Show when={opt.description}><span class="permission-option-description">{opt.description}</span></Show>
+          </Button>
+        )}</For>
+        <Show when={needsGenericDeny(props.permission.options)}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={props.disabled}
+            onClick={(e) => { e.preventDefault(); props.onDeny(); }}
+          >
+            Deny
+          </Button>
+        </Show>
+      </div>
+      <Show when={canRememberChoice(props.permission) && !props.compact}>
+        <label class="mt-2 flex items-center gap-1.5 cursor-pointer select-none w-fit">
+          <UiSwitch checked={remember()} onChange={setRemember} />
+          <span class="text-[11px] theme-muted">Remember my choice</span>
+        </label>
+      </Show>
+    </div>
+  );
+}
+
+function PermissionsQueue(props: PermissionModalProps) {
   const [submitting, setSubmitting] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
 
   const queue = () => props.activeSession()?.pendingPermissions ?? [];
   const current = () => queue()[0]!;
-  const hasRememberable = () => current().options.some((o) => (o.kind ?? "").endsWith("_always"));
-  const opts = () => {
-    const all = current().options;
-    return visiblePermissionOptions(all, remember());
-  };
   const respond = async (optionId: string, cancelled = false) => {
     if (submitting() || props.disabled) return;
     const requestId = current().requestId;
@@ -61,45 +118,13 @@ function PermissionsQueue(props: PermissionModalProps) {
           permission 1 of {queue().length}
         </span>
       </Show>
-      <div class="mb-1 text-xs font-semibold text-[var(--ui-state-warning-text)]">{current().title}</div>
-      <Show when={current().description}>
-        <Show when={props.compact} fallback={<p class="mb-2 text-xs theme-muted">{current().description}</p>}>
-          <details class="mb-2 text-xs theme-muted"><summary class="cursor-pointer">Operation details</summary><p class="mt-2">{current().description}</p></details>
-        </Show>
-      </Show>
-      <div class="flex flex-wrap gap-2">
-        <For each={opts()}>{(opt) => (
-          <Button
-            // Rejecting is not destructive (nothing is lost), so it is outlined; filled red stays
-            // reserved for deletes. The first allow option is the expected answer and leads.
-            variant={isRejectOption(opt) ? "outline" : opt === opts().find((o) => !isRejectOption(o)) ? "primary" : "secondary"}
-            size="sm"
-            disabled={submitting() || props.disabled}
-            onClick={() => void respond(opt.optionId)}
-          >
-            {opt.title ?? opt.optionId}
-          </Button>
-        )}</For>
-        <Show when={needsGenericDeny(current().options)}>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={submitting() || props.disabled}
-            onClick={() => void respond("", true)}
-          >
-            Deny
-          </Button>
-        </Show>
-      </div>
-      <Show when={hasRememberable() && !props.compact}>
-        <label class="mt-2 flex items-center gap-1.5 cursor-pointer select-none w-fit">
-          <UiSwitch
-            checked={remember()}
-            onChange={setRemember}
-          />
-          <span class="text-[11px] theme-muted">Remember my choice</span>
-        </label>
-      </Show>
+      <PermissionBody
+        permission={current()}
+        compact={props.compact}
+        disabled={submitting() || props.disabled}
+        onChoose={(id) => void respond(id)}
+        onDeny={() => void respond("", true)}
+      />
     </Panel>
   );
 }

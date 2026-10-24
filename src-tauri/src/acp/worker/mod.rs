@@ -1,3 +1,4 @@
+pub(crate) mod elicitation;
 mod handlers;
 mod notify;
 mod permission;
@@ -8,7 +9,7 @@ pub use crate::runtime_kind::RuntimeKind;
 pub use notify::{set_death_event_sender, set_prewarm_event_sender};
 pub use permission::{
     list_pending_permissions, list_pending_prompts, respond_to_permission, respond_to_user_input,
-    PendingPrompts,
+    PendingPrompts, PendingUserInputInfo,
 };
 pub use types::{
     AcpEvent, AcpPromptResult, ActiveConnectionInfo, ConnectionDeathEvent, PrewarmEvent,
@@ -17,7 +18,8 @@ pub use types::{
 pub(crate) use handlers::build_prompt_blocks;
 pub(crate) use permission::{
     cached_approval, cancel_all_permissions, cancel_all_user_input, cancel_permissions_for,
-    has_pending_permissions, insert_permission, permission_requests, PendingPermission,
+    cancel_request, has_pending_permissions, insert_permission, insert_user_input,
+    permission_requests, PendingPermission, UserInputOutcome,
 };
 pub(crate) use pool::{
     pool_key, register_child_pid, ConfigStateCell, DeltaSlot, LiveConnection, ModeStateCell,
@@ -330,12 +332,13 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                     // while a permission prompt is pending — the adapter then queues the
                     // message behind it instead of pre-empting.
                     let waited = std::time::Instant::now();
-                    while !steering_next {
+                    loop {
                         if !CANCEL_HANDLES.with(|m| m.borrow().contains_key(&key)) {
                             let _ = result_tx.send(SteerOutcome::NoRunningTurn);
                             return;
                         }
-                        if activity.borrow().is_idle()
+                        if steering_next
+                            || activity.borrow().is_idle()
                             || has_pending_permissions(runtime_key, &role_name, &app_session_id)
                         {
                             break;
@@ -404,7 +407,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 // `request_permission`), so the cancelled child is not left waiting on one.
                 let requests = subagents.borrow_mut().take_permissions(&child_session_id);
                 for request_id in requests {
-                    permission_requests().remove(&request_id);
+                    cancel_request(&request_id);
                 }
                 tokio::task::spawn_local(async move {
                     conn.cancel(acp::CancelNotification::new(acp::SessionId::from(

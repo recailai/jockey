@@ -1,4 +1,4 @@
-import { For } from "solid-js";
+import { For, createSignal } from "solid-js";
 import type { JSX } from "solid-js";
 import { MessageSquare, Plus, RefreshCw } from "lucide-solid";
 import {
@@ -11,6 +11,7 @@ import {
   FormField,
   IconButton,
   Input,
+  Panel,
   Pill,
   RowButton,
   StateDot,
@@ -24,8 +25,10 @@ import { SESSION_STATUS_LOOK } from "../ui/status-badge";
 import type { SessionStatus } from "../../lib/sessionStatus";
 import { useTheme } from "../../lib/useTheme";
 import { ToolCallGroup } from "../ToolCallGroup";
-import type { AppPermission, AppPlanEntry, AppToolCall } from "../types";
+import type { AppPermission, AppPlanEntry, AppSession, AppToolCall, AppUserInputRequest } from "../types";
 import { PlanPanel } from "../PlanPanel";
+import { PermissionBody } from "../PermissionModal";
+import UserInputModal from "../UserInputModal";
 import "./catalog.css";
 
 const TONES = ["neutral", "info", "success", "warning", "danger"] as const;
@@ -45,6 +48,42 @@ const PERMISSION: AppPermission = {
   title: "Run pnpm install?",
   description: null,
   options: [{ optionId: "allow", title: "Allow", kind: "allow_once" }, { optionId: "reject", title: "Reject", kind: "reject_once" }],
+};
+const PLAN_APPROVAL: AppPermission = {
+  requestId: "catalog-plan-approval",
+  title: "Ready to code?",
+  description: null,
+  toolKind: "switch_mode",
+  content: [{ type: "content", content: { type: "text", text: "## Plan\n\n1. Extract `PermissionBody` from the modal\n2. Render the plan above the options\n3. Hide the Remember switch for plan approvals\n\n" + "A long plan scrolls inside its box instead of pushing the options away.\n\n".repeat(8) } }],
+  options: [
+    { optionId: "clear-auto", title: "Yes, clear context and use auto mode", kind: "allow_always" },
+    { optionId: "auto", title: "Yes, and use auto mode", kind: "allow_always" },
+    { optionId: "manual", title: "Yes, manually approve edits", kind: "allow_once" },
+    { optionId: "keep", title: "No, keep planning", kind: "reject_once" },
+  ],
+};
+const USER_INPUT: AppUserInputRequest = {
+  requestId: "catalog-user-input",
+  title: "Please answer the following questions.",
+  blocking: true,
+  questions: [
+    {
+      id: "question_0", header: "Library", prompt: "Which date library should the form use?", allowOther: true, secret: false, multi: false,
+      options: [
+        { value: "date-fns (Recommended)", label: "date-fns (Recommended)", description: "Small, tree-shakeable helpers" },
+        { value: "Temporal", label: "Temporal", description: "Native, needs a polyfill today" },
+      ],
+    },
+    {
+      id: "question_1", header: "Features", prompt: "Which features should it support?", allowOther: true, secret: false, multi: true,
+      options: [
+        { value: "Ranges", label: "Ranges" },
+        { value: "Time zones", label: "Time zones", description: "Needs the IANA database" },
+        { value: "Recurring", label: "Recurring" },
+      ],
+    },
+    { id: "question_2", header: "Token", prompt: "API token for the preview server", allowOther: false, secret: true, multi: false, options: [] },
+  ],
 };
 const PLAN: AppPlanEntry[] = [
   { content: "Read the plan renderer", status: "completed" },
@@ -147,6 +186,7 @@ function SessionListSample() {
  */
 export default function Catalog() {
   const theme = useTheme();
+  const [userInputSession, setUserInputSession] = createSignal({ id: "catalog", pendingUserInput: [USER_INPUT] } as unknown as AppSession);
   return (
     <main class="catalog">
       <header class="catalog-header">
@@ -182,6 +222,16 @@ export default function Catalog() {
             </div>
           )}
         </For>
+      </Section>
+
+      <Section title="Plan approval" note="A plan approval shows every option as the agent sent it, with no Remember switch.">
+        <Panel class="permission-panel my-2 px-3 py-2">
+          <PermissionBody permission={PLAN_APPROVAL} onChoose={() => {}} onDeny={() => {}} />
+        </Panel>
+      </Section>
+
+      <Section title="Questions" note="Several questions become tabs with a final review step.">
+        <UserInputModal inline activeSession={userInputSession} patchActiveSession={(patch) => setUserInputSession((s) => ({ ...s, ...patch }) as AppSession)} />
       </Section>
 
       <Section title="Plan">
