@@ -761,7 +761,7 @@ function MessageWindowContent(props: MessageWindowProps) {
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 11 12 6 7 11"/><polyline points="17 18 12 13 7 18"/></svg>
                 {props.activeSession()?.turnPhase === "sending" || props.activeSession()?.queueRunActive === true
                   ? "Sending…"
-                  : props.inputDelivery?.()?.strategy === "steer" ? "Steer now" : "Send now"}
+                  : props.inputDelivery?.()?.strategy === "steer" ? "Steer now" : "Interrupt & send"}
               </button>
             </Show>
           </div>

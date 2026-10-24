@@ -213,6 +213,18 @@ pub enum AcpEvent {
 
 // ── Worker message channel ────────────────────────────────────────────────────
 
+/// What happened to a steer request; callers fall back differently for each.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SteerOutcome {
+    /// Delivered into the running turn, whose output continues in the same prompt.
+    Injected,
+    /// Nothing is running (the turn ended first); the input belongs in a normal prompt.
+    NoRunningTurn,
+    /// The adapter does not advertise steering.
+    Unsupported,
+    Failed(String),
+}
+
 pub(crate) enum WorkerMsg {
     Execute {
         runtime_key: &'static str,
@@ -256,6 +268,14 @@ pub(crate) enum WorkerMsg {
         /// (i.e. agent responded with StopReason::Cancelled or process died).
         /// None = fire-and-forget (legacy callers).
         result_tx: Option<oneshot::Sender<()>>,
+    },
+    /// Inject input into the running turn (`_session/steering`).
+    Steer {
+        runtime_key: &'static str,
+        role_name: String,
+        app_session_id: String,
+        prompt: Vec<acp::ContentBlock>,
+        result_tx: oneshot::Sender<SteerOutcome>,
     },
     Reset {
         runtime_key: &'static str,

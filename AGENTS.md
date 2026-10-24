@@ -109,6 +109,7 @@ Rule: the engine owns every durable write; views are thin and only render engine
 - **Engine-owned persistence and a single event emitter**: all transcript, queue, and session writes go through `engine/`; the UI and web companion never write messages themselves.
 - **Per-session serial, cross-session parallel turns**: `turns::reserve` rejects a second concurrent turn on a session; new input is queued in the inbox and drained in order.
 - **Interrupt-based cancel**: cancelling sends ACP `session/cancel` and keeps a responsive adapter process warm. The process is killed only if the same turn is still running after 3 s.
+- **Steer, don't interrupt**: "Send now" injects queued input into the running turn through the `_session/steering` extension (advertised as `initialize` `_meta.steering.supported`; claude-agent-acp and codex-acp) with `idleBehavior: "promptRequired"`, so the turn keeps going. Only adapters without steering (Pi, DeepSeek Harness, Antigravity) fall back to cancel-then-drain, and the button says "Interrupt & send" there. `engine::service::send_queued_now`.
 - **Built-in Jockey MCP bridge**: injected into agent sessions as a normal MCP server (`jockey_mcp/`), not a separate protocol path.
 - **SSE focus filter**: the web gateway sends high-frequency stream frames (`acp/delta`, `acp/stream`) only to clients focused on that session (`/api/events?focus=<sid>`); lifecycle events and permissions go to every client, and a lagging client gets `resync`.
 

@@ -458,8 +458,10 @@ async fn run_control(
     Ok(SubmitResult::Control { message })
 }
 
-/// "Send now" for queued input: steer it into the running turn when the engine supports
-/// that, otherwise stop the turn so the queue drains immediately.
+/// "Send now" for queued input. The running turn is steered when its adapter supports the
+/// `_session/steering` extension (Claude, Codex): the input joins the turn and nothing is
+/// interrupted. Only an adapter without steering gets the old stop-then-drain, which is the one
+/// way to deliver input early there. A turn that ended before the steer arrived just drains.
 pub(crate) async fn send_queued_now(app: &AppHandle, session_id: &str) -> Result<(), String> {
     if !turns::is_busy(session_id) {
         kick(app, session_id);
@@ -467,57 +469,79 @@ pub(crate) async fn send_queued_now(app: &AppHandle, session_id: &str) -> Result
     }
     let state = app.state::<AppState>();
     let head = load_head(&state, session_id)?;
-    let steerable = match &head.runtime_kind {
-        Some(rt) => sessions::supports_steer(rt).await,
-        None => false,
+    let items = crate::db::inbox::list_inbox_internal(&state, session_id, false)?;
+    let steerable_batch = queue::select_batch(&items).filter(|b| {
+        b.attachments.is_empty() && b.role_name.as_deref().is_none_or(|r| r == head.active_role)
+    });
+    if steerable_batch.is_none() {
+        // A batch for another persona, or with images, cannot join this turn.
+        return cancel(app, session_id).await.map(|_| ());
+    }
+    let Some(batch) = queue::claim_next(&state, session_id)? else {
+        return Ok(());
     };
-    if steerable {
-        let items = crate::db::inbox::list_inbox_internal(&state, session_id, false)?;
-        let same_role = queue::select_batch(&items).filter(|b| {
-            b.attachments.is_empty() && b.role_name.as_deref().is_none_or(|r| r == head.active_role)
-        });
-        if same_role.is_some() {
-            if let Some(batch) = queue::claim_next(&state, session_id)? {
-                let steered = crate::commands::runtime_cmd::steer_acp_session(
-                    app.state::<AppState>(),
-                    head.active_role.clone(),
-                    session_id.to_string(),
-                    batch.text.clone(),
-                    Vec::new(),
-                )
-                .await;
-                match steered {
-                    Ok(()) => {
-                        let user = json!({
-                            "id": uuid::Uuid::new_v4().to_string(),
-                            "roleName": "user",
-                            "text": batch.text,
-                            "at": crate::now_ms(),
-                        });
-                        crate::db::app_session::save_app_message_internal(
-                            &state,
-                            session_id,
-                            user.get("id").and_then(Value::as_str),
-                            "user",
-                            &batch.text,
-                            None,
-                            None,
-                        )?;
-                        queue::consume(app, &state, session_id, &batch);
-                        let _ = app.emit(
-                            MESSAGE_ADDED_EVENT,
-                            json!({ "appSessionId": session_id, "message": user }),
-                        );
-                        return Ok(());
-                    }
-                    // The turn can finish between the busy check and the steer; fall back to
-                    // stop-and-drain, which is always safe.
-                    Err(_) => queue::restore(app, &state, session_id, &batch),
+    let steered = crate::commands::runtime_cmd::steer_acp_session(
+        app.state::<AppState>(),
+        head.active_role.clone(),
+        session_id.to_string(),
+        batch.text.clone(),
+        Vec::new(),
+    )
+    .await;
+    match steered {
+        Ok(()) => {
+            let user = json!({
+                "id": uuid::Uuid::new_v4().to_string(),
+                "roleName": "user",
+                "text": batch.text,
+                "at": crate::now_ms(),
+            });
+            crate::db::app_session::save_app_message_internal(
+                &state,
+                session_id,
+                user.get("id").and_then(Value::as_str),
+                "user",
+                &batch.text,
+                None,
+                None,
+            )?;
+            queue::consume(app, &state, session_id, &batch);
+            let _ = app.emit(
+                MESSAGE_ADDED_EVENT,
+                json!({ "appSessionId": session_id, "message": user }),
+            );
+            Ok(())
+        }
+        Err(e) => {
+            queue::restore(app, &state, session_id, &batch);
+            match steer_failure(&e) {
+                SteerFailure::Unsupported => cancel(app, session_id).await.map(|_| ()),
+                SteerFailure::TurnEnded => {
+                    kick(app, session_id);
+                    Ok(())
                 }
+                // The input stays queued; interrupting the turn over a failed steer would
+                // trade a visible error for a lost turn.
+                SteerFailure::Other => Err(format!("Could not steer the running turn: {e}")),
             }
         }
     }
-    cancel(app, session_id).await.map(|_| ())
+}
+
+enum SteerFailure {
+    Unsupported,
+    TurnEnded,
+    Other,
+}
+
+fn steer_failure(error: &str) -> SteerFailure {
+    if error.starts_with("UnsupportedCapability(") || error.starts_with("unsupported runtime") {
+        SteerFailure::Unsupported
+    } else if error == crate::acp::session::adapter_runtime::STEER_NO_RUNNING_TURN {
+        SteerFailure::TurnEnded
+    } else {
+        SteerFailure::Other
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -587,5 +611,26 @@ mod tests {
         assert_eq!(control_command("/cancel now"), Some("cancel"));
         assert_eq!(control_command("/planner"), None);
         assert_eq!(control_command("plan"), None);
+    }
+}
+
+#[cfg(test)]
+mod steer_tests {
+    use super::{steer_failure, SteerFailure};
+
+    #[test]
+    fn steer_failures_pick_the_least_disruptive_fallback() {
+        assert!(matches!(
+            steer_failure("UnsupportedCapability(steer)"),
+            SteerFailure::Unsupported
+        ));
+        assert!(matches!(
+            steer_failure(crate::acp::session::adapter_runtime::STEER_NO_RUNNING_TURN),
+            SteerFailure::TurnEnded
+        ));
+        assert!(matches!(
+            steer_failure("connection closed"),
+            SteerFailure::Other
+        ));
     }
 }

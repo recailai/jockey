@@ -40,6 +40,9 @@ pub(crate) struct LiveConnection {
     /// `set_session_config_option` responses.
     pub(crate) config_state: ConfigStateCell,
     pub(crate) child_pid: Option<u32>,
+    /// The adapter advertised `_meta.steering.supported` at `initialize`: input can be injected
+    /// into a running turn with `_session/steering` instead of cancelling it.
+    pub(crate) steering: bool,
     pub(crate) last_active: Instant,
     pub(crate) _child: tokio::process::Child,
     pub(crate) _io_task: tokio::task::JoinHandle<()>,

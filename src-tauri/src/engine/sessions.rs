@@ -109,20 +109,6 @@ pub(crate) fn resolve_role_runtime(
         .map(|r| runtime_key(&r))
 }
 
-/// Whether the runtime takes extra input into a running turn (vs. only between turns).
-pub(crate) async fn supports_steer(runtime: &str) -> bool {
-    let want = runtime_key(runtime);
-    tokio::task::spawn_blocking(crate::assistant::cached_assistant_catalog)
-        .await
-        .map(|catalog| {
-            catalog.iter().any(|a| {
-                runtime_key(&a.key) == want
-                    && a.input_delivery.get("strategy").and_then(|s| s.as_str()) == Some("steer")
-            })
-        })
-        .unwrap_or(false)
-}
-
 // ---------------------------------------------------------------------------
 // Session and project operations — the only writers; each one announces itself
 // ---------------------------------------------------------------------------

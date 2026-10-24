@@ -14,6 +14,7 @@ pub use types::{
     AcpEvent, AcpPromptResult, ActiveConnectionInfo, ConnectionDeathEvent, PrewarmEvent,
 };
 
+pub(crate) use handlers::build_prompt_blocks;
 pub(crate) use permission::{
     cached_approval, cancel_all_permissions, cancel_all_user_input, cancel_permissions_for,
     insert_permission, permission_requests, PendingPermission,
@@ -22,7 +23,7 @@ pub(crate) use pool::{
     pool_key, register_child_pid, ConfigStateCell, DeltaSlot, LiveConnection, ModeStateCell,
     CANCEL_HANDLES, CONN_MAP, DELTA_CHANNEL_CAPACITY,
 };
-pub(crate) use types::WorkerMsg;
+pub(crate) use types::{SteerOutcome, WorkerMsg};
 
 use crate::acp::protocol as acp;
 use handlers::{
@@ -283,6 +284,58 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                     let result =
                         reconnect_worker_session(runtime_key, &role_name, &app_session_id).await;
                     let _ = result_tx.send(result);
+                });
+            }
+            WorkerMsg::Steer {
+                runtime_key,
+                role_name,
+                app_session_id,
+                prompt,
+                result_tx,
+            } => {
+                let key = pool_key(&app_session_id, runtime_key, &role_name);
+                // Only a prompt in flight can be steered; its cancel handle exists exactly then.
+                let running = CANCEL_HANDLES.with(|m| m.borrow().contains_key(&key));
+                let live = CONN_MAP.with(|m| {
+                    m.borrow()
+                        .get(&key)
+                        .map(|c| (c.conn.clone(), c.session_id.clone(), c.steering))
+                });
+                let Some((conn, session_id, steering)) = live.filter(|_| running) else {
+                    let _ = result_tx.send(SteerOutcome::NoRunningTurn);
+                    return;
+                };
+                if !steering {
+                    let _ = result_tx.send(SteerOutcome::Unsupported);
+                    return;
+                }
+                tokio::task::spawn_local(async move {
+                    // `promptRequired`: if the turn ended meanwhile the adapter hands the input
+                    // back instead of starting a detached turn the engine would not own.
+                    let params = json!({
+                        "sessionId": session_id,
+                        "prompt": prompt,
+                        "_meta": { "steering": { "idleBehavior": "promptRequired" } },
+                    });
+                    let outcome = match conn
+                        .request::<_, serde_json::Value>("_session/steering", params)
+                        .await
+                    {
+                        Ok(resp) => match resp.get("outcome").and_then(|o| o.as_str()) {
+                            Some("injected") => SteerOutcome::Injected,
+                            Some("promptRequired") => SteerOutcome::NoRunningTurn,
+                            other => SteerOutcome::Failed(format!(
+                                "unexpected steering outcome: {}",
+                                other.unwrap_or("none")
+                            )),
+                        },
+                        Err(e) => SteerOutcome::Failed(e.to_string()),
+                    };
+                    acp_log(
+                        "steer.result",
+                        json!({ "runtime": runtime_key, "role": role_name, "outcome": format!("{outcome:?}") }),
+                    );
+                    let _ = result_tx.send(outcome);
                 });
             }
             WorkerMsg::SetMode {

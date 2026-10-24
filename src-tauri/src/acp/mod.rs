@@ -19,7 +19,7 @@ pub use adapter::{
 };
 pub use metrics::{snapshot as metrics_snapshot, AcpRuntimeMetrics};
 pub use runtime_state::{
-    clear_discovered_catalogs, list_available_commands, list_discovered_models,
+    clear_discovered_catalogs, list_available_commands, list_discovered_models, runtime_steering,
 };
 pub use session::{
     cancel_session, execute_runtime, prewarm_role, reconnect_session,

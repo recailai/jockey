@@ -14,7 +14,8 @@ use super::super::metrics::{
     record_init_latency, record_session_start_latency, record_spawn_latency,
 };
 use super::super::runtime_state::{
-    clear_runtime, remember_runtime_config_options, remember_runtime_models, remember_runtime_modes,
+    clear_runtime, remember_runtime_config_options, remember_runtime_models,
+    remember_runtime_modes, remember_runtime_steering,
 };
 use super::super::transport::{run_io, AcpConnection};
 use super::super::worker::{
@@ -214,6 +215,18 @@ pub(crate) async fn cold_start(
 
     let t = Instant::now();
     let supports_load = init_resp.agent_capabilities.load_session;
+    // Not part of stable ACP: claude-agent-acp and codex-acp agree on a `_session/steering`
+    // extension and advertise it under the initialize response's `_meta`.
+    let steering = init_resp
+        .meta
+        .as_ref()
+        .and_then(|m| m.get("steering"))
+        .and_then(|s| s.get("supported"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if remember_runtime_steering(runtime_key, steering) {
+        crate::assistant::invalidate_assistant_catalog();
+    }
     // `session/resume` reattaches without replaying history. Agents that keep sessions but
     // cannot replay them (DeepSeek Harness) advertise only this.
     let supports_resume = init_resp
@@ -434,6 +447,7 @@ pub(crate) async fn cold_start(
         mode_state,
         config_state,
         child_pid: child.id(),
+        steering,
         last_active: Instant::now(),
         _child: child,
         _io_task: io_handle,

@@ -31,6 +31,8 @@ struct RuntimeCatalog {
     models: Vec<String>,
     modes: Vec<String>,
     options: Option<CatalogOptions>,
+    /// Whether the adapter advertised the `_session/steering` extension at `initialize`.
+    steering: Option<bool>,
 }
 
 static RUNTIME_CATALOGS: OnceLock<DashMap<String, RuntimeCatalog>> = OnceLock::new();
@@ -72,6 +74,21 @@ pub(super) fn remember_runtime_models(runtime_key: &str, mut models: Vec<String>
     models.sort_unstable();
     models.dedup();
     with_catalog(runtime_key, |catalog| catalog.models = models);
+}
+
+/// Returns whether this changed what was known, so callers can refresh derived catalogs.
+pub(super) fn remember_runtime_steering(runtime_key: &str, supported: bool) -> bool {
+    let mut changed = false;
+    with_catalog(runtime_key, |catalog| {
+        changed = catalog.steering != Some(supported);
+        catalog.steering = Some(supported);
+    });
+    changed
+}
+
+/// `Some(true)` once a live connection of this runtime advertised steering.
+pub fn runtime_steering(runtime_key: &str) -> Option<bool> {
+    runtime_catalogs().get(runtime_key).and_then(|c| c.steering)
 }
 
 pub(super) fn remember_runtime_modes(runtime_key: &str, mut modes: Vec<String>) {

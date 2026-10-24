@@ -16,6 +16,27 @@ fn catalog_cache() -> &'static Mutex<CatalogCache> {
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
+/// Drop the cached catalog so the next read reflects something learned from a live
+/// connection (e.g. that an adapter supports steering).
+pub(crate) fn invalidate_assistant_catalog() {
+    if let Ok(mut guard) = catalog_cache().lock() {
+        *guard = None;
+    }
+}
+
+/// Steering is negotiated per connection, so the static descriptor cannot know it; once a live
+/// connection advertised it, "Send now" steers instead of interrupting.
+fn with_learned_delivery(
+    runtime_key: &str,
+    mut delivery: crate::acp::session::adapter_runtime::InputDeliveryCapabilities,
+) -> crate::acp::session::adapter_runtime::InputDeliveryCapabilities {
+    if crate::acp::runtime_steering(runtime_key) == Some(true) {
+        delivery.strategy = "steer".to_string();
+        delivery.next_step = true;
+    }
+    delivery
+}
+
 pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
     let kinds = [
         RuntimeKind::ClaudeCode,
@@ -58,7 +79,9 @@ pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
                 RuntimeCapabilities::unavailable()
             };
             let input_delivery = AnyRuntimeAdapter::resolve(kind.runtime_key())
-                .map(|adapter| adapter.descriptor().input_delivery)
+                .map(|adapter| {
+                    with_learned_delivery(kind.runtime_key(), adapter.descriptor().input_delivery)
+                })
                 .unwrap_or_else(|| {
                     AnyRuntimeAdapter::resolve("mock")
                         .expect("mock adapter")
@@ -103,7 +126,9 @@ pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
         };
         let unavailable_reason = (!available).then_some(binary.clone());
         let input_delivery = AnyRuntimeAdapter::resolve(&profile.runtime_key)
-            .map(|adapter| adapter.descriptor().input_delivery)
+            .map(|adapter| {
+                with_learned_delivery(&profile.runtime_key, adapter.descriptor().input_delivery)
+            })
             .unwrap_or_else(|| {
                 AnyRuntimeAdapter::resolve("mock")
                     .expect("mock adapter")

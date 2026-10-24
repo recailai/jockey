@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use super::super::adapter::AdapterTransport;
 use super::super::protocol as acp;
-use super::super::worker::{worker_tx, AcpPromptResult, WorkerMsg};
+use super::super::worker::{worker_tx, AcpPromptResult, SteerOutcome, WorkerMsg};
 use super::execute::{mock_execute, AcpWorkerPromptContext};
 use crate::runtime_profile::RuntimeCapabilities;
 
@@ -99,6 +99,10 @@ pub(crate) struct AdapterProbe {
     /// Unavailable reason, or resolved binary info when available.
     pub(crate) detail: Option<String>,
 }
+
+/// Steer error text for "the turn ended before the input arrived"; the engine drains the queue
+/// normally instead of interrupting anything.
+pub(crate) const STEER_NO_RUNNING_TURN: &str = "no running turn to steer";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -343,6 +347,39 @@ impl RuntimeAdapter for AnyRuntimeAdapter {
                 result_tx: None,
             })
             .map_err(|_| AdapterError::Unavailable("ACP worker is unavailable".into()))
+    }
+    async fn steer(
+        &self,
+        key: &SessionKey,
+        prompt: &str,
+        attachments: &[crate::types::ImageAttachment],
+    ) -> Result<(), AdapterError> {
+        if *self == Self::Mock {
+            return Err(AdapterError::unsupported("steer"));
+        }
+        let runtime_key = static_runtime_key(&key.runtime_key)
+            .ok_or_else(|| AdapterError::UnsupportedRuntime(key.runtime_key.clone()))?;
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        worker_tx()
+            .send(WorkerMsg::Steer {
+                runtime_key,
+                role_name: key.role_name.clone(),
+                app_session_id: key.app_session_id.clone(),
+                prompt: crate::acp::worker::build_prompt_blocks(prompt.to_string(), attachments),
+                result_tx,
+            })
+            .map_err(|_| AdapterError::Unavailable("ACP worker is unavailable".into()))?;
+        match result_rx.await {
+            Ok(SteerOutcome::Injected) => Ok(()),
+            Ok(SteerOutcome::Unsupported) => Err(AdapterError::unsupported("steer")),
+            Ok(SteerOutcome::NoRunningTurn) => {
+                Err(AdapterError::Unavailable(STEER_NO_RUNNING_TURN.into()))
+            }
+            Ok(SteerOutcome::Failed(e)) => Err(AdapterError::Unavailable(e)),
+            Err(_) => Err(AdapterError::Unavailable(
+                "ACP worker dropped the steer".into(),
+            )),
+        }
     }
     async fn discard_slot(&self, key: &SessionKey) -> Result<(), AdapterError> {
         if *self == Self::Mock {
