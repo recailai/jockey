@@ -8,14 +8,10 @@
 .control-center-column > .jui-alert { margin-bottom: 20px; }
 
 .control-center-intro { margin-bottom: 24px; }
+/* With nothing to list, the heading is the whole page: centre it instead of leaving it top-left. */
+.control-center-column.is-empty { min-height: 60%; justify-content: center; align-items: center; }
+.control-center-column.is-empty .control-center-intro h1 { color: var(--ui-muted); font-weight: 500; }
 .control-center-intro h1 { font-size: 22px; letter-spacing: -.02em; font-weight: 500; line-height: 1.25; margin: 0 0 14px; text-wrap: balance; }
-.control-center-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.control-center-stat { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border: 0; border-radius: var(--ui-radius-lg); background: var(--ui-surface); box-shadow: var(--ui-elevation-panel); }
-.control-center-stat > strong { font-size: 20px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
-.control-center-stat > span { font-size: 12px; color: var(--ui-text-caption); }
-.control-center-stat[data-tone="warning"] { background: var(--ui-state-warning-bg); --ui-elevation-stroke-color: color-mix(in srgb, var(--ui-state-warning-text) 35%, transparent); }
-.control-center-stat[data-tone="warning"] > strong { color: var(--ui-state-warning-text); }
-.control-center-stat[data-tone="info"] > strong { color: var(--ui-state-info-text); }
 
 .control-center-section { display: flex; flex-direction: column; gap: 8px; margin-block: 0 24px; }
 .control-center-section h2 { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 500; color: var(--ui-text-caption); margin: 0 0 2px; }
@@ -52,6 +48,4 @@
   .control-center-scroll { padding-inline: 12px; padding-top: 16px; }
   .control-center-header { padding-inline: 12px; padding-block: 4px; padding-top: max(4px, env(safe-area-inset-top)); }
   .control-center-intro h1 { font-size: 20px; }
-  .control-center-stat { padding: 8px 10px; }
-  .control-center-stat > strong { font-size: 18px; }
-}
+    }

@@ -651,13 +651,6 @@
   justify-content: space-between;
   padding: 0 8px 0 14px;
 }
-.sidebar-header-title {
-  color: var(--ui-text-caption);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
 .sidebar-tree {
   display: flex;
   min-height: 0;

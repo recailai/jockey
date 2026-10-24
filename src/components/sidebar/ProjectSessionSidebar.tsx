@@ -206,7 +206,7 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
     <aside class="jockey-tree-sidebar sidebar-shell">
       {/* ── Header ── */}
       <div class="sidebar-header">
-        <span class="sidebar-header-title">Projects</span>
+        <span class="flex-1" />
         <div class="flex items-center gap-0.5">
           <Show when={props.onImportSessions}>
             <IconButton

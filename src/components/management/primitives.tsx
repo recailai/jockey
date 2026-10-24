@@ -49,7 +49,7 @@ export function PanelSection(props: { title: string; action?: { label: string; o
 export function FieldRow(props: { label: string; children: unknown }) {
   return (
     <div class="flex items-start gap-3">
-      <span class="w-20 shrink-0 font-mono text-[9px] uppercase tracking-wide theme-muted pt-[3px]">{props.label}</span>
+      <span class="w-20 shrink-0 text-[12px] theme-muted pt-[7px]">{props.label}</span>
       <div class="flex-1 min-w-0">{props.children as any}</div>
     </div>
   );

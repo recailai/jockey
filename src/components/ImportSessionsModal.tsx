@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createMemo, createResource, createSignal, on } from "solid-js";
-import { ChevronDown, ChevronRight, DownloadCloud, Folder, MessageSquare, RefreshCw, Search } from "lucide-solid";
+import { ChevronDown, ChevronRight, Folder, MessageSquare, RefreshCw, Search } from "lucide-solid";
 import {
   Alert,
   AsyncContent,
@@ -311,7 +311,6 @@ export default function ImportSessionsModal(props: ImportSessionsModalProps) {
       <DialogContent
         class="max-w-[720px]"
         title="Import CLI Sessions"
-        icon={<DownloadCloud size={20} class="text-[var(--ui-accent)]" />}
       >
         <DialogBody class="space-y-3" onKeyDown={onKeyDown}>
           <Show when={error()}>
@@ -438,7 +437,7 @@ export default function ImportSessionsModal(props: ImportSessionsModalProps) {
 
         <DialogFooter>
           <span class="mr-auto text-[11px] theme-muted">
-            {selected().size} selected
+            <Show when={selected().size > 0}>{selected().size} selected</Show>
             <Show when={newProjectCount() > 0}>
               {` · will create ${newProjectCount()} ${newProjectCount() === 1 ? "project" : "projects"}`}
             </Show>

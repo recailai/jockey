@@ -4,7 +4,7 @@ import { ArrowLeft, ChevronRight, FolderPlus, History, Plus, RefreshCw, Download
 import type { SessionSummary } from "../components/types";
 import type { Project } from "../lib/tauriApi";
 import { displayTitle, fmtRelative } from "../lib/formatHelpers";
-import { AsyncContent, Badge, Button, IconButton, RowButton, StatusBadge, StatusDot } from "../components/ui";
+import { AsyncContent, Badge, Button, IconButton, RowButton, StatusDot } from "../components/ui";
 import { sessionStatus } from "../lib/sessionStatus";
 
 const OPEN_PROJECTS_KEY = "jockey_open_projects";
@@ -48,10 +48,6 @@ function SessionRow(props: { session: SessionSummary; onOpen: (id: string) => vo
         <Show when={s().preview}>
           <span class="companion-session-preview">{s().preview}</span>
         </Show>
-        <span class="flex items-center gap-1.5">
-          <Badge tone="neutral">@{s().activeRole}</Badge>
-          <StatusBadge status={status()} quiet />
-        </span>
       </span>
     </RowButton>
   );

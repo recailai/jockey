@@ -346,6 +346,10 @@ export function SessionsTab(props: {
   const selected = createMemo(() =>
     storedSessions().find((s) => s.id === selectedId()) ?? null,
   );
+  // The detail pane always shows a session when the filter matches one.
+  createEffect(() => {
+    if (!selected() && filtered()[0]) setSelectedId(filtered()[0].id);
+  });
 
 
   const handleReopen = async (s: StoredSession) => {
@@ -387,9 +391,7 @@ export function SessionsTab(props: {
           <Show when={loading()}>
             <p class="p-4 font-mono text-[10px] theme-muted opacity-60">Loading…</p>
           </Show>
-          <Show when={!loading() && filtered().length === 0}>
-            <p class="p-4 font-mono text-[10px] theme-muted opacity-60">No archived sessions.</p>
-          </Show>
+
           <For each={filtered()}>
             {(s) => {
               const isActive = () => activeIds().has(s.id);
@@ -450,7 +452,9 @@ export function SessionsTab(props: {
       {/* Detail pane */}
       <div class="flex-1 overflow-y-auto p-5">
         <Show when={selected()} fallback={
-          <EmptyState icon="◫" title="Select a session" />
+          <Show when={!loading()}>
+            <EmptyState title="No archived sessions" />
+          </Show>
         }>
           {(s) => (
             <div class="space-y-5">

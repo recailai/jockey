@@ -263,7 +263,9 @@ export default function SettingsPage(props: SettingsPageProps) {
                         <span class={`settings-runtime-dot ${assistant.available ? "is-online" : "is-offline"}`} />
                         <div class="min-w-0 flex-1 text-left">
                           <div class="text-[14px] font-medium theme-text">{assistant.label}</div>
-                          <div class="mt-1 truncate text-[12px] theme-muted">{assistant.available ? assistant.version ?? assistant.launchMethod ?? assistant.key : assistant.unavailableReason ?? assistant.installHint ?? "Unavailable"}</div>
+                          <Show when={assistant.available ? assistant.version : (assistant.unavailableReason ?? assistant.installHint ?? "Unavailable")}>
+                            {(detail) => <div class="mt-1 truncate text-[12px] theme-muted">{detail()}</div>}
+                          </Show>
                         </div>
                         <Show when={props.activeSession()?.runtimeKind === assistant.key}>
                           <CheckCircle2 size={18} class="theme-accent" />

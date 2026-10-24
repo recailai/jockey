@@ -22,6 +22,9 @@ export type ControlCenterProps = {
   onBrowseSessions: () => void;
   /** Extra header controls; the phone companion has no topbar, so it puts theme and navigation here. */
   headerActions?: JSX.Element;
+  /** Own header and "all sessions" link. The desktop already has a topbar and a sidebar, and the
+   *  list refreshes itself from engine events, so only the companion shows them. */
+  chrome?: boolean;
 };
 
 export default function ControlCenter(props: ControlCenterProps) {
@@ -119,7 +122,7 @@ export default function ControlCenter(props: ControlCenterProps) {
         </span>
         <span class="control-center-row-title">{displayTitle(s.title)}</span>
         <Show when={decision && !pendingFor(s.id).permissions.length}><span class="control-center-row-preview">{pendingFor(s.id).userInputs[0]?.title ?? s.lastError ?? "Your answer is needed"}</span></Show>
-        <Show when={!pendingFor(s.id).permissions.length && statusOf(s) !== "idle"}>
+        <Show when={!decision && statusOf(s) !== "idle"}>
           <span class="control-center-row-status"><StatusBadge status={statusOf(s)} /></span>
         </Show>
       </RowButton>
@@ -143,26 +146,25 @@ export default function ControlCenter(props: ControlCenterProps) {
 
   return (
     <main class="control-center">
-      <header class="control-center-header"><strong>Jockey</strong>{props.headerActions}<IconButton title="Refresh" aria-label="Refresh control center" onClick={() => void data.refresh()}><RefreshCw size={17} /></IconButton></header>
+      <Show when={props.chrome !== false}>
+        <header class="control-center-header"><strong>Jockey</strong>{props.headerActions}<IconButton title="Refresh" aria-label="Refresh control center" onClick={() => void data.refresh()}><RefreshCw size={17} /></IconButton></header>
+      </Show>
       <div class="control-center-scroll">
-        <div class="control-center-column">
+        <div class="control-center-column" classList={{ "is-empty": !data.loading() && !data.error() && data.sessions().length === 0 }}>
         <div class="control-center-intro">
-          <h1>{data.loading() ? "Connecting to your agents…" : data.error() ? "Connection needs attention" : decisionCount() ? `${decisionCount()} decision${decisionCount() === 1 ? "" : "s"} waiting` : attention().length ? "Your agents need attention" : "You’re all caught up"}</h1>
-          <div class="control-center-stats" role="list">
-            <div class="control-center-stat" role="listitem" data-tone={attention().length ? "warning" : undefined}><strong>{attention().length}</strong><span>Need you</span></div>
-            <div class="control-center-stat" role="listitem" data-tone={working().length ? "info" : undefined}><strong>{working().length}</strong><span>Working</span></div>
-            <div class="control-center-stat" role="listitem"><strong>{data.sessions().length}</strong><span>Open</span></div>
-          </div>
+          <h1>{data.loading() ? "Connecting to your agents…" : data.error() ? "Connection needs attention" : data.sessions().length === 0 ? "No active sessions" : decisionCount() ? `${decisionCount()} decision${decisionCount() === 1 ? "" : "s"} waiting` : attention().length ? "Your agents need attention" : "You’re all caught up"}</h1>
         </div>
         <Show when={data.error() || actionError()}><Alert tone="danger">{data.error() || actionError()} <Button variant="ghost" onClick={() => { setActionError(null); void data.refresh(); }}>Retry</Button></Alert></Show>
         <Show when={batchable().length > 1}><div class="control-center-batch"><Button variant="secondary" disabled={batching() || individualBusy() > 0 || !!data.error()} onClick={() => void allowAllOnce()}>{batching() ? "Submitting decisions…" : `Allow all once (${batchable().length})`}</Button></div></Show>
         <Show when={batchResult()}><p class="control-center-batch-result" role="status">{batchResult()}</p></Show>
-        <AsyncContent state={data.loading() ? "loading" : data.sessions().length === 0 ? "empty" : "ready"} emptyTitle="No active sessions">
+        <AsyncContent state={data.loading() ? "loading" : "ready"}>
           <Show when={attention().length}><section class="control-center-section"><h2>Needs you <Badge tone="warning">{attention().length}</Badge></h2><For each={attention()}>{(s) => row(s, true)}</For></section></Show>
           <Show when={working().length}><section class="control-center-section"><h2>In progress <Badge tone="info">{working().length}</Badge></h2><For each={working()}>{(s) => row(s)}</For></section></Show>
           <Show when={recent().length}><section class="control-center-section"><h2>Recent sessions</h2><For each={recent()}>{(s) => row(s)}</For></section></Show>
         </AsyncContent>
-        <Button variant="secondary" class="control-center-browse" onClick={props.onBrowseSessions}>All projects & sessions</Button>
+        <Show when={props.chrome !== false}>
+          <Button variant="secondary" class="control-center-browse" onClick={props.onBrowseSessions}>All projects & sessions</Button>
+        </Show>
         </div>
       </div>
       <Show when={chosen()}>

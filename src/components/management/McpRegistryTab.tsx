@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 import { EmptyState, Badge, type BadgeTone } from "../ui";
 import { FieldRow, TextInput, InlineSelect, ActionButton, PanelSection } from "./primitives";
 import type { AcpMcpServer } from "./primitives";
@@ -31,6 +31,10 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
   const argsInvalid = createMemo(() => fTransport() === "stdio" && !!fArgs().trim() && parsedArgs() === null);
 
   const selected = createMemo(() => entries().find((e) => e.key === selectedKey()) ?? null);
+  // The detail pane always shows a server when there is one, instead of a "Select" prompt.
+  createEffect(() => {
+    if (!creating() && !selected() && entries()[0]) setSelectedKey(entries()[0].key);
+  });
 
   async function refresh() {
     try {
@@ -115,6 +119,9 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
   }
 
   return (
+    <Show when={creating() || entries().length > 0} fallback={
+      <EmptyState class="h-full justify-center" title="No MCP servers" action={{ label: "Add MCP server", onClick: () => setCreating(true) }} />
+    }>
     <div class="flex h-full">
       <div class="flex w-60 shrink-0 flex-col border-r theme-border">
         <div class="p-3">
@@ -126,9 +133,7 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
           />
         </div>
         <div class="flex-1 overflow-y-auto space-y-0.5 py-1">
-          <Show when={entries().length === 0}>
-            <EmptyState icon="◈" title="No MCP servers" />
-          </Show>
+
           <For each={entries()}>
             {(entry) => (
               <button
@@ -279,10 +284,8 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
           }}
         </Show>
 
-        <Show when={!creating() && !selected()}>
-          <EmptyState icon="◈" title="Select an MCP server" />
-        </Show>
       </div>
     </div>
+    </Show>
   );
 }

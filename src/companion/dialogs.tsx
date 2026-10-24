@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createResource, createSignal } from "solid-js";
-import { ArrowUp, Folder, GitBranch } from "lucide-solid";
+import { ArrowUp, Check, Folder, GitBranch } from "lucide-solid";
 import type { AssistantRuntime, SessionSummary } from "../components/types";
 import type { Project, RawSession } from "../lib/tauriApi";
 import { call } from "../lib/transport";
@@ -173,7 +173,7 @@ export function RolePickerDialog(props: {
           <h3 class="text-xs theme-muted">Agent</h3>
           <For each={props.assistants.filter((a) => a.available)}>{(agent) => (
             <RowButton active={agent.key === props.runtimeKind} disabled={busy() || props.disabled} onClick={() => void select(() => props.onPickRuntime(agent))}>
-              <span class="flex w-full items-center gap-2"><span class="min-w-0 flex-1 truncate">{agent.label}</span><Show when={agent.key === props.runtimeKind}><Badge tone="success">current</Badge></Show></span>
+              <span class="flex w-full items-center gap-2"><span class="min-w-0 flex-1 truncate">{agent.label}</span><Show when={agent.key === props.runtimeKind}><Check size={16} class="shrink-0 text-[var(--ui-brand)]" aria-label="Current" /></Show></span>
             </RowButton>
           )}</For>
           <h3 class="pt-3 text-xs theme-muted">Persona</h3>
@@ -196,7 +196,7 @@ export function RolePickerDialog(props: {
                       <span class="block truncate text-xs theme-muted">{r.runtimeKind}</span>
                     </span>
                     <Show when={r.roleName.toLowerCase() === props.activeRole.toLowerCase()}>
-                      <Badge tone="success">current</Badge>
+                      <Check size={16} class="shrink-0 text-[var(--ui-brand)]" aria-label="Current" />
                     </Show>
                   </span>
                 </RowButton>

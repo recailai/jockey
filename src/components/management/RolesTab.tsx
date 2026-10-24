@@ -287,7 +287,6 @@ export function RolesTab(props: {
   // Scope & filter states
   const [cScope, setCScope] = createSignal<"project" | "global">(props.currentProject?.() ? "project" : "global");
   const [eScope, setEScope] = createSignal<"project" | "global">("global");
-  const [roleFilter, setRoleFilter] = createSignal<"all" | "project" | "global">("all");
 
   const projectRoles = createMemo(() => {
     const currentProjId = props.currentProject?.()?.id;
@@ -299,12 +298,8 @@ export function RolesTab(props: {
     return userRoles().filter((r) => !r.projectId);
   });
 
-  const filteredRoles = createMemo(() => {
-    const filter = roleFilter();
-    if (filter === "project") return projectRoles();
-    if (filter === "global") return globalRoles();
-    return [...projectRoles(), ...globalRoles()];
-  });
+  // Project roles first; the badge on each row says which scope it is.
+  const filteredRoles = createMemo(() => [...projectRoles(), ...globalRoles()]);
 
   // ── Create form state ───────────────────────────────────────────────────────
   const [cName, setCName] = createSignal("Developer");
@@ -447,6 +442,13 @@ export function RolesTab(props: {
     if (!props.initialRoleName || creating() || selectedId()) return;
     const role = userRoles().find((r) => r.roleName === props.initialRoleName);
     if (role) openEdit(role);
+  });
+
+  // The detail pane always shows a role when there is one, instead of a "Select a role" prompt.
+  createEffect(() => {
+    if (creating() || selectedId() || props.initialRoleName) return;
+    const first = filteredRoles()[0];
+    if (first) openEdit(first);
   });
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -758,24 +760,8 @@ export function RolesTab(props: {
             onClick={openCreate}
           />
         </div>
-        {/* Scope Filter Tabs */}
-        <div class="flex items-center gap-1 px-2.5 py-1.5 border-b theme-border text-[10px]">
-          <Pill active={roleFilter() === "all"} onClick={() => setRoleFilter("all")}>
-            All ({userRoles().length})
-          </Pill>
-          <Show when={props.currentProject?.()}>
-              <Pill active={roleFilter() === "project"} onClick={() => setRoleFilter("project")}>
-                Project ({projectRoles().length})
-              </Pill>
-          </Show>
-          <Pill active={roleFilter() === "global"} onClick={() => setRoleFilter("global")}>
-            Global ({globalRoles().length})
-          </Pill>
-        </div>
         <div class="flex-1 overflow-y-auto space-y-0.5 py-1">
-          <Show when={filteredRoles().length === 0}>
-          <EmptyState icon="◎" title="No roles" />
-          </Show>
+
           <For each={filteredRoles()}>
             {(role) => {
               const color = () => RUNTIME_COLOR[role.runtimeKind] ?? "theme-muted";
@@ -796,10 +782,8 @@ export function RolesTab(props: {
                 >
                   <div class="flex items-center justify-between min-w-0 gap-1">
                     <div class="flex items-center gap-1.5 min-w-0 truncate">
-                      <span class={`truncate font-mono text-[10px] font-semibold ${isSelected() ? "theme-text" : "theme-text"}`}>{role.roleName}</span>
-                      <Show when={role.projectId} fallback={
-                        <Badge tone="neutral" class="font-mono">global</Badge>
-                      }>
+                      <span class="truncate text-[13px] font-medium theme-text">{role.roleName}</span>
+                      <Show when={role.projectId}>
                         <Show when={isProjectOverride(role)} fallback={
                           <Badge tone="info" class="font-mono">project</Badge>
                         }>
@@ -875,10 +859,10 @@ export function RolesTab(props: {
               <FieldRow label="Scope">
                 <div class="flex items-center gap-2">
                   <Pill active={cScope() === "project"} disabled={!props.currentProject?.()} onClick={() => setCScope("project")}>
-                    Project: {props.currentProject?.() ? props.currentProject()!.name : "(No project)"}
+                    {props.currentProject?.()?.name ?? "This project"}
                   </Pill>
                   <Pill active={cScope() === "global"} onClick={() => setCScope("global")}>
-                    Global (All Projects)
+                    All projects
                   </Pill>
                 </div>
               </FieldRow>
@@ -920,7 +904,7 @@ export function RolesTab(props: {
                   <CapabilityChips assistant={selectedAssistant()} />
                 </div>
               </FieldRow>
-              <FieldRow label="Prompt (Optional)">
+              <FieldRow label="Prompt">
                 <div class="w-full flex flex-col gap-1">
                   <TextInput
                     value={cPrompt()}
@@ -1038,14 +1022,7 @@ export function RolesTab(props: {
                 <div class="flex items-start justify-between gap-4">
                   <div>
                     <div class="flex items-center gap-2 flex-wrap">
-                      <h2 class="font-mono text-sm font-bold theme-text">{role().roleName}</h2>
-                      <Show when={role().projectId} fallback={
-                        <Badge tone="neutral" class="font-mono">Global Role</Badge>
-                      }>
-                        <Badge tone="info" class="font-mono">
-                          Project Role · {props.currentProject?.()?.name ?? "Project"}
-                        </Badge>
-                      </Show>
+                      <h2 class="text-[15px] font-semibold theme-text">{role().roleName}</h2>
                     </div>
                     <div class="flex items-center gap-2 mt-1">
                       <span class={`font-mono text-[10px] ${RUNTIME_COLOR[role().runtimeKind] ?? "theme-muted"}`}>{role().runtimeKind}</span>
@@ -1070,7 +1047,7 @@ export function RolesTab(props: {
                     <Show when={deletingId() === role().id} fallback={
                       <ActionButton
                         label={isProjectOverride(role()) ? "Revert to Global" : "Delete"}
-                        variant={isProjectOverride(role()) ? "secondary" : "danger"}
+                        variant="secondary"
                         onClick={() => setDeletingId(role().id)}
                       />
                     }>
@@ -1121,10 +1098,10 @@ export function RolesTab(props: {
                   <FieldRow label="Scope">
                     <div class="flex items-center gap-2">
                       <Pill active={eScope() === "project"} disabled={!props.currentProject?.()} onClick={() => setEScope("project")}>
-                        Project {props.currentProject?.() ? `(${props.currentProject()!.name})` : "(No project selected)"}
+                        {props.currentProject?.()?.name ?? "This project"}
                       </Pill>
                       <Pill active={eScope() === "global"} onClick={() => setEScope("global")}>
-                        Global (All Projects)
+                        All projects
                       </Pill>
                     </div>
                   </FieldRow>
@@ -1143,7 +1120,7 @@ export function RolesTab(props: {
                     </div>
                   </FieldRow>
                   <RoleAccountField roleId={role().id} runtimeKind={role().runtimeKind} />
-                  <FieldRow label="Prompt (Optional)">
+                  <FieldRow label="Prompt">
                     <div class="w-full flex flex-col gap-1">
                       <TextInput
                         value={ePrompt()}
@@ -1265,7 +1242,6 @@ export function RolesTab(props: {
 
                 <div class="flex gap-2">
                   <ActionButton label={saving() ? "Saving…" : "Save"} variant="primary" disabled={saving()} onClick={() => void handleSaveEdit()} />
-                  <ActionButton label="Back" variant="ghost" onClick={() => setSelectedId(null)} />
                 </div>
               </div>
             );
@@ -1273,8 +1249,8 @@ export function RolesTab(props: {
         </Show>
 
         {/* Empty state */}
-        <Show when={!creating() && !editingRole()}>
-          <EmptyState icon="◎" title="Select a role" />
+        <Show when={!creating() && filteredRoles().length === 0}>
+          <EmptyState title="No roles" action={{ label: "New role", onClick: openCreate }} />
         </Show>
       </div>
 

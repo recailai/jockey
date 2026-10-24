@@ -122,7 +122,7 @@ export default function ChatInput(props: ChatInputProps) {
               ref={props.richInputRef}
               nodes={props.richNodes}
               onRemoveImage={props.onRemoveImage}
-              placeholder={props.placeholder ?? `Chat with ${props.activeRole()}... (type / for commands)`}
+              placeholder={props.placeholder ?? `Message ${props.activeRole()}…`}
               class="composer-rich-input rich-input"
               onNodesChange={(nodes) => props.setRichNodes(nodes)}
               onCaretText={(text, caret) => {

@@ -1056,6 +1056,7 @@ export default function App() {
       showControlCenter={showControlCenter()}
       controlCenter={
         <ControlCenter
+          chrome={false}
           projects={projects}
           onOpenChat={(id) => { setShowControlCenter(false); void openExistingSession(id); }}
           onSend={async (id, text) => {
