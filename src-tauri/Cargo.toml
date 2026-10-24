@@ -49,6 +49,7 @@ uuid = { version = "1.26.0", features = ["v4", "serde"] }
 which = "8"
 axum = { version = "0.7", features = ["macros"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
+ruzstd = "0.9.1"
 
 
 [dev-dependencies]

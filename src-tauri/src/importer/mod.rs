@@ -1,6 +1,7 @@
 mod acp_list;
 pub(crate) mod claude;
 pub(crate) mod codex;
+pub(crate) mod dsh;
 pub(crate) mod pi;
 
 use crate::db::app_session_role::save_app_session_role_cli_id;
@@ -128,6 +129,7 @@ fn scan_sessions(project_path: &str) -> Vec<DiscoveredSession> {
     let mut sessions = claude::scan_claude_sessions(project_path);
     sessions.extend(codex::scan_codex_sessions(project_path));
     sessions.extend(pi::scan_pi_sessions(project_path));
+    sessions.extend(dsh::scan_dsh_sessions(project_path));
     acp_list::enrich(&mut sessions, |cwd| cwd_in_project(cwd, project_path));
     finish_scan(sessions)
 }
@@ -136,6 +138,7 @@ fn scan_all_sessions() -> Vec<DiscoveredSession> {
     let mut sessions = claude::scan_all_claude_sessions();
     sessions.extend(codex::scan_all_codex_sessions());
     sessions.extend(pi::scan_all_pi_sessions());
+    sessions.extend(dsh::scan_all_dsh_sessions());
     acp_list::enrich(&mut sessions, |_| true);
     finish_scan(sessions)
 }
@@ -167,6 +170,7 @@ pub(crate) fn parser_for(runtime_kind: &str) -> Option<fn(&Path) -> Vec<ParsedIm
         "claude-code" | "claude-native" => Some(claude::parse_claude_session_messages),
         "codex-cli" => Some(codex::parse_codex_session_messages),
         "pi-cli" => Some(pi::parse_pi_session_messages),
+        "dsh-cli" => Some(dsh::parse_dsh_session_messages),
         _ => None,
     }
 }
@@ -451,6 +455,7 @@ pub(crate) fn locate_transcript(runtime_kind: &str, provider_id: &str) -> Option
         }
         "codex-cli" => file_named(home.join(".codex").join("sessions")),
         "pi-cli" => file_named(home.join(".pi").join("agent").join("sessions")),
+        "dsh-cli" => dsh::locate(provider_id),
         _ => None,
     }
 }

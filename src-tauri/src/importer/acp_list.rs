@@ -1,9 +1,11 @@
 //! ACP `session/list` as a second discovery source next to the transcript scanners.
 //!
-//! The file scanners stay authoritative for which Claude, Codex and Pi conversations exist:
-//! they filter probe, sub-agent and empty transcripts, and their files carry the history that
-//! import copies. ACP contributes what files cannot: Claude's generated session summaries as
-//! titles, and the whole list for runtimes Jockey has no transcript reader for (Antigravity). Listing starts each installed adapter once; missing adapters are skipped.
+//! The file scanners stay authoritative for which Claude, Codex, Pi and DeepSeek Harness
+//! conversations exist: they filter probe, sub-agent and empty transcripts, and their files
+//! carry the history that import copies. ACP contributes what files cannot: Claude's generated
+//! session summaries as titles, and the whole list for runtimes Jockey has no transcript
+//! reader for (Antigravity). Listing starts each installed adapter once; missing adapters are
+//! skipped.
 
 use super::DiscoveredSession;
 use crate::acp::session::list::{list_runtime_sessions, ListedSession};
@@ -16,10 +18,7 @@ const FILE_BACKED: [RuntimeKind; 3] = [
     RuntimeKind::CodexCli,
     RuntimeKind::PiCli,
 ];
-const ACP_ONLY: [(RuntimeKind, &str); 2] = [
-    (RuntimeKind::AntigravityCli, "Antigravity"),
-    (RuntimeKind::DeepSeekHarness, "DeepSeek Harness"),
-];
+const ACP_ONLY: [(RuntimeKind, &str); 1] = [(RuntimeKind::AntigravityCli, "Antigravity")];
 /// Runtimes whose listed title is a real summary. Codex and Pi list the raw first message
 /// (attachment headers included), which reads worse than the scanner's cleaned title.
 const SUMMARY_TITLES: [RuntimeKind; 1] = [RuntimeKind::ClaudeCode];
@@ -85,10 +84,7 @@ fn merge(
             if !belongs(&s.cwd) {
                 continue;
             }
-            let at = s
-                .updated_at_ms
-                .or_else(|| stored_activity_ms(kind, &s.session_id))
-                .unwrap_or(0);
+            let at = s.updated_at_ms.unwrap_or(0);
             sessions.push(DiscoveredSession {
                 runtime_kind: kind.runtime_key(),
                 agent,
@@ -111,30 +107,6 @@ fn merge(
 fn short_id(id: &str) -> &str {
     let id = id.strip_prefix("session-").unwrap_or(id);
     &id[..id.len().min(8)]
-}
-
-/// Last activity for agents whose `session/list` carries no `updatedAt`. DeepSeek Harness keeps
-/// each conversation in `~/.dsh/sessions/<encoded cwd>/<session id>/`; the newest file there is
-/// when it was last written. Its contents (compressed, versioned) are not read.
-fn stored_activity_ms(kind: RuntimeKind, session_id: &str) -> Option<i64> {
-    if kind != RuntimeKind::DeepSeekHarness || session_id.contains(['/', '\\']) {
-        return None;
-    }
-    let root = std::env::var_os("DSH_HOME")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".dsh")))?
-        .join("sessions");
-    std::fs::read_dir(root)
-        .ok()?
-        .flatten()
-        .map(|cwd_dir| cwd_dir.path().join(session_id))
-        .find(|dir| dir.is_dir())
-        .and_then(|dir| std::fs::read_dir(dir).ok())?
-        .flatten()
-        .filter_map(|f| f.metadata().ok()?.modified().ok())
-        .max()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as i64)
 }
 
 #[cfg(test)]
