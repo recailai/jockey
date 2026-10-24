@@ -4,6 +4,7 @@ import { render } from "solid-js/web";
 import App from "./App";
 import "./index.css";
 import "./styles/design-system.css";
+import "./styles/shell.css";
 import { trackInputModality } from "./lib/inputModality";
 
 // The UI catalog is a dev-only page; production builds tree-shake this branch away.

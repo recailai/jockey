@@ -112,7 +112,7 @@ export default function SessionTopbar(props: SessionTopbarProps) {
           <DropdownMenu>
             <DropdownTrigger
               variant="plain"
-              class="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-[var(--ui-surface-muted)] text-[var(--ui-accent)] font-semibold cursor-pointer transition-colors max-w-[180px] shrink-0 font-mono text-xs"
+              class="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-[var(--ui-row-hover)] text-[var(--ui-text)] font-medium cursor-pointer transition-colors max-w-[180px] shrink-0 text-[13px]"
               title={props.currentProject?.()?.rootPath ?? "Switch Project"}
             >
               <FolderGit2 size={13} class="shrink-0" />
@@ -120,7 +120,7 @@ export default function SessionTopbar(props: SessionTopbarProps) {
               <ChevronDown size={11} class="theme-muted shrink-0 opacity-70" />
             </DropdownTrigger>
             <DropdownContent placement="bottom-start" class="min-w-[230px]">
-              <div class="px-2 py-1 text-[10px] font-mono font-bold uppercase theme-muted">
+              <div class="px-2 py-1 text-[10px] font-medium uppercase text-[var(--ui-text-caption)]">
                 Projects
               </div>
               <For each={props.projects?.() ?? []}>
@@ -164,7 +164,7 @@ export default function SessionTopbar(props: SessionTopbarProps) {
             </DropdownContent>
           </DropdownMenu>
 
-          <span class="theme-muted select-none mx-0.5 opacity-40 shrink-0 font-mono text-xs">/</span>
+          <span class="theme-muted select-none mx-0.5 opacity-40 shrink-0 text-xs">/</span>
 
           {/* ── Horizontal Session Chips (同项目不同session横向排列 & 可操控) ── */}
           <div class="session-chip-strip flex-1 min-w-0 flex items-center">
@@ -207,7 +207,7 @@ export default function SessionTopbar(props: SessionTopbarProps) {
                       when={isRenaming()}
                       fallback={
                         <span
-                          class="truncate select-none text-xs font-mono"
+                          class="truncate select-none text-[12.5px]"
                           title={session.title}
                         >
                           {session.title}
@@ -215,7 +215,7 @@ export default function SessionTopbar(props: SessionTopbarProps) {
                       }
                     >
                       <input
-                        class="session-chip-rename-input font-mono text-xs"
+                        class="session-chip-rename-input text-[12.5px]"
                         value={renameValue()}
                         aria-label="Rename session"
                         onInput={(e) => setRenameValue(e.currentTarget.value)}
@@ -269,7 +269,7 @@ export default function SessionTopbar(props: SessionTopbarProps) {
                   <ChevronDown size={12} class="theme-muted" />
                 </DropdownTrigger>
                 <DropdownContent placement="bottom-start" class="min-w-[200px]">
-                  <div class="px-2 py-1 text-[10px] font-mono font-bold uppercase theme-muted">
+                  <div class="px-2 py-1 text-[10px] font-medium uppercase text-[var(--ui-text-caption)]">
                     All Sessions ({currentSessions().length})
                   </div>
                   <For each={currentSessions()}>

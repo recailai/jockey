@@ -1,6 +1,7 @@
 import { render } from "solid-js/web";
 import "../index.css";
 import "../styles/design-system.css";
+import "../styles/shell.css";
 import { trackInputModality } from "../lib/inputModality";
 import "./companion.css";
 import { setTransport } from "../lib/transport";
