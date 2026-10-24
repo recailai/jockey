@@ -3547,14 +3547,25 @@ pre.md-code > code { display: block; padding: 12px 16px 14px; background: none; 
 }
 .composer-context-footer .role-switcher {
   display: inline-flex;
-  max-width: min(36vw, 200px);
+  min-width: 0;
+  max-width: min(40vw, 300px);
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   padding: 0 8px;
 }
-.composer-context-footer .role-switcher > span {
-  line-height: 1;
+/* Agent name and its model/effort detail truncate independently: the detail gives way first,
+   the name keeps at least a few characters. Plain blocks, because ellipsis needs them. */
+.role-switcher > .role-switcher-agent,
+.role-switcher > .role-switcher-detail {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 18px;
 }
+.role-switcher > .role-switcher-agent { flex: 0 1 auto; min-width: 4.5em; color: var(--ui-text); }
+.role-switcher > .role-switcher-detail { flex: 0 100 auto; color: var(--ui-muted); font-weight: 400; }
 .composer-context-footer .topbar-branch {
   display: inline-flex;
   align-items: center;

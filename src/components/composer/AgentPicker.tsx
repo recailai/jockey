@@ -307,16 +307,11 @@ export default function AgentPicker(props: AgentPickerProps) {
         title="Agent, model and effort for this project"
       >
         <span class="composer-role-dot" />
-        <span class={`truncate ${RUNTIME_COLOR[runtimeKind() ?? ""] ?? ""}`}>
-          {agent()?.label ?? runtimeKind() ?? "no agent"}
-        </span>
-        <Show when={modelSummary()}>
-          <span class="shrink-0 truncate font-mono text-[10px] theme-muted">{modelSummary()}</span>
+        <span class="role-switcher-agent">{agent()?.label ?? runtimeKind() ?? "No agent"}</span>
+        <Show when={[modelSummary(), summaryChip()].filter(Boolean).join(" · ")}>
+          {(detail) => <span class="role-switcher-detail">{detail()}</span>}
         </Show>
-        <Show when={summaryChip()}>
-          <span class="shrink-0 font-mono text-[10px] text-[var(--ui-state-warning-text)]">{summaryChip()}</span>
-        </Show>
-        <ChevronDown size={12} class="theme-muted" />
+        <ChevronDown size={12} class="shrink-0 theme-muted" />
       </DropdownTrigger>
 
       <DropdownContent placement="top-start" class="jui-agent-menu">
