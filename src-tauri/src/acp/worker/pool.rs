@@ -43,6 +43,9 @@ pub(crate) struct LiveConnection {
     /// The adapter advertised `_meta.steering.supported` at `initialize`: input can be injected
     /// into a running turn with `_session/steering` instead of cancelling it.
     pub(crate) steering: bool,
+    /// The adapter also advertised honouring `next` delivery, so a steer needs no wait for a
+    /// step boundary on Jockey's side (`acp::activity`).
+    pub(crate) steering_next: bool,
     /// `llm_providers::revision` this connection was configured with.
     pub(crate) providers_rev: u64,
     /// The role instructions this connection was started with (whether or not the agent could

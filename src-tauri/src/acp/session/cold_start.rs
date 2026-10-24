@@ -266,13 +266,13 @@ pub(crate) async fn cold_start(spec: ColdStartSpec) -> Result<LiveConnection, St
     let supports_load = init_resp.agent_capabilities.load_session;
     // Not part of stable ACP: claude-agent-acp and codex-acp agree on a `_session/steering`
     // extension and advertise it under the initialize response's `_meta`.
-    let steering = init_resp
-        .meta
-        .as_ref()
-        .and_then(|m| m.get("steering"))
+    let steering_meta = init_resp.meta.as_ref().and_then(|m| m.get("steering"));
+    let steering = steering_meta
         .and_then(|s| s.get("supported"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let steering_next =
+        steering && steering_meta.is_some_and(super::super::activity::advertises_next_delivery);
     let supports_fork = init_resp
         .agent_capabilities
         .session_capabilities
@@ -535,6 +535,7 @@ pub(crate) async fn cold_start(spec: ColdStartSpec) -> Result<LiveConnection, St
         config_state,
         child_pid: child.id(),
         steering,
+        steering_next,
         providers_rev,
         system_prompt: requested_prompt,
         subagents,

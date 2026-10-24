@@ -309,11 +309,14 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                             c.conn.clone(),
                             c.session_id.clone(),
                             c.steering,
+                            c.steering_next,
                             c.tool_activity.clone(),
                         )
                     })
                 });
-                let Some((conn, session_id, steering, activity)) = live.filter(|_| running) else {
+                let Some((conn, session_id, steering, steering_next, activity)) =
+                    live.filter(|_| running)
+                else {
                     let _ = result_tx.send(SteerOutcome::NoRunningTurn);
                     continue;
                 };
@@ -323,10 +326,11 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 }
                 tokio::task::spawn_local(async move {
                     // Wait for a step boundary: injecting while a tool runs cuts it off (see
-                    // `acp::activity`). A pending permission prompt needs no wait — the
-                    // adapter then queues the message behind it instead of pre-empting.
+                    // `acp::activity`). Not needed when the adapter honours `next` delivery, or
+                    // while a permission prompt is pending — the adapter then queues the
+                    // message behind it instead of pre-empting.
                     let waited = std::time::Instant::now();
-                    loop {
+                    while !steering_next {
                         if !CANCEL_HANDLES.with(|m| m.borrow().contains_key(&key)) {
                             let _ = result_tx.send(SteerOutcome::NoRunningTurn);
                             return;
@@ -340,15 +344,16 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                     }
                     acp_log(
                         "steer.ready",
-                        json!({ "runtime": runtime_key, "waitedMs": waited.elapsed().as_millis() }),
+                        json!({
+                            "runtime": runtime_key,
+                            "waitedMs": waited.elapsed().as_millis(),
+                            "adapterNext": steering_next,
+                        }),
                     );
-                    // `promptRequired`: if the turn ended meanwhile the adapter hands the input
-                    // back instead of starting a detached turn the engine would not own.
-                    let params = json!({
-                        "sessionId": session_id,
-                        "prompt": prompt,
-                        "_meta": { "steering": { "idleBehavior": "promptRequired" } },
-                    });
+                    let params = crate::acp::activity::steer_params(
+                        &session_id.to_string(),
+                        &serde_json::to_value(&prompt).unwrap_or_default(),
+                    );
                     let outcome = match conn
                         .request::<_, serde_json::Value>("_session/steering", params)
                         .await

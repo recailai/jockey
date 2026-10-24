@@ -1,4 +1,4 @@
-mod activity;
+pub(crate) mod activity;
 mod adapter;
 pub(crate) use adapter::app_data_dir;
 mod client;
