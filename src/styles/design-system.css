@@ -1,0 +1,360 @@
+/* ─── Design system: primitive layer ──────────────────────────────────────────
+   The one place `components/ui/*` primitives are styled. Loaded after index.css.
+   Visual language (see docs/architecture/ui-design-and-components.md):
+   - surfaces step up a cool near-black ladder in dark, never pure black;
+   - borders and hover fills are translucent, edges of raised surfaces are a 0.5px hairline
+     drawn inside box-shadow (--ui-elevation-*), not a grey border;
+   - ink (--ui-accent) is the primary action colour, blue (--ui-brand) is reserved for send,
+     links, focus and the caret; status tones tint their own colour at ~10%.
+   Radii come from --ui-radius-* only (4/8/12/16/20/28).
+──────────────────────────────────────────────────────────────────────────── */
+
+html { font-family: var(--ui-font-sans); -webkit-font-smoothing: antialiased; }
+::selection { background: var(--ui-selection); }
+
+/* Focus: one ring for every control, shown for keyboard use only (html[data-input-modality]
+   is set by lib/inputModality.ts; text fields always show focus). */
+:where(button, a, [role="button"], [role="tab"], [role="menuitem"], [role="option"], [tabindex]):focus-visible {
+  outline: 2px solid var(--ui-focus-ring);
+  outline-offset: 2px;
+}
+html[data-input-modality="pointer"] :where(button, a, [role="button"], [role="tab"], [role="menuitem"], [role="option"], [tabindex]):focus-visible {
+  outline: none;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+.jui-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--ui-control-height-md);
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: none;
+  transition: background-color var(--ui-duration-fast) var(--ui-ease), color var(--ui-duration-fast) var(--ui-ease), opacity var(--ui-duration-fast) var(--ui-ease);
+}
+.jui-button-sm { height: 28px; padding: 0 10px; border-radius: var(--ui-radius-sm); font-size: 12px; line-height: 18px; }
+.jui-button-md { height: var(--ui-control-height-md); }
+.jui-button-lg { height: 36px; padding: 0 14px; border-radius: var(--ui-radius-md); font-size: 14px; line-height: 22px; }
+.jui-button:disabled { opacity: 0.4; cursor: default; }
+
+.jui-button-default,
+.jui-button-primary { background: var(--ui-accent); color: var(--ui-accent-text); }
+.jui-button-default:hover:not(:disabled),
+.jui-button-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--ui-accent) 86%, var(--ui-bg)); }
+.jui-button-secondary { background: var(--ui-secondary-bg); color: var(--ui-secondary-text); }
+.jui-button-secondary:hover:not(:disabled) { background: color-mix(in srgb, var(--ui-secondary-bg) 80%, var(--ui-text)); }
+.jui-button-outline { background: transparent; color: var(--ui-text); box-shadow: inset 0 0 0 0.5px var(--ui-border-strong); }
+.jui-button-ghost { background: transparent; color: var(--ui-text); }
+.jui-button-outline:hover:not(:disabled),
+.jui-button-ghost:hover:not(:disabled) { background: var(--ui-row-hover); }
+.jui-button-outline:active:not(:disabled),
+.jui-button-ghost:active:not(:disabled) { background: var(--ui-row-active); }
+.jui-button-destructive,
+.jui-button-danger { background: var(--ui-destructive-bg); color: var(--ui-destructive-text); }
+.jui-button-destructive:hover:not(:disabled),
+.jui-button-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--ui-destructive-bg) 88%, black); }
+
+.jui-icon-button,
+.jui-toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ui-radius-sm);
+  background: transparent;
+  color: var(--ui-muted);
+  cursor: pointer;
+  transition: background-color var(--ui-duration-fast) var(--ui-ease), color var(--ui-duration-fast) var(--ui-ease);
+}
+.jui-icon-button-sm { width: 24px; height: 24px; min-width: 24px; border-radius: 6px; }
+.jui-icon-button-outline,
+.jui-toolbar-button-outline { box-shadow: inset 0 0 0 0.5px var(--ui-border-strong); }
+.jui-icon-button:hover:not(:disabled),
+.jui-toolbar-button:hover:not(:disabled) { background: var(--ui-row-hover); color: var(--ui-text); }
+.jui-icon-button.is-active,
+.jui-toolbar-button.is-active { background: var(--ui-row-active); color: var(--ui-text); }
+.jui-icon-button:disabled,
+.jui-toolbar-button:disabled { opacity: 0.4; cursor: default; }
+
+.jui-row-button {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--ui-radius-md);
+  background: transparent;
+  color: var(--ui-text);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--ui-duration-fast) var(--ui-ease);
+}
+.jui-row-button:hover:not(:disabled),
+.jui-row-button.is-active { background: var(--ui-row-hover); }
+
+/* ── Pills, badges, dots ─────────────────────────────────────────────────── */
+.jui-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ui-row-hover);
+  color: var(--ui-muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.jui-pill-interactive { cursor: pointer; transition: background-color var(--ui-duration-fast) var(--ui-ease), color var(--ui-duration-fast) var(--ui-ease); }
+.jui-pill-interactive:hover:not(.is-disabled) { background: var(--ui-row-active); color: var(--ui-text); }
+.jui-pill.is-active { background: var(--ui-row-active); color: var(--ui-text); box-shadow: inset 0 0 0 0.5px var(--ui-border-strong); }
+.jui-pill.is-disabled { opacity: 0.4; cursor: default; }
+
+.jui-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 17px;
+  white-space: nowrap;
+}
+.jui-badge-neutral { background: var(--ui-state-muted-bg); color: var(--ui-state-muted-text); }
+.jui-badge-success { background: var(--ui-state-success-bg); color: var(--ui-state-success-text); }
+.jui-badge-warning { background: var(--ui-state-warning-bg); color: var(--ui-state-warning-text); }
+.jui-badge-danger { background: var(--ui-state-danger-bg); color: var(--ui-state-danger-text); }
+.jui-badge-info { background: var(--ui-state-info-bg); color: var(--ui-state-info-text); }
+.jui-badge-outline { background: transparent; box-shadow: inset 0 0 0 0.5px color-mix(in srgb, currentColor 40%, transparent); }
+.jui-badge-solid.jui-badge-neutral { background: var(--ui-state-muted-text); color: var(--ui-bg); }
+.jui-badge-solid.jui-badge-success { background: var(--ui-state-success-text); color: var(--ui-bg); }
+.jui-badge-solid.jui-badge-warning { background: var(--ui-state-warning-text); color: var(--ui-bg); }
+.jui-badge-solid.jui-badge-danger { background: var(--ui-state-danger-text); color: #fff; }
+.jui-badge-solid.jui-badge-info { background: var(--ui-state-info-text); color: #fff; }
+
+/* A 6px dot centred in its slot; `ongoing` is a breathing arc (state-dot.tsx). */
+.jui-state-dot { display: inline-block; flex-shrink: 0; border-radius: 999px; }
+.jui-state-dot-idle { background: var(--ui-text-caption); opacity: 0.6; }
+.jui-state-dot-done { background: var(--ui-state-success-text); }
+.jui-state-dot-warning { background: var(--ui-state-warning-text); }
+.jui-state-dot-error { background: var(--ui-state-danger-text); }
+.jui-state-dot-spinner { display: inline-block; flex-shrink: 0; color: var(--ui-brand); }
+.jui-state-dot-spinner .jui-state-dot-track { opacity: 0.25; }
+.jui-state-dot-spinner .jui-state-dot-arc { transform-origin: center; animation: jui-dot-spin 1.5s linear infinite, jui-dot-breathe 1.5s var(--ui-ease) infinite; }
+@keyframes jui-dot-spin { to { transform: rotate(360deg); } }
+@keyframes jui-dot-breathe { 0%, 100% { stroke-dasharray: 12 150; } 50% { stroke-dasharray: 24 150; } }
+.jui-status-badge .jui-state-dot-spinner { color: currentColor; }
+
+/* ── Alerts ──────────────────────────────────────────────────────────────── */
+.jui-alert {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: var(--ui-radius-md);
+  font-size: 13px;
+  line-height: 20px;
+}
+.jui-alert-neutral { background: var(--ui-state-muted-bg); color: var(--ui-text); }
+.jui-alert-info { background: var(--ui-state-info-bg); color: var(--ui-text); }
+.jui-alert-success { background: var(--ui-state-success-bg); color: var(--ui-text); }
+.jui-alert-warning { background: var(--ui-state-warning-bg); color: var(--ui-text); }
+.jui-alert-danger { background: var(--ui-state-danger-bg); color: var(--ui-text); }
+.jui-alert-info .jui-alert-icon { color: var(--ui-state-info-text); }
+.jui-alert-success .jui-alert-icon { color: var(--ui-state-success-text); }
+.jui-alert-warning .jui-alert-icon { color: var(--ui-state-warning-text); }
+.jui-alert-danger .jui-alert-icon { color: var(--ui-state-danger-text); }
+.jui-alert-neutral .jui-alert-icon { color: var(--ui-muted); }
+.jui-alert-title { font-weight: 600; }
+.jui-alert-action { color: inherit; font-weight: 500; text-decoration: underline dotted; text-underline-offset: 3px; }
+
+/* ── Inputs ──────────────────────────────────────────────────────────────── */
+.jui-field,
+.jui-textarea {
+  width: 100%;
+  border: 0;
+  border-radius: 10px;
+  background: var(--ui-input-bg);
+  color: var(--ui-text);
+  box-shadow: inset 0 0 0 0.5px var(--ui-input-border);
+  font-size: 13px;
+  line-height: 20px;
+  transition: box-shadow var(--ui-duration-fast) var(--ui-ease);
+}
+.jui-field { height: var(--ui-control-height-md); padding: 0 10px; }
+.jui-textarea { padding: 8px 10px; }
+.jui-field::placeholder,
+.jui-textarea::placeholder { color: var(--ui-text-caption); }
+.jui-field:focus,
+.jui-textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--ui-brand); }
+.jui-form-field-label { font-size: 13px; font-weight: 500; color: var(--ui-text); }
+.jui-form-field-description,
+.jui-form-field-hint { font-size: 12px; color: var(--ui-muted); }
+.jui-form-field-error { font-size: 12px; color: var(--ui-state-danger-text); }
+
+/* ── Overlays: dialog, menus, tooltip ────────────────────────────────────── */
+.jui-dialog-overlay { background: var(--ui-scrim); animation: jui-fade-in var(--ui-duration) var(--ui-ease); }
+.jui-dialog-content {
+  border: 0;
+  border-radius: var(--ui-radius-panel);
+  background: var(--ui-popover-bg);
+  color: var(--ui-popover-text);
+  box-shadow: var(--ui-elevation-prominent);
+  animation: jui-pop-in var(--ui-duration) var(--ui-ease);
+}
+.jui-dialog-title { font-size: 16px; font-weight: 600; line-height: 24px; }
+.jui-dialog-description { font-size: 13px; color: var(--ui-muted); }
+
+.jui-dropdown-content,
+.jui-dropdown-subcontent,
+.jui-context-menu,
+.jui-popup-select-card {
+  padding: 4px;
+  border: 0;
+  border-radius: var(--ui-radius-lg);
+  background: color-mix(in srgb, var(--ui-popover-bg) 88%, transparent);
+  -webkit-backdrop-filter: blur(40px) saturate(150%);
+  backdrop-filter: blur(40px) saturate(150%);
+  box-shadow: var(--ui-elevation-prominent);
+  --ui-elevation-stroke-color: var(--ui-border);
+}
+.jui-dropdown-item,
+.jui-dropdown-subtrigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--ui-text);
+  cursor: pointer;
+  outline: none;
+}
+.jui-dropdown-item[data-highlighted],
+.jui-dropdown-subtrigger[data-highlighted],
+.jui-dropdown-item:hover,
+.jui-dropdown-subtrigger:hover { background: var(--ui-row-hover); }
+.jui-dropdown-item[data-disabled] { opacity: 0.4; }
+.jui-dropdown-label { padding: 6px 8px 2px; font-size: 11px; font-weight: 500; color: var(--ui-text-caption); }
+.jui-dropdown-separator { height: 0.5px; margin: 4px 6px; background: var(--ui-border); border: 0; }
+
+.jui-tooltip {
+  padding: 3px 7px;
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-tooltip-bg);
+  color: #fff;
+  font-size: 12px;
+  line-height: 18px;
+  max-width: 50vw;
+  animation: jui-fade-in 150ms var(--ui-ease);
+}
+
+/* ── Tabs, segmented, switch, checkbox ───────────────────────────────────── */
+.jui-tabs-list,
+.jui-segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-row-hover);
+}
+.jui-tabs-trigger,
+.jui-segment {
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ui-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--ui-duration) var(--ui-ease), color var(--ui-duration) var(--ui-ease), box-shadow var(--ui-duration) var(--ui-ease);
+}
+.jui-tabs-trigger:hover,
+.jui-segment:hover { color: var(--ui-text); }
+.jui-tabs-trigger[aria-selected="true"],
+.jui-tabs-trigger[data-selected],
+.jui-segment.is-active {
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  box-shadow: var(--ui-elevation-soft);
+}
+
+.jui-switch-control {
+  width: 32px;
+  height: 18px;
+  padding: 1px;
+  border-radius: 999px;
+  background: var(--ui-border-strong);
+  transition: background-color var(--ui-duration) var(--ui-ease);
+}
+.jui-switch-control[data-checked] { background: var(--ui-brand); }
+.jui-switch-thumb {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: transform var(--ui-duration) var(--ui-ease);
+}
+.jui-switch-control[data-checked] .jui-switch-thumb { transform: translateX(14px); }
+
+.jui-checkbox-control {
+  border-radius: 5px;
+  box-shadow: inset 0 0 0 1px var(--ui-border-strong);
+  transition: background-color var(--ui-duration-fast) var(--ui-ease);
+}
+.jui-checkbox-control[data-checked],
+.jui-checkbox-control[data-indeterminate] { background: var(--ui-brand); box-shadow: none; color: #fff; }
+
+/* ── Empty states and panels ─────────────────────────────────────────────── */
+.jui-empty-state-title { font-size: 14px; font-weight: 500; color: var(--ui-text); }
+.jui-empty-state-description { font-size: 13px; color: var(--ui-muted); }
+.jui-panel { border: 0; border-radius: var(--ui-radius-lg); background: var(--ui-surface); box-shadow: var(--ui-elevation-panel); }
+
+/* ── Scrollbars: thin, and only as visible as the content needs ──────────── */
+* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ui-text) 18%, transparent) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 999px; background: color-mix(in srgb, var(--ui-text) 18%, transparent) padding-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ── Motion ──────────────────────────────────────────────────────────────── */
+@keyframes jui-fade-in { from { opacity: 0; } }
+@keyframes jui-pop-in { from { opacity: 0; transform: translate(-50%, -50%) scale(0.98); } }
+/* "Thinking…" shimmer: a sweep across muted text. */
+.jui-shimmer {
+  color: var(--ui-muted);
+  background: linear-gradient(105deg, var(--ui-muted) 40%, var(--ui-text) 50%, var(--ui-muted) 60%) 0 0 / 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: jui-shimmer 1.6s linear infinite;
+}
+@keyframes jui-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  .jui-shimmer { -webkit-text-fill-color: currentColor; background: none; }
+}
