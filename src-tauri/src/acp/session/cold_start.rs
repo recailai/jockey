@@ -14,8 +14,8 @@ use super::super::metrics::{
     record_init_latency, record_session_start_latency, record_spawn_latency,
 };
 use super::super::runtime_state::{
-    clear_runtime, remember_runtime_config_options, remember_runtime_fork, remember_runtime_models,
-    remember_runtime_modes, remember_runtime_steering, role_system_prompt,
+    clear_runtime, remember_runtime_caps, remember_runtime_config_options, remember_runtime_models,
+    remember_runtime_modes, LearnedCaps,
 };
 use super::super::transport::{run_io, AcpConnection};
 use super::super::worker::{
@@ -73,31 +73,71 @@ pub(super) fn extract_models_from_config_options(
     models
 }
 
-pub(crate) async fn cold_start(
-    runtime_key: &'static str,
-    role_name: &str,
-    app_session_id: &str,
-    binary: &str,
-    args: &[String],
-    env_pairs: &[(String, String)],
-    abs_cwd: &str,
-    auto_approve: bool,
-    mcp_servers: Vec<acp::McpServer>,
-    resume_session_id: Option<String>,
-) -> Result<LiveConnection, String> {
+/// Everything a cold start launches with. Owned, because concurrent callers share one start
+/// as a `'static` future.
+pub(crate) struct ColdStartSpec {
+    pub(crate) runtime_key: &'static str,
+    pub(crate) role_name: String,
+    pub(crate) app_session_id: String,
+    pub(crate) binary: String,
+    pub(crate) args: Vec<String>,
+    pub(crate) env: Vec<(String, String)>,
+    pub(crate) cwd: String,
+    pub(crate) auto_approve: bool,
+    pub(crate) mcp_servers: Vec<acp::McpServer>,
+    pub(crate) resume_session_id: Option<String>,
+    /// The role's instructions; sent only when the agent advertises support.
+    pub(crate) system_prompt: Option<String>,
+}
+
+/// The session request's `systemPrompt`: the role's instructions in append mode, only when
+/// the agent advertised `sessionCapabilities.systemPrompt`. An agent must reject a session
+/// request carrying a system prompt it cannot apply.
+pub(super) fn session_system_prompt(
+    advertised: bool,
+    text: Option<&str>,
+) -> Option<acp::SystemPrompt> {
+    let text = text
+        .map(str::trim)
+        .filter(|t| advertised && !t.is_empty())?;
+    Some(acp::SystemPrompt::new(vec![acp::ContentBlock::from(
+        text.to_string(),
+    )]))
+}
+
+pub(crate) async fn cold_start(spec: ColdStartSpec) -> Result<LiveConnection, String> {
+    let ColdStartSpec {
+        runtime_key,
+        role_name,
+        app_session_id,
+        binary,
+        args,
+        env: env_pairs,
+        cwd: abs_cwd,
+        auto_approve,
+        mcp_servers,
+        resume_session_id,
+        system_prompt: requested_prompt,
+    } = spec;
+    let (role_name, app_session_id, binary, abs_cwd) = (
+        role_name.as_str(),
+        app_session_id.as_str(),
+        binary.as_str(),
+        abs_cwd.as_str(),
+    );
     clear_runtime(runtime_key);
     let delta_slot: DeltaSlot = Arc::new(Mutex::new(None));
     acp_log("spawn.start", json!({ "binary": binary, "cwd": abs_cwd }));
 
     let mut cmd = tokio::process::Command::new(binary);
-    cmd.args(args)
+    cmd.args(&args)
         .current_dir(abs_cwd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .process_group(0);
-    for (k, v) in env_pairs {
+    for (k, v) in &env_pairs {
         cmd.env(k, v);
     }
 
@@ -142,6 +182,7 @@ pub(crate) async fn cold_start(
     let config_state: ConfigStateCell = Rc::new(RefCell::new(Vec::new()));
     let terminals: super::super::client::TerminalMap =
         Rc::new(RefCell::new(std::collections::HashMap::new()));
+    let subagents: Rc<RefCell<super::super::subagents::Subagents>> = Default::default();
     let client = Rc::new(JockeyUiClient {
         delta_slot: delta_slot.clone(),
         auto_approve,
@@ -152,7 +193,7 @@ pub(crate) async fn cold_start(
         mode_state: mode_state.clone(),
         config_state: config_state.clone(),
         terminals,
-        subagents: Default::default(),
+        subagents: subagents.clone(),
     });
     let conn = Rc::new(AcpConnection::new(stdin));
     let io_conn = conn.clone();
@@ -230,15 +271,18 @@ pub(crate) async fn cold_start(
         .and_then(|s| s.get("supported"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    if remember_runtime_steering(runtime_key, steering) {
-        crate::assistant::invalidate_assistant_catalog();
-    }
     let supports_fork = init_resp
         .agent_capabilities
         .session_capabilities
         .fork
         .is_some();
-    if remember_runtime_fork(runtime_key, supports_fork) {
+    if remember_runtime_caps(
+        runtime_key,
+        LearnedCaps {
+            steering,
+            fork: supports_fork,
+        },
+    ) {
         crate::assistant::invalidate_assistant_catalog();
     }
     // `session/resume` reattaches without replaying history. Agents that keep sessions but
@@ -249,15 +293,14 @@ pub(crate) async fn cold_start(
         .resume
         .is_some();
 
-    // The role's instructions, appended to the agent's own. Only sent when advertised: an
-    // agent must reject a session request carrying a system prompt it cannot apply.
-    let system_prompt = init_resp
-        .agent_capabilities
-        .session_capabilities
-        .system_prompt
-        .as_ref()
-        .and_then(|_| role_system_prompt(app_session_id, role_name))
-        .map(|text| acp::SystemPrompt::new(vec![acp::ContentBlock::from(text)]));
+    let system_prompt = session_system_prompt(
+        init_resp
+            .agent_capabilities
+            .session_capabilities
+            .system_prompt
+            .is_some(),
+        requested_prompt.as_deref(),
+    );
 
     struct SessionStartResult {
         session_id: acp::SessionId,
@@ -484,16 +527,34 @@ pub(crate) async fn cold_start(
         conn,
         session_id,
         cwd: abs_cwd.to_string(),
-        env: env_pairs.to_vec(),
+        env: env_pairs,
         delta_slot,
         mode_state,
         config_state,
         child_pid: child.id(),
         steering,
         providers_rev,
+        system_prompt: requested_prompt,
+        subagents,
         last_active: Instant::now(),
         _child: child,
         _io_task: io_handle,
         health_rx,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_prompt_is_sent_only_when_advertised_and_non_empty() {
+        assert!(session_system_prompt(false, Some("Be terse.")).is_none());
+        assert!(session_system_prompt(true, None).is_none());
+        assert!(session_system_prompt(true, Some("  \n")).is_none());
+        let built = session_system_prompt(true, Some("  Be terse.\n")).expect("advertised");
+        let json = serde_json::to_value(&built).unwrap();
+        assert_eq!(json.to_string().matches("Be terse.").count(), 1);
+        assert!(!json.to_string().contains("\\n"));
+    }
 }

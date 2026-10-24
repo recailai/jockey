@@ -226,6 +226,10 @@ export function createHttpTransport(initialToken: string): HttpTransport {
         const res = await api<{ cancelled: boolean }>(`/sessions/${enc(a.sessionId)}/cancel`, { body: {} });
         return res.cancelled as T;
       }
+      case "cancel_acp_subagent":
+        return api(`/sessions/${enc(a.appSessionId)}/subagents/cancel`, {
+          body: { role: a.roleName, toolCallId: a.toolCallId },
+        });
       case "send_queued_input_now":
         return api(`/sessions/${enc(a.sessionId)}/send-now`, { body: {} });
       case "remove_queued_input":

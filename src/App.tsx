@@ -1049,7 +1049,10 @@ export default function App() {
         a.capabilities.fork === true,
     );
 
+  const forkingSessions = new Set<string>();
   const forkSession = async (session: AppSession) => {
+    if (forkingSessions.has(session.id)) return;
+    forkingSessions.add(session.id);
     try {
       const raw = await appSessionApi.fork(session.id);
       if (getSessionIndex(raw.id) === -1) setSessions((prev) => [sessionFromRaw(raw), ...prev]);
@@ -1057,6 +1060,8 @@ export default function App() {
       setActiveSessionId(raw.id);
     } catch (e) {
       showToast(`Failed to fork session: ${String(e)}`, "error");
+    } finally {
+      forkingSessions.delete(session.id);
     }
   };
 
@@ -1242,6 +1247,7 @@ export default function App() {
                 void engineApi.removeQueued(sid, itemId).catch((e: unknown) => showToast(`Could not remove queued message: ${String(e)}`));
               }}
               onSendQueuedNow={() => { void sendQueuedNow(); }}
+              showToast={showToast}
               onResetAgentContext={resetActiveAgentContext}
               onReconnectAgent={reconnectActiveAgent}
               onListMounted={onListMounted}

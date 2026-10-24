@@ -24,14 +24,34 @@ import { SESSION_STATUS_LOOK } from "../ui/status-badge";
 import type { SessionStatus } from "../../lib/sessionStatus";
 import { useTheme } from "../../lib/useTheme";
 import { ToolCallGroup } from "../ToolCallGroup";
-import type { AppToolCall } from "../types";
+import type { AppPermission, AppPlanEntry, AppToolCall } from "../types";
+import { PlanPanel } from "../PlanPanel";
 import "./catalog.css";
 
 const TONES = ["neutral", "info", "success", "warning", "danger"] as const;
 const STATUSES = Object.keys(SESSION_STATUS_LOOK) as SessionStatus[];
 
 const tool = (id: string, title: string, kind: string, status: string): AppToolCall => ({ toolCallId: id, title, kind, status });
-const TOOL_SAMPLES: { label: string; tools: AppToolCall[]; streaming?: boolean }[] = [
+const agentRow = (id: string, title: string, status: string, extra: Partial<AppToolCall> = {}): AppToolCall => ({
+  ...tool(`subagent:${id}`, title, "agent", status),
+  toolName: "Agent",
+  rawInput: { description: "Find the plan renderer", prompt: "Find where the plan panel renders and list its props." },
+  ...extra,
+});
+const LONG_OUTPUT = Array.from({ length: 40 }, (_, i) => `${i + 1}. Finding ${i + 1}: a long line of sub-agent output that must wrap inside the row instead of widening the page, e.g. src/components/very/long/path/to/File${i}.tsx`).join("\n");
+const PERMISSION: AppPermission = {
+  requestId: "catalog-permission",
+  toolCallId: "p2",
+  title: "Run pnpm install?",
+  description: null,
+  options: [{ optionId: "allow", title: "Allow", kind: "allow_once" }, { optionId: "reject", title: "Reject", kind: "reject_once" }],
+};
+const PLAN: AppPlanEntry[] = [
+  { content: "Read the plan renderer", status: "completed" },
+  { content: "Extract it into a component", status: "in_progress", priority: "high" },
+  { content: "Check both themes", status: "pending", priority: "medium" },
+];
+const TOOL_SAMPLES: { label: string; tools: AppToolCall[]; streaming?: boolean; permission?: AppPermission }[] = [
   { label: "Finished group", tools: [tool("a", "Read src/lib/theme.ts", "read", "completed"), tool("b", "pnpm build", "execute", "completed"), tool("c", "Edit src/index.css", "edit", "completed")] },
   { label: "Single call", tools: [tool("d", "cargo test --manifest-path src-tauri/Cargo.toml", "execute", "completed")] },
   { label: "Running", tools: [tool("e", "Read src/App.tsx", "read", "completed"), tool("f", "pnpm lint:ui", "execute", "running")], streaming: true },
@@ -48,6 +68,37 @@ const TOOL_SAMPLES: { label: string; tools: AppToolCall[]; streaming?: boolean }
       },
       { ...tool("i", "Grep currentPlan", "search", "completed"), parentId: "subagent:c1" },
       { ...tool("j", "Read src/components/MessageWindow.tsx", "read", "in_progress"), parentId: "subagent:c1" },
+    ],
+  },
+  {
+    label: "Sub-agent, finished (no stop)",
+    tools: [
+      agentRow("c2", "explorer (Explore)", "completed", { outputLog: "The plan panel lives in `PlanPanel.tsx`." }),
+      { ...tool("k", "Grep currentPlan", "search", "completed"), parentId: "subagent:c2" },
+    ],
+  },
+  {
+    label: "Nested sub-agents, depth 3",
+    streaming: true,
+    tools: [
+      agentRow("d1", "lead (General)", "in_progress"),
+      { ...agentRow("d2", "explorer (Explore)", "in_progress"), parentId: "subagent:d1" },
+      { ...agentRow("d3", "reader (Explore)", "in_progress"), parentId: "subagent:d2" },
+      { ...tool("l", "Read src/index.css", "read", "in_progress"), parentId: "subagent:d3" },
+    ],
+  },
+  {
+    label: "Sub-agent with long output",
+    tools: [agentRow("e1", "reviewer (Review)", "completed", { outputLog: LONG_OUTPUT })],
+  },
+  {
+    label: "Child awaiting approval",
+    streaming: true,
+    permission: PERMISSION,
+    tools: [
+      agentRow("f1", "builder (General)", "pending"),
+      { ...tool("p1", "Read package.json", "read", "completed"), parentId: "subagent:f1" },
+      { ...tool("p2", "pnpm install", "execute", "pending"), parentId: "subagent:f1" },
     ],
   },
 ];
@@ -127,10 +178,15 @@ export default function Catalog() {
           {(sample) => (
             <div>
               <p class="catalog-note">{sample.label}</p>
-              <ToolCallGroup tools={sample.tools} streaming={!!sample.streaming} />
+              <ToolCallGroup tools={sample.tools} streaming={!!sample.streaming} pendingPermission={sample.permission} onStopAgent={() => {}} />
             </div>
           )}
         </For>
+      </Section>
+
+      <Section title="Plan">
+        <PlanPanel plan={PLAN} />
+        <PlanPanel plan={[{ content: "# Plan\n\n- one\n- two", format: "markdown" }]} />
       </Section>
 
       <Section title="Buttons">

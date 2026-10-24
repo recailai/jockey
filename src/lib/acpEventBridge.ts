@@ -92,6 +92,68 @@ function applyTerminalMetaToSession(
   }
 }
 
+type PendingOutput = { chunks: Map<string, string>; mutateSession: BridgeDeps["mutateSession"] };
+const pendingOutput = new Map<string, PendingOutput>();
+// toolCallId -> index in streamSegments. Segments are only appended or replaced in place, so an
+// index stays valid; it is re-checked on use and rebuilt by a scan only when stale.
+const segmentIndex = new Map<string, Map<string, number>>();
+let outputFrame: number | null = null;
+
+function scheduleOutputFlush() {
+  if (outputFrame !== null) return;
+  const run = () => { outputFrame = null; flushToolOutputDeltas(); };
+  outputFrame = typeof requestAnimationFrame === "function"
+    ? requestAnimationFrame(run)
+    : (setTimeout(run, 16) as unknown as number);
+}
+
+function queueToolOutput(sid: string, toolCallId: string, delta: string, mutateSession: BridgeDeps["mutateSession"]) {
+  let entry = pendingOutput.get(sid);
+  if (!entry) {
+    entry = { chunks: new Map(), mutateSession };
+    pendingOutput.set(sid, entry);
+  }
+  entry.chunks.set(toolCallId, (entry.chunks.get(toolCallId) ?? "") + delta);
+  scheduleOutputFlush();
+}
+
+/** Applies buffered tool output. Called before any other event for the session so ordering
+ *  against tool updates and turn end is preserved. */
+export function flushToolOutputDeltas(sid?: string): void {
+  const sids = sid ? [sid] : [...pendingOutput.keys()];
+  for (const id of sids) {
+    const entry = pendingOutput.get(id);
+    if (!entry) continue;
+    pendingOutput.delete(id);
+    entry.mutateSession(id, (s) => {
+      let index = segmentIndex.get(id);
+      if (!index) {
+        index = new Map();
+        segmentIndex.set(id, index);
+      }
+      for (const [toolCallId, delta] of entry.chunks) {
+        const tc = s.toolCalls[toolCallId];
+        if (!tc) continue;
+        const next = { ...tc, outputLog: `${tc.outputLog ?? ""}${delta}` };
+        s.toolCalls[toolCallId] = next;
+        let at = index.get(toolCallId) ?? -1;
+        const hit = (i: number) => {
+          const seg = s.streamSegments[i];
+          return seg?.kind === "tool" && seg.tc.toolCallId === toolCallId;
+        };
+        if (at < 0 || !hit(at)) {
+          at = s.streamSegments.findIndex((_, i) => hit(i));
+          if (at >= 0) index.set(toolCallId, at);
+        }
+        if (at >= 0) {
+          const seg = s.streamSegments[at];
+          s.streamSegments[at] = { kind: "tool", tc: next, roleName: seg.kind === "tool" ? seg.roleName : undefined };
+        }
+      }
+    });
+  }
+}
+
 export type BridgeDeps = {
   sid: string;
   roleName: string;
@@ -149,6 +211,7 @@ export function appendAcpDelta(
 }
 
 export function applyAcpStreamEvent(deps: BridgeDeps): void {
+  if (deps.event.kind !== "toolOutputDelta" && pendingOutput.has(deps.sid)) flushToolOutputDeltas(deps.sid);
   const {
     sid,
     roleName,
@@ -280,19 +343,9 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
       break;
     case "toolOutputDelta":
       // Appended rather than replacing rawOutput so a long command's stdout can render as
-      // it arrives without the provider resending the whole call each chunk.
-      if (event.toolCallId && event.delta) {
-        mutateSession(sid, (s) => {
-          const tc = s.toolCalls[event.toolCallId!];
-          if (!tc) return;
-          const next = { ...tc, outputLog: `${tc.outputLog ?? ""}${event.delta}` };
-          s.toolCalls[event.toolCallId!] = next;
-          const idx = s.streamSegments.findIndex(
-            (seg) => seg.kind === "tool" && seg.tc.toolCallId === event.toolCallId,
-          );
-          if (idx >= 0) s.streamSegments[idx] = { kind: "tool", tc: next, roleName: s.streamSegments[idx].kind === "tool" ? s.streamSegments[idx].roleName : roleName };
-        });
-      }
+      // it arrives without the provider resending the whole call each chunk. Chunks are
+      // coalesced per frame: one store write per row per frame instead of one per chunk.
+      if (event.toolCallId && event.delta) queueToolOutput(sid, event.toolCallId, event.delta, deps.mutateSession);
       break;
     case "userInputRequest":
       if (event.requestId) {
@@ -372,6 +425,7 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
         mutateSession(sid, (s) => {
           const next: AppPermission = {
             requestId: event.requestId!,
+            toolCallId: event.toolCallId ?? event.parentId ?? null,
             title: event.title ?? "Permission Required",
             description: event.description ?? null,
             options:

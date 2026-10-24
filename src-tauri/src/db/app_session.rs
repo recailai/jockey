@@ -666,6 +666,21 @@ pub(crate) fn imported_message_counts(
     })
 }
 
+/// `base`, or `base_2`, `base_3`, ... when an open session in the project already has the title.
+fn unique_title(
+    conn: &rusqlite::Connection,
+    base: &str,
+    project_id: Option<&str>,
+) -> Result<String, String> {
+    let mut title = base.to_string();
+    let mut counter = 1;
+    while active_session_title_exists(conn, &title, project_id, None)? {
+        counter += 1;
+        title = format!("{base}_{counter}");
+    }
+    Ok(title)
+}
+
 pub(crate) fn create_app_session_internal(
     state: &AppState,
     title: Option<&str>,
@@ -689,12 +704,7 @@ pub(crate) fn create_app_session_internal(
 
     with_db(state, |conn| {
         in_tx(conn, |conn| {
-            let mut final_title = base_title.clone();
-            let mut counter = 1;
-            while active_session_title_exists(conn, &final_title, project_id, None)? {
-                counter += 1;
-                final_title = format!("{}_{}", base_title, counter);
-            }
+            let final_title = unique_title(conn, &base_title, project_id)?;
 
             let session = AppSession {
                 id: id
@@ -738,10 +748,17 @@ pub(crate) fn create_app_session_internal(
 /// A new open session beside `source_id` (same project, cwd, persona and engine) holding a copy
 /// of its transcript, in one transaction. `title` must already be a single token; a clash with
 /// an open session gets a numeric suffix like any other new session.
+///
+/// `provider` is the forked provider conversation `(runtime_key, role, handle)`. It is bound in
+/// the same transaction, together with the source's model/mode/option overrides for that
+/// binding, so a failure leaves no session that would silently start a fresh conversation.
+/// Handles of the source's other personas are not carried over: only the active persona was
+/// forked at the provider, so the others stay unbound.
 pub(crate) fn fork_app_session_internal(
     state: &AppState,
     source_id: &str,
     title: &str,
+    provider: Option<(&str, &str, &str)>,
 ) -> Result<AppSession, String> {
     let now = now_ms();
     with_db(state, |conn| {
@@ -770,12 +787,7 @@ pub(crate) fn fork_app_session_internal(
                 .optional()
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| "session not found".to_string())?;
-            let mut final_title = title.to_string();
-            let mut counter = 1;
-            while active_session_title_exists(conn, &final_title, project_id.as_deref(), None)? {
-                counter += 1;
-                final_title = format!("{title}_{counter}");
-            }
+            let final_title = unique_title(conn, title, project_id.as_deref())?;
             let id = Uuid::new_v4().to_string();
             conn.execute(
                 "INSERT INTO app_sessions (id, title, active_role, runtime_kind, runtime_profile_id, cwd, project_id, external_session_id, created_at, last_active_at, closed_at)
@@ -799,6 +811,19 @@ pub(crate) fn fork_app_session_internal(
                 params![id, source_id],
             )
             .map_err(|e| e.to_string())?;
+            if let Some((runtime_key, role, handle)) = provider {
+                if handle.trim().is_empty() {
+                    return Err("The agent returned no session id for the fork".to_string());
+                }
+                crate::db::app_session_role::save_cli_id_on(conn, &id, runtime_key, role, handle)?;
+                crate::db::app_session_role::copy_role_overrides_on(
+                    conn,
+                    source_id,
+                    &id,
+                    role,
+                    runtime_key,
+                )?;
+            }
             Ok(AppSession {
                 id,
                 title: final_title,
@@ -1505,8 +1530,8 @@ mod tests {
             .unwrap();
         append_app_message_internal(&state, &source.id, "Developer", "yo", None, None).unwrap();
 
-        let a = fork_app_session_internal(&state, &source.id, "[Fork]_s").unwrap();
-        let b = fork_app_session_internal(&state, &source.id, "[Fork]_s").unwrap();
+        let a = fork_app_session_internal(&state, &source.id, "[Fork]_s", None).unwrap();
+        let b = fork_app_session_internal(&state, &source.id, "[Fork]_s", None).unwrap();
         assert_eq!(
             (a.title.as_str(), b.title.as_str()),
             ("[Fork]_s", "[Fork]_s_2")
@@ -1519,6 +1544,84 @@ mod tests {
         assert_eq!(copy[0].messages[0]["text"], "hi");
         let original = get_app_sessions_by_ids(&state, &[source.id.clone()]).unwrap();
         assert_eq!(original[0].messages.len(), 2);
-        assert!(fork_app_session_internal(&state, "missing", "x").is_err());
+        assert!(fork_app_session_internal(&state, "missing", "x", None).is_err());
+    }
+
+    #[test]
+    fn fork_binds_handle_and_copies_overrides() {
+        use crate::db::app_session_role as roles;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(&dir);
+        let source =
+            create_app_session_internal(&state, Some("s"), None, Some("codex-cli"), None, None)
+                .unwrap();
+        roles::save_app_session_role_cli_id(&state, &source.id, "codex-cli", "Developer", "src")
+            .unwrap();
+        roles::save_app_session_role_mode_override(
+            &state,
+            &source.id,
+            "Developer",
+            "codex-cli",
+            Some("plan"),
+        )
+        .unwrap();
+
+        let fork = fork_app_session_internal(
+            &state,
+            &source.id,
+            "[Fork]_s",
+            Some(("codex-cli", "Developer", "forked")),
+        )
+        .unwrap();
+        assert_eq!(
+            roles::load_app_session_role_cli_id(&state, &fork.id, "codex-cli", "Developer")
+                .as_deref(),
+            Some("forked")
+        );
+        let copied =
+            roles::load_app_session_role_runtime_state(&state, &fork.id, "Developer", "codex-cli")
+                .unwrap()
+                .unwrap();
+        assert_eq!(copied.mode_override.as_deref(), Some("plan"));
+        assert_eq!(
+            roles::load_app_session_role_cli_id(&state, &source.id, "codex-cli", "Developer")
+                .as_deref(),
+            Some("src")
+        );
+    }
+
+    #[test]
+    fn fork_leaves_no_session_when_the_handle_cannot_be_saved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(&dir);
+        let source =
+            create_app_session_internal(&state, Some("s"), None, Some("codex-cli"), None, None)
+                .unwrap();
+        with_db(&state, |conn| {
+            conn.execute("DROP TABLE app_session_role_runtime_configs", [])
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+
+        let err = fork_app_session_internal(
+            &state,
+            &source.id,
+            "[Fork]_s",
+            Some(("codex-cli", "Developer", "forked")),
+        );
+        assert!(err.is_err());
+        let count: i64 = with_db(&state, |conn| {
+            conn.query_row("SELECT count(*) FROM app_sessions", [], |r| r.get(0))
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert_eq!(count, 1);
+        assert!(fork_app_session_internal(
+            &state,
+            &source.id,
+            "x",
+            Some(("codex-cli", "Developer", " "))
+        )
+        .is_err());
     }
 }

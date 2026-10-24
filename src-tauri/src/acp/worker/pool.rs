@@ -45,6 +45,11 @@ pub(crate) struct LiveConnection {
     pub(crate) steering: bool,
     /// `llm_providers::revision` this connection was configured with.
     pub(crate) providers_rev: u64,
+    /// The role instructions this connection was started with (whether or not the agent could
+    /// apply them), compared on reuse: they only take effect at session start.
+    pub(crate) system_prompt: Option<String>,
+    /// Shared with the owning `JockeyUiClient`: the turn lifecycle settles it from here.
+    pub(crate) subagents: Rc<RefCell<super::super::subagents::Subagents>>,
     pub(crate) last_active: Instant,
     pub(crate) _child: tokio::process::Child,
     pub(crate) _io_task: tokio::task::JoinHandle<()>,

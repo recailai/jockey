@@ -71,8 +71,6 @@ pub async fn steer_session(
         .map_err(AdapterError::into)
 }
 
-/// Branch the slot's live provider session. The slot must already be connected (prewarm it
-/// first); the returned id is the new provider conversation.
 /// Stops one sub-agent; the parent turn keeps running.
 pub async fn cancel_subagent(
     runtime_kind: &str,
@@ -96,6 +94,8 @@ pub async fn cancel_subagent(
         .map_err(|_| "ACP cancel acknowledgement was dropped".to_string())?
 }
 
+/// Branch the slot's live provider session. The slot must already be connected (prewarm it
+/// first); the returned id is the new provider conversation.
 pub async fn fork_session(
     runtime_kind: &str,
     role_name: &str,

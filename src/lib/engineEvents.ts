@@ -15,6 +15,7 @@ import type {
 import { now } from "../components/types";
 import { sessionFromRaw } from "./sessionHelpers";
 import { appSessionApi } from "./tauriApi";
+import { flushToolOutputDeltas } from "./acpEventBridge";
 
 type EngineEventsInput = {
   sessions: AppSession[];
@@ -100,6 +101,7 @@ export async function registerEngineEvents(input: EngineEventsInput): Promise<Un
     }),
     listen<TurnFinishedEvent>("turn/finished", (ev) => {
       const { appSessionId: sid, turnId, ok, cancelled, error, messages } = ev.payload;
+      flushToolOutputDeltas(sid);
       finishedTurns.add(turnId);
       if (finishedTurns.size > 200) finishedTurns.delete(finishedTurns.values().next().value as string);
       if (!known(sid)) return;

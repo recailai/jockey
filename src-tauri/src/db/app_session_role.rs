@@ -357,47 +357,99 @@ pub(crate) fn save_app_session_role_cli_id(
     if app_session_id.trim().is_empty() || cli_session_id.trim().is_empty() {
         return Ok(());
     }
+    with_db(state, |conn| {
+        save_cli_id_on(conn, app_session_id, runtime_key, role_name, cli_session_id)
+    })
+}
+
+/// Connection-level body of [`save_app_session_role_cli_id`], so a caller can run it inside
+/// its own transaction.
+pub(crate) fn save_cli_id_on(
+    conn: &rusqlite::Connection,
+    app_session_id: &str,
+    runtime_key: &str,
+    role_name: &str,
+    cli_session_id: &str,
+) -> Result<(), String> {
     let now = now_ms();
     let profile_id = runtime_profile::profile_id(runtime_key);
-    with_db(state, |conn| {
-        ensure_app_session_role_row(conn, app_session_id, role_name, runtime_key)?;
-        conn.execute(
-            "INSERT INTO app_session_role_runtime_configs (
-                app_session_id, role_name, runtime_kind, runtime_profile_id, acp_session_id, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(app_session_id, role_name, runtime_kind) DO UPDATE SET
-               -- A different provider conversation starts from its own beginning.
-               transcript_cursor = CASE WHEN acp_session_id IS excluded.acp_session_id
-                                        THEN transcript_cursor ELSE NULL END,
-               acp_session_id = excluded.acp_session_id,
-               runtime_profile_id = excluded.runtime_profile_id,
-               updated_at = excluded.updated_at",
-            params![
-                app_session_id,
-                role_name,
-                runtime_key,
-                &profile_id,
-                cli_session_id,
-                now,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
+    ensure_app_session_role_row(conn, app_session_id, role_name, runtime_key)?;
+    conn.execute(
+        "INSERT INTO app_session_role_runtime_configs (
+            app_session_id, role_name, runtime_kind, runtime_profile_id, acp_session_id, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(app_session_id, role_name, runtime_kind) DO UPDATE SET
+           -- A different provider conversation starts from its own beginning.
+           transcript_cursor = CASE WHEN acp_session_id IS excluded.acp_session_id
+                                    THEN transcript_cursor ELSE NULL END,
+           acp_session_id = excluded.acp_session_id,
+           runtime_profile_id = excluded.runtime_profile_id,
+           updated_at = excluded.updated_at",
+        params![
+            app_session_id,
+            role_name,
+            runtime_key,
+            &profile_id,
+            cli_session_id,
+            now,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
 
-        conn.execute(
-            "UPDATE app_session_roles
-             SET runtime_kind = ?1, runtime_profile_id = ?2, acp_session_id = ?3
-             WHERE app_session_id = ?4 AND role_name = ?5",
-            params![
-                runtime_key,
-                &profile_id,
-                cli_session_id,
-                app_session_id,
-                role_name
-            ],
+    conn.execute(
+        "UPDATE app_session_roles
+         SET runtime_kind = ?1, runtime_profile_id = ?2, acp_session_id = ?3
+         WHERE app_session_id = ?4 AND role_name = ?5",
+        params![
+            runtime_key,
+            &profile_id,
+            cli_session_id,
+            app_session_id,
+            role_name
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Copies the session-level model, mode and option overrides of one (persona, engine) binding
+/// to another session, so a fork keeps the setup its source was running with.
+pub(crate) fn copy_role_overrides_on(
+    conn: &rusqlite::Connection,
+    from_session_id: &str,
+    to_session_id: &str,
+    role_name: &str,
+    runtime_key: &str,
+) -> Result<(), String> {
+    let copied = conn
+        .execute(
+            "UPDATE app_session_role_runtime_configs SET
+               model_override = src.model_override,
+               mode_override = src.mode_override,
+               config_options_json = src.config_options_json
+             FROM (SELECT model_override, mode_override, config_options_json
+                   FROM app_session_role_runtime_configs
+                   WHERE app_session_id = ?1 AND role_name = ?3 AND runtime_kind = ?4) AS src
+             WHERE app_session_id = ?2 AND role_name = ?3 AND runtime_kind = ?4",
+            params![from_session_id, to_session_id, role_name, runtime_key],
         )
         .map_err(|e| e.to_string())?;
-        Ok(())
-    })
+    if copied == 0 {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE app_session_roles SET
+           model_override = src.model_override,
+           mode_override = src.mode_override,
+           config_options_json = src.config_options_json
+         FROM (SELECT model_override, mode_override, config_options_json
+               FROM app_session_role_runtime_configs
+               WHERE app_session_id = ?2 AND role_name = ?3 AND runtime_kind = ?4) AS src
+         WHERE app_session_id = ?2 AND role_name = ?3",
+        params![from_session_id, to_session_id, role_name, runtime_key],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// A provider conversation behind an app session: one per (persona, engine) that has a

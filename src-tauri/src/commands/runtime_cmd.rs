@@ -145,8 +145,7 @@ pub(crate) async fn cancel_acp_subagent(
     app_session_id: String,
     tool_call_id: String,
 ) -> Result<(), String> {
-    let child = tool_call_id
-        .strip_prefix(crate::acp::subagents::ROW_PREFIX)
+    let child = crate::acp::subagents::child_of_row(&tool_call_id)
         .filter(|id| !id.is_empty())
         .ok_or_else(|| "not a sub-agent".to_string())?;
     let runtime =

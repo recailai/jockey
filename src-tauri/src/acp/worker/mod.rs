@@ -143,6 +143,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 role_mode,
                 role_config_options,
                 resume_session_id,
+                system_prompt,
             } => {
                 let key = pool_key(&app_session_id, runtime_key, &role_name);
                 tokio::task::spawn_local(async move {
@@ -164,6 +165,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                         role_mode,
                         role_config_options,
                         resume_session_id,
+                        system_prompt,
                     )
                     .await;
                 });
@@ -183,6 +185,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 result_tx,
                 resume_session_id,
                 force_refresh,
+                system_prompt,
             } => {
                 let key = pool_key(&app_session_id, runtime_key, &role_name);
                 tokio::task::spawn_local(async move {
@@ -202,6 +205,7 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                         result_tx,
                         resume_session_id,
                         force_refresh,
+                        system_prompt,
                     )
                     .await;
                 });
@@ -303,11 +307,11 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 });
                 let Some((conn, session_id, steering)) = live.filter(|_| running) else {
                     let _ = result_tx.send(SteerOutcome::NoRunningTurn);
-                    return;
+                    continue;
                 };
                 if !steering {
                     let _ = result_tx.send(SteerOutcome::Unsupported);
-                    return;
+                    continue;
                 }
                 tokio::task::spawn_local(async move {
                     // `promptRequired`: if the turn ended meanwhile the adapter hands the input
@@ -346,15 +350,29 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 result_tx,
             } => {
                 let key = pool_key(&app_session_id, runtime_key, &role_name);
-                let conn = CONN_MAP.with(|m| m.borrow().get(&key).map(|c| c.conn.clone()));
-                let Some(conn) = conn else {
+                let live = CONN_MAP.with(|m| {
+                    m.borrow()
+                        .get(&key)
+                        .map(|c| (c.conn.clone(), c.subagents.clone()))
+                });
+                let Some((conn, subagents)) = live else {
                     let _ = result_tx.send(Err("no active session".to_string()));
-                    return;
+                    continue;
                 };
+                if !subagents.borrow().is_child(&child_session_id) {
+                    let _ = result_tx.send(Err("unknown sub-agent".to_string()));
+                    continue;
+                }
                 acp_log(
                     "cancel.subagent",
                     json!({ "runtime": runtime_key, "child": child_session_id }),
                 );
+                // Dropping a pending request resolves it as cancelled and tells the UI (see
+                // `request_permission`), so the cancelled child is not left waiting on one.
+                let requests = subagents.borrow_mut().take_permissions(&child_session_id);
+                for request_id in requests {
+                    permission_requests().remove(&request_id);
+                }
                 tokio::task::spawn_local(async move {
                     conn.cancel(acp::CancelNotification::new(acp::SessionId::from(
                         child_session_id,
@@ -377,13 +395,13 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 });
                 let Some((conn, session_id, cwd)) = live else {
                     let _ = result_tx.send(Err("no active session".to_string()));
-                    return;
+                    continue;
                 };
                 if crate::acp::runtime_fork(runtime_key) != Some(true) {
                     let _ = result_tx.send(Err(
                         "This ACP adapter has not negotiated session fork.".to_string(),
                     ));
-                    return;
+                    continue;
                 }
                 tokio::task::spawn_local(async move {
                     let result = conn

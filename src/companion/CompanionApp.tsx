@@ -488,6 +488,7 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
                   void engineApi.removeQueued(session().id, itemId).catch((e: unknown) => showToast(`Could not remove queued message: ${String(e)}`));
                 }}
                 onSendQueuedNow={() => void sendQueuedNow()}
+                showToast={showToast}
                 onResetAgentContext={resetActiveAgentContext}
                 onReconnectAgent={reconnectActiveAgent}
                 onListMounted={sessionManager.onListMounted}

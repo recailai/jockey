@@ -112,7 +112,8 @@ pub fn run() {
                     .map_err(|e| std::io::Error::other(e.to_string()))?;
                 db::profiles::load_custom_runtime_profiles(&conn)
                     .map_err(std::io::Error::other)?;
-                llm_providers::load_snapshot(&conn).map_err(std::io::Error::other)?;
+                llm_providers::load(&conn).map_err(std::io::Error::other)?;
+                llm_providers::preload_secrets();
             }
 
             let bridge_state = std::sync::Arc::new(state.clone_refs());
@@ -202,10 +203,10 @@ pub fn run() {
             commands::provider_session_cmd::rewind_provider_session_cmd,
             commands::runtime_cmd::sync_role_mode_cmd,
             commands::runtime_cmd::prewarm_role_config_cmd,
-            llm_providers::list_runtime_providers_cmd,
-            llm_providers::get_llm_provider_configs_cmd,
-            llm_providers::set_llm_provider_config_cmd,
-            llm_providers::clear_llm_provider_config_cmd,
+            commands::llm_providers_cmd::list_runtime_providers_cmd,
+            commands::llm_providers_cmd::get_llm_provider_configs_cmd,
+            commands::llm_providers_cmd::set_llm_provider_config_cmd,
+            commands::llm_providers_cmd::clear_llm_provider_config_cmd,
             credentials::list_agent_credentials_cmd,
             credentials::create_agent_credential_cmd,
             credentials::update_agent_credential_cmd,

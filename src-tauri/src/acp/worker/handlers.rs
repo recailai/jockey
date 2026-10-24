@@ -10,7 +10,7 @@ use super::super::runtime_state::{
     list_discovered_config_options, list_discovered_modes, remember_runtime_available_commands,
     remember_runtime_config_options, remember_runtime_modes,
 };
-use super::super::session::cold_start;
+use super::super::session::{cold_start, ColdStartSpec};
 use super::notify::{notify_connection_death, notify_prewarm};
 use super::pool::{
     child_pids, pool_key, CANCEL_HANDLES, CONN_MAP, DELTA_CHANNEL_CAPACITY, PENDING_COLD_STARTS,
@@ -203,23 +203,20 @@ pub(crate) async fn reconnect_worker_session(
 
 // ── Connection helpers ────────────────────────────────────────────────────────
 
-/// Evict the connection if the working directory or launch env (e.g. the role's account)
-/// has changed.
-pub(crate) fn evict_if_launch_changed(
-    key: &str,
-    resolved: &str,
-    env: &[(String, String)],
-    runtime_key: &str,
-    role_name: &str,
-) {
+/// Evict the connection if the working directory, launch env (e.g. the role's account),
+/// provider configuration or role instructions have changed.
+pub(crate) fn evict_if_launch_changed(key: &str, spec: &ColdStartSpec) {
+    let (runtime_key, role_name) = (spec.runtime_key, spec.role_name.as_str());
     let reason = CONN_MAP.with(|m| {
         m.borrow().get(key).and_then(|c| {
-            if c.cwd != resolved {
+            if c.cwd != spec.cwd {
                 Some("cwd_change")
-            } else if c.env.as_slice() != env {
+            } else if c.env != spec.env {
                 Some("env_change")
             } else if c.providers_rev != crate::llm_providers::revision(runtime_key) {
                 Some("providers_change")
+            } else if c.system_prompt != spec.system_prompt {
+                Some("system_prompt_change")
             } else {
                 None
             }
@@ -238,19 +235,8 @@ pub(crate) fn evict_if_launch_changed(
 /// Returns `true` if a cold start was performed (or shared with a concurrent
 /// cold start). Multiple concurrent callers for the same key share a single
 /// `cold_start` task via `PENDING_COLD_STARTS`.
-pub(crate) async fn ensure_connection(
-    key: &str,
-    runtime_key: &'static str,
-    binary: &str,
-    args: &[String],
-    env: &[(String, String)],
-    resolved: &str,
-    role_name: &str,
-    app_session_id: &str,
-    auto_approve: bool,
-    mcp_servers: Vec<acp::McpServer>,
-    resume_session_id: Option<String>,
-) -> Result<bool, String> {
+pub(crate) async fn ensure_connection(key: &str, spec: ColdStartSpec) -> Result<bool, String> {
+    let (runtime_key, role_name) = (spec.runtime_key, spec.role_name.clone());
     let already_live = CONN_MAP.with(|m| m.borrow().contains_key(key));
     if already_live {
         CONN_MAP.with(|m| {
@@ -280,27 +266,10 @@ pub(crate) async fn ensure_connection(
     // await it. On completion, insert the resulting LiveConnection into
     // CONN_MAP and remove the pending entry.
     let key_owned = key.to_string();
-    let role_owned = role_name.to_string();
-    let app_session_owned = app_session_id.to_string();
-    let binary_owned = binary.to_string();
-    let args_owned = args.to_vec();
-    let env_owned = env.to_vec();
-    let resolved_owned = resolved.to_string();
+    let role_owned = role_name;
     let pending_key_for_task = key_owned.clone();
     let task = async move {
-        let result = cold_start(
-            runtime_key,
-            &role_owned,
-            &app_session_owned,
-            &binary_owned,
-            &args_owned,
-            &env_owned,
-            &resolved_owned,
-            auto_approve,
-            mcp_servers,
-            resume_session_id,
-        )
-        .await;
+        let result = cold_start(spec).await;
         // Always clear the pending entry, regardless of success.
         PENDING_COLD_STARTS.with(|m| {
             m.borrow_mut().remove(&pending_key_for_task);
@@ -544,6 +513,19 @@ pub(crate) fn spawn_connection_health_watch(
     });
 }
 
+/// Closes the sub-agent rows the turn left open. Awaited sends: the closing events must reach
+/// the recorder before the turn result does.
+async fn settle_subagents(
+    subagents: &std::rc::Rc<std::cell::RefCell<super::super::subagents::Subagents>>,
+    delta_tx: &mpsc::Sender<AcpEvent>,
+    status: &str,
+) {
+    let events = subagents.borrow_mut().end_turn(status);
+    for event in events {
+        let _ = delta_tx.send(event).await;
+    }
+}
+
 // ── handle_execute ────────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -565,10 +547,23 @@ pub(crate) async fn handle_execute(
     role_mode: Option<String>,
     role_config_options: Vec<(String, String)>,
     resume_session_id: Option<String>,
+    system_prompt: Option<String>,
 ) {
-    let resolved = resolve_cwd(&cwd);
+    let spec = ColdStartSpec {
+        runtime_key,
+        role_name: role_name.clone(),
+        app_session_id: app_session_id.clone(),
+        binary,
+        args,
+        env,
+        cwd: resolve_cwd(&cwd),
+        auto_approve,
+        mcp_servers,
+        resume_session_id: resume_session_id.clone(),
+        system_prompt,
+    };
 
-    evict_if_launch_changed(&key, &resolved, &env, runtime_key, &role_name);
+    evict_if_launch_changed(&key, &spec);
 
     let conn_exists = CONN_MAP.with(|m| m.borrow().contains_key(&key));
     if !conn_exists {
@@ -583,21 +578,7 @@ pub(crate) async fn handle_execute(
         let _ = delta_tx.try_send(AcpEvent::StatusUpdate { text });
     }
 
-    let is_cold = match ensure_connection(
-        &key,
-        runtime_key,
-        &binary,
-        &args,
-        &env,
-        &resolved,
-        &role_name,
-        &app_session_id,
-        auto_approve,
-        mcp_servers,
-        resume_session_id,
-    )
-    .await
-    {
+    let is_cold = match ensure_connection(&key, spec).await {
         Ok(cold) => cold,
         Err(e) => {
             record_error(runtime_key);
@@ -621,10 +602,12 @@ pub(crate) async fn handle_execute(
                 crate::acp::AgentConnection::rpc_handle(c),
                 c.health_rx.clone(),
                 c.instance_id,
+                c.subagents.clone(),
             )
         })
     });
-    let Some((session_id, delta_slot, conn_rc, mut health_rx, instance_id)) = live else {
+    let Some((session_id, delta_slot, conn_rc, mut health_rx, instance_id, subagents)) = live
+    else {
         let _ = result_tx.send(Err("connection disappeared after cold start".to_string()));
         return;
     };
@@ -632,6 +615,7 @@ pub(crate) async fn handle_execute(
     if let Ok(mut slot_guard) = delta_slot.lock() {
         *slot_guard = Some(delta_tx.clone());
     }
+    subagents.borrow_mut().begin_turn();
 
     if is_cold {
         let health_rx_clone = health_rx.clone();
@@ -788,17 +772,27 @@ pub(crate) async fn handle_execute(
             );
             // `total_tokens` is left out: the UI's total is context occupancy from
             // `usage_update`, and the turn's own total would overwrite it.
+            let outcome = if resp.stop_reason == acp::StopReason::Cancelled {
+                "cancelled"
+            } else {
+                "completed"
+            };
+            settle_subagents(&subagents, &delta_tx, outcome).await;
+            // Awaited, like the settle events: a full channel must delay the usage, not
+            // lose it, and both must precede `result_tx` or the consumer stops listening.
             if let Some(usage) = resp.usage.as_ref() {
-                let _ = delta_tx.try_send(AcpEvent::Usage {
-                    input_tokens: Some(usage.input_tokens),
-                    output_tokens: Some(usage.output_tokens),
-                    cache_read_tokens: usage.cached_read_tokens,
-                    cache_write_tokens: usage.cached_write_tokens,
-                    reasoning_tokens: usage.thought_tokens,
-                    total_tokens: None,
-                    context_window: None,
-                    cost_usd: None,
-                });
+                let _ = delta_tx
+                    .send(AcpEvent::Usage {
+                        input_tokens: Some(usage.input_tokens),
+                        output_tokens: Some(usage.output_tokens),
+                        cache_read_tokens: usage.cached_read_tokens,
+                        cache_write_tokens: usage.cached_write_tokens,
+                        reasoning_tokens: usage.thought_tokens,
+                        total_tokens: None,
+                        context_window: None,
+                        cost_usd: None,
+                    })
+                    .await;
             }
             let _ = result_tx.send(Ok((String::new(), session_id.to_string())));
         }
@@ -814,6 +808,7 @@ pub(crate) async fn handle_execute(
                 layer.message = format!("{detail}: {}", layer.message);
                 layer.retryable = true;
             }
+            settle_subagents(&subagents, &delta_tx, "failed").await;
             emit_session_error(
                 &delta_tx,
                 layer.code,
@@ -851,6 +846,7 @@ pub(crate) async fn handle_execute(
                 }),
             );
             let reason = child_exit_detail(&key).unwrap_or(reason);
+            settle_subagents(&subagents, &delta_tx, "failed").await;
             emit_session_error(
                 &delta_tx,
                 AcpErrorCode::ProcessCrashed,
@@ -900,6 +896,7 @@ pub(crate) async fn handle_prewarm(
     result_tx: Option<oneshot::Sender<(Vec<Value>, Vec<String>, String)>>,
     resume_session_id: Option<String>,
     force_refresh: bool,
+    system_prompt: Option<String>,
 ) {
     let already_live = CONN_MAP.with(|m| m.borrow().contains_key(&key));
     if already_live {
@@ -944,18 +941,19 @@ pub(crate) async fn handle_prewarm(
         PrewarmStatus::Started,
     );
 
-    match cold_start(
+    match cold_start(ColdStartSpec {
         runtime_key,
-        &role_name,
-        &app_session_id,
-        &binary,
-        &args,
-        &env,
-        &resolved,
+        role_name: role_name.clone(),
+        app_session_id: app_session_id.clone(),
+        binary,
+        args,
+        env,
+        cwd: resolved,
         auto_approve,
         mcp_servers,
         resume_session_id,
-    )
+        system_prompt,
+    })
     .await
     {
         Ok(conn) => {

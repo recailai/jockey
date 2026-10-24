@@ -6,6 +6,7 @@ pub(crate) mod global_mcp;
 pub(crate) mod inbox;
 mod legacy_cleanup;
 pub(crate) mod lifecycle;
+pub(crate) mod llm_providers;
 pub(crate) mod pool;
 pub(crate) mod profiles;
 pub(crate) mod project;
@@ -352,7 +353,7 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     crate::credentials::store::init_schema(conn)?;
-    crate::llm_providers::init_schema(conn)?;
+    llm_providers::init_schema(conn)?;
     ensure_column(
         conn,
         "roles",

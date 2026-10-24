@@ -390,7 +390,7 @@ export default function SettingsPage(props: SettingsPageProps) {
               <h1 class="settings-title">Agent accounts</h1>
               <div class="settings-section">
                 <div class="settings-management-panel">
-                  <AgentAccountsTab />
+                  <AgentAccountsTab showToast={props.showToast} />
                 </div>
               </div>
             </section>

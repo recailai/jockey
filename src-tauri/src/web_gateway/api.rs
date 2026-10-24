@@ -33,6 +33,10 @@ pub(super) fn router(ctx: ServerContext) -> Router {
         .route("/sessions/:id", get(session_detail))
         .route("/sessions/:id/chat", post(session_chat))
         .route("/sessions/:id/cancel", post(session_cancel))
+        .route(
+            "/sessions/:id/subagents/cancel",
+            post(session_cancel_subagent),
+        )
         .route("/sessions/:id/queue", get(session_queue))
         .route(
             "/sessions/:id/queue/:item/remove",
@@ -650,6 +654,29 @@ async fn session_cancel(
         .await
         .map_err(bad_request)?;
     Ok(Json(json!({ "ok": true, "cancelled": cancelled })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CancelSubagentBody {
+    role: String,
+    tool_call_id: String,
+}
+
+async fn session_cancel_subagent(
+    State(ctx): State<ServerContext>,
+    Path(id): Path<String>,
+    Json(body): Json<CancelSubagentBody>,
+) -> ApiResult<Value> {
+    crate::commands::runtime_cmd::cancel_acp_subagent(
+        ctx.app.state(),
+        body.role,
+        id,
+        body.tool_call_id,
+    )
+    .await
+    .map_err(bad_request)?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn session_queue(

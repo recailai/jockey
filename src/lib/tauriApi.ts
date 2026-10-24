@@ -348,14 +348,23 @@ export const llmProviderApi = {
     call<void>("clear_llm_provider_config_cmd", { runtimeKey, providerId }),
 };
 
-const CREDENTIAL_PROVIDER_BY_RUNTIME: Record<string, CredentialProviderKey> = {
-  claude: "claude", "native:claude": "claude", "claude-native": "claude",
-  "claude-code": "claude", "claude-acp": "claude", "acp:claude-code": "claude",
-  codex: "codex", "codex-cli": "codex", "native:codex": "codex",
-  pi: "pi", "pi-cli": "pi", "native:pi": "pi",
-  agy: "antigravity", "native:agy": "antigravity", antigravity: "antigravity",
-  "antigravity-cli": "antigravity", gemini: "antigravity", "gemini-cli": "antigravity",
+/// The runtime each account provider's CLI runs as, followed by the legacy spellings that
+/// still resolve to it. One table feeds both directions of the lookup.
+const RUNTIME_SPELLINGS: Record<CredentialProviderKey, string[]> = {
+  claude: ["claude-code", "claude", "native:claude", "claude-native", "claude-acp", "acp:claude-code"],
+  codex: ["codex-cli", "codex", "native:codex"],
+  pi: ["pi-cli", "pi", "native:pi"],
+  antigravity: ["antigravity-cli", "agy", "native:agy", "antigravity", "gemini", "gemini-cli"],
 };
+
+const CREDENTIAL_PROVIDER_BY_RUNTIME: Record<string, CredentialProviderKey> = Object.fromEntries(
+  (Object.entries(RUNTIME_SPELLINGS) as Array<[CredentialProviderKey, string[]]>).flatMap(
+    ([provider, spellings]) => spellings.map((spelling) => [spelling, provider] as const),
+  ),
+);
+
+/// Canonical runtime key of an account provider's CLI.
+export const runtimeKeyForProvider = (provider: CredentialProviderKey): string => RUNTIME_SPELLINGS[provider][0];
 
 /// Mirrors `CredentialProvider::for_runtime`: both Claude runtimes run the same Claude Code
 /// install, so they share one account.

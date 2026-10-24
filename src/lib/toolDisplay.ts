@@ -207,3 +207,15 @@ export function formatToolDisplay(tc: AppToolCall, cwd?: string | null): ToolDis
     targetSummary: firstLocation ? stripCwdPrefix(firstLocation, cwd) : "",
   };
 }
+
+/** Sub-agent rows are synthesized by the backend with this id prefix. */
+export const SUBAGENT_ROW_PREFIX = "subagent:";
+
+export const isSubagentRow = (tc: Pick<AppToolCall, "toolCallId" | "kind">): boolean =>
+  tc.kind === "agent" && tc.toolCallId.startsWith(SUBAGENT_ROW_PREFIX);
+
+/** Normalised "still working" check; live rows say `running`, stored ones `in_progress`. */
+export const isRunningStatus = (status: string): boolean => {
+  const s = status.replace(/[-_]/g, "").toLowerCase();
+  return s === "inprogress" || s === "running";
+};

@@ -206,13 +206,20 @@ async fn run_io_inner(
                 if method == "session/update" {
                     // An update kind this schema does not know (an adapter's private
                     // extension, a newer draft) is skipped; it must not end the connection.
+                    let update_kind = params
+                        .pointer("/update/sessionUpdate")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
                     let notification =
                         match serde_json::from_value::<acp::SessionNotification>(params) {
                             Ok(notification) => notification,
                             Err(error) => {
                                 crate::acp::adapter::acp_log(
                                     "session.update.unparsed",
-                                    json!({ "error": error.to_string() }),
+                                    json!({
+                                        "sessionUpdate": update_kind,
+                                        "error": error.to_string()
+                                    }),
                                 );
                                 continue;
                             }

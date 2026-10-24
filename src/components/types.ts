@@ -76,7 +76,7 @@ export type AppUserInputRequest = {
   blocking: boolean;
   questions: AppUserInputQuestion[];
 };
-export type AppPermission = { requestId: string; title: string; description: string | null; options: Array<{ optionId: string; title?: string; kind?: string }> };
+export type AppPermission = { requestId: string; /** Tool row that asked, when the backend says. */ toolCallId?: string | null; title: string; description: string | null; options: Array<{ optionId: string; title?: string; kind?: string }> };
 export type AgentBlock =
   | { kind: "text"; text: string; roleName?: string }
   | { kind: "thought"; text: string; channel?: "raw" | "summary"; roleName?: string }

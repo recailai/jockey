@@ -4,11 +4,12 @@ mod execute;
 pub(crate) mod list;
 mod mcp;
 mod prewarm;
+pub(crate) mod probe;
 mod providers;
 mod session_cmds;
 
 // cold_start is called by worker/handlers.rs via super::super::session::cold_start
-pub(crate) use cold_start::cold_start;
+pub(crate) use cold_start::{cold_start, ColdStartSpec};
 
 pub use execute::execute_runtime;
 

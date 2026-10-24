@@ -8,14 +8,15 @@ import { ProviderEventGroup } from "./ProviderEventGroup";
 import { AgentBlockRenderer } from "./AgentBlockRenderer";
 import UserInputModal from "./UserInputModal";
 import { renderMd, renderMdCached } from "../lib/markdown";
-import { ToolCallGroup, type ToolCallGroupItem } from "./ToolCallGroup";
+import { ToolCallGroup } from "./ToolCallGroup";
+import { PlanPanel } from "./PlanPanel";
+import { collectToolGroups, type ToolCallGroupItem } from "../lib/toolGroups";
 import { PermissionModal } from "./PermissionModal";
 import SessionErrorBanner from "./SessionErrorBanner";
 import { assistantApi, engineApi } from "../lib/tauriApi";
 import { openExternal } from "../lib/transport";
 import { copyText } from "../lib/clipboard";
 import { responseSession } from "../lib/messagePresentation";
-import { isTransparentProviderEvent } from "../lib/providerEventPolicy";
 import { Badge, Button, ContextMenuItem, ContextMenuSurface, StateDot } from "./ui";
 import { Check, Copy } from "lucide-solid";
 
@@ -180,6 +181,7 @@ type MessageWindowProps = {
   onListUnmounted?: (id: string) => void;
   onFileClick?: (path: string, kind: string) => void;
   onRejectHunk?: (rejectPrompt: string) => void;
+  showToast?: (message: string, severity?: "error" | "info") => void;
 };
 
 export default function MessageWindow(props: MessageWindowProps) {
@@ -603,17 +605,22 @@ function MessageWindowContent(props: MessageWindowProps) {
                 <AgentStreamList
                   segments={props.activeSession()?.streamSegments ?? []}
                   fallbackRole={streaming().roleName || props.activeSession()?.activeRole || "Agent"}
-                  onStopAgent={(tc) => {
+                  onStopAgent={async (tc) => {
                     const sid = props.activeSessionId();
                     const role = tc.roleName || streaming().roleName || props.activeSession()?.activeRole;
-                    if (sid && role) void assistantApi.stopSubagent(role, sid, tc.toolCallId);
+                    if (!sid || !role) return;
+                    try {
+                      await assistantApi.stopSubagent(role, sid, tc.toolCallId);
+                    } catch (e) {
+                      props.showToast?.(`Could not stop the sub-agent: ${String(e)}`);
+                      throw e;
+                    }
                   }}
                   cwd={props.activeSession()?.cwd}
                   terminals={props.activeSession()?.terminals}
                   pendingPermission={
                     (props.activeSession()?.pendingPermissions ?? [])[0] ?? null
                   }
-                  pendingCount={(props.activeSession()?.pendingPermissions ?? []).length}
                   onApprove={(optionId) => {
                     const perm = (props.activeSession()?.pendingPermissions ?? [])[0];
                     if (!perm) return;
@@ -670,75 +677,7 @@ function MessageWindowContent(props: MessageWindowProps) {
         <SessionTelemetry activeSession={props.activeSession} capabilities={props.runtimeCapabilities} />
       </CapabilityGate>
       <Show when={props.activeSession()?.currentPlan}>
-        {(plan) => {
-          const total = () => plan().length;
-          const done = () => plan().filter((e) => e.status === "completed").length;
-          const running = () => plan().some((e) => e.status === "in_progress");
-          const allDone = () => done() === total() && total() > 0;
-          const doc = () => (plan().length === 1 && plan()[0].format ? plan()[0] : null);
-          const priorityBadge = (p?: string) => {
-            if (p === "high") return "is-high";
-            if (p === "medium") return "is-medium";
-            return null;
-          };
-          return (
-            <details class="group/plan rounded-lg border theme-border theme-surface my-2 overflow-hidden">
-              <summary class="flex cursor-pointer items-center gap-2 px-3 py-2 text-[11.5px] font-semibold theme-muted select-none list-none hover:bg-[var(--ui-accent-soft)] transition-colors">
-                <span class="plan-status-dot" classList={{ "is-running": running(), "is-done": allDone(), "is-idle": !running() && !allDone() }} />
-                <span class="theme-text tracking-tight">Plan</span>
-                <Show when={running()}>
-                  <span class="plan-state-label is-running">running</span>
-                </Show>
-                <Show when={allDone()}>
-                  <span class="plan-state-label is-done">done</span>
-                </Show>
-                <Show when={!doc()} fallback={<span class="ml-auto" />}>
-                  <span class="ml-auto text-[10px] theme-muted font-mono bg-[var(--ui-panel-2)] px-1.5 py-0.5 rounded-md">{done()}/{total()}</span>
-                </Show>
-                <svg class="w-3 h-3 theme-muted transition-transform duration-150 group-open/plan:rotate-180" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-              </summary>
-              <Show when={doc()}>
-                {(d) => (
-                  <div class="border-t theme-border px-3 py-2 text-[12px]">
-                    <Show
-                      when={d().format === "markdown"}
-                      fallback={<span class="font-mono text-[11px] theme-muted break-all">{d().content}</span>}
-                    >
-                      <div class="md-prose">{renderMd(d().content ?? "")}</div>
-                    </Show>
-                  </div>
-                )}
-              </Show>
-              <div class="border-t theme-border" classList={{ hidden: !!doc() }}>
-                <For each={plan()}>{(entry, i) => {
-                  const isRunning = () => entry.status === "in_progress";
-                  const isCompleted = () => entry.status === "completed";
-                  const pb = priorityBadge(entry.priority);
-                  return (
-                    <div
-                      class="flex items-start gap-2.5 px-3 py-1.5 text-[11px] border-b theme-border last:border-b-0 transition-colors"
-                      classList={{
-                        "plan-step-running": isRunning(),
-                        "theme-muted/50": isCompleted(),
-                      }}
-                    >
-                      <span class="mt-[3px] shrink-0 text-[9px] font-mono theme-muted w-4 text-right">{i() + 1}</span>
-                      <span class="plan-step-dot" classList={{ "is-done": isCompleted(), "is-running": isRunning(), "is-idle": !isCompleted() && !isRunning() }} />
-                      <span class={`flex-1 leading-relaxed ${isCompleted() ? "theme-muted line-through decoration-[var(--ui-muted)]" : "theme-text"}`}>
-                        {entry.content ?? entry.title ?? entry.description ?? "step"}
-                      </span>
-                      <Show when={pb}>
-                        <span class={`plan-priority-badge ${pb}`}>
-                          {entry.priority}
-                        </span>
-                      </Show>
-                    </div>
-                  );
-                }}</For>
-              </div>
-            </details>
-          );
-        }}
+        {(plan) => <PlanPanel plan={plan()} />}
       </Show>
       <Show when={props.activeSession()?.submitting && !props.activeSession()?.streamingMessage}>
         <div class="chat-running chat-column">
@@ -841,86 +780,6 @@ function MessageWindowContent(props: MessageWindowProps) {
   );
 }
 
-function collectToolGroups(segments: AppSegment[]): Array<
-  | { kind: "text"; text: string }
-  | { kind: "thought"; text: string }
-  | { kind: "tools"; items: ToolCallGroupItem[] }
-  | { kind: "events"; events: Array<{ type: string; payload: unknown }> }
-> {
-  const result: Array<
-    | { kind: "text"; text: string }
-    | { kind: "thought"; text: string }
-    | { kind: "tools"; items: ToolCallGroupItem[] }
-    | { kind: "events"; events: Array<{ type: string; payload: unknown }> }
-  > = [];
-  // A sub-agent's calls keep arriving while the parent writes; they join the group that holds
-  // the sub-agent's row instead of starting a group of their own.
-  const groupOfTool = new Map<string, ToolCallGroupItem[]>();
-  for (const seg of segments) {
-    if (seg.kind === "text") {
-      const last = result[result.length - 1];
-      if (last?.kind === "text") last.text += seg.text;
-      else result.push({ kind: "text", text: seg.text });
-    } else if (seg.kind === "tool") {
-      const parentGroup = seg.tc.parentId ? groupOfTool.get(seg.tc.parentId) : undefined;
-      if (parentGroup) {
-        parentGroup.push({ kind: "tool", tool: seg.tc });
-        groupOfTool.set(seg.tc.toolCallId, parentGroup);
-        continue;
-      }
-      const last = result[result.length - 1];
-      if (last?.kind === "tools") {
-        last.items.push({ kind: "tool", tool: seg.tc });
-      } else if (last?.kind === "events" || last?.kind === "thought") {
-        const items: ToolCallGroupItem[] = [];
-        while (result.length > 0) {
-          const tail = result[result.length - 1];
-          if (tail.kind === "events") {
-            items.unshift({ kind: "events", events: tail.events });
-            result.pop();
-          } else if (tail.kind === "thought") {
-            items.unshift({ kind: "thought", text: tail.text });
-            result.pop();
-          } else {
-            break;
-          }
-        }
-        items.push({ kind: "tool", tool: seg.tc });
-        result.push({ kind: "tools", items });
-      } else {
-        result.push({ kind: "tools", items: [{ kind: "tool", tool: seg.tc }] });
-      }
-      const placed = result[result.length - 1];
-      if (placed.kind === "tools") groupOfTool.set(seg.tc.toolCallId, placed.items);
-    } else if (seg.kind === "thought") {
-      const last = result[result.length - 1];
-      if (last?.kind === "tools") {
-        const tail = last.items[last.items.length - 1];
-        if (tail?.kind === "thought") tail.text += seg.text;
-        else last.items.push({ kind: "thought", text: seg.text });
-      } else if (last?.kind === "thought") {
-        last.text += seg.text;
-      } else {
-        result.push({ kind: "thought", text: seg.text });
-      }
-    } else {
-      if (isTransparentProviderEvent({ type: seg.type, payload: seg.payload })) continue;
-      const last = result[result.length - 1];
-      const event = { type: seg.type, payload: seg.payload };
-      if (last?.kind === "tools") {
-        const tail = last.items[last.items.length - 1];
-        if (tail?.kind === "events") tail.events.push(event);
-        else last.items.push({ kind: "events", events: [event] });
-      } else if (last?.kind === "events") {
-        last.events.push(event);
-      } else {
-        result.push({ kind: "events", events: [event] });
-      }
-    }
-  }
-  return result;
-}
-
 /** Segment markdown is cached by content (the key includes a content hash), so a text block
  *  that has not changed never re-parses — whether it is in history or above the growing tail
  *  of a streaming message. */
@@ -959,12 +818,11 @@ function StreamSegmentList(props: {
   cwd?: string | null;
   terminals?: AppSession["terminals"];
   pendingPermission?: AppPermission | null;
-  pendingCount?: number;
   onApprove?: (optionId: string) => void;
   onDeny?: () => void;
   onFileClick?: (path: string, kind: string) => void;
   onRejectHunk?: (p: string) => void;
-  onStopAgent?: (tc: AppToolCall) => void;
+  onStopAgent?: (tc: AppToolCall) => void | Promise<void>;
 }) {
   const groups = createMemo(() => collectToolGroups(props.segments));
   // Only the last block is still growing; caching every partial version of it would just
@@ -1001,7 +859,6 @@ function StreamSegmentList(props: {
             cwd={props.cwd}
             terminals={props.terminals}
             pendingPermission={i === groups().length - 1 ? props.pendingPermission : null}
-            pendingCount={props.pendingCount}
             onApprove={props.onApprove}
             onDeny={props.onDeny}
             onFileClick={props.onFileClick}
@@ -1035,12 +892,11 @@ function AgentStreamList(props: {
   cwd?: string | null;
   terminals?: AppSession["terminals"];
   pendingPermission?: AppPermission | null;
-  pendingCount?: number;
   onApprove?: (optionId: string) => void;
   onDeny?: () => void;
   onFileClick?: (path: string, kind: string) => void;
   onRejectHunk?: (p: string) => void;
-  onStopAgent?: (tc: AppToolCall) => void;
+  onStopAgent?: (tc: AppToolCall) => void | Promise<void>;
 }) {
   const groups = createMemo(() => groupSegmentsByRole(props.segments, props.fallbackRole));
   return (
@@ -1063,7 +919,6 @@ function AgentStreamList(props: {
             cwd={props.cwd}
             terminals={props.terminals}
             pendingPermission={index() === groups().length - 1 ? props.pendingPermission : null}
-            pendingCount={props.pendingCount}
             onApprove={props.onApprove}
             onDeny={props.onDeny}
             onFileClick={props.onFileClick}

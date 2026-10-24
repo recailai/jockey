@@ -135,6 +135,9 @@ pub enum AcpEvent {
         title: String,
         description: Option<String>,
         options: Vec<Value>,
+        /// Row of the sub-agent that raised the request, so the UI can attach it there.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent_id: Option<String>,
     },
     ModeUpdate {
         mode_id: String,
@@ -243,6 +246,7 @@ pub(crate) enum WorkerMsg {
         role_mode: Option<String>,
         role_config_options: Vec<(String, String)>,
         resume_session_id: Option<String>,
+        system_prompt: Option<String>,
     },
     Prewarm {
         runtime_key: &'static str,
@@ -259,6 +263,7 @@ pub(crate) enum WorkerMsg {
         result_tx: Option<oneshot::Sender<(Vec<Value>, Vec<String>, String)>>,
         resume_session_id: Option<String>,
         force_refresh: bool,
+        system_prompt: Option<String>,
     },
     Cancel {
         runtime_key: &'static str,

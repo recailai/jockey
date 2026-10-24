@@ -10,7 +10,7 @@ use super::worker::{
     PendingPermission,
 };
 
-const RAW_PAYLOAD_LIMIT: usize = 64 * 1024;
+pub(super) const RAW_PAYLOAD_LIMIT: usize = 64 * 1024;
 const DEFAULT_TERMINAL_OUTPUT_LIMIT: u64 = 256 * 1024;
 
 /// A plan operation as the single plan the UI shows. File and Markdown plans have no entries;
@@ -350,7 +350,13 @@ impl JockeyUiClient {
         }
 
         let request_id = uuid::Uuid::new_v4().to_string();
+        let parent_id = {
+            let mut subagents = self.subagents.borrow_mut();
+            subagents.track_permission(&args.session_id.0, &request_id);
+            subagents.scope_of(&args.session_id.0)
+        };
         let event = AcpEvent::PermissionRequest {
+            parent_id,
             request_id: request_id.clone(),
             title: args.tool_call.fields.title.clone().unwrap_or_default(),
             description: None,
@@ -453,19 +459,27 @@ impl JockeyUiClient {
         }
         // A child's traffic carries the child's own session id. Its mode, config and command
         // updates must not touch the parent's state, so only what its row shows gets through.
-        let scope = self.subagents.borrow().scope_of(&args.session_id.0);
-        if scope.is_some()
-            && !matches!(
+        let (scope, stale) = {
+            let subagents = self.subagents.borrow();
+            (
+                subagents.scope_of(&args.session_id.0),
+                subagents.is_stale(&args.session_id.0),
+            )
+        };
+        if scope.is_some() {
+            let announces = matches!(&args.update, acp::SessionUpdate::SubagentUpdate(_));
+            let shown = matches!(
                 &args.update,
                 acp::SessionUpdate::AgentMessageChunk(_)
                     | acp::SessionUpdate::ToolCall(_)
                     | acp::SessionUpdate::ToolCallUpdate(_)
-                    | acp::SessionUpdate::SubagentUpdate(_)
                     | acp::SessionUpdate::SessionMessage(_)
                     | acp::SessionUpdate::SessionMessageChunk(_)
-            )
-        {
-            return Ok(());
+            );
+            // A child of an earlier turn has no row in this one until it announces itself.
+            if !(announces || (shown && !stale)) {
+                return Ok(());
+            }
         }
         let event = match args.update {
             acp::SessionUpdate::SubagentUpdate(update) => {

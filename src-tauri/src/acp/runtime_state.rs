@@ -31,10 +31,16 @@ struct RuntimeCatalog {
     models: Vec<String>,
     modes: Vec<String>,
     options: Option<CatalogOptions>,
-    /// Whether the adapter advertised the `_session/steering` extension at `initialize`.
-    steering: Option<bool>,
-    /// Whether the adapter advertised `session/fork` at `initialize`.
-    fork: Option<bool>,
+    caps: Option<LearnedCaps>,
+}
+
+/// Capabilities negotiated per connection, so a static runtime profile cannot know them.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct LearnedCaps {
+    /// The `_session/steering` extension was advertised: input can join a running turn.
+    pub steering: bool,
+    /// `session/fork` was advertised.
+    pub fork: bool,
 }
 
 static RUNTIME_CATALOGS: OnceLock<DashMap<String, RuntimeCatalog>> = OnceLock::new();
@@ -79,33 +85,23 @@ pub(super) fn remember_runtime_models(runtime_key: &str, mut models: Vec<String>
 }
 
 /// Returns whether this changed what was known, so callers can refresh derived catalogs.
-pub(super) fn remember_runtime_steering(runtime_key: &str, supported: bool) -> bool {
+pub(super) fn remember_runtime_caps(runtime_key: &str, caps: LearnedCaps) -> bool {
     let mut changed = false;
     with_catalog(runtime_key, |catalog| {
-        changed = catalog.steering != Some(supported);
-        catalog.steering = Some(supported);
+        changed = catalog.caps != Some(caps);
+        catalog.caps = Some(caps);
     });
     changed
 }
 
-/// `Some(true)` once a live connection of this runtime advertised steering.
-pub fn runtime_steering(runtime_key: &str) -> Option<bool> {
-    runtime_catalogs().get(runtime_key).and_then(|c| c.steering)
-}
-
-/// Returns whether this changed what was known, so callers can refresh derived catalogs.
-pub(super) fn remember_runtime_fork(runtime_key: &str, supported: bool) -> bool {
-    let mut changed = false;
-    with_catalog(runtime_key, |catalog| {
-        changed = catalog.fork != Some(supported);
-        catalog.fork = Some(supported);
-    });
-    changed
+/// What live connections of this runtime advertised at `initialize`; `None` until one has.
+pub fn runtime_caps(runtime_key: &str) -> Option<LearnedCaps> {
+    runtime_catalogs().get(runtime_key).and_then(|c| c.caps)
 }
 
 /// `Some(true)` once a live connection of this runtime advertised `session/fork`.
 pub fn runtime_fork(runtime_key: &str) -> Option<bool> {
-    runtime_catalogs().get(runtime_key).and_then(|c| c.fork)
+    runtime_caps(runtime_key).map(|c| c.fork)
 }
 
 pub(super) fn remember_runtime_modes(runtime_key: &str, mut modes: Vec<String>) {
@@ -321,30 +317,21 @@ mod catalog_reuse_tests {
         assert_eq!(aliased.len(), 2);
         assert_eq!(aliased[0]["name"], "model");
     }
-}
 
-/// Role instructions to hand the agent as an ACP `systemPrompt` (append mode) when its
-/// session starts, keyed by `app_session_id:role_name`. Set where the role is loaded and read
-/// at cold start, so the worker messages need not carry it.
-static ROLE_SYSTEM_PROMPTS: OnceLock<DashMap<String, String>> = OnceLock::new();
-
-fn role_prompt_key(app_session_id: &str, role_name: &str) -> String {
-    format!("{app_session_id}:{role_name}")
-}
-
-pub(crate) fn remember_role_system_prompt(app_session_id: &str, role_name: &str, prompt: &str) {
-    let prompts = ROLE_SYSTEM_PROMPTS.get_or_init(DashMap::new);
-    let key = role_prompt_key(app_session_id, role_name);
-    if prompt.trim().is_empty() {
-        prompts.remove(&key);
-    } else {
-        prompts.insert(key, prompt.trim().to_string());
+    #[test]
+    fn learned_caps_report_change_once_and_back_the_fork_wrapper() {
+        let runtime = "test-runtime-caps";
+        clear_runtime(runtime);
+        assert_eq!(runtime_caps(runtime), None);
+        assert_eq!(runtime_fork(runtime), None);
+        let caps = LearnedCaps {
+            steering: true,
+            fork: false,
+        };
+        assert!(remember_runtime_caps(runtime, caps));
+        assert!(!remember_runtime_caps(runtime, caps));
+        assert_eq!(runtime_caps(runtime), Some(caps));
+        assert_eq!(runtime_fork(runtime), Some(false));
+        clear_runtime(runtime);
     }
-}
-
-pub(super) fn role_system_prompt(app_session_id: &str, role_name: &str) -> Option<String> {
-    ROLE_SYSTEM_PROMPTS
-        .get()?
-        .get(&role_prompt_key(app_session_id, role_name))
-        .map(|p| p.value().clone())
 }

@@ -24,27 +24,37 @@ pub(crate) fn invalidate_assistant_catalog() {
     }
 }
 
-/// Steering is negotiated per connection, so the static descriptor cannot know it; once a live
-/// connection advertised it, "Send now" steers instead of interrupting.
-fn with_learned_delivery(
+type Learned = (
+    RuntimeCapabilities,
+    crate::acp::session::adapter_runtime::InputDeliveryCapabilities,
+);
+
+/// Steering and fork are negotiated per connection, so the static profile and descriptor
+/// cannot know them; once a live connection advertised one, the capability turns on ("Send
+/// now" steers instead of interrupting, fork becomes available).
+fn apply_learned_caps(
     runtime_key: &str,
-    mut delivery: crate::acp::session::adapter_runtime::InputDeliveryCapabilities,
-) -> crate::acp::session::adapter_runtime::InputDeliveryCapabilities {
-    if crate::acp::runtime_steering(runtime_key) == Some(true) {
+    available: bool,
+    profile_caps: RuntimeCapabilities,
+) -> Learned {
+    let learned = crate::acp::runtime_caps(runtime_key).unwrap_or_default();
+    let mut capabilities = if available {
+        profile_caps
+    } else {
+        RuntimeCapabilities::unavailable()
+    };
+    if available {
+        capabilities.fork = learned.fork;
+    }
+    let mut delivery = AnyRuntimeAdapter::resolve(runtime_key)
+        .unwrap_or_else(|| AnyRuntimeAdapter::resolve("mock").expect("mock adapter"))
+        .descriptor()
+        .input_delivery;
+    if learned.steering {
         delivery.strategy = "steer".to_string();
         delivery.next_step = true;
     }
-    delivery
-}
-
-/// Fork is negotiated at `initialize`; the static profile cannot know it, so the capability
-/// flips on only once a live connection of this runtime advertised `session/fork`.
-fn with_learned_capabilities(
-    runtime_key: &str,
-    mut capabilities: RuntimeCapabilities,
-) -> RuntimeCapabilities {
-    capabilities.fork = crate::acp::runtime_fork(runtime_key) == Some(true);
-    capabilities
+    (capabilities, delivery)
 }
 
 pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
@@ -83,21 +93,8 @@ pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
                     Some(h.to_string())
                 }
             };
-            let capabilities = if available {
-                with_learned_capabilities(kind.runtime_key(), profile.capabilities)
-            } else {
-                RuntimeCapabilities::unavailable()
-            };
-            let input_delivery = AnyRuntimeAdapter::resolve(kind.runtime_key())
-                .map(|adapter| {
-                    with_learned_delivery(kind.runtime_key(), adapter.descriptor().input_delivery)
-                })
-                .unwrap_or_else(|| {
-                    AnyRuntimeAdapter::resolve("mock")
-                        .expect("mock adapter")
-                        .descriptor()
-                        .input_delivery
-                });
+            let (capabilities, input_delivery) =
+                apply_learned_caps(kind.runtime_key(), available, profile.capabilities);
             let unavailable_reason = (!available).then_some(binary.clone());
             AssistantRuntime {
                 key: kind.runtime_key().to_string(),
@@ -135,16 +132,8 @@ pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
             None
         };
         let unavailable_reason = (!available).then_some(binary.clone());
-        let input_delivery = AnyRuntimeAdapter::resolve(&profile.runtime_key)
-            .map(|adapter| {
-                with_learned_delivery(&profile.runtime_key, adapter.descriptor().input_delivery)
-            })
-            .unwrap_or_else(|| {
-                AnyRuntimeAdapter::resolve("mock")
-                    .expect("mock adapter")
-                    .descriptor()
-                    .input_delivery
-            });
+        let (capabilities, input_delivery) =
+            apply_learned_caps(&profile.runtime_key, available, profile.capabilities);
         rows.push(AssistantRuntime {
             key: profile.id.clone(),
             profile_id: profile.id,
@@ -157,12 +146,7 @@ pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
             unavailable_reason,
             launch_method,
             transport,
-            capabilities: to_value(if available {
-                with_learned_capabilities(&profile.runtime_key, profile.capabilities)
-            } else {
-                RuntimeCapabilities::unavailable()
-            })
-            .unwrap_or_else(|_| serde_json::json!({})),
+            capabilities: to_value(capabilities).unwrap_or_else(|_| serde_json::json!({})),
             input_delivery: to_value(input_delivery).unwrap_or_else(|_| serde_json::json!({})),
         });
     }

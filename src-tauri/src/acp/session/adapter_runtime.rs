@@ -165,6 +165,7 @@ pub(crate) struct PromptRequest<'a> {
     pub(crate) env: &'a [(String, String)],
     pub(crate) resume_session_id: Option<&'a str>,
     pub(crate) mcp_servers: &'a [acp::McpServer],
+    pub(crate) system_prompt: Option<&'a str>,
 }
 
 /// Fixed lifecycle entry points shared by every runtime.
@@ -327,6 +328,7 @@ impl RuntimeAdapter for AnyRuntimeAdapter {
                     role_mode: request.role_mode.map(str::to_string),
                     role_config_options: request.role_config_options.to_vec(),
                     resume_session_id: request.resume_session_id.map(str::to_string),
+                    system_prompt: request.system_prompt.map(str::to_string),
                 };
                 super::execute::execute_acp_worker_prompt(context, request.app.clone()).await
             }

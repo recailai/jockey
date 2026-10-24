@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Match, Show, Switch, createContext, createEffect, createMemo, createSignal, onCleanup, onMount, useContext } from "solid-js";
 import { Check, ChevronDown, Square } from "lucide-solid";
 import { isRejectOption, needsGenericDeny, visiblePermissionOptions } from "../lib/permissionOptions";
 import type { AppPermission, AppToolCall, TerminalEntry } from "./types";
@@ -11,12 +11,35 @@ import "@xterm/xterm/css/xterm.css";
 import { Badge, Button, IconButton, StateDot, Switch as UiSwitch } from "./ui";
 import { ProviderEventGroup } from "./ProviderEventGroup";
 import { renderMd } from "../lib/markdown";
+import { buildToolTree, type ToolCallGroupItem } from "../lib/toolGroups";
+import { formatToolDisplay, isRunningStatus, isSubagentRow } from "../lib/toolDisplay";
 
-export type ToolCallGroupItem =
-  | { kind: "tool"; tool: AppToolCall }
-  | { kind: "events"; events: Array<{ type: string; payload: unknown }> }
-  | { kind: "thought"; text: string }
-  | { kind: "executionText"; text: string };
+export type { ToolCallGroupItem };
+
+/** What every row in one group's tree needs. Shared through context so nested rows do not
+ *  re-thread a dozen props per level. */
+type ToolTree = {
+  live: boolean;
+  cwd?: string | null;
+  terminals?: Record<string, TerminalEntry>;
+  childrenOf: (toolCallId: string) => AppToolCall[];
+  permissionFor: (toolCallId: string) => AppPermission | null;
+  /** The row owning the permission, and its ancestors; they render open. */
+  opensFor: (toolCallId: string) => boolean;
+  onApprove?: (optionId: string) => void;
+  onDeny?: () => void;
+  onFileClick?: (path: string, kind: string) => void;
+  onRejectHunk?: (rejectPrompt: string) => void;
+  /** Stops a running sub-agent; rejects when the stop could not be sent. */
+  onStopAgent?: (tc: AppToolCall) => void | Promise<void>;
+};
+
+const ToolTreeContext = createContext<ToolTree>({
+  live: false,
+  childrenOf: () => [],
+  permissionFor: () => null,
+  opensFor: () => false,
+});
 
 function ToolGroupThought(props: { text: string }) {
   return (
@@ -168,24 +191,9 @@ function TerminalView(props: { entry: TerminalEntry }) {
   );
 }
 
-import { formatToolDisplay } from "../lib/toolDisplay";
-
 type ToolCallItemProps = {
   tc: AppToolCall;
-  cwd?: string | null;
-  terminals?: Record<string, TerminalEntry>;
-  live?: boolean;
-  inlinePermission?: AppPermission | null;
-  onApprove?: (optionId: string) => void;
-  onDeny?: () => void;
-  onFileClick?: (path: string, kind: string) => void;
-  onRejectHunk?: (rejectPrompt: string) => void;
-  /** Calls this one started (a sub-agent's tools), rendered inside it. */
-  childrenOf?: (toolCallId: string) => AppToolCall[];
-  permissionFor?: (toolCallId: string) => AppPermission | null;
   nested?: boolean;
-  /** Stops a running sub-agent; offered only while the turn is live. */
-  onStopAgent?: (tc: AppToolCall) => void;
 };
 
 /** Pretty JSON for display. Computed on demand: tool payloads can be large, and the stored
@@ -211,6 +219,7 @@ const diffTextOf = (tc: AppToolCall): string | null => {
 };
 
 function ToolCallItem(props: ToolCallItemProps) {
+  const tree = useContext(ToolTreeContext);
   const tc = () => props.tc;
   const hasRawInput = () => tc().rawInput != null || !!tc().rawInputJson;
   const hasRawOutput = () => tc().rawOutput != null || !!tc().rawOutputJson;
@@ -221,17 +230,31 @@ function ToolCallItem(props: ToolCallItemProps) {
   const terminalEntry = () => {
     const tid = terminalIdOf(tc());
     if (!tid) return null;
-    return props.terminals?.[tid] ?? null;
+    return tree.terminals?.[tid] ?? null;
   };
-  const inlinePermission = () =>
-    props.permissionFor ? props.permissionFor(tc().toolCallId) : props.inlinePermission ?? null;
-  const showPermission = () =>
-    !!inlinePermission() && tc().status === "pending";
-  const children = () => props.childrenOf?.(tc().toolCallId) ?? [];
+  const inlinePermission = () => tree.permissionFor(tc().toolCallId);
+  const showPermission = () => !!inlinePermission();
+  const children = () => tree.childrenOf(tc().toolCallId);
   const isAgent = () => displayInfo().category === "task";
-  const canStop = () =>
-    !!props.onStopAgent && props.live && tc().toolCallId.startsWith("subagent:") &&
-    tc().status === "in_progress";
+  const running = () => isRunningStatus(tc().status);
+  const canStop = () => !!tree.onStopAgent && tree.live && isSubagentRow(tc()) && running();
+  // Disabled from the click until the row's status moves on, so a slow stop is not re-sent.
+  const [stopping, setStopping] = createSignal(false);
+  createEffect(() => { tc().status; setStopping(false); });
+  const stop = async () => {
+    setStopping(true);
+    try {
+      await tree.onStopAgent?.(tc());
+    } catch {
+      setStopping(false);
+    }
+  };
+  // Rows that need a decision, and the sub-agents holding them, open on their own; rows
+  // running a sub-agent open while it works. Never closes a row the user opened.
+  let detailsEl: HTMLDetailsElement | undefined;
+  const autoOpen = () =>
+    tree.opensFor(tc().toolCallId) || (isAgent() && tree.live && running());
+  createEffect(() => { if (autoOpen() && detailsEl) detailsEl.open = true; });
   /** The task a sub-agent was given, as its parent sent it. */
   const agentPrompt = () => {
     const input = tc().rawInput as { prompt?: unknown } | null | undefined;
@@ -239,18 +262,19 @@ function ToolCallItem(props: ToolCallItemProps) {
   };
 
   const [remember, setRemember] = createSignal(false);
-  const displayInfo = createMemo(() => formatToolDisplay(tc(), props.cwd));
+  const displayInfo = createMemo(() => formatToolDisplay(tc(), tree.cwd));
 
   const hasRememberableOptions = () =>
     !!inlinePermission()?.options.some((o) => o.kind === "allow_always");
 
   return (
     <details
+      ref={detailsEl}
       class="tool-call-item group/tc"
       classList={{ "needs-approval": showPermission() }}
     >
       <summary class="tool-call-item-summary select-none">
-        <span class={`ui-tool-status-dot shrink-0 ${tcStatusDot(tc().status, props.live)}`} />
+        <span class={`ui-tool-status-dot shrink-0 ${tcStatusDot(tc().status, tree.live)}`} />
         <span class="tool-call-item-kind" data-category={displayInfo().category}>
           {displayInfo().categoryBadge}
         </span>
@@ -289,7 +313,8 @@ function ToolCallItem(props: ToolCallItemProps) {
             size="sm"
             aria-label="Stop sub-agent"
             title="Stop sub-agent"
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); props.onStopAgent?.(tc()); }}
+            disabled={stopping()}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); void stop(); }}
           >
             <Square size={10} fill="currentColor" />
           </IconButton>
@@ -313,7 +338,7 @@ function ToolCallItem(props: ToolCallItemProps) {
                   <Button
                     variant={isRejectOption(opt) ? "destructive" : "secondary"}
                     size="sm"
-                    onClick={(e) => { e.preventDefault(); props.onApprove?.(opt.optionId); }}
+                    onClick={(e) => { e.preventDefault(); tree.onApprove?.(opt.optionId); }}
                   >
                     {opt.title ?? opt.optionId}
                   </Button>
@@ -322,7 +347,7 @@ function ToolCallItem(props: ToolCallItemProps) {
                   <Button
                     variant="destructive"
                     size="sm"
-                    onClick={(e) => { e.preventDefault(); props.onDeny?.(); }}
+                    onClick={(e) => { e.preventDefault(); tree.onDeny?.(); }}
                   >
                     Deny
                   </Button>
@@ -350,8 +375,8 @@ function ToolCallItem(props: ToolCallItemProps) {
           <For each={tc().locations}>{(loc) => (
             <button
               type="button"
-              class={`block w-full text-left font-mono break-all hover:text-[var(--ui-accent)] transition-colors ${props.onFileClick ? "cursor-pointer" : "cursor-default"}`}
-              onClick={() => props.onFileClick?.(loc.path, tc().kind)}
+              class={`block w-full text-left font-mono break-all hover:text-[var(--ui-accent)] transition-colors ${tree.onFileClick ? "cursor-pointer" : "cursor-default"}`}
+              onClick={() => tree.onFileClick?.(loc.path, tc().kind)}
             >
               {loc.path}{loc.line ? `:${loc.line}` : ""}
             </button>
@@ -364,25 +389,19 @@ function ToolCallItem(props: ToolCallItemProps) {
       <Show when={children().length > 0}>
         <div class="tool-call-children">
           <For each={children()}>{(child) => (
-            <ToolCallItem
-              tc={child}
-              cwd={props.cwd}
-              terminals={props.terminals}
-              live={props.live}
-              permissionFor={props.permissionFor}
-              childrenOf={props.childrenOf}
-              onStopAgent={props.onStopAgent}
-              nested
-              onApprove={props.onApprove}
-              onDeny={props.onDeny}
-              onFileClick={props.onFileClick}
-              onRejectHunk={props.onRejectHunk}
-            />
+            <ToolCallItem tc={child} nested />
           )}</For>
         </div>
       </Show>
       <Show when={isAgent() && tc().outputLog}>
-        <div class="tool-execution-text md-prose">{renderMd(tc().outputLog!)}</div>
+        {/* Markdown is parsed once the sub-agent is done; re-parsing every chunk of a growing
+            reply costs more than it shows. */}
+        <Show
+          when={!running()}
+          fallback={<div class="tool-agent-output whitespace-pre-wrap break-words">{tc().outputLog}</div>}
+        >
+          <div class="tool-agent-output md-prose">{renderMd(tc().outputLog!)}</div>
+        </Show>
       </Show>
       <Show when={!isAgent() && tc().outputLog}>
         <div class="px-2 pb-1.5">
@@ -400,7 +419,7 @@ function ToolCallItem(props: ToolCallItemProps) {
                   <DiffViewer
                     diffs={diffs()}
                     onRejectHunk={(filePath: string, hunk: DiffHunk) => {
-                      props.onRejectHunk?.(hunkToRejectPrompt(filePath, hunk));
+                      tree.onRejectHunk?.(hunkToRejectPrompt(filePath, hunk));
                     }}
                   />
                 </div>
@@ -453,12 +472,11 @@ export function ToolCallGroup(props: {
   cwd?: string | null;
   terminals?: Record<string, TerminalEntry>;
   pendingPermission?: AppPermission | null;
-  pendingCount?: number;
   onApprove?: (optionId: string) => void;
   onDeny?: () => void;
   onFileClick?: (path: string, kind: string) => void;
   onRejectHunk?: (rejectPrompt: string) => void;
-  onStopAgent?: (tc: AppToolCall) => void;
+  onStopAgent?: (tc: AppToolCall) => void | Promise<void>;
 }) {
   const groupItems = createMemo<ToolCallGroupItem[]>(() =>
     props.items ?? (props.tools ?? []).map((tool) => ({ kind: "tool", tool })),
@@ -471,50 +489,42 @@ export function ToolCallGroup(props: {
   const hasPendingPermission = () => !!props.pendingPermission;
   const [expanded, setExpanded] = createSignal(false);
 
-  // A call whose parent is in this group renders inside it; one whose parent is elsewhere
-  // (another group, or a provider that never sent it) stays at the top level.
-  const childMap = createMemo(() => {
-    const ids = new Set(tools().map((t) => t.toolCallId));
-    const map = new Map<string, AppToolCall[]>();
-    for (const t of tools()) {
-      if (!t.parentId || t.parentId === t.toolCallId || !ids.has(t.parentId)) continue;
-      const list = map.get(t.parentId);
-      if (list) list.push(t);
-      else map.set(t.parentId, [t]);
-    }
-    return map;
-  });
-  const nestedIds = createMemo(() => new Set([...childMap().values()].flat().map((t) => t.toolCallId)));
+  const treeIndex = createMemo(() => buildToolTree(tools(), props.pendingPermission));
   const topItems = createMemo(() =>
-    groupItems().filter((item) => item.kind !== "tool" || !nestedIds().has(item.tool.toolCallId)),
+    groupItems().filter((item) => item.kind !== "tool" || !treeIndex().nestedIds.has(item.tool.toolCallId)),
   );
-  const topTools = createMemo(() => tools().filter((t) => !nestedIds().has(t.toolCallId)));
-  const childrenOf = (id: string) => childMap().get(id) ?? [];
+  const topTools = createMemo(() => tools().filter((t) => !treeIndex().nestedIds.has(t.toolCallId)));
 
   createEffect(() => {
     if (hasPendingPermission()) setExpanded(true);
   });
 
+  // Counted over the same top-level rows the title counts; a sub-agent's own calls are
+  // summarised by its row.
   const statusCounts = createMemo(() => {
     let success = 0, error = 0;
-    for (const t of tools()) {
+    const top = topTools();
+    for (const t of top) {
       const status = t.status.replace(/[-_]/g, "").toLowerCase();
       if (status === "success" || status === "completed") success++;
       else if (status === "failure" || status === "failed" || status === "error" || status === "declined" || status === "cancelled" || status === "canceled") error++;
     }
-    return { success, error, pending: tools().length - success - error };
+    return { success, error, pending: top.length - success - error };
   });
 
-  const pendingToolCallId = createMemo(() => {
-    if (!props.pendingPermission) return null;
-    const list = tools();
-    for (let i = list.length - 1; i >= 0; i--) {
-      if (list[i].status === "pending") return list[i].toolCallId;
-    }
-    return list[list.length - 1]?.toolCallId ?? null;
-  });
-  const permissionFor = (id: string) =>
-    id === pendingToolCallId() ? props.pendingPermission ?? null : null;
+  const tree: ToolTree = {
+    get live() { return props.streaming; },
+    get cwd() { return props.cwd; },
+    get terminals() { return props.terminals; },
+    childrenOf: (id) => treeIndex().childMap.get(id) ?? [],
+    permissionFor: (id) => (id === treeIndex().ownerId ? props.pendingPermission ?? null : null),
+    opensFor: (id) => treeIndex().openIds.has(id),
+    get onApprove() { return props.onApprove; },
+    get onDeny() { return props.onDeny; },
+    get onFileClick() { return props.onFileClick; },
+    get onRejectHunk() { return props.onRejectHunk; },
+    get onStopAgent() { return props.onStopAgent; },
+  };
 
   // Title says what happened; detail is secondary context. Exceptions (approval, failures) get
   // a badge on the right; a clean run needs no badge at all.
@@ -568,22 +578,11 @@ export function ToolCallGroup(props: {
         </span>
       </button>
       <Show when={expanded()}>
+        <ToolTreeContext.Provider value={tree}>
         <div class="tool-call-list">
           <For each={topItems()}>{(item) => {
             return item.kind === "tool" ? (
-              <ToolCallItem
-                tc={item.tool}
-                cwd={props.cwd}
-                terminals={props.terminals}
-                live={props.streaming}
-                permissionFor={permissionFor}
-                childrenOf={childrenOf}
-                onStopAgent={props.onStopAgent}
-                onApprove={props.onApprove}
-                onDeny={props.onDeny}
-                onFileClick={props.onFileClick}
-                onRejectHunk={props.onRejectHunk}
-              />
+              <ToolCallItem tc={item.tool} />
             ) : item.kind === "events" ? (
               <ProviderEventGroup events={item.events} />
             ) : item.kind === "thought" ? (
@@ -593,6 +592,7 @@ export function ToolCallGroup(props: {
             );
           }}</For>
         </div>
+        </ToolTreeContext.Provider>
       </Show>
     </div>
   );

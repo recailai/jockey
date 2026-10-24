@@ -24,6 +24,7 @@ struct PrewarmOpts<'a> {
     role_mode: Option<String>,
     role_config_options: Vec<(String, String)>,
     force_refresh: bool,
+    system_prompt: Option<String>,
     /// The role's account env (`credentials::launch_env_for`). A process warmed without it
     /// would be evicted by the first turn, which launches with it.
     launch_env: Result<Vec<(String, String)>, String>,
@@ -95,6 +96,7 @@ async fn send_prewarm(
         result_tx: Some(tx),
         resume_session_id: opts.resume_session_id,
         force_refresh: opts.force_refresh,
+        system_prompt: opts.system_prompt,
     });
     Some(rx)
 }
@@ -125,20 +127,19 @@ fn parse_config_map(raw: &str) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-/// Makes the role's instructions available to the cold start of this session's slot.
-pub(super) fn remember_role_prompt(
+/// The role's instructions, handed to the agent as an ACP `systemPrompt` when it advertises
+/// support. Resolved wherever the role's MCP servers are, so every turn and prewarm of a slot
+/// agrees on it (a mismatch would evict the warm process).
+pub(super) fn load_role_system_prompt(
     state: &AppState,
-    app_session_id: &str,
     role_name: &str,
     project_id: Option<&str>,
-) {
-    if let Ok(Some(role)) = crate::db::role::load_role_scoped(state, role_name, project_id) {
-        super::super::runtime_state::remember_role_system_prompt(
-            app_session_id,
-            role_name,
-            &role.system_prompt,
-        );
-    }
+) -> Option<String> {
+    let role = crate::db::role::load_role_scoped(state, role_name, project_id)
+        .ok()
+        .flatten()?;
+    let prompt = role.system_prompt.trim();
+    (!prompt.is_empty()).then(|| prompt.to_string())
 }
 
 fn load_role_default_config(
@@ -180,9 +181,10 @@ async fn prewarm_config_impl(req: ConfigPrewarmRequest<'_>) -> (Vec<Value>, Vec<
             crate::db::app_session::get_app_session_project_id(s, app_session_id)
         });
     let project_id = session_project_id.as_deref().or(req.project_id);
-    if let Some((s, app_sid)) = req.state.zip(req.app_session_id) {
-        remember_role_prompt(s, app_sid, req.role_name, project_id);
-    }
+    let system_prompt = req
+        .state
+        .zip(req.app_session_id)
+        .and_then(|(s, _)| load_role_system_prompt(s, req.role_name, project_id));
     let mcp_servers = req
         .state
         .map(|s| load_role_mcp_servers(s, req.role_name, project_id, req.runtime_kind))
@@ -198,6 +200,7 @@ async fn prewarm_config_impl(req: ConfigPrewarmRequest<'_>) -> (Vec<Value>, Vec<
         role_mode: req.role_mode,
         role_config_options: req.role_config_options,
         force_refresh: req.force_refresh,
+        system_prompt,
         launch_env,
     })
     .await
@@ -234,9 +237,9 @@ pub async fn prewarm_role(
     let project_id = state.as_ref().and_then(|(s, app_session_id)| {
         crate::db::app_session::get_app_session_project_id(s, app_session_id)
     });
-    if let Some((s, app_sid)) = state {
-        remember_role_prompt(s, app_sid, role_name, project_id.as_deref());
-    }
+    let system_prompt = state
+        .as_ref()
+        .and_then(|(s, _)| load_role_system_prompt(s, role_name, project_id.as_deref()));
     let mcp_servers = state
         .as_ref()
         .map(|(s, _)| load_role_mcp_servers(s, role_name, project_id.as_deref(), runtime_kind))
@@ -258,6 +261,7 @@ pub async fn prewarm_role(
         role_mode: None,
         role_config_options: vec![],
         force_refresh: false,
+        system_prompt,
         launch_env,
     })
     .await

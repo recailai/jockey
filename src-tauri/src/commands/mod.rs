@@ -2,6 +2,7 @@ pub(crate) mod completion;
 pub(crate) mod cwd_util;
 pub(crate) mod fs_cmd;
 pub(crate) mod git_cmd;
+pub(crate) mod llm_providers_cmd;
 pub(crate) mod project_cmd;
 pub(crate) mod provider_session_cmd;
 pub(crate) mod resume_cmd;

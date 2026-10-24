@@ -95,9 +95,11 @@ pub async fn execute_runtime(
         }
     };
 
+    let mut system_prompt = None;
     if let Some((s, app_sid)) = state {
         let project_id = crate::db::app_session::get_app_session_project_id(s, app_sid);
-        super::prewarm::remember_role_prompt(s, app_sid, role_name, project_id.as_deref());
+        system_prompt =
+            super::prewarm::load_role_system_prompt(s, role_name, project_id.as_deref());
         match crate::credentials::launch_env_for(s, role_name, project_id.as_deref(), &normalized) {
             Ok(env) => adapter.env.extend(env),
             Err(e) => {
@@ -156,6 +158,7 @@ pub async fn execute_runtime(
         env: &adapter.env,
         resume_session_id: resume_session_id.as_deref(),
         mcp_servers: &mcp_servers,
+        system_prompt: system_prompt.as_deref(),
     };
     let result = RuntimeAdapter::prompt(&adapter_impl, prompt_request).await;
 
@@ -203,6 +206,7 @@ pub(super) struct AcpWorkerPromptContext {
     pub(super) role_mode: Option<String>,
     pub(super) role_config_options: Vec<(String, String)>,
     pub(super) resume_session_id: Option<String>,
+    pub(super) system_prompt: Option<String>,
 }
 
 pub(super) async fn execute_acp_worker_prompt(
@@ -226,6 +230,7 @@ pub(super) async fn execute_acp_worker_prompt(
         role_mode,
         role_config_options,
         resume_session_id,
+        system_prompt,
     } = ctx_data;
     let started = Instant::now();
     let (delta_tx, mut delta_rx) =
@@ -249,6 +254,7 @@ pub(super) async fn execute_acp_worker_prompt(
         role_mode,
         role_config_options,
         resume_session_id,
+        system_prompt,
     });
 
     let app = app.clone();

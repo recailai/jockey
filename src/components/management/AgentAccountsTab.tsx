@@ -2,6 +2,7 @@ import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 import { KeyRound, LogIn, Plus, RefreshCw, Trash2, X } from "lucide-solid";
 import {
   credentialApi,
+  runtimeKeyForProvider,
   type AgentCredential,
   type CredentialProviderInfo,
   type CredentialProviderKey,
@@ -11,13 +12,6 @@ import { LlmEndpointSection } from "./LlmEndpointSection";
 import { Alert, Badge, Button, FormField, IconButton, Input, Panel, PanelBody, Pill, createCopyFeedback } from "../ui";
 
 type EnvRow = { key: string; value: string };
-
-const RUNTIME_KEY_BY_PROVIDER: Record<CredentialProviderKey, string> = {
-  claude: "claude-code",
-  codex: "codex-cli",
-  pi: "pi-cli",
-  antigravity: "antigravity-cli",
-};
 
 function AccountBadge(props: { signedIn: boolean; identity?: string | null }) {
   return (
@@ -258,7 +252,7 @@ function AddAccountForm(props: {
   );
 }
 
-export function AgentAccountsTab() {
+export function AgentAccountsTab(props: { showToast?: (message: string, severity?: "error" | "info") => void }) {
   const [overview, setOverview] = createSignal<CredentialsOverview | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [busy, setBusy] = createSignal(false);
@@ -331,7 +325,7 @@ export function AgentAccountsTab() {
                 <Alert tone="info">{provider.loginHint}</Alert>
               </Show>
 
-              <LlmEndpointSection runtimeKey={RUNTIME_KEY_BY_PROVIDER[provider.key]} />
+              <LlmEndpointSection runtimeKey={runtimeKeyForProvider(provider.key)} showToast={props.showToast} />
 
               <For each={accountsFor(provider.key)}>
                 {(account) => (

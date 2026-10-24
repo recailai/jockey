@@ -79,5 +79,7 @@
   .companion-host .composer-rich-input { font-size: 16px; }
   .companion-host .composer-input-row { padding: 8px; gap: 8px; }
   .companion-host .composer-input-row .composer-send-button.jui-icon-button { width: 44px; height: 44px; }
+  /* The stop button sits inside a compact row: full touch height, without growing the row. */
+  .companion-host .tool-call-item-summary .jui-icon-button { margin-block: -8px; }
   .companion-session-row { min-width: 0; padding-block: 10px; }
 }

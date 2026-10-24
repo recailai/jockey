@@ -2310,77 +2310,19 @@ pre {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-.plan-status-dot,
 .queued-status-dot {
   display: inline-block;
   width: 8px;
   height: 8px;
   flex-shrink: 0;
   border-radius: 999px;
-  background: var(--ui-state-muted-text);
-  box-shadow: 0 0 0 3px var(--ui-state-muted-bg);
-}
-.plan-status-dot.is-running,
-.queued-status-dot {
   background: var(--ui-state-warning-text);
   box-shadow: 0 0 0 3px var(--ui-state-warning-bg);
   animation: pulse 1.5s ease-in-out infinite;
 }
-.plan-status-dot.is-done {
-  background: var(--ui-state-success-text);
-  box-shadow: 0 0 0 3px var(--ui-state-success-bg);
-}
-.plan-state-label {
-  font-size: 9px;
-  font-weight: 500;
-}
-.plan-state-label.is-running {
-  color: var(--ui-state-warning-text);
-  font-style: italic;
-}
-.plan-state-label.is-done {
-  color: var(--ui-state-success-text);
-}
 .plan-step-running {
   border-left: 2px solid color-mix(in srgb, var(--ui-state-warning-text), transparent 62%);
   background: color-mix(in srgb, var(--ui-state-warning-bg), transparent 45%);
-}
-.plan-step-dot {
-  width: 6px;
-  height: 6px;
-  flex-shrink: 0;
-  margin-top: 4px;
-  border-radius: 999px;
-  background: var(--ui-state-muted-text);
-}
-.plan-step-dot.is-running {
-  background: var(--ui-state-warning-text);
-  animation: pulse 1.5s ease-in-out infinite;
-}
-.plan-step-dot.is-done {
-  background: var(--ui-state-success-text);
-}
-.plan-priority-badge {
-  flex-shrink: 0;
-  margin-top: 2px;
-  border: 1px solid var(--ui-border);
-  border-radius: 999px;
-  padding: 1px 6px;
-  font-size: 8.5px;
-  font-weight: 700;
-  line-height: 14px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-.plan-priority-badge.is-high {
-  border-color: color-mix(in srgb, var(--ui-state-danger-text), transparent 68%);
-  background: var(--ui-state-danger-bg);
-  color: var(--ui-state-danger-text);
-}
-.plan-priority-badge.is-medium {
-  border-color: color-mix(in srgb, var(--ui-state-warning-text), transparent 68%);
-  background: var(--ui-state-warning-bg);
-  color: var(--ui-state-warning-text);
 }
 .queued-flush-button {
   display: inline-flex;
@@ -3396,7 +3338,15 @@ pre.md-code > code { display: block; padding: 12px 16px 14px; background: none; 
 .tool-call-item pre { max-height: 180px; }
 /* A sub-agent's own calls, inside its row; the rule on the left ties them to it. */
 .tool-call-children { display: flex; flex-direction: column; gap: 2px; margin: 2px 6px 6px 13px; padding-left: 8px; border-left: 1px solid var(--ui-border-subtle); }
-.tool-agent-prompt { margin: 2px 10px 6px; padding-left: 8px; border-left: 2px solid var(--ui-border); color: var(--ui-text-secondary); font-size: 12px; max-height: 160px; overflow-y: auto; }
+.tool-agent-prompt,
+.tool-agent-output { min-width: 0; margin: 2px 10px 6px; padding-left: 8px; border-left: 2px solid var(--ui-border); color: var(--ui-text-secondary); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; overflow-y: auto; }
+.tool-agent-prompt { max-height: 160px; }
+.tool-agent-output { max-height: 240px; }
+.tool-execution-text { min-width: 0; max-height: 240px; margin: 2px 10px 6px; overflow-y: auto; overflow-wrap: anywhere; font-size: 12px; }
+.plan-panel-summary { display: flex; cursor: pointer; align-items: center; gap: 8px; padding: 8px 12px; font-size: 12px; list-style: none; user-select: none; transition: background-color var(--ui-duration-fast) var(--ui-ease); }
+.plan-panel-summary::-webkit-details-marker { display: none; }
+.plan-panel-summary:hover { background: var(--ui-row-hover); }
+.plan-panel-doc { max-height: 320px; overflow-y: auto; overflow-wrap: anywhere; }
 
 .ui-tool-status-dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 999px; }
 .ui-tool-status-success { background: var(--ui-state-success-text); }

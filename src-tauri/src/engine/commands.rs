@@ -33,10 +33,11 @@ pub(crate) async fn create_app_session(
 /// the transcript, bound to the forked provider conversation.
 #[tauri::command]
 pub(crate) async fn fork_app_session(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<AppSession, String> {
-    super::fork::fork_session(get_state(&state), &id).await
+    super::fork::fork_session(&app, get_state(&state), &id).await
 }
 
 #[tauri::command]

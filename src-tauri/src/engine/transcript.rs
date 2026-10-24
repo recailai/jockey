@@ -176,18 +176,38 @@ pub(crate) fn sanitize_tool_call(tc: &Value) -> Value {
         map.remove("rawOutputJson");
         map.remove("contentJson");
         if let Some(Value::String(log)) = map.get_mut("outputLog") {
-            if log.len() > OUTPUT_LOG_LIMIT {
-                let head_end = floor_char_boundary(log, OUTPUT_LOG_KEEP);
-                let tail_start = ceil_char_boundary(log, log.len() - OUTPUT_LOG_KEEP);
-                *log = format!(
-                    "{}\n...[truncated]...\n{}",
-                    &log[..head_end],
-                    &log[tail_start..]
-                );
-            }
+            bound_output_log(log);
         }
     }
     tc
+}
+
+/// Keeps the head and tail of a log past `OUTPUT_LOG_LIMIT`. Run on every append as well as at
+/// persist time, so a long-running tool's log stays bounded while it streams.
+fn bound_output_log(log: &mut String) {
+    if log.len() > OUTPUT_LOG_LIMIT {
+        let head_end = floor_char_boundary(log, OUTPUT_LOG_KEEP);
+        let tail_start = ceil_char_boundary(log, log.len() - OUTPUT_LOG_KEEP);
+        *log = format!(
+            "{}\n...[truncated]...\n{}",
+            &log[..head_end],
+            &log[tail_start..]
+        );
+    }
+}
+
+/// Appends to a tool's `outputLog` in place, creating it if absent.
+fn append_output_log(tc: &mut Value, delta: &str) {
+    let Some(map) = tc.as_object_mut() else {
+        return;
+    };
+    let entry = map
+        .entry("outputLog")
+        .or_insert_with(|| Value::String(String::new()));
+    if let Value::String(log) = entry {
+        log.push_str(delta);
+        bound_output_log(log);
+    }
 }
 
 fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
@@ -355,6 +375,11 @@ impl Transcript {
                     return false;
                 };
                 let is_new = !self.tools.contains_key(id);
+                // A sub-agent row only ever opens with its own `toolCall`; an update for one
+                // this turn never saw (a straggler from an earlier turn) would be a blank row.
+                if is_new && crate::acp::subagents::child_of_row(id).is_some() {
+                    return false;
+                }
                 let mut tc = match self.tools.get(id) {
                     Some(Value::Object(existing)) => existing.clone(),
                     _ => {
@@ -418,21 +443,17 @@ impl Transcript {
                 if delta.is_empty() {
                     return false;
                 }
-                let Some(Value::Object(existing)) = self.tools.get(id) else {
+                let Some(tc) = self.tools.get_mut(id).filter(|tc| tc.is_object()) else {
                     return false;
                 };
-                let mut tc = existing.clone();
-                let log = tc.get("outputLog").and_then(Value::as_str).unwrap_or("");
-                tc.insert("outputLog".into(), json!(format!("{log}{delta}")));
-                let tc = Value::Object(tc);
-                self.tools.insert(id.to_string(), tc.clone());
-                if let Some(idx) = self
+                append_output_log(tc, delta);
+                if let Some(seg_tc) = self
                     .segments
-                    .iter()
-                    .position(|s| is_tool_segment_for(s, id))
+                    .iter_mut()
+                    .find(|s| is_tool_segment_for(s, id))
+                    .and_then(|s| s.get_mut("tc"))
                 {
-                    let seg_role = role_of(&self.segments[idx]).map(str::to_string);
-                    self.segments[idx] = tool_segment(tc, seg_role.as_deref().or(role));
+                    append_output_log(seg_tc, delta);
                 }
                 true
             }
@@ -1025,5 +1046,45 @@ mod tests {
         assert!(tc.get("contentJson").is_none());
         assert!(tc["outputLog"].as_str().unwrap().contains("[truncated]"));
         assert!(tc["outputLog"].as_str().unwrap().len() <= 2 * OUTPUT_LOG_KEEP + 32);
+    }
+
+    #[test]
+    fn streamed_output_log_is_appended_in_place_and_bounded() {
+        let mut t = Transcript::new("Developer");
+        t.apply_event(
+            &json!({"kind": "toolCall", "toolCallId": "t1", "title": "Run", "toolKind": "execute", "status": "in_progress"}),
+            Some("Developer"),
+        );
+        let chunk = "y".repeat(64 * 1024);
+        for _ in 0..8 {
+            t.apply_event(
+                &json!({"kind": "toolOutputDelta", "toolCallId": "t1", "delta": chunk}),
+                Some("Developer"),
+            );
+        }
+        t.apply_event(
+            &json!({"kind": "toolOutputDelta", "toolCallId": "t1", "delta": "end"}),
+            Some("Developer"),
+        );
+        let msg = t.message("m1", 1, None);
+        for log in [
+            msg["toolCalls"][0]["outputLog"].as_str().unwrap(),
+            msg["segments"][0]["tc"]["outputLog"].as_str().unwrap(),
+        ] {
+            assert!(log.len() <= 2 * OUTPUT_LOG_KEEP + 32);
+            assert!(log.contains("[truncated]"));
+            assert!(log.ends_with("end"));
+        }
+    }
+
+    #[test]
+    fn an_update_for_an_unseen_subagent_row_creates_nothing() {
+        let mut t = Transcript::new("Developer");
+        let changed = t.apply_event(
+            &json!({"kind": "toolCallUpdate", "toolCallId": "subagent:old", "status": "completed"}),
+            Some("Developer"),
+        );
+        assert!(!changed);
+        assert!(!t.has_content());
     }
 }
