@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { Accessor, Setter } from "solid-js";
 import {
   Check,
@@ -28,6 +28,7 @@ import {
 import type { ThemePreference } from "../../lib/theme";
 import { sessionStatus, type SessionStatus } from "../../lib/sessionStatus";
 import { appSessionApi } from "../../lib/tauriApi";
+import { displayTitle } from "../../lib/formatHelpers";
 import type { SettingsTab } from "../SettingsPage";
 import type { Project } from "../../lib/tauriApi";
 
@@ -67,6 +68,30 @@ function statusOf(session: AppSession): SessionStatus {
 }
 
 export default function SessionTopbar(props: SessionTopbarProps) {
+  let chipStrip: HTMLDivElement | undefined;
+  const markOverflow = () => {
+    const el = chipStrip;
+    if (!el) return;
+    el.toggleAttribute("data-more-left", el.scrollLeft > 1);
+    el.toggleAttribute("data-more-right", el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  };
+  onMount(() => {
+    if (!chipStrip) return;
+    const ro = new ResizeObserver(markOverflow);
+    ro.observe(chipStrip);
+    chipStrip.addEventListener("scroll", markOverflow, { passive: true });
+    onCleanup(() => ro.disconnect());
+  });
+  // Many sessions scroll the strip; keep the active one in view when it changes.
+  createEffect(() => {
+    const id = props.activeSessionId();
+    if (!id || !chipStrip) return;
+    queueMicrotask(() => {
+      chipStrip?.querySelector<HTMLElement>(`[data-session-id="${CSS.escape(id)}"]`)
+        ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      markOverflow();
+    });
+  });
   const [overflowOpen, setOverflowOpen] = createSignal(false);
   const [renamingSessionId, setRenamingSessionId] = createSignal<string | null>(null);
   const [renameValue, setRenameValue] = createSignal("");
@@ -107,7 +132,7 @@ export default function SessionTopbar(props: SessionTopbarProps) {
         <div class="session-topbar-divider mx-1 shrink-0" />
 
         {/* ── Project Switcher & Horizontal Sessions Strip ── */}
-        <div class="flex items-center gap-1.5 px-1 min-w-0 flex-1">
+        <div class="flex min-w-0 shrink items-center gap-1.5 px-1">
           {/* Project Dropdown */}
           <DropdownMenu>
             <DropdownTrigger
@@ -166,8 +191,7 @@ export default function SessionTopbar(props: SessionTopbarProps) {
 
           <span class="theme-muted select-none mx-0.5 opacity-40 shrink-0 text-xs">/</span>
 
-          {/* ── Horizontal Session Chips (同项目不同session横向排列 & 可操控) ── */}
-          <div class="session-chip-strip flex-1 min-w-0 flex items-center">
+          <div class="session-chip-strip" ref={(el) => (chipStrip = el)}>
             <For each={currentSessions()}>
               {(session) => {
                 const isActive = () => session.id === props.activeSessionId();
@@ -177,10 +201,11 @@ export default function SessionTopbar(props: SessionTopbarProps) {
                   <div
                     role="button"
                     tabindex="0"
-                    class="session-chip group relative cursor-pointer flex-shrink min-w-0"
+                    class="session-chip"
                     classList={{ "is-active": isActive() }}
-                    title={session.cwd ?? session.title}
-                    aria-label={`Session ${session.title}`}
+                    data-session-id={session.id}
+                    title={displayTitle(session.title)}
+                    aria-label={`Session ${displayTitle(session.title)}`}
                     onClick={() => {
                       if (!isRenaming()) {
                         if (props.onSelectSession) {
@@ -206,16 +231,11 @@ export default function SessionTopbar(props: SessionTopbarProps) {
                     <Show
                       when={isRenaming()}
                       fallback={
-                        <span
-                          class="truncate select-none text-[12.5px]"
-                          title={session.title}
-                        >
-                          {session.title}
-                        </span>
+                        <span class="session-chip-title">{displayTitle(session.title)}</span>
                       }
                     >
                       <input
-                        class="session-chip-rename-input text-[12.5px]"
+                        class="session-chip-rename-input"
                         value={renameValue()}
                         aria-label="Rename session"
                         onInput={(e) => setRenameValue(e.currentTarget.value)}
@@ -234,8 +254,7 @@ export default function SessionTopbar(props: SessionTopbarProps) {
                       <button
                         type="button"
                         class="session-chip-close"
-                        title="Close session"
-                        aria-label={`Close session ${session.title}`}
+                        aria-label={`Close session ${displayTitle(session.title)}`}
                         onClick={(e) => {
                           e.stopPropagation();
                           props.onCloseSession(session.id);
@@ -248,12 +267,13 @@ export default function SessionTopbar(props: SessionTopbarProps) {
                 );
               }}
             </For>
+          </div>
 
-            <button
+          <button
               type="button"
-              class="session-chip-add ml-0.5 shrink-0"
+              class="session-chip-add"
               onClick={props.onNewSession}
-              title="New session in current project"
+              title="New session"
               aria-label="New session"
             >
               <Plus size={14} />
@@ -263,15 +283,12 @@ export default function SessionTopbar(props: SessionTopbarProps) {
               <DropdownMenu>
                 <DropdownTrigger
                   variant="plain"
-                  class="session-chip-add shrink-0 ml-0.5"
+                  class="session-chip-add"
                   title="All sessions in project"
                 >
                   <ChevronDown size={12} class="theme-muted" />
                 </DropdownTrigger>
                 <DropdownContent placement="bottom-start" class="min-w-[200px]">
-                  <div class="px-2 py-1 text-[10px] font-medium uppercase text-[var(--ui-text-caption)]">
-                    All Sessions ({currentSessions().length})
-                  </div>
                   <For each={currentSessions()}>
                     {(sess) => (
                       <DropdownItem
@@ -286,7 +303,7 @@ export default function SessionTopbar(props: SessionTopbarProps) {
                       >
                         <div class="flex items-center gap-1.5 truncate">
                           <StatusDot status={statusOf(sess)} />
-                          <span class="truncate">{sess.title}</span>
+                          <span class="truncate">{displayTitle(sess.title)}</span>
                         </div>
                         <Show when={sess.id === props.activeSessionId()}>
                           <Check size={13} class="text-[var(--ui-accent)] shrink-0 ml-2" />
@@ -297,7 +314,6 @@ export default function SessionTopbar(props: SessionTopbarProps) {
                 </DropdownContent>
               </DropdownMenu>
             </Show>
-          </div>
         </div>
       </div>
 

@@ -100,9 +100,6 @@
   --ui-resizer-gutter: clamp(6px, 0.55vmin, 10px);
   --ui-resizer-line: color-mix(in srgb, var(--ui-border-strong) 78%, var(--ui-bg));
   --ui-resizer-line-hover: color-mix(in srgb, var(--ui-muted) 28%, var(--ui-border-strong));
-  --ui-session-chip-active-bg: color-mix(in srgb, var(--ui-text) 9%, var(--ui-surface));
-  --ui-session-chip-active-text: var(--ui-text);
-  --ui-session-chip-active-border: color-mix(in srgb, var(--ui-text) 14%, var(--ui-border));
   --tone-950: #ffffff;
   --tone-900: #f7f7f8;
   --tone-800: #eeeeef;
@@ -181,8 +178,6 @@
   --composer-active-max-height: 160px;
   --composer-empty-max-width: 720px;
   --composer-active-max-width: 980px;
-  --session-chip-max-width: 240px;
-  --session-chip-min-width: 72px;
   --left-dock-default-width: 360px;
   --right-dock-default-width: 280px;
   --chat-min-width: 420px;
@@ -299,9 +294,6 @@
   --ui-resizer-gutter: clamp(6px, 0.55vmin, 10px);
   --ui-resizer-line: color-mix(in srgb, var(--ui-border-strong) 72%, transparent);
   --ui-resizer-line-hover: color-mix(in srgb, var(--ui-muted) 40%, var(--ui-border-strong));
-  --ui-session-chip-active-bg: color-mix(in srgb, var(--ui-text) 11%, var(--ui-surface));
-  --ui-session-chip-active-text: var(--ui-text);
-  --ui-session-chip-active-border: color-mix(in srgb, var(--ui-text) 16%, var(--ui-border));
   --tone-950: #09090b;
   --tone-900: #18181b;
   --tone-800: #27272a;
@@ -1942,7 +1934,6 @@ pre {
   flex-direction: column;
 }
 
-.session-chip,
 .role-switcher,
 .commit-button,
 .run-action-main,
@@ -1964,7 +1955,6 @@ pre {
   justify-content: center;
 }
 
-.session-chip,
 .role-switcher,
 .commit-button,
 .section-header,
@@ -2184,17 +2174,6 @@ pre {
 .workspace-file-row {
   margin-left: 24px;
   width: calc(100% - 24px);
-}
-
-@media (hover: hover) {
-  .session-chip-close {
-    opacity: 0;
-  }
-  .session-chip:hover .session-chip-close,
-  .session-chip.is-active .session-chip-close,
-  .session-chip-close:focus-visible {
-    opacity: 0.85;
-  }
 }
 
 .role-switcher,

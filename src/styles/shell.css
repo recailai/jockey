@@ -288,109 +288,6 @@
   background: var(--ui-row-hover);
 }
 
-.session-chip-strip {
-  display: flex;
-  min-width: 0;
-  max-width: min(68vw, 1080px);
-  flex: 1 1 360px;
-  align-items: center;
-  gap: 4px;
-  overflow-x: auto;
-  padding: 2px 4px;
-  scrollbar-width: none;
-}
-
-.session-chip-strip::-webkit-scrollbar {
-  display: none;
-}
-
-.session-chip {
-  display: inline-flex;
-  height: 28px;
-  min-width: var(--session-chip-min-width, 64px);
-  max-width: var(--session-chip-max-width, 220px);
-  flex: 0 1 auto;
-  align-items: center;
-  gap: 6px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  padding: 0 10px;
-  color: var(--ui-muted);
-  font-size: 12px;
-  font-weight: 500;
-  outline: none;
-  box-shadow: none;
-  user-select: none;
-  transition: background-color 120ms ease, color 120ms ease;
-}
-
-.session-chip:hover {
-  border: 0;
-  background: color-mix(in srgb, var(--ui-text) 6%, transparent);
-  color: var(--ui-text);
-}
-
-.session-chip > .truncate {
-  min-width: 0;
-  flex: 1 1 auto;
-  max-width: calc(var(--session-chip-max-width, 240px) - 36px);
-  line-height: 18px;
-}
-
-.session-chip.is-active {
-  border: 0;
-  background: color-mix(in srgb, var(--ui-text) 9%, transparent);
-  color: var(--ui-text);
-  box-shadow: none;
-}
-
-.session-chip.is-active .ui-status-dot {
-  background: currentColor;
-}
-
-.session-chip-close {
-  display: inline-flex;
-  width: 18px;
-  height: 18px;
-  flex: 0 0 18px;
-  align-items: center;
-  justify-content: center;
-  margin-left: auto;
-  border-radius: 5px;
-  color: currentColor;
-  opacity: 0.45;
-}
-
-.session-chip.is-active .session-chip-close,
-.session-chip-close:focus-visible {
-  opacity: 0.7;
-}
-
-.session-chip-close:hover {
-  background: color-mix(in srgb, currentColor, transparent 88%);
-  opacity: 1;
-}
-
-.session-chip-add {
-  display: inline-flex;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ui-muted);
-  transition: background-color 120ms ease, color 120ms ease;
-}
-
-.session-chip-add:hover {
-  background: color-mix(in srgb, var(--ui-text) 7%, transparent);
-  color: var(--ui-text);
-}
-
 .settings-page {
   background: var(--ui-bg);
 }
@@ -432,8 +329,6 @@
   margin-bottom: 10px;
   font-size: 14px;
 }
-
-
 
 .settings-custom-app-row {
   display: flex;
@@ -529,10 +424,11 @@
   -webkit-backdrop-filter: blur(20px) saturate(1.2);
 }
 
+/* Sized by its chips: it takes room only as sessions need it, and the drag region gets the rest. */
 .session-topbar-content {
   display: flex;
   min-width: 0;
-  flex: 1;
+  flex: 0 1 auto;
   align-items: center;
   gap: 6px;
   padding: 0 8px 0 var(--mac-safe-left);
@@ -590,47 +486,6 @@
   gap: 2px;
   padding: 0 12px 0 4px;
 }
-
-.session-chip-rename-input {
-  min-width: 0;
-  flex: 1;
-  border-bottom: 1px solid var(--ui-border-strong);
-  background: transparent;
-  color: var(--ui-text);
-  font-size: 12.5px;
-  font-weight: 500;
-  outline: none;
-}
-
-.session-chip {
-  max-width: var(--session-chip-max-width);
-  border: 0;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.session-chip:hover {
-  border: 0;
-  background: color-mix(in srgb, var(--ui-text) 6%, transparent);
-}
-
-.session-chip.is-active {
-  border: 0;
-  background: color-mix(in srgb, var(--ui-text) 9%, transparent);
-  box-shadow: none;
-}
-
-.session-chip-add {
-  border: 0;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--ui-text) 5%, transparent);
-}
-
-.session-chip-add:hover {
-  background: color-mix(in srgb, var(--ui-text) 9%, transparent);
-}
-
 
 /* ── Sidebar ─────────────────────────────────────────────────────────────── */
 .sidebar-shell {
@@ -779,9 +634,6 @@
 .session-topbar-action.jui-toolbar-button[data-expanded],
 .session-topbar-dock-tab.jui-toolbar-button:hover:not(:disabled),
 .session-topbar-dock-tab.jui-toolbar-button.is-active { background: var(--ui-row-hover); color: var(--ui-text); }
-.session-chip { color: var(--ui-muted); font-size: 12.5px; }
-.session-chip:hover { background: var(--ui-row-hover); color: var(--ui-text); }
-.session-chip.is-active { background: var(--ui-row-active); color: var(--ui-text); }
 
 /* ── Settings ────────────────────────────────────────────────────────────── */
 .settings-nav {
@@ -872,3 +724,79 @@
 .companion-session-time { flex-shrink: 0; color: var(--ui-text-caption); font-size: 11px; font-variant-numeric: tabular-nums; }
 .companion-session-preview { overflow: hidden; color: var(--ui-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 
+
+/* ── Session chips (topbar) ──────────────────────────────────────────────────
+   Chips keep their title width and the strip scrolls with faded edges; they never shrink to an
+   unreadable stub. The close button shows only on the active or hovered chip, so it does not
+   take a chip's room. New-session and overflow buttons sit outside the scroll area. */
+.session-chip-strip {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  padding: 2px 6px;
+  scrollbar-width: none;
+}
+/* Fade only an edge that hides chips (set by SessionTopbar from the scroll position). */
+.session-chip-strip[data-more-left] { -webkit-mask-image: linear-gradient(to right, transparent 0, black 24px); mask-image: linear-gradient(to right, transparent 0, black 24px); }
+.session-chip-strip[data-more-right] { -webkit-mask-image: linear-gradient(to left, transparent 0, black 24px); mask-image: linear-gradient(to left, transparent 0, black 24px); }
+.session-chip-strip[data-more-left][data-more-right] {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, black 24px, black calc(100% - 24px), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, black 24px, black calc(100% - 24px), transparent 100%);
+}
+.session-chip-strip::-webkit-scrollbar { display: none; }
+.session-chip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  max-width: 200px;
+  height: 28px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: var(--ui-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color var(--ui-duration-fast) var(--ui-ease), color var(--ui-duration-fast) var(--ui-ease);
+}
+.session-chip:hover { background: var(--ui-row-hover); color: var(--ui-text); }
+.session-chip.is-active { background: var(--ui-row-active); color: var(--ui-text); }
+.session-chip-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-chip-close {
+  display: none;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  align-items: center;
+  justify-content: center;
+  margin-right: -4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: currentColor;
+  opacity: 0.6;
+}
+.session-chip.is-active .session-chip-close,
+.session-chip:hover .session-chip-close,
+.session-chip-close:focus-visible { display: inline-flex; }
+.session-chip-close:hover { background: var(--ui-row-hover); opacity: 1; }
+@media (hover: none) { .session-chip-close { display: inline-flex; } }
+.session-chip-rename-input { width: 140px; min-width: 0; border: 0; background: transparent; color: inherit; font: inherit; outline: none; }
+.session-chip-add {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ui-muted);
+  transition: background-color var(--ui-duration-fast) var(--ui-ease), color var(--ui-duration-fast) var(--ui-ease);
+}
+.session-chip-add:hover { background: var(--ui-row-hover); color: var(--ui-text); }
