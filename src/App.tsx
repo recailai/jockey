@@ -4,7 +4,6 @@ import MessageWindow from "./components/MessageWindow";
 import ChatInput from "./components/ChatInput";
 import { now, DEFAULT_ROLE_ALIAS } from "./components/types";
 import type { AppSession, RuntimeCapabilities } from "./components/types";
-import { UI_THEME_KEY } from "./lib/theme";
 
 import SessionTopbar from "./components/chrome/SessionTopbar";
 import ComposerContextFooter from "./components/ComposerContextFooter";
@@ -70,10 +69,10 @@ import type { Project, RawSession } from "./lib/tauriApi";
 
 export default function App() {
   const { toasts, showToast } = useToast();
-  const { uiTheme, setUiTheme } = useTheme();
+  const theme = useTheme();
 
   createEffect(() => {
-    uiTheme();
+    theme.theme();
     setTimeout(() => {
       updateTerminalThemes();
     }, 50);
@@ -845,6 +844,7 @@ export default function App() {
     toggleRightDock,
     toggleLeftSidebar,
     openWorkspacePanel,
+    cycleTheme: theme.cycle,
   });
 
   const composerBlock = (layout: "empty" | "active") => (
@@ -1079,12 +1079,8 @@ export default function App() {
           <SettingsPage
             initialTab={settingsInitialTab()}
             initialRoleName={settingsInitialRole()}
-            uiTheme={uiTheme}
-            setUiTheme={(th) => {
-              setUiTheme(th);
-              window.localStorage.setItem(UI_THEME_KEY, th);
-              document.documentElement.setAttribute("data-theme", th);
-            }}
+            themePreference={theme.preference}
+            setThemePreference={theme.setPreference}
             assistants={assistants}
             roles={roles}
             skills={skills}
@@ -1193,6 +1189,8 @@ export default function App() {
           }}
           onOpenAddProject={() => setShowProjectModal(true)}
           onImportSessions={() => openImportSessions("project")}
+          themePreference={theme.preference}
+          onCycleTheme={theme.cycle}
           controlCenterOpen={showControlCenter}
           onToggleControlCenter={() => setShowControlCenter((v) => !v)}
         />

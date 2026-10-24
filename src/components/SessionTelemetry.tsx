@@ -30,7 +30,7 @@ export default function SessionTelemetry(props: { activeSession: Accessor<AppSes
               <div
                 class="flex items-start gap-2 rounded-lg border px-2.5 py-1.5 text-[11px]"
                 classList={{
-                  "border-amber-500/25 bg-amber-500/10 text-amber-300": notice.level === "warning",
+                  "border-[color-mix(in_srgb,var(--ui-state-warning-text)_35%,transparent)] bg-[var(--ui-state-warning-bg)] text-[var(--ui-state-warning-text)]": notice.level === "warning",
                   "theme-border theme-surface theme-muted": notice.level !== "warning",
                 }}
               >
@@ -68,7 +68,7 @@ export default function SessionTelemetry(props: { activeSession: Accessor<AppSes
             <Show when={pressure() !== null}>
               <span
                 title={`${u().totalTokens} of ${u().contextWindow} context tokens used`}
-                classList={{ "text-amber-400": (pressure() ?? 0) >= 75 }}
+                classList={{ "text-[var(--ui-state-warning-text)]": (pressure() ?? 0) >= 75 }}
               >
                 ctx {pressure()}%
               </span>

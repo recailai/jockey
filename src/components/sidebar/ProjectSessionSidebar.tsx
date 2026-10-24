@@ -22,7 +22,7 @@ import {
 import type { AppSession } from "../types";
 import type { Project } from "../../lib/tauriApi";
 import { appSessionApi } from "../../lib/tauriApi";
-import { ContextMenuSurface, ContextMenuItem, ContextMenuSeparator } from "../ui";
+import { Button, ContextMenuSurface, ContextMenuItem, ContextMenuSeparator, IconButton } from "../ui";
 
 type ProjectSessionSidebarProps = {
   projects: Accessor<Project[]>;
@@ -133,31 +133,31 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
         </span>
         <div class="flex items-center gap-0.5">
           <Show when={props.onImportSessions}>
-            <button
-              type="button"
+            <IconButton
+              size="sm"
               onClick={props.onImportSessions}
               title="Import CLI sessions"
-              class="p-1 rounded theme-muted hover:theme-text hover:bg-[var(--ui-surface-muted)] transition-colors"
+              aria-label="Import CLI sessions"
             >
               <Download size={14} />
-            </button>
+            </IconButton>
           </Show>
-          <button
-            type="button"
+          <IconButton
+            size="sm"
             onClick={props.onOpenAddProject}
             title="Add Project"
-            class="p-1 rounded theme-muted hover:theme-text hover:bg-[var(--ui-surface-muted)] transition-colors"
+            aria-label="Add Project"
           >
             <FolderPlus size={14} />
-          </button>
-          <button
-            type="button"
+          </IconButton>
+          <IconButton
+            size="sm"
             onClick={props.onToggleSidebar}
             title="Collapse Sidebar (⌘B)"
-            class="p-1 rounded theme-muted hover:theme-text hover:bg-[var(--ui-surface-muted)] transition-colors"
+            aria-label="Collapse Sidebar (⌘B)"
           >
             <PanelLeftClose size={14} />
-          </button>
+          </IconButton>
         </div>
       </div>
 
@@ -166,13 +166,9 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
         <Show when={props.projects().length === 0}>
           <div class="p-4 text-center">
             <p class="text-[11px] theme-muted mb-2">No projects added yet.</p>
-            <button
-              type="button"
-              onClick={props.onOpenAddProject}
-              class="px-2.5 py-1 text-[11px] font-medium rounded border border-[var(--ui-border)] hover:bg-[var(--ui-surface-muted)] theme-text transition-colors"
-            >
+            <Button variant="outline" size="sm" onClick={props.onOpenAddProject}>
               + Add Project
-            </button>
+            </Button>
           </div>
         </Show>
 
@@ -220,7 +216,7 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
 
                   <FolderGit2
                     size={14}
-                    class={isCurrent() ? "text-blue-500 shrink-0" : "theme-muted shrink-0"}
+                    class={isCurrent() ? "text-[var(--ui-state-info-text)] shrink-0" : "theme-muted shrink-0"}
                   />
 
                   <span class="truncate flex-1 min-w-0 font-medium text-[11.5px]">
@@ -304,7 +300,7 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
                                     <span
                                       class={`w-1.5 h-1.5 rounded-full shrink-0 ${
                                         session.status === "error"
-                                          ? "bg-rose-400"
+                                          ? "bg-[var(--ui-state-danger-text)]"
                                           : isActive()
                                           ? "bg-[var(--ui-accent)]"
                                           : "bg-[var(--ui-muted)] opacity-50"
@@ -354,7 +350,7 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
                                       props.onCloseSession(session.id);
                                     }}
                                     title="Close Session"
-                                    class="opacity-0 group-hover/session:opacity-100 p-0.5 rounded theme-muted hover:text-rose-400 hover:bg-[var(--ui-surface)] transition-all"
+                                    class="opacity-0 group-hover/session:opacity-100 p-0.5 rounded theme-muted hover:text-[var(--ui-state-danger-text)] hover:bg-[var(--ui-surface)] transition-all"
                                   >
                                     <X size={10} />
                                   </button>
@@ -413,7 +409,7 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
                           e.stopPropagation();
                           props.onCloseSession(session.id);
                         }}
-                        class="p-0.5 rounded theme-muted hover:text-rose-400"
+                        class="p-0.5 rounded theme-muted hover:text-[var(--ui-state-danger-text)]"
                       >
                         <X size={10} />
                       </button>
@@ -429,33 +425,33 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
       {/* ── Footer ── */}
       <div class="p-2 border-t theme-border flex items-center justify-between text-xs bg-[var(--ui-surface-muted)]">
         <div class="flex items-center gap-1">
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => props.onOpenSettings("roles")}
             title="Configure Roles"
-            class="flex items-center gap-1 px-1.5 py-1 rounded theme-muted hover:theme-text hover:bg-[var(--ui-surface)] transition-colors text-[11px]"
           >
             <Bot size={13} />
             <span>Roles</span>
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => props.onOpenSettings("sessions")}
             title="Closed Sessions (Recycle Bin)"
-            class="flex items-center gap-1 px-1.5 py-1 rounded theme-muted hover:theme-text hover:bg-[var(--ui-surface)] transition-colors text-[11px]"
           >
             <ArchiveRestore size={13} />
             <span>Trash</span>
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => props.onOpenSettings("general")}
             title="Settings (⌘,)"
-            class="flex items-center gap-1 px-1.5 py-1 rounded theme-muted hover:theme-text hover:bg-[var(--ui-surface)] transition-colors text-[11px]"
           >
             <Settings size={13} />
             <span>Settings</span>
-          </button>
+          </Button>
         </div>
         <span class="text-[9.5px] font-mono theme-muted pr-1 opacity-60">⌘B</span>
       </div>
@@ -501,8 +497,8 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
             <ContextMenuSeparator />
             <Show when={props.onDeleteProject}>
               <ContextMenuItem
-                icon={<Trash2 size={13} class="text-red-400" />}
-                class="text-red-400 hover:text-red-300"
+                icon={<Trash2 size={13} class="text-[var(--ui-state-danger-text)]" />}
+                class="text-[var(--ui-state-danger-text)] hover:text-[var(--ui-state-danger-text)]"
                 onSelect={() => {
                   const pid = menu().project.id;
                   closeContextMenus();
@@ -564,8 +560,8 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
             </Show>
             <ContextMenuSeparator />
             <ContextMenuItem
-              icon={<Trash2 size={13} class="text-red-400" />}
-              class="text-red-400 hover:text-red-300"
+              icon={<Trash2 size={13} class="text-[var(--ui-state-danger-text)]" />}
+              class="text-[var(--ui-state-danger-text)] hover:text-[var(--ui-state-danger-text)]"
               onSelect={() => {
                 const sid = menu().session.id;
                 closeContextMenus();

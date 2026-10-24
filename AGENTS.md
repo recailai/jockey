@@ -121,6 +121,10 @@ Rule: the engine owns every durable write; views are thin and only render engine
 
 - **Do NOT craft ad-hoc buttons, badges, inputs, or dialogs.** Always consume primitives from `src/components/ui/` (`Badge`, `Pill`, `StateDot`, `Button`, `FormField`, `Checkbox`, `Alert`, `Dialog`, `MasterDetailView`, `AsyncContent`).
 - **Strict semantic tokens**: Do NOT use hardcoded colors (e.g. `text-blue-500`, `bg-amber-500/15`). Rely on `--ui-*` tokens or semantic tone properties (`neutral`, `info`, `success`, `warning`, `danger`).
+- **Session status** ("is it active?") comes only from `sessionStatus()` in `src/lib/sessionStatus.ts`, rendered with `StatusBadge` / `StatusDot`. Do not derive status from flags inside a view.
+- **Theme**: use `useTheme()` / `ThemeToggle`; every `--ui-*` token must exist in both the dark and light blocks of `src/index.css`.
+- **Adaptation**: desktop and the phone companion share components; adapt with container queries, keep 44px touch targets in the companion, and never let long content widen the page.
+- **Before finishing UI work**: check `pnpm dev` → `/#catalog` in both themes and at phone width, and make sure `pnpm lint:ui` passes. It runs in `pnpm build` and rejects palette colour classes, raw hex colours, and any increase in raw `<button>` outside `components/ui/`.
 - Refer to [docs/architecture/ui-design-and-components.md](docs/architecture/ui-design-and-components.md) for detailed UI component specifications.
 
 ### ACP Protocol Standards

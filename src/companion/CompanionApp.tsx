@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
-import { ArrowLeft, Square, X } from "lucide-solid";
+import { ArrowLeft, List, Square, X } from "lucide-solid";
 import MessageWindow from "../components/MessageWindow";
 import ChatInput from "../components/ChatInput";
 import ProjectModal from "../components/ProjectModal";
@@ -13,7 +13,9 @@ import type {
   RuntimeCapabilities,
   SessionSummary,
 } from "../components/types";
-import { Badge, IconButton, Pill } from "../components/ui";
+import { IconButton, Pill, StatusBadge, ThemeToggle } from "../components/ui";
+import { sessionStatus } from "../lib/sessionStatus";
+import { useTheme } from "../lib/useTheme";
 import { useSessionManager } from "../hooks/useSessionManager";
 import { useStreamEngine } from "../hooks/useStreamEngine";
 import { useAgentContext } from "../hooks/useAgentContext";
@@ -126,6 +128,8 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
   const [roleOpen, setRoleOpen] = createSignal(false);
   const [closeOpen, setCloseOpen] = createSignal(false);
   const [browseSessions, setBrowseSessions] = createSignal(false);
+  const theme = useTheme();
+  const themeToggle = () => <ThemeToggle preference={theme.preference} onCycle={theme.cycle} size={17} />;
   const drafts = new Map<string, RichNode[]>();
   const [richNodes, setRichNodes] = createSignal<RichNode[]>([]);
   createEffect(on(activeSessionId, (sid, previous) => {
@@ -415,10 +419,17 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
               onSend={async (id, text) => { await loadSession(id); return sendRaw(text, false, id); }}
               onStop={(id) => engineApi.cancel(id)}
               onBrowseSessions={() => setBrowseSessions(true)}
+              headerActions={<>
+                {themeToggle()}
+                <IconButton title="All sessions" aria-label="All projects and sessions" onClick={() => setBrowseSessions(true)}>
+                  <List size={17} />
+                </IconButton>
+              </>}
             />
           }>
           <SessionList
             onControlCenter={() => setBrowseSessions(false)}
+            headerActions={themeToggle()}
             projects={projects}
             sessions={summaries}
             state={listState}
@@ -444,7 +455,14 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
                 <div class="truncate text-sm font-semibold">{session().title}</div>
                 <div class="flex items-center gap-1.5 truncate text-[11px] theme-muted">
                   <span class="truncate">{projectName()}</span>
-                  <Show when={session().externalActive}><Badge tone="info">terminal</Badge></Show>
+                  <StatusBadge quiet status={sessionStatus({
+                    running: session().status === "running",
+                    submitting: session().submitting,
+                    externalActive: session().externalActive,
+                    error: session().status === "error",
+                    pendingPermissions: session().pendingPermissions?.length,
+                    pendingUserInputs: session().pendingUserInput?.length,
+                  })} />
                 </div>
               </div>
               <Pill onClick={() => setRoleOpen(true)} title="Choose agent & persona">{activeAssistant()?.label ?? session().runtimeKind ?? "Agent"} · @{session().activeRole || DEFAULT_ROLE_ALIAS}</Pill>

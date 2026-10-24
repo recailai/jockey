@@ -12,7 +12,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && pnpm build:companion",
+    "build": "pnpm lint:ui && vite build && pnpm build:companion",
+    "lint:ui": "node scripts/check-ui.mjs",
+    "lint:ui:update": "node scripts/check-ui.mjs --update",
     "build:companion": "vite build --config vite.companion.config.ts",
     "preview": "vite preview",
     "test:remote": "node --experimental-strip-types --test tests/remote-transport.test.mjs",

@@ -1,4 +1,5 @@
 import { For, Show, createMemo, createSignal, onCleanup } from "solid-js";
+import type { JSX } from "solid-js";
 import { ArrowUpRight, MessageSquare, RefreshCw, Square } from "lucide-solid";
 import type { Project } from "../lib/tauriApi";
 import { assistantApi } from "../lib/tauriApi";
@@ -7,7 +8,8 @@ import type { SessionSummary } from "./types";
 import { useControlCenter } from "../hooks/useControlCenter";
 import { makeDefaultSession } from "../lib/sessionHelpers";
 import { fmtRelative } from "../lib/formatHelpers";
-import { Alert, AsyncContent, Badge, Button, Dialog, DialogBody, DialogContent, DialogFooter, IconButton, RowButton, Textarea } from "./ui";
+import { Alert, AsyncContent, Badge, Button, Dialog, DialogBody, DialogContent, DialogFooter, IconButton, RowButton, StatusBadge, Textarea } from "./ui";
+import { sessionStatus } from "../lib/sessionStatus";
 import { PermissionModal } from "./PermissionModal";
 import UserInputModal from "./UserInputModal";
 import "./controlCenter.css";
@@ -18,6 +20,8 @@ export type ControlCenterProps = {
   onSend: (id: string, text: string) => Promise<boolean>;
   onStop: (id: string) => Promise<unknown>;
   onBrowseSessions: () => void;
+  /** Extra header controls; the phone companion has no topbar, so it puts theme and navigation here. */
+  headerActions?: JSX.Element;
 };
 
 export default function ControlCenter(props: ControlCenterProps) {
@@ -104,9 +108,13 @@ export default function ControlCenter(props: ControlCenterProps) {
         <span class="control-center-row-title">{s.title}</span>
         <Show when={decision && !pendingFor(s.id).permissions.length}><span class="control-center-row-preview">{pendingFor(s.id).userInputs[0]?.title ?? s.lastError ?? "Your answer is needed"}</span></Show>
         <Show when={!pendingFor(s.id).permissions.length}><span class="control-center-row-status">
-          <Badge tone={needsDecision(s.id) ? "warning" : s.lastError && !s.running ? "danger" : s.running || s.externalActive ? "info" : "neutral"}>
-            {needsDecision(s.id) ? pendingFor(s.id).permissions.length ? "Approval needed" : "Answer needed" : s.externalActive ? "Active in CLI" : s.running ? "Working" : s.lastError ? "Agent error" : "Idle"}
-          </Badge>
+          <StatusBadge status={sessionStatus({
+            running: s.running,
+            externalActive: s.externalActive,
+            error: s.lastError,
+            pendingPermissions: pendingFor(s.id).permissions.length,
+            pendingUserInputs: pendingFor(s.id).userInputs.length,
+          })} />
           <span>View chat <ArrowUpRight size={12} /></span>
         </span></Show>
       </RowButton>
@@ -130,7 +138,7 @@ export default function ControlCenter(props: ControlCenterProps) {
 
   return (
     <main class="control-center">
-      <header class="control-center-header"><strong>Jockey</strong><span>Control center</span><IconButton title="Refresh" aria-label="Refresh control center" onClick={() => void data.refresh()}><RefreshCw size={17} /></IconButton></header>
+      <header class="control-center-header"><strong>Jockey</strong><span>Control center</span>{props.headerActions}<IconButton title="Refresh" aria-label="Refresh control center" onClick={() => void data.refresh()}><RefreshCw size={17} /></IconButton></header>
       <div class="control-center-scroll">
         <div class="control-center-column">
         <div class="control-center-intro"><span>YOUR AGENTS</span><h1>{data.loading() ? "Connecting to your agents…" : data.error() ? "Connection needs attention." : decisionCount() ? `${decisionCount()} decision${decisionCount() === 1 ? "" : "s"} waiting.` : attention().length ? "Your agents need attention." : "You’re all caught up."}</h1><p>{working().length} working · {data.sessions().length} open sessions</p></div>

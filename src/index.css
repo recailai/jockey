@@ -177,6 +177,20 @@
 :root,
 :root[data-theme="dark"] {
   --ui-bg: #09090b;
+  /* State tones were light-only, so every Badge/Alert tone rendered uncoloured in dark. */
+  --ui-state-success-bg: rgba(34, 197, 94, 0.14);
+  --ui-state-success-text: #4ade80;
+  --ui-state-warning-bg: rgba(245, 158, 11, 0.14);
+  --ui-state-warning-text: #fbbf24;
+  --ui-state-danger-bg: rgba(239, 68, 68, 0.14);
+  --ui-state-danger-text: #f87171;
+  --ui-state-info-bg: rgba(59, 130, 246, 0.15);
+  --ui-state-info-text: #60a5fa;
+  --ui-state-muted-bg: rgba(255, 255, 255, 0.06);
+  --ui-state-muted-text: #a1a1aa;
+  --ui-destructive: var(--ui-state-danger-text);
+  --ui-destructive-bg: #dc2626;
+  --ui-destructive-text: #ffffff;
   --ui-foreground: #f4f4f5;
   --ui-surface: #0f0f12;
   --ui-surface-muted: #18181b;
@@ -518,6 +532,7 @@ textarea {
 .jui-badge-warning { background: var(--ui-state-warning-bg); color: var(--ui-state-warning-text); }
 .jui-badge-danger { background: var(--ui-state-danger-bg); color: var(--ui-state-danger-text); }
 .jui-badge-info { background: var(--ui-state-info-bg); color: var(--ui-state-info-text); }
+.jui-badge-outline { background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 35%, transparent); }
 
 pre {
   position: relative;
@@ -1085,6 +1100,10 @@ pre:hover .jui-code-copy,
 .jui-state-dot-error {
   background: var(--ui-state-danger-text);
 }
+
+.jui-status-dot { display: inline-flex; align-items: center; flex-shrink: 0; }
+.jui-status-badge { gap: 5px; white-space: nowrap; }
+.jui-status-badge .jui-state-dot-matrix .jui-state-dot-cell { fill: currentColor; }
 
 .jui-state-dot-matrix {
   display: inline-block;

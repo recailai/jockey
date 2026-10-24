@@ -1,0 +1,26 @@
+.catalog { min-height: 100dvh; overflow-y: auto; background: var(--ui-bg); color: var(--ui-text); padding: 32px clamp(16px, 4vw, 48px) 64px; }
+.catalog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; max-width: 1100px; margin: 0 auto 32px; }
+.catalog-header h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+.catalog-note { margin: 0; font-size: 12px; color: var(--ui-muted); }
+.catalog-section { max-width: 1100px; margin: 0 auto 36px; }
+.catalog-section h2 { font-size: 13px; font-weight: 600; margin: 0 0 4px; }
+.catalog-body { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; padding: 16px; border: 1px solid var(--ui-border); border-radius: 10px; background: var(--ui-surface); }
+.catalog-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.catalog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; align-items: start; }
+.catalog-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ui-muted); }
+
+.catalog-frames { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.catalog-frame { container: catalog-frame / inline-size; border: 1px dashed var(--ui-border-strong); border-radius: 10px; padding: 8px; background: var(--ui-bg); }
+.catalog-frame-phone { width: 360px; }
+.catalog-frame-panel { width: min(100%, 680px); }
+
+.catalog-list { display: flex; flex-direction: column; }
+.catalog-list-row.jui-row-button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 8px; text-align: left; }
+.catalog-list-text { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
+.catalog-list-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 550; }
+.catalog-list-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--ui-muted); }
+/* Narrow containers keep the dot and drop the label; wide ones show both. */
+@container catalog-frame (max-width: 420px) {
+  .catalog-list-badge { display: none; }
+  .catalog-list-row.jui-row-button { min-height: 44px; }
+}

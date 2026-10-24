@@ -20,7 +20,7 @@ import {
 } from "lucide-solid";
 import type { Accessor } from "solid-js";
 import type { AppSession, AppSkill, AssistantRuntime, Role, AcpConfigOption, Project } from "./types";
-import { type UiTheme, UI_THEMES } from "../lib/theme";
+import { type ThemePreference, UI_THEMES } from "../lib/theme";
 import { SessionsTab } from "./management/SessionsTab";
 import { WorkflowsTab } from "./management/WorkflowsTab";
 import { RolesTab } from "./management/RolesTab";
@@ -54,8 +54,8 @@ export type SettingsTab =
 type SettingsPageProps = {
   initialTab?: SettingsTab;
   initialRoleName?: string;
-  uiTheme: Accessor<UiTheme>;
-  setUiTheme: (theme: UiTheme) => void;
+  themePreference: Accessor<ThemePreference>;
+  setThemePreference: (pref: ThemePreference) => void;
   assistants: Accessor<AssistantRuntime[]>;
   roles: Accessor<Role[]>;
   skills: Accessor<AppSkill[]>;
@@ -236,10 +236,10 @@ export default function SettingsPage(props: SettingsPageProps) {
                       <button
                         type="button"
                         class="settings-theme-card"
-                        classList={{ "is-active": props.uiTheme() === theme.key }}
-                        onClick={() => props.setUiTheme(theme.key)}
+                        classList={{ "is-active": props.themePreference() === theme.key }}
+                        onClick={() => props.setThemePreference(theme.key)}
                       >
-                        <span class="theme-swatch" style={{ "background-color": theme.swatch }}>
+                        <span class="theme-swatch" style={{ background: theme.swatch }}>
                           <span style={{ "background-color": theme.accent }} />
                         </span>
                         <strong>{theme.label}</strong>

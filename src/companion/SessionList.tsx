@@ -1,9 +1,11 @@
 import { For, Show, createSignal } from "solid-js";
+import type { JSX } from "solid-js";
 import { ArrowLeft, ChevronRight, FolderPlus, History, Plus, RefreshCw, DownloadCloud } from "lucide-solid";
 import type { SessionSummary } from "../components/types";
 import type { Project } from "../lib/tauriApi";
 import { fmtRelative } from "../lib/formatHelpers";
-import { AsyncContent, Badge, Button, IconButton, RowButton, StateDot } from "../components/ui";
+import { AsyncContent, Badge, Button, IconButton, RowButton, StatusBadge, StatusDot } from "../components/ui";
+import { sessionStatus } from "../lib/sessionStatus";
 
 const OPEN_PROJECTS_KEY = "jockey_open_projects";
 const UNASSIGNED = "__none";
@@ -29,17 +31,17 @@ type SessionListProps = {
   onImportAll: () => void;
   onAddProject: () => void;
   onControlCenter?: () => void;
+  headerActions?: JSX.Element;
 };
 
 function SessionRow(props: { session: SessionSummary; onOpen: (id: string) => void }) {
   const s = () => props.session;
+  const status = () => sessionStatus({ running: s().running, externalActive: s().externalActive, error: s().lastError });
   return (
     <RowButton class="companion-session-row" onClick={() => props.onOpen(s().id)}>
       <span class="flex w-full min-w-0 flex-col gap-0.5 text-left">
         <span class="flex items-center gap-2">
-          <Show when={s().running || s().externalActive}>
-            <StateDot state="ongoing" />
-          </Show>
+          <StatusDot status={status()} />
           <span class="min-w-0 flex-1 truncate text-sm font-medium">{s().title}</span>
           <span class="shrink-0 text-[11px] theme-muted">{fmtRelative(s().lastActiveAt)}</span>
         </span>
@@ -48,9 +50,7 @@ function SessionRow(props: { session: SessionSummary; onOpen: (id: string) => vo
         </Show>
         <span class="flex items-center gap-1.5">
           <Badge tone="neutral">@{s().activeRole}</Badge>
-          <Show when={s().externalActive}>
-            <Badge tone="info">terminal</Badge>
-          </Show>
+          <StatusBadge status={status()} quiet />
         </span>
       </span>
     </RowButton>
@@ -87,6 +87,7 @@ export default function SessionList(props: SessionListProps) {
       <header class="companion-header">
         <Show when={props.onControlCenter}><IconButton title="Control center" aria-label="Back to control center" onClick={props.onControlCenter}><ArrowLeft size={18} /></IconButton></Show>
         <h1 class="flex-1 text-sm font-semibold">Sessions</h1>
+        {props.headerActions}
         <IconButton title="Refresh" aria-label="Refresh" onClick={props.onRefresh}>
           <RefreshCw size={16} />
         </IconButton>

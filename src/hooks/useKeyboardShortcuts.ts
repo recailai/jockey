@@ -18,6 +18,7 @@ export function useKeyboardShortcuts(handlers: {
   toggleRightDock: () => void;
   toggleLeftSidebar?: () => void;
   openWorkspacePanel: (p: WorkspaceToolPanel) => void;
+  cycleTheme?: () => void;
 }): void {
   onMount(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
@@ -54,6 +55,13 @@ export function useKeyboardShortcuts(handlers: {
           if (inEditable) return;
           e.preventDefault();
           handlers.openWorkspacePanel("terminal");
+          return;
+        case "l":
+        case "L":
+          if (e.shiftKey && handlers.cycleTheme) {
+            e.preventDefault();
+            handlers.cycleTheme();
+          }
           return;
         case "b":
           if (e.shiftKey && !inEditable) {

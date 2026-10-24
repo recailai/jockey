@@ -320,6 +320,10 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
         }
         case "list_role_active_sessions_cmd":
           return [];
+        case "list_agent_credentials_cmd":
+          return { providers: [], credentials: [] };
+        case "get_role_credentials_cmd":
+          return [];
         case "delete_role_cmd": {
           let list = getStorage<MockRole[]>(STORAGE_KEY_ROLES, []);
           list = list.filter(

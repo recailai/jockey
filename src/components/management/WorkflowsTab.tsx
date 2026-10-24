@@ -126,7 +126,7 @@ export function WorkflowsTab(props: { roles: Role[]; onError?: (message: string)
                         <Show when={wfSteps().length > 1}>
                           <button
                             onClick={() => removeStep(i())}
-                            class="font-mono text-[9px] theme-muted hover:text-rose-400 transition-colors"
+                            class="font-mono text-[9px] theme-muted hover:text-[var(--ui-state-danger-text)] transition-colors"
                           >
                             remove
                           </button>

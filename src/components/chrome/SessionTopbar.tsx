@@ -6,7 +6,6 @@ import {
   Ellipsis,
   FolderGit2,
   LayoutDashboard,
-  LoaderCircle,
   PanelLeft,
   PanelRight,
   PanelRightClose,
@@ -22,8 +21,12 @@ import {
   DropdownMenu,
   DropdownSeparator,
   DropdownTrigger,
+  StatusDot,
+  ThemeToggle,
   ToolbarButton,
 } from "../ui";
+import type { ThemePreference } from "../../lib/theme";
+import { sessionStatus, type SessionStatus } from "../../lib/sessionStatus";
 import { appSessionApi } from "../../lib/tauriApi";
 import type { SettingsTab } from "../SettingsPage";
 import type { Project } from "../../lib/tauriApi";
@@ -48,22 +51,19 @@ type SessionTopbarProps = {
   onImportSessions?: () => void;
   controlCenterOpen?: Accessor<boolean>;
   onToggleControlCenter?: () => void;
+  themePreference?: Accessor<ThemePreference>;
+  onCycleTheme?: () => void;
 };
 
-function sessionStatusClass(session: AppSession): string {
-  if (session.status === "error") return "ui-status-danger";
-  return "ui-status-muted";
-}
-
-function sessionIsRunning(session: AppSession): boolean {
-  return session.submitting || session.status === "running" || !!session.externalActive;
-}
-
-function sessionStatusTitle(session: AppSession): string {
-  if (session.externalActive) return "Running outside Jockey";
-  if (sessionIsRunning(session)) return "Running";
-  if (session.status === "error") return "Error";
-  return "Idle";
+function statusOf(session: AppSession): SessionStatus {
+  return sessionStatus({
+    running: session.status === "running",
+    submitting: session.submitting,
+    externalActive: session.externalActive,
+    error: session.status === "error",
+    pendingPermissions: session.pendingPermissions?.length,
+    pendingUserInputs: session.pendingUserInput?.length,
+  });
 }
 
 export default function SessionTopbar(props: SessionTopbarProps) {
@@ -112,7 +112,7 @@ export default function SessionTopbar(props: SessionTopbarProps) {
           <DropdownMenu>
             <DropdownTrigger
               variant="plain"
-              class="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-[var(--ui-surface-muted)] text-blue-400 font-semibold cursor-pointer transition-colors max-w-[180px] shrink-0 font-mono text-xs"
+              class="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-[var(--ui-surface-muted)] text-[var(--ui-accent)] font-semibold cursor-pointer transition-colors max-w-[180px] shrink-0 font-mono text-xs"
               title={props.currentProject?.()?.rootPath ?? "Switch Project"}
             >
               <FolderGit2 size={13} class="shrink-0" />
@@ -138,14 +138,14 @@ export default function SessionTopbar(props: SessionTopbarProps) {
                       <span class="truncate">{proj.name}</span>
                     </div>
                     <Show when={proj.id === props.currentProject?.()?.id}>
-                      <Check size={13} class="text-blue-400 shrink-0 ml-2" />
+                      <Check size={13} class="text-[var(--ui-accent)] shrink-0 ml-2" />
                     </Show>
                   </DropdownItem>
                 )}
               </For>
               <DropdownSeparator />
               <Show when={props.onOpenAddProject}>
-                <DropdownItem onSelect={() => props.onOpenAddProject?.()} class="text-xs py-1.5 text-blue-400">
+                <DropdownItem onSelect={() => props.onOpenAddProject?.()} class="text-xs py-1.5 text-[var(--ui-accent)]">
                   <Plus size={13} class="shrink-0 mr-1.5" />
                   <span>Add Project...</span>
                 </DropdownItem>
@@ -157,7 +157,7 @@ export default function SessionTopbar(props: SessionTopbarProps) {
                   }}
                   class="text-xs py-1.5"
                 >
-                  <RefreshCw size={12} class="shrink-0 mr-1.5 text-blue-400" />
+                  <RefreshCw size={12} class="shrink-0 mr-1.5 text-[var(--ui-accent)]" />
                   <span>Import CLI Sessions</span>
                 </DropdownItem>
               </Show>
@@ -170,7 +170,6 @@ export default function SessionTopbar(props: SessionTopbarProps) {
           <div class="session-chip-strip flex-1 min-w-0 flex items-center">
             <For each={currentSessions()}>
               {(session) => {
-                const isRunning = () => sessionIsRunning(session);
                 const isActive = () => session.id === props.activeSessionId();
                 const isRenaming = () => renamingSessionId() === session.id;
 
@@ -202,17 +201,7 @@ export default function SessionTopbar(props: SessionTopbarProps) {
                       }
                     }}
                   >
-                    <Show
-                      when={isRunning()}
-                      fallback={
-                        <span
-                          class={`ui-status-dot ${sessionStatusClass(session)}`}
-                          title={sessionStatusTitle(session)}
-                        />
-                      }
-                    >
-                      <LoaderCircle size={12} class="ui-running-spinner text-amber-400 shrink-0" />
-                    </Show>
+                    <StatusDot status={statusOf(session)} />
 
                     <Show
                       when={isRenaming()}
@@ -296,11 +285,11 @@ export default function SessionTopbar(props: SessionTopbarProps) {
                         class="flex items-center justify-between text-xs py-1.5"
                       >
                         <div class="flex items-center gap-1.5 truncate">
-                          <span class={`ui-status-dot ${sessionStatusClass(sess)}`} />
+                          <StatusDot status={statusOf(sess)} />
                           <span class="truncate">{sess.title}</span>
                         </div>
                         <Show when={sess.id === props.activeSessionId()}>
-                          <Check size={13} class="text-blue-400 shrink-0 ml-2" />
+                          <Check size={13} class="text-[var(--ui-accent)] shrink-0 ml-2" />
                         </Show>
                       </DropdownItem>
                     )}
@@ -315,6 +304,14 @@ export default function SessionTopbar(props: SessionTopbarProps) {
       <div class="session-topbar-drag" data-tauri-drag-region />
 
       <div class="session-topbar-actions" data-tauri-drag-region="false">
+        <Show when={props.themePreference && props.onCycleTheme}>
+          <ThemeToggle
+            class="session-topbar-action"
+            preference={props.themePreference!}
+            onCycle={() => props.onCycleTheme?.()}
+            shortcut="⌘⇧L"
+          />
+        </Show>
         <Show when={props.onToggleControlCenter}>
           <ToolbarButton
             class="session-topbar-action"

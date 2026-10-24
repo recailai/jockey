@@ -2,6 +2,7 @@ import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 import { assistantApi, runtimeProfileApi } from "../../lib/tauriApi";
 import type { AssistantRuntime } from "../types";
 import { RUNTIME_COLOR } from "../types";
+import { Badge } from "../ui";
 
 function runtimeIcon(key: string): string {
   if (key.includes("claude")) return "◆";
@@ -126,7 +127,7 @@ export function ExternalAgentsTab() {
               <div class="flex flex-wrap gap-1 mt-1">
                 <span class="rounded border theme-border px-1 py-0.5 text-[8px] font-mono theme-muted">{rt.profileId}</span>
                 <For each={capabilityLabels(rt)}>{([, label]) => (
-                  <span class="rounded border border-emerald-500/30 px-1 py-0.5 text-[8px] font-mono text-emerald-400">{label}</span>
+                  <Badge tone="success" class="font-mono">{label}</Badge>
                 )}</For>
               </div>
             </div>

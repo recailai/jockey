@@ -137,7 +137,7 @@ function MessageCopyButton(props: { text: string; class?: string }) {
       aria-label="Copy message"
     >
       <Show when={copied()} fallback={<Copy size={12} />}>
-        <Check size={12} class="text-emerald-400" />
+        <Check size={12} class="text-[var(--ui-state-success-text)]" />
       </Show>
     </button>
   );

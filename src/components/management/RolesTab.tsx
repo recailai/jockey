@@ -18,7 +18,7 @@ import {
   valuesForModel,
   type RuntimeOption,
 } from "../../lib/runtimeOptions";
-import { Badge, ContextMenuSurface, ContextMenuItem, ContextMenuSeparator, EmptyState, RowButton } from "../ui";
+import { Alert, Badge, Button, ContextMenuSurface, ContextMenuItem, ContextMenuSeparator, EmptyState, IconButton, Pill, RowButton } from "../ui";
 
 function ToggleField(props: { label: string; on: boolean; onChange: (on: boolean) => void }) {
   return (
@@ -711,46 +711,22 @@ export function RolesTab(props: {
   );
 
   const runtimeOptions = createMemo(() => {
-    const nativeList: Array<{ value: string; label: string; group: string; disabled?: boolean; hint?: string }> = [];
-    const acpList: Array<{ value: string; label: string; group: string; disabled?: boolean; hint?: string }> = [];
-    const seen = new Set<string>();
-
-    for (const assistant of props.assistants()) {
-      seen.add(assistant.key);
-      const isNative = assistant.family === "native";
-      const item = {
-        value: assistant.key,
-        label: `${isNative ? "⚡ Native" : "🔌 ACP"} · ${assistant.label}`,
-        group: isNative ? "⚡ Native CLI Engines (Top-Level Direct)" : "🔌 ACP Protocol Bridges (Drill-Down)",
-        disabled: !assistant.available,
-        hint: assistant.available
-          ? `${isNative ? "Native CLI Direct Stream" : "ACP Protocol Bridge"} · ${assistant.transport}${assistant.launchMethod ? ` · ${assistant.launchMethod}` : ""}`
-          : (assistant.installHint ?? "not detected on this machine"),
-      };
-      if (isNative) {
-        nativeList.push(item);
-      } else {
-        acpList.push(item);
-      }
-    }
-
-    for (const runtime of RUNTIMES) {
-      if (!seen.has(runtime)) {
-        const isNative = runtime.includes("native") || runtime === "antigravity-cli" || runtime === "codex-cli" || runtime === "pi-cli";
-        const item = {
-          value: runtime,
-          label: `${isNative ? "⚡ Native" : "🔌 ACP"} · ${runtime}`,
-          group: isNative ? "⚡ Native CLI Engines (Top-Level Direct)" : "🔌 ACP Protocol Bridges (Drill-Down)",
-        };
-        if (isNative) {
-          nativeList.push(item);
-        } else {
-          acpList.push(item);
-        }
-      }
-    }
-
-    return [...nativeList, ...acpList];
+    const seen = new Set(props.assistants().map((a) => a.key));
+    const detected = props.assistants().map((assistant) => ({
+      value: assistant.key,
+      label: assistant.label,
+      group: "Agents",
+      disabled: !assistant.available,
+      hint: assistant.available
+        ? `${assistant.transport}${assistant.launchMethod ? ` · ${assistant.launchMethod}` : ""}`
+        : (assistant.installHint ?? "not detected on this machine"),
+    }));
+    const known = RUNTIMES.filter((runtime) => !seen.has(runtime)).map((runtime) => ({
+      value: runtime,
+      label: runtime,
+      group: "Agents",
+    }));
+    return [...detected, ...known];
   });
 
   // Edit form config options (local, not tied to global activeSession).
@@ -784,29 +760,17 @@ export function RolesTab(props: {
         </div>
         {/* Scope Filter Tabs */}
         <div class="flex items-center gap-1 px-2.5 py-1.5 border-b theme-border text-[10px]">
-          <button
-            type="button"
-            onClick={() => setRoleFilter("all")}
-            class={`px-2 py-0.5 rounded transition-colors ${roleFilter() === "all" ? "bg-[var(--ui-surface-muted)] theme-text font-semibold" : "theme-muted hover:theme-text"}`}
-          >
+          <Pill active={roleFilter() === "all"} onClick={() => setRoleFilter("all")}>
             All ({userRoles().length})
-          </button>
+          </Pill>
           <Show when={props.currentProject?.()}>
-              <button
-                type="button"
-                onClick={() => setRoleFilter("project")}
-                class={`px-2 py-0.5 rounded transition-colors ${roleFilter() === "project" ? "bg-blue-500/20 text-blue-400 font-semibold" : "theme-muted hover:theme-text"}`}
-              >
+              <Pill active={roleFilter() === "project"} onClick={() => setRoleFilter("project")}>
                 Project ({projectRoles().length})
-              </button>
+              </Pill>
           </Show>
-          <button
-            type="button"
-            onClick={() => setRoleFilter("global")}
-            class={`px-2 py-0.5 rounded transition-colors ${roleFilter() === "global" ? "bg-[var(--ui-surface-muted)] theme-text font-semibold" : "theme-muted hover:theme-text"}`}
-          >
+          <Pill active={roleFilter() === "global"} onClick={() => setRoleFilter("global")}>
             Global ({globalRoles().length})
-          </button>
+          </Pill>
         </div>
         <div class="flex-1 overflow-y-auto space-y-0.5 py-1">
           <Show when={filteredRoles().length === 0}>
@@ -816,11 +780,6 @@ export function RolesTab(props: {
             {(role) => {
               const color = () => RUNTIME_COLOR[role.runtimeKind] ?? "theme-muted";
               const isSelected = () => selectedId() === role.id && !creating();
-              const isNative = () =>
-                role.runtimeKind.includes("native") ||
-                role.runtimeKind === "antigravity-cli" ||
-                role.runtimeKind === "codex-cli" ||
-                role.runtimeKind === "pi-cli";
               const isOverridden = () =>
                 !role.projectId &&
                 projectRoles().some((pr) => pr.roleName.toLowerCase() === role.roleName.toLowerCase());
@@ -839,21 +798,22 @@ export function RolesTab(props: {
                     <div class="flex items-center gap-1.5 min-w-0 truncate">
                       <span class={`truncate font-mono text-[10px] font-semibold ${isSelected() ? "theme-text" : "theme-text"}`}>{role.roleName}</span>
                       <Show when={role.projectId} fallback={
-                        <span class="font-mono text-[8px] px-1.5 py-0.5 rounded bg-[var(--ui-surface-muted)] text-[var(--ui-muted)] border border-[var(--ui-border)]">global</span>
+                        <Badge tone="neutral" class="font-mono">global</Badge>
                       }>
                         <Show when={isProjectOverride(role)} fallback={
-                          <span class="font-mono text-[8px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/25">project</span>
+                          <Badge tone="info" class="font-mono">project</Badge>
                         }>
-                          <span class="font-mono text-[8px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/25">override</span>
+                          <Badge tone="warning" class="font-mono">override</Badge>
                         </Show>
                       </Show>
                       <Show when={isOverridden()}>
-                        <span
+                        <Badge
+                          tone="warning"
+                          class="font-mono"
                           title="This global role is overridden by a project role of the same name"
-                          class="font-mono text-[7.5px] px-1 py-0.2 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20"
                         >
                           overridden
-                        </span>
+                        </Badge>
                       </Show>
                       <Show when={sessionsUsing(role.id).length}>
                         {(count) => (
@@ -864,30 +824,29 @@ export function RolesTab(props: {
                       </Show>
                     </div>
                     <Show when={deletingId() === role.id} fallback={
-                      <button
+                      <IconButton
+                        size="sm"
                         onClick={(e) => { e.stopPropagation(); setDeletingId(role.id); }}
-                        class="shrink-0 opacity-0 group-hover:opacity-100 theme-muted hover:text-rose-400 transition-all"
+                        class="shrink-0 opacity-0 group-hover:opacity-100 hover:text-[var(--ui-state-danger-text)]"
                         title={isProjectOverride(role) ? "Revert to Global Role" : "Delete Role"}
+                        aria-label={isProjectOverride(role) ? "Revert to Global Role" : "Delete Role"}
                       >
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                      </button>
+                      </IconButton>
                     }>
                       <div class="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                        <button onClick={() => void handleDelete(role)} class="font-mono text-[9px] text-rose-400 hover:text-rose-300">
+                        <Button size="sm" variant="danger" class="font-mono" onClick={() => void handleDelete(role)}>
                           {isProjectOverride(role) ? "revert" : "del"}
-                        </button>
-                        <button onClick={() => setDeletingId(null)} class="font-mono text-[9px] theme-muted hover:text-primary">✕</button>
+                        </Button>
+                        <IconButton size="sm" aria-label="Cancel" onClick={() => setDeletingId(null)}>✕</IconButton>
                       </div>
                     </Show>
                   </div>
                   <div class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-                    <span class={`font-mono text-[8.5px] px-1 py-0.2 rounded border ${isNative() ? "bg-amber-500/10 text-amber-400 border-amber-500/25" : "bg-blue-500/10 text-blue-400 border-blue-500/25"}`}>
-                      {isNative() ? "⚡ Native" : "🔌 ACP"}
-                    </span>
                     <span class={`font-mono text-[9px] ${color()}`}>{role.runtimeKind}</span>
-                    <Show when={roleModel(role)}><span class="min-w-0 max-w-full truncate font-mono text-[9px] text-blue-400">{roleModel(role)}</span></Show>
-                    <Show when={roleMode(role)}><span class="min-w-0 max-w-full truncate font-mono text-[9px] text-violet-300">mode:{roleMode(role)}</span></Show>
-                    <Show when={roleEffort(role)}><span class="min-w-0 max-w-full truncate font-mono text-[9px] text-amber-300">effort:{roleEffort(role)}</span></Show>
+                    <Show when={roleModel(role)}><span class="min-w-0 max-w-full truncate font-mono text-[9px] text-[var(--ui-state-info-text)]">{roleModel(role)}</span></Show>
+                    <Show when={roleMode(role)}><span class="min-w-0 max-w-full truncate font-mono text-[9px] text-[var(--ui-accent)]">mode:{roleMode(role)}</span></Show>
+                    <Show when={roleEffort(role)}><span class="min-w-0 max-w-full truncate font-mono text-[9px] text-[var(--ui-state-warning-text)]">effort:{roleEffort(role)}</span></Show>
                   </div>
                 </div>
               );
@@ -906,7 +865,7 @@ export function RolesTab(props: {
               <h3 class="font-mono text-xs font-bold theme-text uppercase tracking-widest">New Role</h3>
               <Show when={props.currentProject?.()}>
                 {(proj) => (
-                  <span class="text-[11px] text-blue-400 font-mono">
+                  <span class="text-[11px] text-[var(--ui-state-info-text)] font-mono">
                     Project: {proj().name}
                   </span>
                 )}
@@ -915,29 +874,12 @@ export function RolesTab(props: {
             <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
               <FieldRow label="Scope">
                 <div class="flex items-center gap-2">
-                  <button
-                    type="button"
-                    disabled={!props.currentProject?.()}
-                    onClick={() => setCScope("project")}
-                    class={`px-2.5 py-1 text-xs rounded border transition-colors ${
-                      cScope() === "project"
-                        ? "bg-blue-500/20 text-blue-400 border-blue-500/40 font-semibold"
-                        : "bg-[var(--ui-surface)] text-[var(--ui-muted)] border-[var(--ui-border)] hover:text-[var(--ui-text)]"
-                    } ${!props.currentProject?.() ? "opacity-40 cursor-not-allowed" : ""}`}
-                  >
+                  <Pill active={cScope() === "project"} disabled={!props.currentProject?.()} onClick={() => setCScope("project")}>
                     Project: {props.currentProject?.() ? props.currentProject()!.name : "(No project)"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCScope("global")}
-                    class={`px-2.5 py-1 text-xs rounded border transition-colors ${
-                      cScope() === "global"
-                        ? "bg-[var(--ui-accent-muted)] text-[var(--ui-accent)] border-[var(--ui-accent)] font-semibold"
-                        : "bg-[var(--ui-surface)] text-[var(--ui-muted)] border-[var(--ui-border)] hover:text-[var(--ui-text)]"
-                    }`}
-                  >
+                  </Pill>
+                  <Pill active={cScope() === "global"} onClick={() => setCScope("global")}>
                     Global (All Projects)
-                  </button>
+                  </Pill>
                 </div>
               </FieldRow>
               <FieldRow label="Name">
@@ -950,7 +892,7 @@ export function RolesTab(props: {
                     error={!!cName().trim() && !/^[A-Za-z0-9_-]+$/.test(cName().trim())}
                   />
                   <Show when={!!cName().trim() && !/^[A-Za-z0-9_-]+$/.test(cName().trim())}>
-                    <span class="font-mono text-[9px] text-rose-400">only letters, numbers, - and _ (no spaces)</span>
+                    <span class="font-mono text-[9px] text-[var(--ui-state-danger-text)]">only letters, numbers, - and _ (no spaces)</span>
                   </Show>
                 </div>
               </FieldRow>
@@ -976,26 +918,6 @@ export function RolesTab(props: {
                     });
                 }} />
                   <CapabilityChips assistant={selectedAssistant()} />
-                  {/* Runtime Mode Explanatory Box */}
-                  <div class="mt-2 rounded p-2.5 border text-xs flex flex-col gap-1 border-[var(--ui-border)] bg-[var(--ui-surface)]">
-                    <div class="flex items-center gap-2">
-                      <span class={`font-mono text-[9px] font-bold px-1.5 py-0.5 rounded border ${
-                        selectedAssistant()?.family === "native"
-                          ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
-                          : "bg-blue-500/15 text-blue-400 border-blue-500/30"
-                      }`}>
-                        {selectedAssistant()?.family === "native" ? "⚡ Native Mode" : "🔌 ACP Mode"}
-                      </span>
-                      <span class="font-semibold theme-text text-[11px]">
-                        {selectedAssistant()?.family === "native" ? "Native Direct CLI Execution" : "Agent Client Protocol Bridge"}
-                      </span>
-                    </div>
-                    <p class="theme-muted text-[10px] leading-relaxed">
-                      {selectedAssistant()?.family === "native"
-                        ? "Direct subprocess invocation using native streaming JSON (`--output-format=stream-json`). Lowest latency, native tools & permissions, no protocol translation."
-                        : "Connects via Agent Client Protocol (JSON-RPC 2.0). Standardized MCP server injection, dynamic mode toggles, and multi-agent coordination."}
-                    </p>
-                  </div>
                 </div>
               </FieldRow>
               <FieldRow label="Prompt (Optional)">
@@ -1008,7 +930,7 @@ export function RolesTab(props: {
                     rows={3}
                   />
                   <span class="text-[10px] theme-muted">
-                    ⚡ Native Mode: Leave empty to preserve the agent's built-in reasoning and repository instructions.
+                    Leave empty to keep the agent's own system prompt and repository instructions.
                   </span>
                 </div>
               </FieldRow>
@@ -1049,7 +971,7 @@ export function RolesTab(props: {
                             type="checkbox"
                             checked={entry.enabled}
                             onChange={(e) => setCGlobalMcp((prev) => prev.map((m) => m.mcpServerName === entry.mcpServerName ? { ...m, enabled: e.currentTarget.checked } : m))}
-                            class="accent-indigo-400 h-3 w-3 shrink-0"
+                            class="accent-[var(--ui-state-info-text)] h-3 w-3 shrink-0"
                           />
                           <span class="flex-1 truncate font-mono text-[10px] theme-text">{entry.mcpServerName}</span>
                           <Show when={entry.isBuiltin}>
@@ -1070,7 +992,7 @@ export function RolesTab(props: {
                           type="checkbox"
                           checked={rule.enabled}
                           onChange={(e) => setCRoleRules((prev) => prev.map((r) => r.ruleId === rule.ruleId ? { ...r, enabled: e.currentTarget.checked } : r))}
-                          class="accent-violet-400 h-3 w-3 shrink-0"
+                          class="accent-[var(--ui-accent)] h-3 w-3 shrink-0"
                         />
                         <span class="flex-1 truncate font-mono text-[10px] theme-text">{rule.name}</span>
                         <Show when={rule.description}>
@@ -1090,7 +1012,7 @@ export function RolesTab(props: {
                           type="checkbox"
                           checked={skill.enabled}
                           onChange={(e) => setCRoleSkills((prev) => prev.map((s) => s.skillId === skill.skillId ? { ...s, enabled: e.currentTarget.checked } : s))}
-                          class="accent-teal-400 h-3 w-3 shrink-0"
+                          class="accent-[var(--ui-state-success-text)] h-3 w-3 shrink-0"
                         />
                         <span class="flex-1 truncate font-mono text-[10px] theme-text">{skill.name}</span>
                         <Show when={skill.description}>
@@ -1120,23 +1042,12 @@ export function RolesTab(props: {
                   <div>
                     <div class="flex items-center gap-2 flex-wrap">
                       <h2 class="font-mono text-sm font-bold theme-text">{role().roleName}</h2>
-                      <span class={`font-mono text-[9px] font-semibold px-1.5 py-0.5 rounded border ${
-                        (role().runtimeKind.includes("native") || role().runtimeKind === "antigravity-cli" || role().runtimeKind === "codex-cli" || role().runtimeKind === "pi-cli")
-                          ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
-                          : "bg-blue-500/15 text-blue-400 border-blue-500/30"
-                      }`}>
-                        {(role().runtimeKind.includes("native") || role().runtimeKind === "antigravity-cli" || role().runtimeKind === "codex-cli" || role().runtimeKind === "pi-cli")
-                          ? "⚡ Native Mode"
-                          : "🔌 ACP Mode"}
-                      </span>
                       <Show when={role().projectId} fallback={
-                        <span class="font-mono text-[9px] font-semibold px-2 py-0.5 rounded bg-[var(--ui-surface-muted)] text-[var(--ui-muted)] border border-[var(--ui-border)]">
-                          Global Role
-                        </span>
+                        <Badge tone="neutral" class="font-mono">Global Role</Badge>
                       }>
-                        <span class="font-mono text-[9px] font-semibold px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/40">
+                        <Badge tone="info" class="font-mono">
                           Project Role · {props.currentProject?.()?.name ?? "Project"}
-                        </span>
+                        </Badge>
                       </Show>
                     </div>
                     <div class="flex items-center gap-2 mt-1">
@@ -1149,14 +1060,14 @@ export function RolesTab(props: {
                   <div class="flex items-center gap-2 shrink-0">
                     <Show when={!role().projectId && props.currentProject?.()}>
                       {(proj) => (
-                        <button
-                          type="button"
+                        <Button
+                          variant="secondary"
+                          size="sm"
                           onClick={() => void copyRoleToProject(role(), proj())}
                           disabled={saving()}
-                          class="px-2.5 py-1 text-xs rounded border border-blue-500/30 bg-blue-500/15 text-blue-300 hover:bg-blue-500/25 transition-colors font-medium"
                         >
                           Copy to {proj().name}
-                        </button>
+                        </Button>
                       )}
                     </Show>
                     <Show when={deletingId() === role().id} fallback={
@@ -1186,28 +1097,19 @@ export function RolesTab(props: {
                 {/* Helpful Role Scope Guidance Banner */}
                 <Show when={!role().projectId && props.currentProject?.()}>
                   {(proj) => (
-                    <div class="flex items-center justify-between gap-3 p-3 rounded-lg border border-amber-500/30 bg-amber-500/10 text-xs text-amber-200">
-                      <div class="flex items-center gap-2">
-                        <Globe size={15} class="text-amber-400 shrink-0" />
-                        <span>
-                          <strong>Global Role:</strong> Shared across all projects. To customize settings specifically for <strong>{proj().name}</strong>, click "Copy to {proj().name}".
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void copyRoleToProject(role(), proj())}
-                        class="shrink-0 px-2.5 py-1 rounded bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 border border-blue-500/40 text-[11px] font-semibold transition-colors"
-                      >
-                        Copy to {proj().name}
-                      </button>
-                    </div>
+                    <Alert
+                      tone="warning"
+                      class="text-xs"
+                      icon={<Globe size={15} />}
+                      action={{ label: `Copy to ${proj().name}`, onClick: () => void copyRoleToProject(role(), proj()) }}
+                    >
+                      <strong>Global Role:</strong> Shared across all projects. To customize settings specifically for <strong>{proj().name}</strong>, click "Copy to {proj().name}".
+                    </Alert>
                   )}
                 </Show>
 
                 <Show when={role().projectId}>
-                  <div class="flex items-center gap-2 p-3 rounded-lg border border-blue-500/30 bg-blue-500/10 text-xs text-blue-200">
-                    <FolderGit2 size={15} class="text-blue-400 shrink-0" />
-                    <span>
+                  <Alert tone="info" class="text-xs" icon={<FolderGit2 size={15} />}>
                       {isProjectOverride(role()) ? (
                         <>
                           <strong>Project Override:</strong> This role overrides the global <strong>{role().roleName}</strong> role for <strong>{props.currentProject?.()?.name ?? "this project"}</strong>. Click "Revert to Global" to return to the global settings.
@@ -1217,8 +1119,7 @@ export function RolesTab(props: {
                           <strong>Project Role:</strong> Configured specifically for <strong>{props.currentProject?.()?.name ?? "this project"}</strong>. Sessions in this project use this role instead of global fallbacks.
                         </>
                       )}
-                    </span>
-                  </div>
+                  </Alert>
                 </Show>
                 <Show when={deleteError()}>
                   <div class="management-error-box font-mono">
@@ -1249,29 +1150,12 @@ export function RolesTab(props: {
                 <div class="space-y-2 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-4">
                   <FieldRow label="Scope">
                     <div class="flex items-center gap-2">
-                      <button
-                        type="button"
-                        disabled={!props.currentProject?.()}
-                        onClick={() => setEScope("project")}
-                        class={`px-2.5 py-1 text-xs rounded border transition-colors ${
-                          eScope() === "project"
-                            ? "bg-blue-500/20 text-blue-400 border-blue-500/40 font-semibold"
-                            : "bg-[var(--ui-surface)] text-[var(--ui-muted)] border-[var(--ui-border)] hover:text-[var(--ui-text)]"
-                        } ${!props.currentProject?.() ? "opacity-40 cursor-not-allowed" : ""}`}
-                      >
+                      <Pill active={eScope() === "project"} disabled={!props.currentProject?.()} onClick={() => setEScope("project")}>
                         Project {props.currentProject?.() ? `(${props.currentProject()!.name})` : "(No project selected)"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEScope("global")}
-                        class={`px-2.5 py-1 text-xs rounded border transition-colors ${
-                          eScope() === "global"
-                            ? "bg-[var(--ui-accent-muted)] text-[var(--ui-accent)] border-[var(--ui-accent)] font-semibold"
-                            : "bg-[var(--ui-surface)] text-[var(--ui-muted)] border-[var(--ui-border)] hover:text-[var(--ui-text)]"
-                        }`}
-                      >
+                      </Pill>
+                      <Pill active={eScope() === "global"} onClick={() => setEScope("global")}>
                         Global (All Projects)
-                      </button>
+                      </Pill>
                     </div>
                   </FieldRow>
                   <FieldRow label="Name">
@@ -1284,7 +1168,7 @@ export function RolesTab(props: {
                         error={!!eName().trim() && !/^[A-Za-z0-9_-]+$/.test(eName().trim())}
                       />
                       <Show when={!!eName().trim() && !/^[A-Za-z0-9_-]+$/.test(eName().trim())}>
-                        <span class="font-mono text-[9px] text-rose-400">only letters, numbers, - and _ (no spaces)</span>
+                        <span class="font-mono text-[9px] text-[var(--ui-state-danger-text)]">only letters, numbers, - and _ (no spaces)</span>
                       </Show>
                       <span class="text-[10px] theme-muted">Renaming keeps this role's settings and existing session bindings.</span>
                     </div>
@@ -1300,7 +1184,7 @@ export function RolesTab(props: {
                         rows={3}
                       />
                       <span class="text-[10px] theme-muted">
-                        ⚡ Native Mode: Leave empty to preserve the agent's built-in reasoning and repository instructions.
+                        Leave empty to keep the agent's own system prompt and repository instructions.
                       </span>
                     </div>
                   </FieldRow>
@@ -1315,15 +1199,17 @@ export function RolesTab(props: {
                           />
                         </Show>
                       </div>
-                      <button
-                        type="button"
+                      <IconButton
+                        size="sm"
+                        variant="outline"
+                        class="shrink-0"
                         title="Refresh model list from the runtime"
+                        aria-label="Refresh model list"
                         onClick={refreshEditConfig}
                         disabled={eConfigLoading()}
-                        class="shrink-0 rounded border theme-border px-2 py-1 text-[9px] theme-muted hover:text-primary disabled:opacity-40"
                       >
                         {eConfigLoading() ? "…" : "↻"}
-                      </button>
+                      </IconButton>
                     </div>
                   </FieldRow>
                   <Show when={modeResolved()}>
@@ -1354,7 +1240,7 @@ export function RolesTab(props: {
                                 type="checkbox"
                                 checked={entry.enabled}
                                 onChange={(e) => void handleToggleGlobalMcp(entry, e.currentTarget.checked)}
-                                class="accent-indigo-400 h-3 w-3 shrink-0"
+                                class="accent-[var(--ui-state-info-text)] h-3 w-3 shrink-0"
                               />
                               <span class="flex-1 truncate font-mono text-[10px] theme-text">{entry.mcpServerName}</span>
                               <Show when={entry.isBuiltin}>
@@ -1363,7 +1249,7 @@ export function RolesTab(props: {
                             </div>
                           )}</For>
                           <Show when={mcpResetting()}>
-                            <div class="text-[9.5px] text-amber-300 font-mono pt-0.5">MCP changed — reconnecting live sessions…</div>
+                            <div class="text-[9.5px] text-[var(--ui-state-warning-text)] font-mono pt-0.5">MCP changed — reconnecting live sessions…</div>
                           </Show>
                         </div>
                       </Show>
@@ -1378,7 +1264,7 @@ export function RolesTab(props: {
                               type="checkbox"
                               checked={rule.enabled}
                               onChange={(e) => void handleToggleRule(rule, e.currentTarget.checked)}
-                              class="accent-violet-400 h-3 w-3 shrink-0"
+                              class="accent-[var(--ui-accent)] h-3 w-3 shrink-0"
                             />
                             <span class="flex-1 truncate font-mono text-[10px] theme-text">{rule.name}</span>
                             <Show when={rule.description}>
@@ -1398,7 +1284,7 @@ export function RolesTab(props: {
                               type="checkbox"
                               checked={skill.enabled}
                               onChange={(e) => void handleToggleSkill(skill, e.currentTarget.checked)}
-                              class="accent-teal-400 h-3 w-3 shrink-0"
+                              class="accent-[var(--ui-state-success-text)] h-3 w-3 shrink-0"
                             />
                             <span class="flex-1 truncate font-mono text-[10px] theme-text">{skill.name}</span>
                             <Show when={skill.description}>
@@ -1451,7 +1337,7 @@ export function RolesTab(props: {
                   {(proj) => (
                     <>
                       <ContextMenuItem
-                        icon={<Copy size={13} class="text-blue-400" />}
+                        icon={<Copy size={13} class="text-[var(--ui-state-info-text)]" />}
                         onSelect={() => {
                           const r = menu().role;
                           closeRoleContextMenu();
@@ -1461,7 +1347,7 @@ export function RolesTab(props: {
                         Copy to {proj().name}
                       </ContextMenuItem>
                       <ContextMenuItem
-                        icon={<FolderGit2 size={13} class="text-blue-400" />}
+                        icon={<FolderGit2 size={13} class="text-[var(--ui-state-info-text)]" />}
                         onSelect={async () => {
                           const r = menu().role;
                           closeRoleContextMenu();
@@ -1483,7 +1369,7 @@ export function RolesTab(props: {
               }
             >
               <ContextMenuItem
-                icon={<Globe size={13} class="text-amber-400" />}
+                icon={<Globe size={13} class="text-[var(--ui-state-warning-text)]" />}
                 onSelect={async () => {
                   const r = menu().role;
                   closeRoleContextMenu();
@@ -1512,8 +1398,8 @@ export function RolesTab(props: {
             </ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuItem
-              icon={<Trash2 size={13} class="text-red-400" />}
-              class="text-red-400 hover:text-red-300"
+              icon={<Trash2 size={13} class="text-[var(--ui-state-danger-text)]" />}
+              class="text-[var(--ui-state-danger-text)] hover:text-[var(--ui-state-danger-text)]"
               onSelect={() => {
                 const r = menu().role;
                 closeRoleContextMenu();

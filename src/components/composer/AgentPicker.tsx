@@ -314,7 +314,7 @@ export default function AgentPicker(props: AgentPickerProps) {
           <span class="shrink-0 truncate font-mono text-[10px] theme-muted">{modelSummary()}</span>
         </Show>
         <Show when={summaryChip()}>
-          <span class="shrink-0 font-mono text-[10px] text-amber-300">{summaryChip()}</span>
+          <span class="shrink-0 font-mono text-[10px] text-[var(--ui-state-warning-text)]">{summaryChip()}</span>
         </Show>
         <ChevronDown size={12} class="theme-muted" />
       </DropdownTrigger>

@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 import type { AppSession } from "../types";
 import { RUNTIME_COLOR } from "../types";
-import { Alert, EmptyState, Badge, Button } from "../ui";
+import { Alert, EmptyState, Badge, Button, IconButton } from "../ui";
 import { FieldRow, ActionButton } from "./primitives";
 import type { ContextEntry, StoredSession } from "./primitives";
 import { fmtDate, fmtRelative } from "./primitives";
@@ -55,13 +55,12 @@ function SessionContextSection(props: { sessionId: string }) {
   const rootScope = () => `session:${props.sessionId}`;
 
   const iconBtn = (title: string, onClick: () => void, icon: "edit" | "delete" | "save" | "cancel") => (
-    <button
-      type="button"
+    <IconButton
+      size="sm"
       title={title}
+      aria-label={title}
       onClick={onClick}
-      class={`rounded p-1 theme-muted transition-colors hover:theme-text ${
-        icon === "delete" ? "hover:text-rose-400" : icon === "save" ? "hover:text-emerald-400" : ""
-      }`}
+      class={icon === "delete" ? "hover:text-[var(--ui-state-danger-text)]" : icon === "save" ? "hover:text-[var(--ui-state-success-text)]" : ""}
     >
       <Show when={icon === "edit"}>
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
@@ -75,7 +74,7 @@ function SessionContextSection(props: { sessionId: string }) {
       <Show when={icon === "cancel"}>
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </Show>
-    </button>
+    </IconButton>
   );
 
   const reload = () => {
@@ -139,24 +138,21 @@ function SessionContextSection(props: { sessionId: string }) {
           </Show>
         </span>
         <div class="flex items-center gap-1.5">
-          <button
-            onClick={reload}
-            class="font-mono text-[9px] theme-muted hover:theme-text transition-colors"
-            title="Refresh"
-          >↻</button>
-          <button
+          <IconButton size="sm" onClick={reload} title="Refresh" aria-label="Refresh">↻</IconButton>
+          <IconButton
+            size="sm"
             onClick={() => { setAddingNew(true); setNewKey(""); setNewValue(""); }}
-            class="rounded p-1 text-amber-500/70 transition-colors hover:text-amber-400"
             title="Add entry"
+            aria-label="Add entry"
           >
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          </button>
+          </IconButton>
         </div>
       </div>
 
       {/* Add row */}
       <Show when={addingNew()}>
-        <div class="mb-2 flex flex-col gap-1.5 rounded-md border border-amber-500/20 bg-[var(--ui-surface-muted)] p-2">
+        <div class="mb-2 flex flex-col gap-1.5 rounded-md border border-[color-mix(in_srgb,var(--ui-state-warning-text)_35%,transparent)] bg-[var(--ui-surface-muted)] p-2">
           <input
             value={newKey()}
             onInput={(e) => setNewKey(e.currentTarget.value)}
@@ -192,7 +188,7 @@ function SessionContextSection(props: { sessionId: string }) {
               return (
                 <div class="group rounded border theme-border theme-panel px-3 py-2 hover:border-[var(--ui-border-strong)] hover:bg-[var(--ui-accent-soft)] transition-colors">
                   <div class="mb-1 flex items-center justify-between gap-2">
-                    <span class="font-mono text-[9px] font-semibold text-amber-400/80 truncate">{entry.key}</span>
+                    <span class="font-mono text-[9px] font-semibold text-[var(--ui-state-warning-text)] truncate">{entry.key}</span>
                     <div class="flex items-center gap-2 shrink-0">
                       <Show when={!isEditing()}>
                         <span class="opacity-0 group-hover:opacity-100 transition-all">

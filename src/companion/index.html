@@ -11,6 +11,7 @@
         try {
           const saved = window.localStorage.getItem("jockey.ui.theme");
           if (saved === "light" || saved === "dark") theme = saved;
+          else if (saved === "system") theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
         } catch (_) {}
         document.documentElement.setAttribute("data-theme", theme);
       })();

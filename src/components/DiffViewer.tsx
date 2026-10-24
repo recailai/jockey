@@ -1,12 +1,12 @@
 import { For, Show, createSignal } from "solid-js";
 import type { ParsedDiff, DiffHunk } from "../lib/diffParser";
-import { INTERACTIVE_MOTION } from "./types";
+import { Badge, Button } from "./ui";
 
 type HunkStatus = "kept" | "rejected" | "pending";
 
 function lineClass(kind: "context" | "add" | "remove") {
-  if (kind === "add") return "bg-emerald-500/10 text-emerald-200";
-  if (kind === "remove") return "bg-rose-500/10 text-rose-300 line-through opacity-70";
+  if (kind === "add") return "bg-[var(--ui-state-success-bg)] text-[var(--ui-state-success-text)]";
+  if (kind === "remove") return "bg-[var(--ui-state-danger-bg)] text-[var(--ui-state-danger-text)] line-through opacity-70";
   return "theme-muted";
 }
 
@@ -29,37 +29,29 @@ function HunkBlock(props: HunkProps) {
     <div
       class="rounded-lg border overflow-hidden"
       classList={{
-        "border-emerald-500/30 bg-emerald-500/5": props.status === "kept",
-        "border-rose-500/30 bg-rose-500/5 opacity-60": props.status === "rejected",
-        "border-white/10 theme-surface": props.status === "pending",
+        "border-[color-mix(in_srgb,var(--ui-state-success-text)_35%,transparent)] bg-[var(--ui-state-success-bg)]": props.status === "kept",
+        "border-[color-mix(in_srgb,var(--ui-state-danger-text)_35%,transparent)] bg-[var(--ui-state-danger-bg)] opacity-60": props.status === "rejected",
+        "border-[var(--ui-border)] theme-surface": props.status === "pending",
       }}
     >
-      <div class="flex items-center justify-between px-3 py-1.5 border-b border-white/5">
+      <div class="flex items-center justify-between px-3 py-1.5 border-b border-[var(--ui-border)]">
         <span class="font-mono text-[9px] theme-muted">{props.hunk.header}</span>
         <div class="flex items-center gap-1.5">
           <Show when={props.status === "rejected"}>
-            <span class="text-[9px] text-rose-400 font-semibold">rejected</span>
+            <Badge tone="danger">rejected</Badge>
           </Show>
           <Show when={props.status === "kept"}>
-            <span class="text-[9px] text-emerald-400 font-semibold">kept</span>
+            <Badge tone="success">kept</Badge>
           </Show>
           <Show when={props.status !== "rejected"}>
-            <button
-              type="button"
-              onClick={props.onReject}
-              class={`rounded border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[9px] font-semibold text-rose-300 hover:bg-rose-500/20 ${INTERACTIVE_MOTION}`}
-            >
+            <Button size="sm" variant="danger" onClick={props.onReject}>
               Reject
-            </button>
+            </Button>
           </Show>
           <Show when={props.status !== "kept"}>
-            <button
-              type="button"
-              onClick={props.onKeep}
-              class={`rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-semibold text-emerald-300 hover:bg-emerald-500/20 ${INTERACTIVE_MOTION}`}
-            >
+            <Button size="sm" variant="secondary" onClick={props.onKeep}>
               Keep
-            </button>
+            </Button>
           </Show>
         </div>
       </div>

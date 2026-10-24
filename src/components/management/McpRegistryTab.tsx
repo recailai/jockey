@@ -178,7 +178,7 @@ export function McpRegistryTab(props: { pushMessage: (role: string, text: string
                   <TextInput value={fArgs()} onInput={setFArgs} placeholder="-y @anthropic-ai/chrome-devtools-mcp@latest" monospace />
                 </FieldRow>
                 <Show when={argsInvalid()}>
-                  <div class="ml-[92px] text-[10px] text-rose-400 font-mono">Invalid args: check quotes/escaping.</div>
+                  <div class="ml-[92px] text-[10px] text-[var(--ui-state-danger-text)] font-mono">Invalid args: check quotes/escaping.</div>
                 </Show>
                 <FieldRow label="Env">
                   <TextInput value={fEnvText()} onInput={setFEnvText} placeholder="KEY=value (one per line)" multiline rows={2} monospace />
