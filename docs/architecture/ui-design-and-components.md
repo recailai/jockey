@@ -76,6 +76,15 @@ Render it only through `StatusBadge` (dot + label; `quiet` hides idle) or `Statu
 - **No hover-only affordances.** Anything revealed on hover (row actions, delete) must also be reachable by tap/long-press or always visible in the companion.
 - **Long content never widens the page.** Containers get `min-width: 0`; commands, paths and code wrap (`overflow-wrap: anywhere`) or scroll inside their own box.
 
+### Copy: Let the Layout Explain
+Avoid secondary labels and descriptions. Grouping, headings, order, status badges and the controls themselves carry the meaning; a sentence that restates them is noise.
+
+- No subtitle under a title, heading, dialog or empty state that restates it ("Import your local repository…", "Open a session to give an agent work.").
+- No helper text for obvious controls, no tooltip that repeats a visible label, no label beside a self-explanatory icon or button.
+- Placeholders are a short example, not an instruction.
+- Keep text only for what the layout cannot show: errors, the consequence of a destructive action (one short line), and facts such as counts, paths, the account in use, or that an import has no local history.
+- Icon-only buttons still need `title`/`aria-label`; that is accessibility, not decoration.
+
 ### Interaction Guidelines
 - Every async action shows feedback within 100ms (disabled state + verb-ing label, e.g. "Sending…"), and a failure keeps the user's input (drafts, form values).
 - Destructive actions confirm inline or via dialog and state what will be affected (e.g. role deletion lists the open sessions using the role).

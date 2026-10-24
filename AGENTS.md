@@ -127,6 +127,7 @@ Rule: the engine owns every durable write; views are thin and only render engine
 - **Session status** ("is it active?") comes only from `sessionStatus()` in `src/lib/sessionStatus.ts`, rendered with `StatusBadge` / `StatusDot`. Do not derive status from flags inside a view.
 - **Theme**: use `useTheme()` / `ThemeToggle`; every `--ui-*` token must exist in both the dark and light blocks of `src/index.css`.
 - **Adaptation**: desktop and the phone companion share components; adapt with container queries, keep 44px touch targets in the companion, and never let long content widen the page.
+- **Copy**: avoid secondary labels and descriptions; let layout, grouping and status carry the meaning. Keep text for errors, destructive consequences and facts the layout cannot show (see "Copy" in the UI spec).
 - **Before finishing UI work**: check `pnpm dev` → `/#catalog` in both themes and at phone width, and make sure `pnpm lint:ui` passes. It runs in `pnpm build` and rejects palette colour classes, raw hex colours, and any increase in raw `<button>` outside `components/ui/`.
 - Refer to [docs/architecture/ui-design-and-components.md](docs/architecture/ui-design-and-components.md) for detailed UI component specifications.
 
