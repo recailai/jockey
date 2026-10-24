@@ -70,12 +70,13 @@ Workflows are legacy and minimal: `start_workflow` runs a workflow's steps seque
 - A dedicated OS thread runs a `current_thread` Tokio runtime + `LocalSet` so the adapter layer can keep provider sessions, UI callbacks, and terminal ownership on one thread. External callers send `WorkerMsg::Execute` or `WorkerMsg::Prewarm` via an unbounded channel.
 - ACP 2.0 stable-v1 schema types are paired with Jockey's small JSONL JSON-RPC transport boundary in `acp/transport.rs`; this keeps request correlation, backpressure, stderr tails, cancellation, and process shutdown uniform across every adapter.
 - Provider process slots are scoped by `app_session_id:runtime_key:role_name`, and are evicted on cwd/launch-contract changes, errors, cancellation, or idle timeout.
-- Canonical runtime keys live in `runtime_kind.rs`: `claude-native`, `claude-code`, `codex-cli`, `pi-cli`, `antigravity-cli`. Legacy spellings (`claude`, `codex`, `pi`, `agy`, `gemini`, ...) are normalised. Custom ACP runtime profiles are stored via `db/profiles.rs` and `runtime_profile.rs`. A `mock` runtime is available for offline development.
+- Canonical runtime keys live in `runtime_kind.rs`: `claude-native`, `claude-code`, `codex-cli`, `pi-cli`, `antigravity-cli`, `dsh-cli`. Legacy spellings (`claude`, `codex`, `pi`, `agy`, `gemini`, ...) are normalised. Custom ACP runtime profiles are stored via `db/profiles.rs` and `runtime_profile.rs`. A `mock` runtime is available for offline development.
 - Supported runtimes (all ACP):
   - `claude-code` → `@agentclientprotocol/claude-agent-acp@0.94.0`.
   - `codex-cli` → `@agentclientprotocol/codex-acp@2.2.2`.
   - `pi-cli` → `pi-acp@0.0.34`.
   - `antigravity-cli` → Google's `agy_acp_server.par` 1.4.1.
+  - `dsh-cli` → DeepSeek Harness, native ACP via the user's own `dsh --profile acp` (not managed or pinned). It advertises `session/resume` instead of `session/load`; cold start resumes with it, and its model option is grouped by provider.
 - Rust ACP SDK is pinned to 3.5.0; stable ACP v1 is negotiated on the wire.
 - Old `claude-native` / `native:*` names are compatibility aliases, not execution modes. Schema v17 migrates active Claude bindings and preserves transcripts and provider handles.
 - Catalog detection does not launch provider processes or install packages. Managed adapters install on demand with exact version validation. There is no silent native fallback.

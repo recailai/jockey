@@ -280,6 +280,7 @@ fn cached_sessions(state: &AppState, project_id: &str) -> Result<Vec<DiscoveredS
                             "codex-cli" => "codex-cli",
                             "pi-cli" => "pi-cli",
                             "antigravity-cli" => "antigravity-cli",
+                            "dsh-cli" => "dsh-cli",
                             _ => return None,
                         },
                         agent: match agent.as_str() {
@@ -287,6 +288,7 @@ fn cached_sessions(state: &AppState, project_id: &str) -> Result<Vec<DiscoveredS
                             "Codex" => "Codex",
                             "Pi" => "Pi",
                             "Antigravity" => "Antigravity",
+                            "DeepSeek Harness" => "DeepSeek Harness",
                             _ => return None,
                         },
                         session_id,

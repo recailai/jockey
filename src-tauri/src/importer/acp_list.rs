@@ -16,7 +16,10 @@ const FILE_BACKED: [RuntimeKind; 3] = [
     RuntimeKind::CodexCli,
     RuntimeKind::PiCli,
 ];
-const ACP_ONLY: [(RuntimeKind, &str); 1] = [(RuntimeKind::AntigravityCli, "Antigravity")];
+const ACP_ONLY: [(RuntimeKind, &str); 2] = [
+    (RuntimeKind::AntigravityCli, "Antigravity"),
+    (RuntimeKind::DeepSeekHarness, "DeepSeek Harness"),
+];
 /// Runtimes whose listed title is a real summary. Codex and Pi list the raw first message
 /// (attachment headers included), which reads worse than the scanner's cleaned title.
 const SUMMARY_TITLES: [RuntimeKind; 1] = [RuntimeKind::ClaudeCode];
@@ -82,22 +85,56 @@ fn merge(
             if !belongs(&s.cwd) {
                 continue;
             }
-            let at = s.updated_at_ms.unwrap_or(0);
+            let at = s
+                .updated_at_ms
+                .or_else(|| stored_activity_ms(kind, &s.session_id))
+                .unwrap_or(0);
             sessions.push(DiscoveredSession {
                 runtime_kind: kind.runtime_key(),
                 agent,
                 session_id: s.session_id.clone(),
                 file_path: PathBuf::new(),
                 cwd: s.cwd.clone(),
-                title: s.title.clone().unwrap_or_else(|| {
-                    format!("{agent}_{}", &s.session_id[..s.session_id.len().min(8)])
-                }),
+                title: s
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| format!("{agent} · {}", short_id(&s.session_id))),
                 created_at: at,
                 last_active_at: at,
                 turn_count: 0,
             });
         }
     }
+}
+
+/// `session-52f90df4-…` → `52f90df4`: the readable part of an untitled conversation's id.
+fn short_id(id: &str) -> &str {
+    let id = id.strip_prefix("session-").unwrap_or(id);
+    &id[..id.len().min(8)]
+}
+
+/// Last activity for agents whose `session/list` carries no `updatedAt`. DeepSeek Harness keeps
+/// each conversation in `~/.dsh/sessions/<encoded cwd>/<session id>/`; the newest file there is
+/// when it was last written. Its contents (compressed, versioned) are not read.
+fn stored_activity_ms(kind: RuntimeKind, session_id: &str) -> Option<i64> {
+    if kind != RuntimeKind::DeepSeekHarness || session_id.contains(['/', '\\']) {
+        return None;
+    }
+    let root = std::env::var_os("DSH_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".dsh")))?
+        .join("sessions");
+    std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .map(|cwd_dir| cwd_dir.path().join(session_id))
+        .find(|dir| dir.is_dir())
+        .and_then(|dir| std::fs::read_dir(dir).ok())?
+        .flatten()
+        .filter_map(|f| f.metadata().ok()?.modified().ok())
+        .max()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
 }
 
 #[cfg(test)]
@@ -125,6 +162,12 @@ mod tests {
             title: title.map(Into::into),
             updated_at_ms: Some(5),
         }
+    }
+
+    #[test]
+    fn untitled_conversations_get_a_readable_short_id() {
+        assert_eq!(short_id("session-52f90df4-a862-4c47"), "52f90df4");
+        assert_eq!(short_id("abc"), "abc");
     }
 
     #[test]

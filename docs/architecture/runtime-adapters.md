@@ -38,10 +38,21 @@ Fork and rewind previously implemented through native Codex commands are not adv
 Session discovery for import combines two sources (`src-tauri/src/importer/`):
 
 - **Transcript scanners** (Claude, Codex, Pi) decide which conversations exist and supply history and turn counts. They skip probe, empty and sub-agent transcripts (Codex guardian rollouts share the parent's `session_id`, so threads are keyed by `id`), and a git worktree counts as part of the project whose checkout its `.git` file points to.
-- **ACP `session/list`** (`acp/session/list.rs`), negotiated through `sessionCapabilities.list`, runs only when the import dialog refreshes its catalog and only for adapters already installed (it never installs). It supplies Claude's generated titles and the full list for runtimes without a transcript reader (Antigravity). Codex and Pi list the raw first message as the title, so their scanner titles are kept. Importing an ACP-only conversation binds it without history; the next turn resumes it with `session/load`.
+- **ACP `session/list`** (`acp/session/list.rs`), negotiated through `sessionCapabilities.list`, runs only when the import dialog refreshes its catalog and only for adapters already installed (it never installs). It supplies Claude's generated titles and the full list for runtimes without a transcript reader (Antigravity, DeepSeek Harness; dsh lists no titles or times, so its last activity comes from the session directory's newest file). Codex and Pi list the raw first message as the title, so their scanner titles are kept. Importing an ACP-only conversation binds it without history; the next turn resumes it with `session/load`.
 
 ACP cannot replace the scanners: it has no transcript read (only `session/load`, which resumes and replays without timestamps), no per-session change notification for the external-sync watcher, no turn counts, and adapter filters differ (Claude matches the exact cwd; codex-acp lists only the configured model provider's threads from its state DB).
 
 ## Validation
 
 Unit tests cover runtime routing, pinned-version detection, data migration with an existing ACP slot, transcript/handle preservation, suppression of setup replay, permission acknowledgements and cancellation isolation. Shared HTTP contract and production CSS checks cover the companion boundary. Real adapter smoke checks exercise standard initialize/new/prompt operations without tools or file modifications; authentication-dependent failures must be reported separately from protocol support.
+
+
+### DeepSeek Harness (`dsh-cli`)
+
+DeepSeek Harness speaks ACP itself (`dsh --profile acp`), so there is no adapter package: Jockey resolves the user's `dsh` from the shell PATH and does not pin a version. Observed with dsh 0.2.1-rc.2:
+
+- `sessionCapabilities` = `list`, `resume`, `close`; no `loadSession`. Resuming a stored handle uses `session/resume` (no replay); the transcript Jockey recorded is the history.
+- MCP over HTTP only, which the Jockey MCP bridge uses, so the bridge stays injected (unlike Codex/Pi/Antigravity).
+- No image prompts.
+- Config options: `model` is grouped by provider and its values are JSON-encoded `[provider, model]` pairs; `reasoning_effort` (`thought_level`) is off/low/high/max. No modes.
+- It writes a plain-text log line to stdout while listing models; the transport skips stdout lines that cannot start a JSON-RPC frame (`parse_frame`) instead of dropping the connection.

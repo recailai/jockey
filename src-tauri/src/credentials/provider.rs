@@ -69,6 +69,7 @@ impl CredentialProvider {
             RuntimeKind::CodexCli => Some(Self::Codex),
             RuntimeKind::PiCli => Some(Self::Pi),
             RuntimeKind::AntigravityCli => Some(Self::Antigravity),
+            RuntimeKind::DeepSeekHarness => None,
             RuntimeKind::Mock => None,
         }
     }

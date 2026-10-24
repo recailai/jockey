@@ -214,6 +214,13 @@ pub(crate) async fn cold_start(
 
     let t = Instant::now();
     let supports_load = init_resp.agent_capabilities.load_session;
+    // `session/resume` reattaches without replaying history. Agents that keep sessions but
+    // cannot replay them (DeepSeek Harness) advertise only this.
+    let supports_resume = init_resp
+        .agent_capabilities
+        .session_capabilities
+        .resume
+        .is_some();
 
     struct SessionStartResult {
         session_id: acp::SessionId,
@@ -254,10 +261,51 @@ pub(crate) async fn cold_start(
         })
     }
 
-    if resume_session_id.is_some() && !supports_load {
-        return Err("This ACP adapter cannot load the existing session. The transcript and handle were preserved; use an adapter with session/load support or explicitly reset context.".into());
+    if resume_session_id.is_some() && !supports_load && !supports_resume {
+        return Err("This ACP adapter cannot load or resume the existing session. The transcript and handle were preserved; use an adapter with session/load or session/resume support or explicitly reset context.".into());
     }
-    let start_result: SessionStartResult = if supports_load {
+    let start_result: SessionStartResult = if let Some(sid) = resume_session_id
+        .clone()
+        .filter(|_| !supports_load && supports_resume)
+    {
+        let mut resume_req = acp::ResumeSessionRequest::new(
+            acp::SessionId::from(sid.clone()),
+            std::path::PathBuf::from(abs_cwd),
+        );
+        if !mcp_servers.is_empty() {
+            resume_req = resume_req.mcp_servers(mcp_servers.clone());
+        }
+        let resumed: Result<acp::ResumeSessionResponse, acp::Error> =
+            tokio::time::timeout(SESSION_TIMEOUT, conn.request("session/resume", resume_req))
+                .await
+                .map_err(|_| {
+                    acp::Error::new(
+                        acp::ErrorCode::InternalError.into(),
+                        format!(
+                            "timeout: resume_session exceeded {}s",
+                            SESSION_TIMEOUT.as_secs()
+                        ),
+                    )
+                })
+                .and_then(|r| r);
+        match resumed {
+            Ok(resp) => {
+                acp_log(
+                    "session.resume.ok",
+                    json!({ "runtime": runtime_key, "sessionId": &sid }),
+                );
+                SessionStartResult {
+                    session_id: acp::SessionId::from(sid),
+                    config_options: resp.config_options,
+                    modes: resp.modes,
+                    resumed: true,
+                }
+            }
+            Err(e) => {
+                return Err(format!("Could not resume the existing ACP session. Its transcript and handle were preserved; retry or explicitly reset the agent context. Details: {}", AcpLayerError::from(e).into_message()));
+            }
+        }
+    } else if supports_load {
         if let Some(sid) = resume_session_id {
             let mut load_req = acp::LoadSessionRequest::new(
                 acp::SessionId::from(sid.clone()),

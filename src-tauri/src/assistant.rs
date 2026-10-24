@@ -22,6 +22,7 @@ pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
         RuntimeKind::AntigravityCli,
         RuntimeKind::CodexCli,
         RuntimeKind::PiCli,
+        RuntimeKind::DeepSeekHarness,
     ];
     let mut rows = kinds
         .into_iter()

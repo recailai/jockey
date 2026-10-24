@@ -368,13 +368,14 @@ export type AppSession = {
   externalActive?: boolean;
 };
 
-export const RUNTIMES = ["claude-code", "codex-cli", "pi-cli", "antigravity-cli", "mock"];
+export const RUNTIMES = ["claude-code", "codex-cli", "pi-cli", "antigravity-cli", "dsh-cli", "mock"];
 export const RUNTIME_COLOR: Record<string, string> = {
   "claude-native": "runtime-color-claude",
   "antigravity-cli": "runtime-color-antigravity",
   "claude-code": "runtime-color-claude",
   "codex-cli": "runtime-color-codex",
   "pi-cli": "runtime-color-pi",
+  "dsh-cli": "runtime-color-dsh",
   mock: "runtime-color-muted",
 };
 export const INTERACTIVE_MOTION = "motion-safe:transition-colors motion-safe:transition-transform motion-safe:duration-150 motion-safe:ease-out active:scale-[0.98]";

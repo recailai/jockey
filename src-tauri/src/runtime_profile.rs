@@ -190,6 +190,7 @@ pub(crate) fn profile_id(runtime: &str) -> String {
         Some(RuntimeKind::AntigravityCli) => "acp:agy".to_string(),
         Some(RuntimeKind::CodexCli) => "acp:codex".to_string(),
         Some(RuntimeKind::PiCli) => "acp:pi".to_string(),
+        Some(RuntimeKind::DeepSeekHarness) => "acp:dsh".to_string(),
         None => runtime.trim().to_string(),
     }
 }
@@ -227,6 +228,7 @@ pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
         ),
         ("pi-cli", "acp:pi", "Pi", "pi-acp@0.0.34"),
         ("antigravity-cli", "acp:agy", "Antigravity", "1.4.1"),
+        ("dsh-cli", "acp:dsh", "DeepSeek Harness", "0.2.1"),
     ]
     .into_iter()
     .map(|(runtime, id, label, version)| RuntimeProfile {

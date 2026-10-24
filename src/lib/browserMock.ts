@@ -344,6 +344,7 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
             { key: "claude-code", name: "Claude Code", label: "Claude Code", family: "acp", available: true, profileId: "claude-code", transport: "stdio", capabilities: caps },
             { key: "codex-cli", name: "Codex CLI", label: "Codex CLI", family: "acp", available: true, profileId: "codex-cli", transport: "stdio", capabilities: caps },
             { key: "antigravity-cli", name: "Antigravity CLI", label: "Antigravity CLI", family: "acp", available: true, profileId: "antigravity-cli", transport: "stdio", capabilities: caps },
+            { key: "dsh-cli", name: "DeepSeek Harness", label: "DeepSeek Harness", family: "acp", available: true, profileId: "acp:dsh", transport: "stdio", capabilities: caps },
             { key: "pi-cli", name: "Pi CLI", label: "Pi CLI", family: "acp", available: true, profileId: "pi-cli", transport: "stdio", capabilities: caps },
             { key: "mock", name: "Mock Assistant", label: "Mock Assistant", family: "acp", available: true, profileId: "mock", transport: "in-process", capabilities: caps },
           ];

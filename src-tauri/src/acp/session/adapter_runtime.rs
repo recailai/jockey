@@ -591,6 +591,7 @@ mod tests {
             "codex-cli",
             "pi-cli",
             "antigravity-cli",
+            "dsh-cli",
         ] {
             let adapter = AnyRuntimeAdapter::resolve(runtime).unwrap();
             assert_eq!(adapter.transport_name(), "acp");

@@ -55,7 +55,10 @@ fn resume_command(runtime: RuntimeKind, session_id: &str) -> Result<String, Stri
     match runtime {
         RuntimeKind::ClaudeCode => Ok(format!("claude --resume {id}")),
         RuntimeKind::CodexCli => Ok(format!("codex resume {id}")),
-        RuntimeKind::PiCli | RuntimeKind::AntigravityCli | RuntimeKind::Mock => Err(format!(
+        RuntimeKind::PiCli
+        | RuntimeKind::AntigravityCli
+        | RuntimeKind::DeepSeekHarness
+        | RuntimeKind::Mock => Err(format!(
             "{} sessions cannot be resumed in a terminal yet",
             runtime.runtime_key()
         )),

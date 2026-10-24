@@ -23,6 +23,7 @@ export function useAgentData(
     if (k === "agy" || k === "antigravity" || k === "gemini" || k === "gemini-cli") return "antigravity-cli";
     if (k === "codex" || k === "codex-acp") return "codex-cli";
     if (k === "pi" || k === "pi-coding-agent") return "pi-cli";
+    if (k === "dsh" || k === "deepseek" || k === "deepseek-harness" || k === "acp:dsh") return "dsh-cli";
     return k;
   };
 

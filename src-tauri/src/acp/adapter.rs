@@ -151,6 +151,7 @@ pub(crate) fn installed_stdio_adapter(kind: RuntimeKind) -> Option<StdioAdapterS
     let resolved = match adapter_cache().get(&kind).and_then(|r| r.clone().ok()) {
         Some(resolved) => resolved,
         None => match kind {
+            RuntimeKind::DeepSeekHarness => resolve_adapter_for_kind(kind).ok()?,
             RuntimeKind::AntigravityCli => APP_DATA_DIR
                 .get()
                 .map(|base| base.join("adapters/bin/agy_acp_server.par"))
@@ -262,6 +263,18 @@ fn resolve_adapter_for_kind(kind: RuntimeKind) -> Result<AdapterResolution, Stri
             Ok(AdapterResolution {
                 binary: binary.to_string_lossy().into_owned(),
                 args: vec![],
+                env: agent_env_overrides(),
+                transport: AdapterTransport::Acp,
+            })
+        }
+        // Native ACP: the user's own `dsh` install, nothing to manage or pin.
+        RuntimeKind::DeepSeekHarness => {
+            let binary = find_binary("dsh").ok_or(
+                "DeepSeek Harness is not installed; install it so `dsh --profile acp` runs.",
+            )?;
+            Ok(AdapterResolution {
+                binary: binary.to_string_lossy().into_owned(),
+                args: vec!["--profile".into(), "acp".into()],
                 env: agent_env_overrides(),
                 transport: AdapterTransport::Acp,
             })

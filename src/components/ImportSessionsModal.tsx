@@ -33,7 +33,7 @@ type ImportSessionsModalProps = {
   onOpenExisting?: (appSessionId: string) => void;
 };
 
-const AGENTS = ["Claude Code", "Codex", "Pi", "Antigravity"] as const;
+const AGENTS = ["Claude Code", "Codex", "Pi", "Antigravity", "DeepSeek Harness"] as const;
 
 const shortenPath = (path: string) => path.replace(/^(\/Users|\/home)\/[^/]+/, "~");
 
@@ -311,7 +311,7 @@ export default function ImportSessionsModal(props: ImportSessionsModalProps) {
       <DialogContent
         class="max-w-[720px]"
         title="Import CLI Sessions"
-        description="Bring conversations from Claude Code, Codex, Pi and Antigravity into Jockey"
+        description="Bring conversations from Claude Code, Codex, Pi, Antigravity and DeepSeek Harness into Jockey"
         icon={<DownloadCloud size={20} class="text-[var(--ui-accent)]" />}
       >
         <DialogBody class="space-y-3" onKeyDown={onKeyDown}>
@@ -355,7 +355,7 @@ export default function ImportSessionsModal(props: ImportSessionsModalProps) {
               <For each={AGENTS}>
                 {(agent) => (
                   <SegmentButton active={agents().has(agent)} onClick={() => toggleAgent(agent)}>
-                    {agent === "Claude Code" ? "Claude" : agent}
+                    {agent === "Claude Code" ? "Claude" : agent === "DeepSeek Harness" ? "DeepSeek" : agent}
                   </SegmentButton>
                 )}
               </For>

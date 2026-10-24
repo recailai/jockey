@@ -8,6 +8,8 @@ pub enum RuntimeKind {
     AntigravityCli,
     CodexCli,
     PiCli,
+    /// DeepSeek Harness (`dsh --profile acp`), an agent that speaks ACP natively.
+    DeepSeekHarness,
 }
 
 impl RuntimeKind {
@@ -22,6 +24,9 @@ impl RuntimeKind {
             | "gemini-cli" => Some(Self::AntigravityCli),
             "codex" | "codex-cli" | "native:codex" | "acp:codex" => Some(Self::CodexCli),
             "pi" | "pi-cli" | "native:pi" | "acp:pi" => Some(Self::PiCli),
+            "dsh" | "dsh-cli" | "acp:dsh" | "deepseek" | "deepseek-harness" => {
+                Some(Self::DeepSeekHarness)
+            }
             _ => None,
         }
     }
@@ -33,6 +38,7 @@ impl RuntimeKind {
             Self::AntigravityCli => "antigravity-cli",
             Self::CodexCli => "codex-cli",
             Self::PiCli => "pi-cli",
+            Self::DeepSeekHarness => "dsh-cli",
         }
     }
 
@@ -46,6 +52,7 @@ impl RuntimeKind {
             Self::AntigravityCli => "Install agy_acp_server.par from the official ACP registry",
             Self::CodexCli => "npm install -g @agentclientprotocol/codex-acp@2.2.2",
             Self::PiCli => "npm install -g pi-acp@0.0.34",
+            Self::DeepSeekHarness => "Install DeepSeek Harness so `dsh --profile acp` runs",
             Self::Mock => "",
         }
     }
@@ -61,6 +68,11 @@ mod tests {
             RuntimeKind::from_str("native:agy"),
             Some(RuntimeKind::AntigravityCli)
         );
+        assert_eq!(
+            RuntimeKind::from_str("dsh"),
+            Some(RuntimeKind::DeepSeekHarness)
+        );
+        assert_eq!(RuntimeKind::DeepSeekHarness.runtime_key(), "dsh-cli");
         assert_eq!(
             RuntimeKind::from_str("native:claude"),
             Some(RuntimeKind::ClaudeCode)

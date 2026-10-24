@@ -276,15 +276,26 @@ async fn run_io_inner(
 /// (a JSON array of JSON-RPC messages) are split so each member is dispatched
 /// independently; empty lines are ignored.
 fn parse_frame(line: &str) -> Result<Vec<Value>, String> {
-    if line.trim().is_empty() {
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() {
         return Ok(Vec::new());
     }
-    let message: Value = serde_json::from_str(line).map_err(|error| {
-        format!(
-            "invalid ACP JSONL message: {error}; line={}",
-            clip_line(line)
-        )
-    })?;
+    let message: Value = match serde_json::from_str(line) {
+        Ok(message) => message,
+        // Some agents print log lines to stdout (DeepSeek Harness reports its model listing as
+        // `[llm-deepseek-account] …`, which even starts like a JSON array). Only a broken object
+        // is a broken JSON-RPC stream; anything else is noise and is skipped.
+        Err(error) if trimmed.starts_with('{') => {
+            return Err(format!(
+                "invalid ACP JSONL message: {error}; line={}",
+                clip_line(line)
+            ))
+        }
+        Err(_) => {
+            crate::acp::adapter::acp_log("stdout.noise", json!({ "line": clip_line(line) }));
+            return Ok(Vec::new());
+        }
+    };
     Ok(match message {
         Value::Array(messages) => messages,
         other => vec![other],
@@ -353,8 +364,14 @@ mod tests {
     }
 
     #[test]
+    fn stdout_log_lines_are_skipped_not_fatal() {
+        let line = "[llm-deepseek-account] model listing loaded 2 model(s)";
+        assert!(parse_frame(line).unwrap().is_empty());
+    }
+
+    #[test]
     fn invalid_json_reports_error_with_clipped_line() {
-        let long_garbage = "x".repeat(2048);
+        let long_garbage = format!("{{{}", "x".repeat(2048));
         let error = parse_frame(&long_garbage).unwrap_err();
         assert!(error.contains("invalid ACP JSONL message"));
         assert!(error.chars().count() < 600);
