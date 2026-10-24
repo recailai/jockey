@@ -90,6 +90,78 @@ fn tool_segment(tc: Value, role: Option<&str>) -> Value {
     Value::Object(seg)
 }
 
+fn is_text_segment(seg: &Value) -> bool {
+    seg.get("kind").and_then(Value::as_str) == Some("text")
+}
+
+/// An ACP reply is every streamed text chunk concatenated, so the segments normally hold it
+/// already and only text the stream missed is added. A reply that does not continue the stream
+/// supersedes the trailing text instead.
+fn merge_final_reply(segments: &mut Vec<Value>, streamed: &str, reply: &str) {
+    let ends_with_text = segments.last().is_some_and(is_text_segment);
+    match reply.strip_prefix(streamed) {
+        Some("") => {}
+        Some(missing) if ends_with_text => {
+            if let Some(Value::String(text)) = segments.last_mut().and_then(|s| s.get_mut("text")) {
+                text.push_str(missing);
+            }
+        }
+        Some(missing) => segments.push(json!({ "kind": "text", "text": missing })),
+        None if ends_with_text => {
+            if let Some(last) = segments.last_mut() {
+                last["text"] = json!(reply);
+            }
+        }
+        None => segments.push(json!({ "kind": "text", "text": reply })),
+    }
+}
+
+/// Repairs a message stored before ACP replies were merged correctly: per-update usage frames
+/// were kept as `other` segments, and the whole reply was written again as the last text
+/// segment after the chunks that already carried it. Returns whether anything changed.
+pub(crate) fn repair_stored_segments(msg: &mut Value) -> bool {
+    let full_text = msg
+        .get("text")
+        .and_then(Value::as_str)
+        .map(normalize_newlines);
+    let Some(Value::Array(segments)) = msg.get_mut("segments") else {
+        return false;
+    };
+    let before = segments.len();
+    segments.retain(|s| {
+        !(s.get("type").and_then(Value::as_str) == Some("acp.sessionUpdate")
+            && s.pointer("/payload/sessionUpdate").and_then(Value::as_str) == Some("usage_update"))
+    });
+    let mut changed = segments.len() != before;
+    let Some(last) = segments.iter().rposition(is_text_segment) else {
+        return changed;
+    };
+    let earlier: String = segments[..last]
+        .iter()
+        .filter(|s| is_text_segment(s))
+        .filter_map(|s| s.get("text").and_then(Value::as_str))
+        .collect();
+    let last_text = segments[last]
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    // The duplicate is exactly the message text and starts with every earlier chunk; a reply
+    // that only happens to share a prefix with them is left alone.
+    if earlier.is_empty() || full_text.as_deref() != Some(last_text.as_str()) {
+        return changed;
+    }
+    if let Some(rest) = last_text.strip_prefix(earlier.as_str()) {
+        if rest.trim().is_empty() {
+            segments.remove(last);
+        } else {
+            segments[last]["text"] = json!(rest);
+        }
+        changed = true;
+    }
+    changed
+}
+
 fn is_tool_segment_for(seg: &Value, id: &str) -> bool {
     seg.get("kind").and_then(Value::as_str) == Some("tool")
         && seg.pointer("/tc/toolCallId").and_then(Value::as_str) == Some(id)
@@ -446,19 +518,7 @@ impl Transcript {
         }
         if let Some(reply) = final_reply {
             if !segments.is_empty() {
-                let normalized = normalize_newlines(reply);
-                let last_is_text = segments
-                    .last()
-                    .and_then(|s| s.get("kind"))
-                    .and_then(Value::as_str)
-                    == Some("text");
-                if last_is_text {
-                    if let Some(last) = segments.last_mut() {
-                        last["text"] = json!(normalized);
-                    }
-                } else {
-                    segments.push(json!({ "kind": "text", "text": normalized }));
-                }
+                merge_final_reply(&mut segments, &self.text, &normalize_newlines(reply));
             }
         }
         let mut msg = json!({
@@ -692,6 +752,63 @@ mod tests {
         );
         let msg = t.message("m1", 1, Some("done"));
         assert_eq!(kinds(&msg), ["tool", "text"]);
+    }
+
+    #[test]
+    fn acp_reply_already_streamed_is_not_repeated() {
+        let mut t = Transcript::new("Developer");
+        t.apply_text("Looking.", Some("Developer"));
+        t.apply_event(
+            &json!({"kind": "toolCall", "toolCallId": "t1", "title": "Run"}),
+            Some("Developer"),
+        );
+        t.apply_text("Answer.", Some("Developer"));
+        t.apply_event(&json!({"kind": "usage", "totalTokens": 9}), None);
+        let msg = t.message("m1", 1, Some("Looking.Answer."));
+        assert_eq!(kinds(&msg), ["text", "tool", "text"]);
+        assert_eq!(msg["segments"][2]["text"], "Answer.");
+        assert_eq!(msg["text"], "Looking.Answer.");
+    }
+
+    #[test]
+    fn reply_text_the_stream_missed_is_appended() {
+        let mut t = Transcript::new("Developer");
+        t.apply_text("Half", Some("Developer"));
+        let msg = t.message("m1", 1, Some("Half done"));
+        assert_eq!(kinds(&msg), ["text"]);
+        assert_eq!(msg["segments"][0]["text"], "Half done");
+    }
+
+    #[test]
+    fn stored_messages_lose_the_repeated_reply_and_usage_frames() {
+        let usage = json!({"kind": "other", "type": "acp.sessionUpdate",
+            "payload": {"sessionUpdate": "usage_update", "used": 1, "size": 2}});
+        let mut appended = json!({"text": "A.B.", "segments": [
+            usage.clone(),
+            {"kind": "text", "roleName": "Dev", "text": "A."},
+            {"kind": "tool", "tc": {"toolCallId": "t"}},
+            {"kind": "text", "roleName": "Dev", "text": "B."},
+            usage,
+            {"kind": "text", "text": "A.B."},
+        ]});
+        assert!(repair_stored_segments(&mut appended));
+        assert_eq!(kinds(&appended), ["text", "tool", "text"]);
+        assert_eq!(appended["segments"][2]["text"], "B.");
+
+        let mut replaced = json!({"text": "A.B.", "segments": [
+            {"kind": "text", "text": "A."},
+            {"kind": "tool", "tc": {"toolCallId": "t"}},
+            {"kind": "text", "text": "A.B."},
+        ]});
+        assert!(repair_stored_segments(&mut replaced));
+        assert_eq!(replaced["segments"][2]["text"], "B.");
+
+        let mut clean = json!({"text": "B.", "segments": [
+            {"kind": "text", "text": "A."},
+            {"kind": "tool", "tc": {"toolCallId": "t"}},
+            {"kind": "text", "text": "B."},
+        ]});
+        assert!(!repair_stored_segments(&mut clean));
     }
 
     #[test]

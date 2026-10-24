@@ -548,6 +548,19 @@ impl JockeyUiClient {
                     .map(|c| serde_json::to_value(c).unwrap_or(json!({})))
                     .collect(),
             },
+            acp::SessionUpdate::UsageUpdate(usage) => AcpEvent::Usage {
+                input_tokens: None,
+                output_tokens: None,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+                total_tokens: Some(usage.used),
+                context_window: Some(usage.size),
+                cost_usd: usage
+                    .cost
+                    .filter(|c| c.currency.eq_ignore_ascii_case("USD"))
+                    .map(|c| c.amount),
+            },
             other => AcpEvent::Unknown {
                 type_name: "acp.sessionUpdate".to_string(),
                 raw: serde_json::to_value(other).unwrap_or_else(|_| json!({})),

@@ -432,8 +432,19 @@ pub(crate) fn list_provider_conversations(
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())
+        let mut rows = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        // A legacy alias row (e.g. `claude-native`) can still hold the handle its canonical
+        // successor took over; following both imports the same transcript twice.
+        let is_canonical = |c: &ProviderConversation| {
+            crate::runtime_kind::RuntimeKind::from_str(&c.runtime_kind)
+                .is_some_and(|k| k.runtime_key() == c.runtime_kind)
+        };
+        rows.sort_by_key(|c| !is_canonical(c));
+        let mut seen = std::collections::HashSet::new();
+        rows.retain(|c| seen.insert((c.role_name.clone(), c.provider_id.clone())));
+        Ok(rows)
     })
 }
 

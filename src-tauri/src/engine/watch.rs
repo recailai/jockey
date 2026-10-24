@@ -414,7 +414,7 @@ mod tests {
         );
         let added = sync(&state);
         assert_eq!(texts(&added), ["from terminal", "terminal reply"]);
-        assert_eq!(added[0]["id"], "import:claude-native:pid:2");
+        assert_eq!(added[0]["id"], "import:claude-code:pid:2");
         assert!(sync(&state).is_empty(), "idempotent");
 
         // Jockey's own next turn lands in the transcript too; marking it read keeps it out.

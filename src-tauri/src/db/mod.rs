@@ -4,6 +4,7 @@ pub(crate) mod app_session_role;
 pub(crate) mod context;
 pub(crate) mod global_mcp;
 pub(crate) mod inbox;
+mod legacy_cleanup;
 pub(crate) mod lifecycle;
 pub(crate) mod pool;
 pub(crate) mod profiles;
@@ -25,7 +26,7 @@ use tauri::State;
 
 /// Bump when a new one-shot data migration is added below. Table and column creation stay
 /// unconditional (they are idempotent); only data rewrites are gated on this.
-const SCHEMA_VERSION: i64 = 17;
+const SCHEMA_VERSION: i64 = 18;
 
 fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
     if !is_safe_identifier(table) || !is_safe_identifier(column) {
@@ -875,6 +876,10 @@ pub(crate) fn init_db(conn: &Connection) -> Result<(), String> {
 
     if from_version < 17 {
         acp_migration::migrate(conn)?;
+    }
+
+    if from_version < 18 {
+        legacy_cleanup::migrate(conn)?;
     }
 
     // Only stamped once everything above succeeded, so a failed migration is retried on the

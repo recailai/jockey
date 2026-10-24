@@ -427,8 +427,12 @@ pub(crate) fn locate_transcript(runtime_kind: &str, provider_id: &str) -> Option
     }
 }
 
+/// Keyed by the canonical runtime so a conversation reached under a legacy alias keeps the
+/// same message ids and the unique index still dedupes them.
 pub(crate) fn transcript_id_prefix(runtime_kind: &str, provider_id: &str) -> String {
-    format!("import:{runtime_kind}:{provider_id}")
+    let runtime = crate::runtime_kind::RuntimeKind::from_str(runtime_kind)
+        .map_or(runtime_kind, |k| k.runtime_key());
+    format!("import:{runtime}:{provider_id}")
 }
 
 /// Where to start reading a transcript the session has no cursor for yet. A session whose
