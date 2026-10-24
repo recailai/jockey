@@ -7,7 +7,7 @@
 //! takes effect on its next turn.
 
 pub(crate) mod provider;
-mod secrets;
+pub(crate) mod secrets;
 pub(crate) mod store;
 
 use std::collections::{BTreeMap, HashMap};

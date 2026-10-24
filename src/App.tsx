@@ -1042,6 +1042,24 @@ export default function App() {
     }
   };
 
+  const canForkSession = (session: AppSession) =>
+    assistants().some(
+      (a) =>
+        (session.runtimeProfileId ? a.profileId === session.runtimeProfileId : a.key === session.runtimeKind) &&
+        a.capabilities.fork === true,
+    );
+
+  const forkSession = async (session: AppSession) => {
+    try {
+      const raw = await appSessionApi.fork(session.id);
+      if (getSessionIndex(raw.id) === -1) setSessions((prev) => [sessionFromRaw(raw), ...prev]);
+      setShowControlCenter(false);
+      setActiveSessionId(raw.id);
+    } catch (e) {
+      showToast(`Failed to fork session: ${String(e)}`, "error");
+    }
+  };
+
   const openSessionInTerminal = async (session: AppSession) => {
     try {
       const command = await appSessionApi.openInTerminal(session.id);
@@ -1154,6 +1172,8 @@ export default function App() {
             onNewSession={(projectId) => { void newSession(projectId); }}
             onCloseSession={closeSession}
             onDuplicateSession={duplicateSession}
+            onForkSession={forkSession}
+            canForkSession={canForkSession}
             onOpenSessionInTerminal={openSessionInTerminal}
             onDeleteProject={deleteProject}
             onOpenAddProject={() => setShowProjectModal(true)}

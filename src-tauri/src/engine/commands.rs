@@ -29,6 +29,16 @@ pub(crate) async fn create_app_session(
     .await
 }
 
+/// Branch a session through the provider's `session/fork`: a new Jockey session with a copy of
+/// the transcript, bound to the forked provider conversation.
+#[tauri::command]
+pub(crate) async fn fork_app_session(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<AppSession, String> {
+    super::fork::fork_session(get_state(&state), &id).await
+}
+
 #[tauri::command]
 pub(crate) fn update_app_session(
     state: State<'_, AppState>,

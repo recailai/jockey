@@ -1,5 +1,5 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import { Check, ChevronDown } from "lucide-solid";
+import { Check, ChevronDown, Square } from "lucide-solid";
 import { isRejectOption, needsGenericDeny, visiblePermissionOptions } from "../lib/permissionOptions";
 import type { AppPermission, AppToolCall, TerminalEntry } from "./types";
 import { DiffViewer } from "./DiffViewer";
@@ -8,7 +8,7 @@ import type { DiffHunk } from "../lib/diffParser";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { Badge, Button, StateDot, Switch as UiSwitch } from "./ui";
+import { Badge, Button, IconButton, StateDot, Switch as UiSwitch } from "./ui";
 import { ProviderEventGroup } from "./ProviderEventGroup";
 import { renderMd } from "../lib/markdown";
 
@@ -180,6 +180,12 @@ type ToolCallItemProps = {
   onDeny?: () => void;
   onFileClick?: (path: string, kind: string) => void;
   onRejectHunk?: (rejectPrompt: string) => void;
+  /** Calls this one started (a sub-agent's tools), rendered inside it. */
+  childrenOf?: (toolCallId: string) => AppToolCall[];
+  permissionFor?: (toolCallId: string) => AppPermission | null;
+  nested?: boolean;
+  /** Stops a running sub-agent; offered only while the turn is live. */
+  onStopAgent?: (tc: AppToolCall) => void;
 };
 
 /** Pretty JSON for display. Computed on demand: tool payloads can be large, and the stored
@@ -217,14 +223,26 @@ function ToolCallItem(props: ToolCallItemProps) {
     if (!tid) return null;
     return props.terminals?.[tid] ?? null;
   };
+  const inlinePermission = () =>
+    props.permissionFor ? props.permissionFor(tc().toolCallId) : props.inlinePermission ?? null;
   const showPermission = () =>
-    !!props.inlinePermission && tc().status === "pending";
+    !!inlinePermission() && tc().status === "pending";
+  const children = () => props.childrenOf?.(tc().toolCallId) ?? [];
+  const isAgent = () => displayInfo().category === "task";
+  const canStop = () =>
+    !!props.onStopAgent && props.live && tc().toolCallId.startsWith("subagent:") &&
+    tc().status === "in_progress";
+  /** The task a sub-agent was given, as its parent sent it. */
+  const agentPrompt = () => {
+    const input = tc().rawInput as { prompt?: unknown } | null | undefined;
+    return isAgent() && typeof input?.prompt === "string" ? input.prompt : null;
+  };
 
   const [remember, setRemember] = createSignal(false);
   const displayInfo = createMemo(() => formatToolDisplay(tc(), props.cwd));
 
   const hasRememberableOptions = () =>
-    !!props.inlinePermission?.options.some((o) => o.kind === "allow_always");
+    !!inlinePermission()?.options.some((o) => o.kind === "allow_always");
 
   return (
     <details
@@ -257,7 +275,7 @@ function ToolCallItem(props: ToolCallItemProps) {
         <Show when={displayInfo().background}>
           <Badge tone="info">bg</Badge>
         </Show>
-        <Show when={tc().parentId}>
+        <Show when={tc().parentId && !props.nested}>
           <Badge tone="info">subagent</Badge>
         </Show>
         <Show when={terminalEntry()}>
@@ -266,10 +284,20 @@ function ToolCallItem(props: ToolCallItemProps) {
         <Show when={showPermission()}>
           <Badge tone="warning">approval</Badge>
         </Show>
+        <Show when={canStop()}>
+          <IconButton
+            size="sm"
+            aria-label="Stop sub-agent"
+            title="Stop sub-agent"
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); props.onStopAgent?.(tc()); }}
+          >
+            <Square size={10} fill="currentColor" />
+          </IconButton>
+        </Show>
       </summary>
       <Show when={showPermission()}>
         {(_) => {
-          const perm = () => props.inlinePermission!;
+          const perm = () => inlinePermission()!;
           const opts = () => {
             const all = perm().options;
             return visiblePermissionOptions(all, remember());
@@ -330,7 +358,33 @@ function ToolCallItem(props: ToolCallItemProps) {
           )}</For>
         </div>
       </Show>
-      <Show when={tc().outputLog}>
+      <Show when={agentPrompt()}>
+        {(prompt) => <div class="tool-agent-prompt md-prose">{renderMd(prompt())}</div>}
+      </Show>
+      <Show when={children().length > 0}>
+        <div class="tool-call-children">
+          <For each={children()}>{(child) => (
+            <ToolCallItem
+              tc={child}
+              cwd={props.cwd}
+              terminals={props.terminals}
+              live={props.live}
+              permissionFor={props.permissionFor}
+              childrenOf={props.childrenOf}
+              onStopAgent={props.onStopAgent}
+              nested
+              onApprove={props.onApprove}
+              onDeny={props.onDeny}
+              onFileClick={props.onFileClick}
+              onRejectHunk={props.onRejectHunk}
+            />
+          )}</For>
+        </div>
+      </Show>
+      <Show when={isAgent() && tc().outputLog}>
+        <div class="tool-execution-text md-prose">{renderMd(tc().outputLog!)}</div>
+      </Show>
+      <Show when={!isAgent() && tc().outputLog}>
         <div class="px-2 pb-1.5">
           <div class="text-[9px] uppercase tracking-wide theme-muted">output</div>
           <pre class="mt-0.5 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded bg-[var(--ui-surface-muted)] p-2 font-mono text-[10px] theme-muted">{tc().outputLog}</pre>
@@ -404,6 +458,7 @@ export function ToolCallGroup(props: {
   onDeny?: () => void;
   onFileClick?: (path: string, kind: string) => void;
   onRejectHunk?: (rejectPrompt: string) => void;
+  onStopAgent?: (tc: AppToolCall) => void;
 }) {
   const groupItems = createMemo<ToolCallGroupItem[]>(() =>
     props.items ?? (props.tools ?? []).map((tool) => ({ kind: "tool", tool })),
@@ -415,6 +470,26 @@ export function ToolCallGroup(props: {
   );
   const hasPendingPermission = () => !!props.pendingPermission;
   const [expanded, setExpanded] = createSignal(false);
+
+  // A call whose parent is in this group renders inside it; one whose parent is elsewhere
+  // (another group, or a provider that never sent it) stays at the top level.
+  const childMap = createMemo(() => {
+    const ids = new Set(tools().map((t) => t.toolCallId));
+    const map = new Map<string, AppToolCall[]>();
+    for (const t of tools()) {
+      if (!t.parentId || t.parentId === t.toolCallId || !ids.has(t.parentId)) continue;
+      const list = map.get(t.parentId);
+      if (list) list.push(t);
+      else map.set(t.parentId, [t]);
+    }
+    return map;
+  });
+  const nestedIds = createMemo(() => new Set([...childMap().values()].flat().map((t) => t.toolCallId)));
+  const topItems = createMemo(() =>
+    groupItems().filter((item) => item.kind !== "tool" || !nestedIds().has(item.tool.toolCallId)),
+  );
+  const topTools = createMemo(() => tools().filter((t) => !nestedIds().has(t.toolCallId)));
+  const childrenOf = (id: string) => childMap().get(id) ?? [];
 
   createEffect(() => {
     if (hasPendingPermission()) setExpanded(true);
@@ -430,26 +505,30 @@ export function ToolCallGroup(props: {
     return { success, error, pending: tools().length - success - error };
   });
 
-  const pendingToolCallIndex = createMemo(() => {
-    if (!props.pendingPermission) return -1;
-    for (let i = tools().length - 1; i >= 0; i--) {
-      if (tools()[i].status === "pending") return i;
+  const pendingToolCallId = createMemo(() => {
+    if (!props.pendingPermission) return null;
+    const list = tools();
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (list[i].status === "pending") return list[i].toolCallId;
     }
-    return tools().length - 1;
+    return list[list.length - 1]?.toolCallId ?? null;
   });
+  const permissionFor = (id: string) =>
+    id === pendingToolCallId() ? props.pendingPermission ?? null : null;
 
   // Title says what happened; detail is secondary context. Exceptions (approval, failures) get
   // a badge on the right; a clean run needs no badge at all.
   const groupSummary = createMemo((): { title: string; detail?: string } => {
-    if (tools().length === 0) return { title: "Execution" };
-    if (tools().length === 1) {
-      const display = formatToolDisplay(tools()[0], props.cwd);
+    const top = topTools();
+    if (top.length === 0) return { title: "Execution" };
+    if (top.length === 1) {
+      const display = formatToolDisplay(top[0], props.cwd);
       return { title: display.actionLabel, detail: display.targetSummary };
     }
     const categories = Array.from(
-      new Set(tools().map((t) => formatToolDisplay(t, props.cwd).categoryBadge)),
+      new Set(top.map((t) => formatToolDisplay(t, props.cwd).categoryBadge)),
     );
-    return { title: `Ran ${tools().length} tools`, detail: categories.join(", ") };
+    return { title: `Ran ${top.length} tools`, detail: categories.join(", ") };
   });
 
   return (
@@ -490,18 +569,16 @@ export function ToolCallGroup(props: {
       </button>
       <Show when={expanded()}>
         <div class="tool-call-list">
-          <For each={groupItems()}>{(item, itemIndex) => {
-            const toolIndex = () =>
-              groupItems()
-                .slice(0, itemIndex())
-                .filter((candidate) => candidate.kind === "tool").length;
+          <For each={topItems()}>{(item) => {
             return item.kind === "tool" ? (
               <ToolCallItem
                 tc={item.tool}
                 cwd={props.cwd}
                 terminals={props.terminals}
                 live={props.streaming}
-                inlinePermission={toolIndex() === pendingToolCallIndex() ? props.pendingPermission : null}
+                permissionFor={permissionFor}
+                childrenOf={childrenOf}
+                onStopAgent={props.onStopAgent}
                 onApprove={props.onApprove}
                 onDeny={props.onDeny}
                 onFileClick={props.onFileClick}

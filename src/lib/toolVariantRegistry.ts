@@ -16,7 +16,7 @@ const variants: ToolVariant[] = [
   { category: "write", aliases: ["write_to_file", "create_file", "write"] },
   { category: "search", aliases: ["grep_search", "file_search", "search", "find_by_name", "glob"] },
   { category: "fetch", aliases: ["read_url_content", "web_search", "search_web", "fetch", "browser_subagent"] },
-  { category: "task", aliases: ["subagent", "manage_task", "background_task"] },
+  { category: "task", aliases: ["subagent", "agent", "manage_task", "background_task"] },
 ];
 
 const aliases = createKeyedRegistry<ToolVariant>();
@@ -43,6 +43,7 @@ export function resolveToolVariant(name: string, kind?: string): ToolVariantCate
   if (explicitKind === "filechange" || explicitKind === "edit") return "edit";
   if (explicitKind === "websearch" || explicitKind === "fetch") return "fetch";
   if (explicitKind === "mcptoolcall" || explicitKind === "dynamictoolcall") return "tool";
+  if (explicitKind === "agent") return "task";
   if (explicitKind === "shell" || explicitKind === "read" || explicitKind === "edit" || explicitKind === "write" || explicitKind === "search" || explicitKind === "fetch" || explicitKind === "task") {
     return explicitKind;
   }

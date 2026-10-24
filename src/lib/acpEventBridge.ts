@@ -362,7 +362,10 @@ export function applyAcpStreamEvent(deps: BridgeDeps): void {
       }
       break;
     case "plan":
-      if (event.entries) patchSession(sid, { currentPlan: event.entries as AppPlanEntry[] });
+      // An empty plan is a removed one (ACP `plan_removed`, or a plan cleared to no steps).
+      if (event.entries) {
+        patchSession(sid, { currentPlan: event.entries.length > 0 ? (event.entries as AppPlanEntry[]) : null });
+      }
       break;
     case "permissionRequest":
       if (event.requestId) {

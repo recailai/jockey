@@ -77,7 +77,7 @@ Workflows are legacy and minimal: `start_workflow` runs a workflow's steps seque
   - `pi-cli` → `pi-acp@0.0.34`.
   - `antigravity-cli` → Google's `agy_acp_server.par` 1.4.1.
   - `dsh-cli` → DeepSeek Harness, native ACP via the user's own `dsh --profile acp` (not managed or pinned). It advertises `session/resume` instead of `session/load`; cold start resumes with it, and its model option is grouped by provider.
-- Rust ACP SDK is pinned to 3.5.0; stable ACP v1 is negotiated on the wire.
+- Rust ACP SDK is pinned to 3.5.0; stable ACP v1 is negotiated on the wire. Unstable features (sub-agents, plan operations, end-of-turn usage, system prompt, fork, LLM providers, MCP over ACP) are compiled in and used only when the agent advertises them; see "Unstable ACP surfaces" in `docs/architecture/runtime-adapters.md`.
 - Old `claude-native` / `native:*` names are compatibility aliases, not execution modes. Schema v17 migrates active Claude bindings and preserves transcripts and provider handles.
 - Catalog detection does not launch provider processes or install packages. Managed adapters install on demand with exact version validation. There is no silent native fallback.
 - Import discovery = transcript scanners + ACP `session/list` from installed adapters only (never installs); see `docs/architecture/runtime-adapters.md`.
@@ -136,7 +136,8 @@ Rule: the engine owns every durable write; views are thin and only render engine
 - Provider-specific wire conversion belongs to the external ACP adapters.
 - `session/new` startup messages and `session/load` transcript replay must not enter the next turn's transcript; configuration and command discovery still apply during setup.
 - Failed session loading preserves the original handle and history. Never silently create a replacement conversation.
-- Fork, rewind and provider listing require negotiated ACP extensions; do not advertise native-only controls.
+- Fork, rewind and provider listing require negotiated ACP capabilities; do not advertise native-only controls.
+- Sub-agent traffic arrives under the child's session id; it renders as the `subagent:<id>` tool row and must never reach the parent's reply text or state.
 
 ## Testing Guidelines
 

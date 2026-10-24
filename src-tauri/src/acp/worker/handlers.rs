@@ -218,6 +218,8 @@ pub(crate) fn evict_if_launch_changed(
                 Some("cwd_change")
             } else if c.env.as_slice() != env {
                 Some("env_change")
+            } else if c.providers_rev != crate::llm_providers::revision(runtime_key) {
+                Some("providers_change")
             } else {
                 None
             }
@@ -784,6 +786,20 @@ pub(crate) async fn handle_execute(
                     "stopReason": format!("{:?}", resp.stop_reason)
                 }),
             );
+            // `total_tokens` is left out: the UI's total is context occupancy from
+            // `usage_update`, and the turn's own total would overwrite it.
+            if let Some(usage) = resp.usage.as_ref() {
+                let _ = delta_tx.try_send(AcpEvent::Usage {
+                    input_tokens: Some(usage.input_tokens),
+                    output_tokens: Some(usage.output_tokens),
+                    cache_read_tokens: usage.cached_read_tokens,
+                    cache_write_tokens: usage.cached_write_tokens,
+                    reasoning_tokens: usage.thought_tokens,
+                    total_tokens: None,
+                    context_window: None,
+                    cost_usd: None,
+                });
+            }
             let _ = result_tx.send(Ok((String::new(), session_id.to_string())));
         }
         Ok(Err(e)) => {

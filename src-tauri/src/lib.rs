@@ -11,6 +11,7 @@ mod fs_context;
 mod git;
 pub mod importer;
 pub mod jockey_mcp;
+mod llm_providers;
 mod parser;
 mod resource_limits;
 mod runtime_kind;
@@ -111,6 +112,7 @@ pub fn run() {
                     .map_err(|e| std::io::Error::other(e.to_string()))?;
                 db::profiles::load_custom_runtime_profiles(&conn)
                     .map_err(std::io::Error::other)?;
+                llm_providers::load_snapshot(&conn).map_err(std::io::Error::other)?;
             }
 
             let bridge_state = std::sync::Arc::new(state.clone_refs());
@@ -180,6 +182,7 @@ pub fn run() {
             commands::completion::complete_mentions,
             assistant::detect_assistants,
             commands::runtime_cmd::cancel_acp_session,
+            commands::runtime_cmd::cancel_acp_subagent,
             commands::runtime_cmd::steer_acp_session,
             commands::runtime_cmd::reset_acp_session,
             commands::runtime_cmd::reconnect_acp_session,
@@ -199,6 +202,10 @@ pub fn run() {
             commands::provider_session_cmd::rewind_provider_session_cmd,
             commands::runtime_cmd::sync_role_mode_cmd,
             commands::runtime_cmd::prewarm_role_config_cmd,
+            llm_providers::list_runtime_providers_cmd,
+            llm_providers::get_llm_provider_configs_cmd,
+            llm_providers::set_llm_provider_config_cmd,
+            llm_providers::clear_llm_provider_config_cmd,
             credentials::list_agent_credentials_cmd,
             credentials::create_agent_credential_cmd,
             credentials::update_agent_credential_cmd,
@@ -237,6 +244,7 @@ pub fn run() {
             db::app_session::list_app_sessions,
             db::app_session::list_closed_app_sessions,
             engine::commands::create_app_session,
+            engine::commands::fork_app_session,
             engine::commands::update_app_session,
             engine::commands::delete_app_session,
             engine::commands::reopen_app_session,

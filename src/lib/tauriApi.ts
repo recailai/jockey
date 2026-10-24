@@ -161,6 +161,8 @@ export const appSessionApi = {
       runtimeProfileId,
       id,
     }),
+  /** Branch the session through the provider's `session/fork`; resolves to the new session. */
+  fork: (id: string) => call<RawSession>("fork_app_session", { id }),
   update: (id: string, update: SessionUpdate) => call<void>("update_app_session", { id, update }),
   remove: (id: string) => call<void>("delete_app_session", { id }),
   list: (projectId?: string) => call<RawSession[]>("list_app_sessions", { projectId }),
@@ -307,6 +309,43 @@ export const credentialApi = {
     call<Array<{ provider: CredentialProviderKey; credentialId: string }>>("get_role_credentials_cmd", { roleId }),
   setRoleBinding: (roleId: string, provider: CredentialProviderKey, credentialId: string | null) =>
     call<void>("set_role_credential_cmd", { roleId, provider, credentialId }),
+};
+
+export type LiveLlmProvider = {
+  providerId: string;
+  supported: string[];
+  required: boolean;
+  currentApiType?: string | null;
+  currentBaseUrl?: string | null;
+};
+
+export type SavedLlmProviderConfig = {
+  providerId: string;
+  apiType: string;
+  baseUrl: string;
+  /// Values stay in the OS keychain; only names come back.
+  headerNames: string[];
+};
+
+export type SavedLlmProviders = { configs: SavedLlmProviderConfig[]; applyError?: string | null };
+
+/// Routes a runtime's model traffic through the user's own endpoint (ACP `providers/*`).
+/// `value` omitted on a header keeps the stored secret.
+export const llmProviderApi = {
+  /// `null` when the adapter is not installed or does not advertise providers.
+  live: (runtimeKey: string) => call<LiveLlmProvider[] | null>("list_runtime_providers_cmd", { runtimeKey }),
+  saved: (runtimeKey: string) => call<SavedLlmProviders>("get_llm_provider_configs_cmd", { runtimeKey }),
+  save: (
+    runtimeKey: string,
+    config: {
+      providerId: string;
+      apiType: string;
+      baseUrl: string;
+      headers: Array<{ name: string; value?: string }>;
+    },
+  ) => call<void>("set_llm_provider_config_cmd", { runtimeKey, config }),
+  clear: (runtimeKey: string, providerId: string) =>
+    call<void>("clear_llm_provider_config_cmd", { runtimeKey, providerId }),
 };
 
 const CREDENTIAL_PROVIDER_BY_RUNTIME: Record<string, CredentialProviderKey> = {
@@ -466,6 +505,8 @@ export const assistantApi = {
   detect: () => call<AssistantRuntime[]>("detect_assistants"),
   cancelSession: (roleName: string, appSessionId: string) =>
     call<void>("cancel_acp_session", { roleName, appSessionId }),
+  stopSubagent: (roleName: string, appSessionId: string, toolCallId: string) =>
+    call<void>("cancel_acp_subagent", { roleName, appSessionId, toolCallId }),
   steerSession: (
     roleName: string,
     appSessionId: string,

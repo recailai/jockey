@@ -4,6 +4,7 @@
 
 pub(crate) mod commands;
 pub(crate) mod events;
+pub(crate) mod fork;
 pub(crate) mod queue;
 pub(crate) mod service;
 pub(crate) mod sessions;

@@ -13,6 +13,32 @@ use super::worker::{
 const RAW_PAYLOAD_LIMIT: usize = 64 * 1024;
 const DEFAULT_TERMINAL_OUTPUT_LIMIT: u64 = 256 * 1024;
 
+/// A plan operation as the single plan the UI shows. File and Markdown plans have no entries;
+/// they become one entry whose `format` tells the plan panel how to render it.
+fn plan_update_event(plan: acp::PlanUpdateContent) -> AcpEvent {
+    let entries = match plan {
+        acp::PlanUpdateContent::Items(items) => items
+            .entries
+            .iter()
+            .map(|e| serde_json::to_value(e).unwrap_or(json!({})))
+            .collect(),
+        acp::PlanUpdateContent::File(file) => vec![json!({
+            "content": file.uri,
+            "format": "file",
+            "priority": "medium",
+            "status": "pending",
+        })],
+        acp::PlanUpdateContent::Markdown(md) => vec![json!({
+            "content": md.content,
+            "format": "markdown",
+            "priority": "medium",
+            "status": "pending",
+        })],
+        _ => Vec::new(),
+    };
+    AcpEvent::Plan { entries }
+}
+
 fn cap_raw(v: Option<Value>) -> Option<Value> {
     let v = v?;
     let s = v.to_string();
@@ -174,6 +200,8 @@ pub(super) struct JockeyUiClient {
     /// Terminals owned by this client. Dropped (and reaped) when the client
     /// drops — which happens when its owning `LiveConnection` is evicted.
     pub(super) terminals: TerminalMap,
+    /// Child sessions announced on this connection (`unstable_subagents`).
+    pub(super) subagents: Rc<RefCell<super::subagents::Subagents>>,
 }
 
 impl Drop for JockeyUiClient {
@@ -197,7 +225,7 @@ impl JockeyUiClient {
             .ok()
             .and_then(|guard| guard.clone());
         if let Some(expected) = expected {
-            if expected != *received {
+            if expected != *received && !self.subagents.borrow().is_child(&received.0) {
                 use super::adapter::acp_log;
                 acp_log(
                     "session.request_mismatch",
@@ -423,7 +451,61 @@ impl JockeyUiClient {
         {
             return Ok(());
         }
+        // A child's traffic carries the child's own session id. Its mode, config and command
+        // updates must not touch the parent's state, so only what its row shows gets through.
+        let scope = self.subagents.borrow().scope_of(&args.session_id.0);
+        if scope.is_some()
+            && !matches!(
+                &args.update,
+                acp::SessionUpdate::AgentMessageChunk(_)
+                    | acp::SessionUpdate::ToolCall(_)
+                    | acp::SessionUpdate::ToolCallUpdate(_)
+                    | acp::SessionUpdate::SubagentUpdate(_)
+                    | acp::SessionUpdate::SessionMessage(_)
+                    | acp::SessionUpdate::SessionMessageChunk(_)
+            )
+        {
+            return Ok(());
+        }
         let event = match args.update {
+            acp::SessionUpdate::SubagentUpdate(update) => {
+                self.subagents.borrow_mut().update(scope.clone(), update)
+            }
+            acp::SessionUpdate::SessionMessage(message) => {
+                let text = match &message.content {
+                    acp::MaybeUndefined::Value(blocks) => super::subagents::text_of(blocks),
+                    _ => String::new(),
+                };
+                let event = self.subagents.borrow_mut().message(
+                    &message.message_id.to_string(),
+                    message.sender_session_id.as_ref(),
+                    message.recipient_session_id.as_ref(),
+                    text,
+                    false,
+                );
+                match event {
+                    Some(event) => event,
+                    None => return Ok(()),
+                }
+            }
+            acp::SessionUpdate::SessionMessageChunk(chunk) => {
+                let event = self.subagents.borrow_mut().message(
+                    &chunk.message_id.to_string(),
+                    chunk.sender_session_id.as_ref(),
+                    chunk.recipient_session_id.as_ref(),
+                    super::subagents::text_of([&chunk.content]),
+                    true,
+                );
+                match event {
+                    Some(event) => event,
+                    None => return Ok(()),
+                }
+            }
+            acp::SessionUpdate::PlanUpdate(update) => plan_update_event(update.plan),
+            // Jockey shows one plan; removing it clears the panel.
+            acp::SessionUpdate::PlanRemoved(_) => AcpEvent::Plan {
+                entries: Vec::new(),
+            },
             acp::SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
                 acp::ContentBlock::Text(tc) if !tc.text.is_empty() => {
                     AcpEvent::TextDelta { text: tc.text }
@@ -566,6 +648,18 @@ impl JockeyUiClient {
                 raw: serde_json::to_value(other).unwrap_or_else(|_| json!({})),
             },
         };
+        let event = match scope {
+            Some(row) => match super::subagents::Subagents::scoped(&row, event) {
+                Some(event) => event,
+                None => return Ok(()),
+            },
+            None => event,
+        };
+        self.emit(event).await;
+        Ok(())
+    }
+
+    pub(super) async fn emit(&self, event: AcpEvent) {
         let tx = self
             .delta_slot
             .lock()
@@ -598,7 +692,6 @@ impl JockeyUiClient {
                 }
             }
         }
-        Ok(())
     }
 
     async fn read_text_file(
@@ -822,6 +915,7 @@ mod notification_tests {
             mode_state: Rc::new(RefCell::new(None)),
             config_state: Rc::new(RefCell::new(vec![])),
             terminals: Rc::new(RefCell::new(HashMap::new())),
+            subagents: Default::default(),
         };
         let notification = |text: &str| {
             serde_json::from_value(json!({ "sessionId": "s", "update": {

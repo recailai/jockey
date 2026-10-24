@@ -44,7 +44,8 @@ export type AppToolCall = {
   /** Agent that owns this call when a turn fans out across roles. */
   roleName?: string;
 };
-export type AppPlanEntry = { content?: string; title?: string; status?: string; description?: string; priority?: string };
+/** `format` marks a plan sent as one document (ACP plan operations) rather than as steps. */
+export type AppPlanEntry = { content?: string; title?: string; status?: string; description?: string; priority?: string; format?: "markdown" | "file" };
 /** Token accounting for the session. `null` fields mean the provider did not report them,
  *  which is different from reporting zero. */
 export type AppUsage = {

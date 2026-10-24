@@ -1,6 +1,6 @@
 import { For, Index, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { Accessor } from "solid-js";
-import type { AppSession, AppMessage, AppSegment, AppPermission, InputDeliveryCapabilities, RuntimeCapabilities } from "./types";
+import type { AppSession, AppMessage, AppSegment, AppPermission, AppToolCall, InputDeliveryCapabilities, RuntimeCapabilities } from "./types";
 import { MESSAGE_RENDER_WINDOW, fmt } from "./types";
 import SessionTelemetry from "./SessionTelemetry";
 import CapabilityGate from "./CapabilityGate";
@@ -603,6 +603,11 @@ function MessageWindowContent(props: MessageWindowProps) {
                 <AgentStreamList
                   segments={props.activeSession()?.streamSegments ?? []}
                   fallbackRole={streaming().roleName || props.activeSession()?.activeRole || "Agent"}
+                  onStopAgent={(tc) => {
+                    const sid = props.activeSessionId();
+                    const role = tc.roleName || streaming().roleName || props.activeSession()?.activeRole;
+                    if (sid && role) void assistantApi.stopSubagent(role, sid, tc.toolCallId);
+                  }}
                   cwd={props.activeSession()?.cwd}
                   terminals={props.activeSession()?.terminals}
                   pendingPermission={
@@ -670,6 +675,7 @@ function MessageWindowContent(props: MessageWindowProps) {
           const done = () => plan().filter((e) => e.status === "completed").length;
           const running = () => plan().some((e) => e.status === "in_progress");
           const allDone = () => done() === total() && total() > 0;
+          const doc = () => (plan().length === 1 && plan()[0].format ? plan()[0] : null);
           const priorityBadge = (p?: string) => {
             if (p === "high") return "is-high";
             if (p === "medium") return "is-medium";
@@ -686,10 +692,24 @@ function MessageWindowContent(props: MessageWindowProps) {
                 <Show when={allDone()}>
                   <span class="plan-state-label is-done">done</span>
                 </Show>
-                <span class="ml-auto text-[10px] theme-muted font-mono bg-[var(--ui-panel-2)] px-1.5 py-0.5 rounded-md">{done()}/{total()}</span>
+                <Show when={!doc()} fallback={<span class="ml-auto" />}>
+                  <span class="ml-auto text-[10px] theme-muted font-mono bg-[var(--ui-panel-2)] px-1.5 py-0.5 rounded-md">{done()}/{total()}</span>
+                </Show>
                 <svg class="w-3 h-3 theme-muted transition-transform duration-150 group-open/plan:rotate-180" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
               </summary>
-              <div class="border-t theme-border">
+              <Show when={doc()}>
+                {(d) => (
+                  <div class="border-t theme-border px-3 py-2 text-[12px]">
+                    <Show
+                      when={d().format === "markdown"}
+                      fallback={<span class="font-mono text-[11px] theme-muted break-all">{d().content}</span>}
+                    >
+                      <div class="md-prose">{renderMd(d().content ?? "")}</div>
+                    </Show>
+                  </div>
+                )}
+              </Show>
+              <div class="border-t theme-border" classList={{ hidden: !!doc() }}>
                 <For each={plan()}>{(entry, i) => {
                   const isRunning = () => entry.status === "in_progress";
                   const isCompleted = () => entry.status === "completed";
@@ -833,12 +853,21 @@ function collectToolGroups(segments: AppSegment[]): Array<
     | { kind: "tools"; items: ToolCallGroupItem[] }
     | { kind: "events"; events: Array<{ type: string; payload: unknown }> }
   > = [];
+  // A sub-agent's calls keep arriving while the parent writes; they join the group that holds
+  // the sub-agent's row instead of starting a group of their own.
+  const groupOfTool = new Map<string, ToolCallGroupItem[]>();
   for (const seg of segments) {
     if (seg.kind === "text") {
       const last = result[result.length - 1];
       if (last?.kind === "text") last.text += seg.text;
       else result.push({ kind: "text", text: seg.text });
     } else if (seg.kind === "tool") {
+      const parentGroup = seg.tc.parentId ? groupOfTool.get(seg.tc.parentId) : undefined;
+      if (parentGroup) {
+        parentGroup.push({ kind: "tool", tool: seg.tc });
+        groupOfTool.set(seg.tc.toolCallId, parentGroup);
+        continue;
+      }
       const last = result[result.length - 1];
       if (last?.kind === "tools") {
         last.items.push({ kind: "tool", tool: seg.tc });
@@ -861,6 +890,8 @@ function collectToolGroups(segments: AppSegment[]): Array<
       } else {
         result.push({ kind: "tools", items: [{ kind: "tool", tool: seg.tc }] });
       }
+      const placed = result[result.length - 1];
+      if (placed.kind === "tools") groupOfTool.set(seg.tc.toolCallId, placed.items);
     } else if (seg.kind === "thought") {
       const last = result[result.length - 1];
       if (last?.kind === "tools") {
@@ -933,6 +964,7 @@ function StreamSegmentList(props: {
   onDeny?: () => void;
   onFileClick?: (path: string, kind: string) => void;
   onRejectHunk?: (p: string) => void;
+  onStopAgent?: (tc: AppToolCall) => void;
 }) {
   const groups = createMemo(() => collectToolGroups(props.segments));
   // Only the last block is still growing; caching every partial version of it would just
@@ -974,6 +1006,7 @@ function StreamSegmentList(props: {
             onDeny={props.onDeny}
             onFileClick={props.onFileClick}
             onRejectHunk={props.onRejectHunk}
+            onStopAgent={props.onStopAgent}
           />
         </Match>
       </Switch>
@@ -1007,6 +1040,7 @@ function AgentStreamList(props: {
   onDeny?: () => void;
   onFileClick?: (path: string, kind: string) => void;
   onRejectHunk?: (p: string) => void;
+  onStopAgent?: (tc: AppToolCall) => void;
 }) {
   const groups = createMemo(() => groupSegmentsByRole(props.segments, props.fallbackRole));
   return (
@@ -1034,6 +1068,7 @@ function AgentStreamList(props: {
             onDeny={props.onDeny}
             onFileClick={props.onFileClick}
             onRejectHunk={props.onRejectHunk}
+            onStopAgent={props.onStopAgent}
           />
         </div>
       </div>

@@ -8,6 +8,7 @@ pub(crate) mod process;
 pub(crate) mod protocol;
 mod runtime_state;
 pub(crate) mod session;
+pub(crate) mod subagents;
 mod transport;
 mod worker;
 
@@ -19,12 +20,13 @@ pub use adapter::{
 };
 pub use metrics::{snapshot as metrics_snapshot, AcpRuntimeMetrics};
 pub use runtime_state::{
-    clear_discovered_catalogs, list_available_commands, list_discovered_models, runtime_steering,
+    clear_discovered_catalogs, list_available_commands, list_discovered_models, runtime_fork,
+    runtime_steering,
 };
 pub use session::{
-    cancel_session, execute_runtime, prewarm_role, reconnect_session,
-    refresh_role_config_defs_with, reset_session, set_config_option, set_mode, steer_session,
-    sync_role_mode,
+    cancel_session, cancel_subagent, execute_runtime, fork_session, prewarm_role,
+    reconnect_session, refresh_role_config_defs_with, reset_session, set_config_option, set_mode,
+    steer_session, sync_role_mode,
 };
 pub use worker::{
     active_connections_snapshot, list_pending_permissions, list_pending_prompts,

@@ -735,6 +735,88 @@ pub(crate) fn create_app_session_internal(
     })
 }
 
+/// A new open session beside `source_id` (same project, cwd, persona and engine) holding a copy
+/// of its transcript, in one transaction. `title` must already be a single token; a clash with
+/// an open session gets a numeric suffix like any other new session.
+pub(crate) fn fork_app_session_internal(
+    state: &AppState,
+    source_id: &str,
+    title: &str,
+) -> Result<AppSession, String> {
+    let now = now_ms();
+    with_db(state, |conn| {
+        in_tx(conn, |conn| {
+            let (active_role, runtime_kind, runtime_profile_id, cwd, project_id): (
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            ) = conn
+                .query_row(
+                    "SELECT active_role, runtime_kind, runtime_profile_id, cwd, project_id
+                     FROM app_sessions WHERE id = ?1",
+                    params![source_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "session not found".to_string())?;
+            let mut final_title = title.to_string();
+            let mut counter = 1;
+            while active_session_title_exists(conn, &final_title, project_id.as_deref(), None)? {
+                counter += 1;
+                final_title = format!("{title}_{counter}");
+            }
+            let id = Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO app_sessions (id, title, active_role, runtime_kind, runtime_profile_id, cwd, project_id, external_session_id, created_at, last_active_at, closed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8, NULL)",
+                params![
+                    id,
+                    final_title,
+                    active_role,
+                    runtime_kind,
+                    runtime_profile_id,
+                    cwd,
+                    project_id,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO app_session_messages (session_id, client_id, role_name, content, content_type, payload, created_at)
+                 SELECT ?1, client_id, role_name, content, content_type, payload, created_at
+                 FROM app_session_messages WHERE session_id = ?2 ORDER BY id",
+                params![id, source_id],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(AppSession {
+                id,
+                title: final_title,
+                active_role,
+                runtime_kind,
+                runtime_profile_id,
+                cwd,
+                project_id,
+                external_session_id: None,
+                messages: Vec::new(),
+                created_at: now,
+                last_active_at: now,
+                closed_at: None,
+            })
+        })
+    })
+}
+
 pub(crate) fn upsert_imported_session(
     state: &AppState,
     project_id: Option<&str>,
@@ -1410,5 +1492,33 @@ mod tests {
         let msg = &reloaded[0].messages[0];
         assert_eq!(msg["text"], "hi");
         assert!(msg.get("toolCalls").is_none());
+    }
+
+    #[test]
+    fn fork_copies_transcript_and_dedupes_title() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(&dir);
+        let source =
+            create_app_session_internal(&state, Some("s"), None, Some("codex-cli"), None, None)
+                .expect("create session");
+        save_app_message_internal(&state, &source.id, Some("c1"), "user", "hi", None, None)
+            .unwrap();
+        append_app_message_internal(&state, &source.id, "Developer", "yo", None, None).unwrap();
+
+        let a = fork_app_session_internal(&state, &source.id, "[Fork]_s").unwrap();
+        let b = fork_app_session_internal(&state, &source.id, "[Fork]_s").unwrap();
+        assert_eq!(
+            (a.title.as_str(), b.title.as_str()),
+            ("[Fork]_s", "[Fork]_s_2")
+        );
+        assert_eq!(a.runtime_kind.as_deref(), Some("codex-cli"));
+        assert_ne!(a.id, source.id);
+
+        let copy = get_app_sessions_by_ids(&state, &[a.id.clone()]).unwrap();
+        assert_eq!(copy[0].messages.len(), 2);
+        assert_eq!(copy[0].messages[0]["text"], "hi");
+        let original = get_app_sessions_by_ids(&state, &[source.id.clone()]).unwrap();
+        assert_eq!(original[0].messages.len(), 2);
+        assert!(fork_app_session_internal(&state, "missing", "x").is_err());
     }
 }

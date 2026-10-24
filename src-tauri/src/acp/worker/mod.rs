@@ -338,6 +338,69 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                     let _ = result_tx.send(outcome);
                 });
             }
+            WorkerMsg::CancelSubagent {
+                runtime_key,
+                role_name,
+                app_session_id,
+                child_session_id,
+                result_tx,
+            } => {
+                let key = pool_key(&app_session_id, runtime_key, &role_name);
+                let conn = CONN_MAP.with(|m| m.borrow().get(&key).map(|c| c.conn.clone()));
+                let Some(conn) = conn else {
+                    let _ = result_tx.send(Err("no active session".to_string()));
+                    return;
+                };
+                acp_log(
+                    "cancel.subagent",
+                    json!({ "runtime": runtime_key, "child": child_session_id }),
+                );
+                tokio::task::spawn_local(async move {
+                    conn.cancel(acp::CancelNotification::new(acp::SessionId::from(
+                        child_session_id,
+                    )))
+                    .await;
+                    let _ = result_tx.send(Ok(()));
+                });
+            }
+            WorkerMsg::Fork {
+                runtime_key,
+                role_name,
+                app_session_id,
+                result_tx,
+            } => {
+                let key = pool_key(&app_session_id, runtime_key, &role_name);
+                let live = CONN_MAP.with(|m| {
+                    m.borrow()
+                        .get(&key)
+                        .map(|c| (c.conn.clone(), c.session_id.clone(), c.cwd.clone()))
+                });
+                let Some((conn, session_id, cwd)) = live else {
+                    let _ = result_tx.send(Err("no active session".to_string()));
+                    return;
+                };
+                if crate::acp::runtime_fork(runtime_key) != Some(true) {
+                    let _ = result_tx.send(Err(
+                        "This ACP adapter has not negotiated session fork.".to_string(),
+                    ));
+                    return;
+                }
+                tokio::task::spawn_local(async move {
+                    let result = conn
+                        .request::<_, acp::ForkSessionResponse>(
+                            "session/fork",
+                            acp::ForkSessionRequest::new(session_id, cwd),
+                        )
+                        .await
+                        .map(|resp| resp.session_id.to_string())
+                        .map_err(|e| AcpLayerError::from(e).into_message());
+                    acp_log(
+                        "fork.result",
+                        json!({ "runtime": runtime_key, "role": role_name, "ok": result.is_ok() }),
+                    );
+                    let _ = result_tx.send(result);
+                });
+            }
             WorkerMsg::SetMode {
                 runtime_key,
                 role_name,

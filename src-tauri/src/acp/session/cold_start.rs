@@ -14,8 +14,8 @@ use super::super::metrics::{
     record_init_latency, record_session_start_latency, record_spawn_latency,
 };
 use super::super::runtime_state::{
-    clear_runtime, remember_runtime_config_options, remember_runtime_models,
-    remember_runtime_modes, remember_runtime_steering,
+    clear_runtime, remember_runtime_config_options, remember_runtime_fork, remember_runtime_models,
+    remember_runtime_modes, remember_runtime_steering, role_system_prompt,
 };
 use super::super::transport::{run_io, AcpConnection};
 use super::super::worker::{
@@ -152,6 +152,7 @@ pub(crate) async fn cold_start(
         mode_state: mode_state.clone(),
         config_state: config_state.clone(),
         terminals,
+        subagents: Default::default(),
     });
     let conn = Rc::new(AcpConnection::new(stdin));
     let io_conn = conn.clone();
@@ -176,6 +177,8 @@ pub(crate) async fn cold_start(
                             .read_text_file(true)
                             .write_text_file(true))
                         .terminal(true)
+                        .subagents(acp::SubagentCapabilities::new())
+                        .plan(acp::PlanCapabilities::new())
                         .meta(acp::Meta::from_iter([(
                             "terminal_output".to_string(),
                             true.into(),
@@ -213,6 +216,9 @@ pub(crate) async fn cold_start(
     );
     record_init_latency(runtime_key, t.elapsed().as_millis());
 
+    let providers_rev = crate::llm_providers::revision(runtime_key);
+    super::providers::apply_saved_providers(&conn, runtime_key, &init_resp).await;
+
     let t = Instant::now();
     let supports_load = init_resp.agent_capabilities.load_session;
     // Not part of stable ACP: claude-agent-acp and codex-acp agree on a `_session/steering`
@@ -227,6 +233,14 @@ pub(crate) async fn cold_start(
     if remember_runtime_steering(runtime_key, steering) {
         crate::assistant::invalidate_assistant_catalog();
     }
+    let supports_fork = init_resp
+        .agent_capabilities
+        .session_capabilities
+        .fork
+        .is_some();
+    if remember_runtime_fork(runtime_key, supports_fork) {
+        crate::assistant::invalidate_assistant_catalog();
+    }
     // `session/resume` reattaches without replaying history. Agents that keep sessions but
     // cannot replay them (DeepSeek Harness) advertise only this.
     let supports_resume = init_resp
@@ -234,6 +248,16 @@ pub(crate) async fn cold_start(
         .session_capabilities
         .resume
         .is_some();
+
+    // The role's instructions, appended to the agent's own. Only sent when advertised: an
+    // agent must reject a session request carrying a system prompt it cannot apply.
+    let system_prompt = init_resp
+        .agent_capabilities
+        .session_capabilities
+        .system_prompt
+        .as_ref()
+        .and_then(|_| role_system_prompt(app_session_id, role_name))
+        .map(|text| acp::SystemPrompt::new(vec![acp::ContentBlock::from(text)]));
 
     struct SessionStartResult {
         session_id: acp::SessionId,
@@ -246,9 +270,11 @@ pub(crate) async fn cold_start(
         conn: &AcpConnection,
         abs_cwd: &str,
         mcp_servers: Vec<acp::McpServer>,
+        system_prompt: Option<acp::SystemPrompt>,
         stderr_buf: Arc<Mutex<String>>,
     ) -> Result<SessionStartResult, String> {
-        let mut req = acp::NewSessionRequest::new(std::path::PathBuf::from(abs_cwd));
+        let mut req = acp::NewSessionRequest::new(std::path::PathBuf::from(abs_cwd))
+            .system_prompt(system_prompt);
         if !mcp_servers.is_empty() {
             req = req.mcp_servers(mcp_servers);
         }
@@ -284,7 +310,8 @@ pub(crate) async fn cold_start(
         let mut resume_req = acp::ResumeSessionRequest::new(
             acp::SessionId::from(sid.clone()),
             std::path::PathBuf::from(abs_cwd),
-        );
+        )
+        .system_prompt(system_prompt.clone());
         if !mcp_servers.is_empty() {
             resume_req = resume_req.mcp_servers(mcp_servers.clone());
         }
@@ -323,7 +350,8 @@ pub(crate) async fn cold_start(
             let mut load_req = acp::LoadSessionRequest::new(
                 acp::SessionId::from(sid.clone()),
                 std::path::PathBuf::from(abs_cwd),
-            );
+            )
+            .system_prompt(system_prompt.clone());
             if !mcp_servers.is_empty() {
                 load_req = load_req.mcp_servers(mcp_servers.clone());
             }
@@ -357,10 +385,24 @@ pub(crate) async fn cold_start(
                 }
             }
         } else {
-            do_new_session(&conn, abs_cwd, mcp_servers, stderr_buf.clone()).await?
+            do_new_session(
+                &conn,
+                abs_cwd,
+                mcp_servers,
+                system_prompt.clone(),
+                stderr_buf.clone(),
+            )
+            .await?
         }
     } else {
-        do_new_session(&conn, abs_cwd, mcp_servers, stderr_buf.clone()).await?
+        do_new_session(
+            &conn,
+            abs_cwd,
+            mcp_servers,
+            system_prompt.clone(),
+            stderr_buf.clone(),
+        )
+        .await?
     };
 
     let discovered_models =
@@ -448,6 +490,7 @@ pub(crate) async fn cold_start(
         config_state,
         child_pid: child.id(),
         steering,
+        providers_rev,
         last_active: Instant::now(),
         _child: child,
         _io_task: io_handle,

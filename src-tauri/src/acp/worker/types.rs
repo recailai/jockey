@@ -277,6 +277,21 @@ pub(crate) enum WorkerMsg {
         prompt: Vec<acp::ContentBlock>,
         result_tx: oneshot::Sender<SteerOutcome>,
     },
+    /// Stop one sub-agent of the slot's session: `session/cancel` with the child's id.
+    CancelSubagent {
+        runtime_key: &'static str,
+        role_name: String,
+        app_session_id: String,
+        child_session_id: String,
+        result_tx: oneshot::Sender<Result<(), String>>,
+    },
+    /// Branch the slot's provider session (`session/fork`); resolves to the new provider id.
+    Fork {
+        runtime_key: &'static str,
+        role_name: String,
+        app_session_id: String,
+        result_tx: oneshot::Sender<Result<String, String>>,
+    },
     Reset {
         runtime_key: &'static str,
         role_name: String,

@@ -187,11 +187,15 @@ export function formatToolDisplay(tc: AppToolCall, cwd?: string | null): ToolDis
       (rawInput.taskName as string) ||
       (rawInput.description as string) ||
       "";
+    // An ACP sub-agent row carries the agent's name as its title and its task as the
+    // description; the name leads and the task follows.
+    const agentName = tc.title && tc.title.trim() !== name ? tc.title.trim() : "";
     return {
       category: "task",
       categoryBadge: "Agent",
       actionLabel: "Sub-agent",
-      targetSummary: taskName || humanizeToolName(name),
+      targetSummary: agentName || taskName || humanizeToolName(name),
+      secondaryInfo: agentName && taskName && taskName !== agentName ? taskName : undefined,
     };
   }
 

@@ -97,6 +97,7 @@ pub async fn execute_runtime(
 
     if let Some((s, app_sid)) = state {
         let project_id = crate::db::app_session::get_app_session_project_id(s, app_sid);
+        super::prewarm::remember_role_prompt(s, app_sid, role_name, project_id.as_deref());
         match crate::credentials::launch_env_for(s, role_name, project_id.as_deref(), &normalized) {
             Ok(env) => adapter.env.extend(env),
             Err(e) => {

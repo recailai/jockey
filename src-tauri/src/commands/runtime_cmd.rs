@@ -136,6 +136,24 @@ pub(crate) async fn cancel_acp_session(
     Ok(())
 }
 
+/// Stops one sub-agent of a running turn. `tool_call_id` is the sub-agent's row id
+/// (`subagent:<child session id>`).
+#[tauri::command]
+pub(crate) async fn cancel_acp_subagent(
+    state: State<'_, AppState>,
+    role_name: String,
+    app_session_id: String,
+    tool_call_id: String,
+) -> Result<(), String> {
+    let child = tool_call_id
+        .strip_prefix(crate::acp::subagents::ROW_PREFIX)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "not a sub-agent".to_string())?;
+    let runtime =
+        resolve_runtime_for_session_role(get_state(&state), &app_session_id, &role_name, None)?;
+    acp::cancel_subagent(&runtime, &role_name, &app_session_id, child).await
+}
+
 #[tauri::command]
 pub(crate) async fn steer_acp_session(
     state: State<'_, AppState>,

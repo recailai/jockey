@@ -71,6 +71,51 @@ pub async fn steer_session(
         .map_err(AdapterError::into)
 }
 
+/// Branch the slot's live provider session. The slot must already be connected (prewarm it
+/// first); the returned id is the new provider conversation.
+/// Stops one sub-agent; the parent turn keeps running.
+pub async fn cancel_subagent(
+    runtime_kind: &str,
+    role_name: &str,
+    app_session_id: &str,
+    child_session_id: &str,
+) -> Result<(), String> {
+    let runtime_key =
+        normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
+    let (tx, rx) = oneshot::channel();
+    worker_tx()
+        .send(WorkerMsg::CancelSubagent {
+            runtime_key,
+            role_name: role_name.to_string(),
+            app_session_id: app_session_id.to_string(),
+            child_session_id: child_session_id.to_string(),
+            result_tx: tx,
+        })
+        .map_err(|_| "ACP worker is unavailable".to_string())?;
+    rx.await
+        .map_err(|_| "ACP cancel acknowledgement was dropped".to_string())?
+}
+
+pub async fn fork_session(
+    runtime_kind: &str,
+    role_name: &str,
+    app_session_id: &str,
+) -> Result<String, String> {
+    let runtime_key =
+        normalize_runtime_key(runtime_kind).ok_or_else(|| "unsupported runtime".to_string())?;
+    let (tx, rx) = oneshot::channel();
+    worker_tx()
+        .send(WorkerMsg::Fork {
+            runtime_key,
+            role_name: role_name.to_string(),
+            app_session_id: app_session_id.to_string(),
+            result_tx: tx,
+        })
+        .map_err(|_| "ACP worker is unavailable".to_string())?;
+    rx.await
+        .map_err(|_| "ACP fork acknowledgement was dropped".to_string())?
+}
+
 pub async fn reset_session(
     runtime_kind: &str,
     role_name: &str,

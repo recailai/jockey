@@ -36,6 +36,20 @@ const TOOL_SAMPLES: { label: string; tools: AppToolCall[]; streaming?: boolean }
   { label: "Single call", tools: [tool("d", "cargo test --manifest-path src-tauri/Cargo.toml", "execute", "completed")] },
   { label: "Running", tools: [tool("e", "Read src/App.tsx", "read", "completed"), tool("f", "pnpm lint:ui", "execute", "running")], streaming: true },
   { label: "With a failure", tools: [tool("g", "git push", "execute", "failed"), tool("h", "git status", "execute", "completed")] },
+  {
+    label: "Sub-agent",
+    streaming: true,
+    tools: [
+      {
+        ...tool("subagent:c1", "explorer (Explore)", "agent", "in_progress"),
+        toolName: "Agent",
+        rawInput: { description: "Find the plan renderer", prompt: "Find where the plan panel renders and list its props." },
+        outputLog: "The plan panel lives in `MessageWindow.tsx`.",
+      },
+      { ...tool("i", "Grep currentPlan", "search", "completed"), parentId: "subagent:c1" },
+      { ...tool("j", "Read src/components/MessageWindow.tsx", "read", "in_progress"), parentId: "subagent:c1" },
+    ],
+  },
 ];
 
 function Section(props: { title: string; note?: string; children: JSX.Element }) {

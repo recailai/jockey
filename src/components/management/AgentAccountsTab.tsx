@@ -7,9 +7,17 @@ import {
   type CredentialProviderKey,
   type CredentialsOverview,
 } from "../../lib/tauriApi";
+import { LlmEndpointSection } from "./LlmEndpointSection";
 import { Alert, Badge, Button, FormField, IconButton, Input, Panel, PanelBody, Pill, createCopyFeedback } from "../ui";
 
 type EnvRow = { key: string; value: string };
+
+const RUNTIME_KEY_BY_PROVIDER: Record<CredentialProviderKey, string> = {
+  claude: "claude-code",
+  codex: "codex-cli",
+  pi: "pi-cli",
+  antigravity: "antigravity-cli",
+};
 
 function AccountBadge(props: { signedIn: boolean; identity?: string | null }) {
   return (
@@ -322,6 +330,8 @@ export function AgentAccountsTab() {
               <Show when={!provider.supportsSignIn}>
                 <Alert tone="info">{provider.loginHint}</Alert>
               </Show>
+
+              <LlmEndpointSection runtimeKey={RUNTIME_KEY_BY_PROVIDER[provider.key]} />
 
               <For each={accountsFor(provider.key)}>
                 {(account) => (

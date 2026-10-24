@@ -125,6 +125,22 @@ fn parse_config_map(raw: &str) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
+/// Makes the role's instructions available to the cold start of this session's slot.
+pub(super) fn remember_role_prompt(
+    state: &AppState,
+    app_session_id: &str,
+    role_name: &str,
+    project_id: Option<&str>,
+) {
+    if let Ok(Some(role)) = crate::db::role::load_role_scoped(state, role_name, project_id) {
+        super::super::runtime_state::remember_role_system_prompt(
+            app_session_id,
+            role_name,
+            &role.system_prompt,
+        );
+    }
+}
+
 fn load_role_default_config(
     state: &AppState,
     role_name: &str,
@@ -164,6 +180,9 @@ async fn prewarm_config_impl(req: ConfigPrewarmRequest<'_>) -> (Vec<Value>, Vec<
             crate::db::app_session::get_app_session_project_id(s, app_session_id)
         });
     let project_id = session_project_id.as_deref().or(req.project_id);
+    if let Some((s, app_sid)) = req.state.zip(req.app_session_id) {
+        remember_role_prompt(s, app_sid, req.role_name, project_id);
+    }
     let mcp_servers = req
         .state
         .map(|s| load_role_mcp_servers(s, req.role_name, project_id, req.runtime_kind))
@@ -215,6 +234,9 @@ pub async fn prewarm_role(
     let project_id = state.as_ref().and_then(|(s, app_session_id)| {
         crate::db::app_session::get_app_session_project_id(s, app_session_id)
     });
+    if let Some((s, app_sid)) = state {
+        remember_role_prompt(s, app_sid, role_name, project_id.as_deref());
+    }
     let mcp_servers = state
         .as_ref()
         .map(|(s, _)| load_role_mcp_servers(s, role_name, project_id.as_deref(), runtime_kind))

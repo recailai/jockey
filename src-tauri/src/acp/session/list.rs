@@ -29,16 +29,58 @@ pub(crate) struct ListedSession {
 }
 
 /// Lists a runtime's conversations, or `Ok(None)` when its adapter is not installed or does not
-/// advertise `sessionCapabilities.list`. Blocking: runs on its own thread and runtime so it can
-/// be called from any context, including a Tokio worker.
+/// advertise `sessionCapabilities.list`.
 pub(crate) fn list_runtime_sessions(
     kind: RuntimeKind,
 ) -> Result<Option<Vec<ListedSession>>, String> {
+    probe_runtime(kind, "session/list", |conn, init| async move {
+        if init.agent_capabilities.session_capabilities.list.is_none() {
+            return Ok(None);
+        }
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_PAGES {
+            let page: acp::ListSessionsResponse = conn
+                .request(
+                    "session/list",
+                    acp::ListSessionsRequest::new().cursor(cursor.clone()),
+                )
+                .await
+                .map_err(|e| format!("session/list: {e}"))?;
+            out.extend(page.sessions.into_iter().map(|s| ListedSession {
+                session_id: s.session_id.to_string(),
+                cwd: s.cwd.to_string_lossy().into_owned(),
+                title: s.title.filter(|t| !t.trim().is_empty()),
+                updated_at_ms: s.updated_at.as_deref().and_then(parse_rfc3339_ms),
+            }));
+            match page.next_cursor {
+                Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
+                _ => break,
+            }
+        }
+        Ok(Some(out))
+    })
+}
+
+/// Runs `op` against a short-lived, already-installed adapter that has completed `initialize`;
+/// `Ok(None)` when the adapter is not installed or `op` reports the capability missing. No
+/// session is ever opened. Blocking: runs on its own thread and runtime so it can be called from
+/// any context, including a Tokio worker.
+pub(crate) fn probe_runtime<T, F, Fut>(
+    kind: RuntimeKind,
+    op_name: &'static str,
+    op: F,
+) -> Result<Option<T>, String>
+where
+    T: Send + 'static,
+    F: FnOnce(Rc<AcpConnection>, acp::InitializeResponse) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<Option<T>, String>> + 'static,
+{
     let Some(spec) = installed_stdio_adapter(kind) else {
         return Ok(None);
     };
     std::thread::Builder::new()
-        .name(format!("acp-list-{}", kind.runtime_key()))
+        .name(format!("acp-probe-{}", kind.runtime_key()))
         .spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -48,23 +90,36 @@ pub(crate) fn list_runtime_sessions(
             local.block_on(&rt, async move {
                 tokio::time::timeout(
                     LIST_TIMEOUT,
-                    list_with(spec.runtime_key, &spec.binary, &spec.args, &spec.env),
+                    probe_with(
+                        spec.runtime_key,
+                        op_name,
+                        &spec.binary,
+                        &spec.args,
+                        &spec.env,
+                        op,
+                    ),
                 )
                 .await
-                .map_err(|_| format!("{}: session/list timed out", spec.runtime_key))?
+                .map_err(|_| format!("{}: {op_name} timed out", spec.runtime_key))?
             })
         })
         .map_err(|e| e.to_string())?
         .join()
-        .map_err(|_| "session/list thread panicked".to_string())?
+        .map_err(|_| format!("{op_name} thread panicked"))?
 }
 
-async fn list_with(
+async fn probe_with<T, F, Fut>(
     runtime_key: &'static str,
+    op_name: &'static str,
     binary: &str,
     args: &[String],
     env: &[(String, String)],
-) -> Result<Option<Vec<ListedSession>>, String> {
+    op: F,
+) -> Result<Option<T>, String>
+where
+    F: FnOnce(Rc<AcpConnection>, acp::InitializeResponse) -> Fut,
+    Fut: std::future::Future<Output = Result<Option<T>, String>>,
+{
     let mut cmd = tokio::process::Command::new(binary);
     cmd.args(args)
         .stdin(std::process::Stdio::piped())
@@ -94,6 +149,7 @@ async fn list_with(
         mode_state: Rc::new(RefCell::new(None)),
         config_state: Rc::new(RefCell::new(Vec::new())),
         terminals: Rc::new(RefCell::new(std::collections::HashMap::new())),
+        subagents: Default::default(),
     });
     let conn = Rc::new(AcpConnection::new(stdin));
     let io = tokio::task::spawn_local(run_io(stdout, conn.clone(), client));
@@ -106,41 +162,20 @@ async fn list_with(
             )
             .await
             .map_err(|e| format!("{runtime_key}: initialize: {e}"))?;
-        if init.agent_capabilities.session_capabilities.list.is_none() {
-            return Ok(None);
-        }
-        let mut out = Vec::new();
-        let mut cursor: Option<String> = None;
-        for _ in 0..MAX_PAGES {
-            let page: acp::ListSessionsResponse = conn
-                .request(
-                    "session/list",
-                    acp::ListSessionsRequest::new().cursor(cursor.clone()),
-                )
-                .await
-                .map_err(|e| format!("{runtime_key}: session/list: {e}"))?;
-            out.extend(page.sessions.into_iter().map(|s| ListedSession {
-                session_id: s.session_id.to_string(),
-                cwd: s.cwd.to_string_lossy().into_owned(),
-                title: s.title.filter(|t| !t.trim().is_empty()),
-                updated_at_ms: s.updated_at.as_deref().and_then(parse_rfc3339_ms),
-            }));
-            match page.next_cursor {
-                Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
-                _ => break,
-            }
-        }
-        Ok(Some(out))
+        op(conn.clone(), init)
+            .await
+            .map_err(|e| format!("{runtime_key}: {e}"))
     }
     .await;
 
     io.abort();
     let _ = child.kill().await;
     acp_log(
-        "session.list",
+        "probe.done",
         json!({
             "runtime": runtime_key,
-            "count": result.as_ref().ok().and_then(|r: &Option<Vec<ListedSession>>| r.as_ref().map(Vec::len)),
+            "op": op_name,
+            "found": result.as_ref().ok().map(Option::is_some),
             "error": result.as_ref().err(),
         }),
     );

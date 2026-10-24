@@ -204,9 +204,19 @@ async fn run_io_inner(
             if let Some(method) = object.get("method").and_then(Value::as_str) {
                 let params = object.get("params").cloned().unwrap_or_else(|| json!({}));
                 if method == "session/update" {
+                    // An update kind this schema does not know (an adapter's private
+                    // extension, a newer draft) is skipped; it must not end the connection.
                     let notification =
-                        serde_json::from_value::<acp::SessionNotification>(params)
-                            .map_err(|error| format!("invalid ACP session/update: {error}"))?;
+                        match serde_json::from_value::<acp::SessionNotification>(params) {
+                            Ok(notification) => notification,
+                            Err(error) => {
+                                crate::acp::adapter::acp_log(
+                                    "session.update.unparsed",
+                                    json!({ "error": error.to_string() }),
+                                );
+                                continue;
+                            }
+                        };
                     if let Err(error) = client.session_notification(notification).await {
                         crate::acp::adapter::acp_log(
                             "session.update.error",

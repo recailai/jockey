@@ -258,6 +258,22 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
           setStorage(STORAGE_KEY_SESSIONS, list);
           return created;
         }
+        case "fork_app_session": {
+          const list = getStorage<MockSession[]>(STORAGE_KEY_SESSIONS, []);
+          const source = list.find((s: { id: string }) => s.id === args.id);
+          if (!source) throw new Error("session not found");
+          const forked = {
+            ...source,
+            id: `s-${Date.now()}`,
+            title: `[Fork]_${source.title.replace(/^\[Fork\]_/, "")}`,
+            messages: [...source.messages],
+            createdAt: Date.now(),
+            lastActiveAt: Date.now(),
+          };
+          list.unshift(forked);
+          setStorage(STORAGE_KEY_SESSIONS, list);
+          return forked;
+        }
         case "update_app_session": {
           const list = getStorage<MockSession[]>(STORAGE_KEY_SESSIONS, []);
           const idx = list.findIndex((s: { id: string }) => s.id === args.id);
@@ -324,6 +340,26 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
           return { providers: [], credentials: [] };
         case "get_role_credentials_cmd":
           return [];
+        case "list_runtime_providers_cmd":
+          return [
+            { providerId: "main", supported: ["anthropic", "openai"], required: true, currentApiType: "anthropic", currentBaseUrl: "https://api.anthropic.com" },
+          ];
+        case "get_llm_provider_configs_cmd":
+          return getStorage<{ configs: unknown[] }>("mock_llm_providers", { configs: [] });
+        case "set_llm_provider_config_cmd": {
+          const cfg = args.config as { providerId: string; apiType: string; baseUrl: string; headers: Array<{ name: string }> };
+          const saved = getStorage<{ configs: Array<{ providerId: string }> }>("mock_llm_providers", { configs: [] });
+          saved.configs = saved.configs.filter((c) => c.providerId !== cfg.providerId);
+          saved.configs.push({ providerId: cfg.providerId, apiType: cfg.apiType, baseUrl: cfg.baseUrl, headerNames: cfg.headers.map((h) => h.name) } as never);
+          setStorage("mock_llm_providers", saved);
+          return null;
+        }
+        case "clear_llm_provider_config_cmd": {
+          const saved = getStorage<{ configs: Array<{ providerId: string }> }>("mock_llm_providers", { configs: [] });
+          saved.configs = saved.configs.filter((c) => c.providerId !== args.providerId);
+          setStorage("mock_llm_providers", saved);
+          return null;
+        }
         case "delete_role_cmd": {
           let list = getStorage<MockRole[]>(STORAGE_KEY_ROLES, []);
           list = list.filter(

@@ -37,6 +37,16 @@ fn with_learned_delivery(
     delivery
 }
 
+/// Fork is negotiated at `initialize`; the static profile cannot know it, so the capability
+/// flips on only once a live connection of this runtime advertised `session/fork`.
+fn with_learned_capabilities(
+    runtime_key: &str,
+    mut capabilities: RuntimeCapabilities,
+) -> RuntimeCapabilities {
+    capabilities.fork = crate::acp::runtime_fork(runtime_key) == Some(true);
+    capabilities
+}
+
 pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
     let kinds = [
         RuntimeKind::ClaudeCode,
@@ -74,7 +84,7 @@ pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
                 }
             };
             let capabilities = if available {
-                profile.capabilities
+                with_learned_capabilities(kind.runtime_key(), profile.capabilities)
             } else {
                 RuntimeCapabilities::unavailable()
             };
@@ -148,7 +158,7 @@ pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
             launch_method,
             transport,
             capabilities: to_value(if available {
-                profile.capabilities
+                with_learned_capabilities(&profile.runtime_key, profile.capabilities)
             } else {
                 RuntimeCapabilities::unavailable()
             })

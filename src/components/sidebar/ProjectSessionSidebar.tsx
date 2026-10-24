@@ -7,6 +7,7 @@ import {
   Edit3,
   Files,
   FolderGit2,
+  GitBranch,
   Download,
   FolderPlus,
   Plus,
@@ -35,6 +36,8 @@ type ProjectSessionSidebarProps = {
   onNewSession: (projectId?: string) => void;
   onCloseSession: (sessionId: string) => void;
   onDuplicateSession?: (session: AppSession) => void;
+  onForkSession?: (session: AppSession) => void;
+  canForkSession?: (session: AppSession) => boolean;
   onOpenSessionInTerminal?: (session: AppSession) => void;
   onDeleteProject?: (id: string) => Promise<void>;
   onOpenAddProject: () => void;
@@ -488,6 +491,18 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
                 }}
               >
                 Duplicate
+              </ContextMenuItem>
+            </Show>
+            <Show when={props.onForkSession && props.canForkSession?.(menu().session)}>
+              <ContextMenuItem
+                icon={<GitBranch size={13} />}
+                onSelect={() => {
+                  const s = menu().session;
+                  closeContextMenus();
+                  props.onForkSession?.(s);
+                }}
+              >
+                Fork
               </ContextMenuItem>
             </Show>
             <Show when={props.onOpenSessionInTerminal}>
