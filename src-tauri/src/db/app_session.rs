@@ -1058,8 +1058,14 @@ mod tests {
             .expect("create session");
         let transition = |next, error| {
             crate::db::lifecycle::transition_internal(
-                &state, &session.id, "Developer", "codex-cli", next, error,
-            ).unwrap();
+                &state,
+                &session.id,
+                "Developer",
+                "codex-cli",
+                next,
+                error,
+            )
+            .unwrap();
         };
         transition("running", None);
         transition("error", Some("Sign in required"));

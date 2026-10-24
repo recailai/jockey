@@ -116,15 +116,9 @@ pub(crate) async fn run_turn(
         let auto_approve = db_data.auto_approve;
         let role_mode = db_data.role_mode;
         let role_config = db_data.role_config;
-        let role_system_prompt = db_data.role_system_prompt;
-        let enabled_rules = db_data.enabled_rules;
         let mcp_servers = db_data.mcp_servers;
 
-        // Every runtime gets the typed message verbatim. Role prompt and rules go through the
-        // runtime's native system-prompt channel where one exists (see `execute_runtime_with_system`).
         let prepared = message.clone();
-        let append_system_prompt =
-            prompt_builder::build_system_prompt(role_system_prompt.as_deref(), &enabled_rules);
 
         chat_log(
             "route.acp.start",
@@ -144,7 +138,7 @@ pub(crate) async fn run_turn(
             None,
         );
         let acp_started = Instant::now();
-        let llm = acp::execute_runtime_with_system(
+        let llm = acp::execute_runtime(
             &runtime,
             &role_name,
             &prepared,
@@ -157,7 +151,6 @@ pub(crate) async fn run_turn(
             role_config,
             Some((get_state(&state), &app_session_id)),
             &app_session_id,
-            append_system_prompt.as_deref(),
         )
         .await;
         let output = llm.output.trim().to_string();

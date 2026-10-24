@@ -31,7 +31,11 @@ fn lookup(path: &str) -> Option<&'static [u8]> {
 /// or a rebuilt app would keep serving a page that points at assets that no longer exist.
 pub(super) async fn serve(uri: Uri) -> Response {
     let requested = uri.path().trim_start_matches('/');
-    let path = if requested.is_empty() { "index.html" } else { requested };
+    let path = if requested.is_empty() {
+        "index.html"
+    } else {
+        requested
+    };
     let Some(bytes) = lookup(path) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -62,7 +66,10 @@ mod tests {
 
     #[test]
     fn content_types_cover_vite_output() {
-        assert_eq!(content_type("assets/a-1.js"), "text/javascript; charset=utf-8");
+        assert_eq!(
+            content_type("assets/a-1.js"),
+            "text/javascript; charset=utf-8"
+        );
         assert_eq!(content_type("assets/a-1.css"), "text/css; charset=utf-8");
         assert_eq!(content_type("index.html"), "text/html; charset=utf-8");
     }

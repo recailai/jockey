@@ -187,10 +187,9 @@ pub(crate) fn profile_id(runtime: &str) -> String {
     match RuntimeKind::from_str(runtime) {
         Some(RuntimeKind::Mock) => "mock".to_string(),
         Some(RuntimeKind::ClaudeCode) => "acp:claude-code".to_string(),
-        Some(RuntimeKind::ClaudeNative) => "native:claude".to_string(),
-        Some(RuntimeKind::AntigravityCli) => "native:agy".to_string(),
-        Some(RuntimeKind::CodexCli) => "native:codex".to_string(),
-        Some(RuntimeKind::PiCli) => "native:pi".to_string(),
+        Some(RuntimeKind::AntigravityCli) => "acp:agy".to_string(),
+        Some(RuntimeKind::CodexCli) => "acp:codex".to_string(),
+        Some(RuntimeKind::PiCli) => "acp:pi".to_string(),
         None => runtime.trim().to_string(),
     }
 }
@@ -213,234 +212,71 @@ pub(crate) fn capabilities_for_transport(transport: &str) -> RuntimeCapabilities
 }
 
 pub(crate) fn builtin_profiles() -> Vec<RuntimeProfile> {
-    vec![
-        RuntimeProfile {
-            id: "native:claude".to_string(),
-            label: "Claude Code".to_string(),
-            family: RuntimeFamily::Native,
-            transport: "claude-stream-json".to_string(),
-            runtime_key: "claude-native".to_string(),
-            capabilities: RuntimeCapabilities {
-                streaming: true,
-                session_persistence: true,
-                session_resume: true,
-                model_catalog: true,
-                dynamic_modes: false,
-                dynamic_config: true,
-                permission_requests: true,
-                mcp_servers: true,
-                attachments: true,
-                tool_invocations: true,
-                session_listing: false,
-                rewind: false,
-                fork: false,
-                tool_detail: true,
-                interaction: InteractionSupport::PermissionOnly,
-                output_streaming: false,
-                usage: true,
-                nested_tools: true,
-                tool_output_streaming: false,
-                structured_user_input: false,
-                terminal: true,
-                plan: false,
-            },
-            launch_spec: None,
-            version_requirement: None,
-            update_strategy: "managed-cli".to_string(),
-            builtin: true,
-        },
-        RuntimeProfile {
-            id: "native:codex".to_string(),
-            label: "Codex CLI".to_string(),
-            family: RuntimeFamily::Native,
-            transport: "codex-app-server".to_string(),
-            runtime_key: "codex-cli".to_string(),
-            capabilities: RuntimeCapabilities {
-                streaming: true,
-                session_persistence: true,
-                session_resume: true,
-                model_catalog: true,
-                dynamic_modes: false,
-                dynamic_config: true,
-                permission_requests: false,
-                mcp_servers: false,
-                attachments: true,
-                tool_invocations: true,
-                session_listing: false,
-                rewind: true,
-                fork: true,
-                tool_detail: true,
-                interaction: InteractionSupport::Full,
-                output_streaming: true,
-                usage: true,
-                nested_tools: true,
-                tool_output_streaming: true,
-                structured_user_input: true,
-                terminal: true,
-                plan: true,
-            },
-            launch_spec: None,
-            version_requirement: None,
-            update_strategy: "managed-cli".to_string(),
-            builtin: true,
-        },
-        RuntimeProfile {
-            id: "native:pi".to_string(),
-            label: "Pi CLI".to_string(),
-            family: RuntimeFamily::Native,
-            transport: "pi-rpc".to_string(),
-            runtime_key: "pi-cli".to_string(),
-            capabilities: RuntimeCapabilities {
-                streaming: true,
-                session_persistence: true,
-                session_resume: true,
-                model_catalog: true,
-                dynamic_modes: false,
-                dynamic_config: true,
-                permission_requests: false,
-                mcp_servers: false,
-                attachments: true,
-                tool_invocations: true,
-                session_listing: false,
-                rewind: false,
-                fork: false,
-                tool_detail: true,
-                interaction: InteractionSupport::None,
-                output_streaming: false,
-                usage: true,
-                nested_tools: false,
-                tool_output_streaming: true,
-                structured_user_input: false,
-                terminal: true,
-                plan: false,
-            },
-            launch_spec: None,
-            version_requirement: None,
-            update_strategy: "managed-cli".to_string(),
-            builtin: true,
-        },
-        RuntimeProfile {
-            id: "native:agy".to_string(),
-            label: "Antigravity CLI (agy)".to_string(),
-            family: RuntimeFamily::Native,
-            transport: "agy-stream-json".to_string(),
-            runtime_key: "antigravity-cli".to_string(),
-            capabilities: RuntimeCapabilities {
-                streaming: true,
-                session_persistence: true,
-                session_resume: true,
-                model_catalog: true,
-                dynamic_modes: false,
-                dynamic_config: true,
-                permission_requests: false,
-                mcp_servers: false,
-                attachments: true,
-                tool_invocations: true,
-                session_listing: false,
-                rewind: false,
-                fork: false,
-                tool_detail: false,
-                interaction: InteractionSupport::None,
-                output_streaming: false,
-                usage: true,
-                nested_tools: false,
-                tool_output_streaming: false,
-                structured_user_input: false,
-                terminal: false,
-                plan: false,
-            },
-            launch_spec: None,
-            version_requirement: None,
-            update_strategy: "managed-cli".to_string(),
-            builtin: true,
-        },
-        RuntimeProfile {
-            id: "acp:claude-code".to_string(),
-            label: "Claude Code (ACP)".to_string(),
-            family: RuntimeFamily::Acp,
-            transport: "acp".to_string(),
-            runtime_key: "claude-code".to_string(),
-            capabilities: RuntimeCapabilities {
-                streaming: true,
-                session_persistence: true,
-                session_resume: true,
-                model_catalog: true,
-                dynamic_modes: true,
-                dynamic_config: true,
-                permission_requests: true,
-                mcp_servers: true,
-                attachments: true,
-                tool_invocations: true,
-                session_listing: false,
-                rewind: false,
-                fork: false,
-                tool_detail: true,
-                interaction: InteractionSupport::PermissionOnly,
-                output_streaming: false,
-                usage: false,
-                nested_tools: false,
-                tool_output_streaming: false,
-                structured_user_input: false,
-                terminal: true,
-                plan: true,
-            },
-            launch_spec: None,
-            version_requirement: Some("@agentclientprotocol/claude-agent-acp@0.70.0".to_string()),
-            update_strategy: "pinned-bridge".to_string(),
-            builtin: true,
-        },
+    [
+        (
+            "claude-code",
+            "acp:claude-code",
+            "Claude Code",
+            "@agentclientprotocol/claude-agent-acp@0.94.0",
+        ),
+        (
+            "codex-cli",
+            "acp:codex",
+            "Codex",
+            "@agentclientprotocol/codex-acp@2.2.2",
+        ),
+        ("pi-cli", "acp:pi", "Pi", "pi-acp@0.0.34"),
+        ("antigravity-cli", "acp:agy", "Antigravity", "1.4.1"),
     ]
+    .into_iter()
+    .map(|(runtime, id, label, version)| RuntimeProfile {
+        id: id.into(),
+        label: label.into(),
+        family: RuntimeFamily::Acp,
+        transport: "acp".into(),
+        runtime_key: runtime.into(),
+        capabilities: RuntimeCapabilities {
+            streaming: true,
+            session_persistence: true,
+            session_resume: true,
+            model_catalog: true,
+            dynamic_modes: true,
+            dynamic_config: true,
+            permission_requests: true,
+            mcp_servers: true,
+            attachments: true,
+            tool_invocations: true,
+            session_listing: false,
+            rewind: false,
+            fork: false,
+            tool_detail: true,
+            interaction: InteractionSupport::PermissionOnly,
+            output_streaming: false,
+            usage: false,
+            nested_tools: false,
+            tool_output_streaming: false,
+            structured_user_input: false,
+            terminal: true,
+            plan: true,
+        },
+        launch_spec: None,
+        version_requirement: Some(version.into()),
+        update_strategy: "pinned-acp-adapter".into(),
+        builtin: true,
+    })
+    .collect()
 }
 
 #[cfg(test)]
 mod capability_tests {
     use super::*;
-
-    fn caps(runtime_key: &str) -> RuntimeCapabilities {
-        builtin_profiles()
-            .into_iter()
-            .find(|p| p.runtime_key == runtime_key)
-            .map(|p| p.capabilities)
-            .expect("builtin profile")
-    }
-
     #[test]
-    fn antigravity_does_not_claim_tool_detail_it_cannot_deliver() {
-        // Measured against agy 1.2.4: print mode reports step_type "unknown" with no tool
-        // name, parameters or output, and resolves its own questions.
-        let agy = caps("antigravity-cli");
-        assert!(!agy.tool_detail);
-        assert_eq!(agy.interaction, InteractionSupport::None);
-        assert!(agy.usage, "agy does report token usage");
-    }
-
-    #[test]
-    fn codex_is_the_only_runtime_with_the_full_interaction_surface() {
-        assert_eq!(caps("codex-cli").interaction, InteractionSupport::Full);
-        for other in ["claude-native", "antigravity-cli", "pi-cli"] {
-            assert_ne!(
-                caps(other).interaction,
-                InteractionSupport::Full,
-                "{other} must not claim structured questions"
-            );
+    fn all_builtin_agents_use_acp_and_do_not_claim_native_extensions() {
+        for profile in builtin_profiles() {
+            assert_eq!(profile.family, RuntimeFamily::Acp);
+            assert_eq!(profile.transport, "acp");
+            assert!(profile.capabilities.permission_requests);
+            assert!(!profile.capabilities.fork && !profile.capabilities.rewind);
         }
-    }
-
-    #[test]
-    fn fork_and_rewind_track_the_runtimes_that_actually_implement_them() {
-        // provider_session_cmd only wires thread/fork and thread/rollback for native Codex.
-        let codex = caps("codex-cli");
-        assert!(codex.fork && codex.rewind);
-        assert!(!caps("claude-native").fork);
-    }
-
-    #[test]
-    fn transport_lookup_matches_profile_lookup() {
-        assert_eq!(
-            capabilities_for_transport("codex-app-server").interaction,
-            InteractionSupport::Full
-        );
-        assert!(!capabilities_for_transport("agy-stream-json").tool_detail);
-        assert!(!capabilities_for_transport("nonexistent").tool_detail);
     }
 }

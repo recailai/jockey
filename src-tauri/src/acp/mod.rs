@@ -15,16 +15,14 @@ pub(crate) use connection::{AgentConnection, AgentRpc};
 
 pub use adapter::{
     acp_log_snapshot, adapter_launch_method, adapter_transport, clear_adapter_cache, probe_runtime,
-    resolve_adapter_launch, set_app_data_dir, AcpLogEntry,
+    set_app_data_dir, AcpLogEntry,
 };
 pub use metrics::{snapshot as metrics_snapshot, AcpRuntimeMetrics};
 pub use runtime_state::{
     clear_discovered_catalogs, list_available_commands, list_discovered_models,
 };
-pub use session::perm_bridge::bridge_subcommand_main as permission_bridge_main;
-pub(crate) use session::perm_bridge::start_permission_bridge;
 pub use session::{
-    cancel_session, execute_runtime, execute_runtime_with_system, prewarm_role, reconnect_session,
+    cancel_session, execute_runtime, prewarm_role, reconnect_session,
     refresh_role_config_defs_with, reset_session, set_config_option, set_mode, steer_session,
     sync_role_mode,
 };

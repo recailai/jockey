@@ -368,7 +368,7 @@ export type AppSession = {
   externalActive?: boolean;
 };
 
-export const RUNTIMES = ["claude-native", "codex-cli", "pi-cli", "antigravity-cli", "claude-code", "mock"];
+export const RUNTIMES = ["claude-code", "codex-cli", "pi-cli", "antigravity-cli", "mock"];
 export const RUNTIME_COLOR: Record<string, string> = {
   "claude-native": "runtime-color-claude",
   "antigravity-cli": "runtime-color-antigravity",

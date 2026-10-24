@@ -79,7 +79,7 @@ fn imported_source_ids(state: &AppState) -> HashMap<String, String> {
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
-Ok((
+                Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
@@ -108,7 +108,9 @@ fn jockey_owned_conversations(state: &AppState) -> HashMap<String, String> {
         ] {
             let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
                 .map_err(|e| e.to_string())?;
             for (provider_id, app_session_id) in rows.filter_map(Result::ok) {
                 owned.entry(provider_id).or_insert(app_session_id);
@@ -157,7 +159,7 @@ fn deduplicate_sessions(sessions: Vec<DiscoveredSession>) -> Vec<DiscoveredSessi
 
 pub(crate) fn parser_for(runtime_kind: &str) -> Option<fn(&Path) -> Vec<ParsedImportedMessage>> {
     match runtime_kind {
-        "claude-native" => Some(claude::parse_claude_session_messages),
+        "claude-code" | "claude-native" => Some(claude::parse_claude_session_messages),
         "codex-cli" => Some(codex::parse_codex_session_messages),
         "pi-cli" => Some(pi::parse_pi_session_messages),
         _ => None,
@@ -269,7 +271,7 @@ fn cached_sessions(state: &AppState, project_id: &str) -> Result<Vec<DiscoveredS
                 )| {
                     Some(DiscoveredSession {
                         runtime_kind: match runtime_kind.as_str() {
-                            "claude-native" => "claude-native",
+                            "claude-code" | "claude-native" => "claude-code",
                             "codex-cli" => "codex-cli",
                             "pi-cli" => "pi-cli",
                             _ => return None,
@@ -360,9 +362,11 @@ pub(crate) fn scan_all_importable_sessions_internal(
 ) -> Result<Vec<ImportableSession>, String> {
     ensure_all_catalog(state, force_refresh)?;
     let projects = crate::db::project::list_projects_internal(state)?;
-    Ok(importable_from(state, cached_sessions(state, ALL_SCOPE)?, |cwd| {
-        resolve_project(&projects, cwd).map(|p| (p.id.clone(), p.name.clone()))
-    }))
+    Ok(importable_from(
+        state,
+        cached_sessions(state, ALL_SCOPE)?,
+        |cwd| resolve_project(&projects, cwd).map(|p| (p.id.clone(), p.name.clone())),
+    ))
 }
 
 fn ensure_all_catalog(state: &AppState, force_refresh: bool) -> Result<(), String> {
@@ -406,7 +410,7 @@ pub(crate) fn locate_transcript(runtime_kind: &str, provider_id: &str) -> Option
         })
     };
     match runtime_kind {
-        "claude-native" => {
+        "claude-code" | "claude-native" => {
             let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join(".claude"));
@@ -559,9 +563,12 @@ fn import_one(
     // cursor are added, so turns Jockey itself ran are never imported a second time.
     // Propagate rather than swallow: a silent failure here would return the session as if
     // fully imported while it actually has zero messages.
-    let conversation = crate::db::app_session_role::list_provider_conversations(state, &app_sess.id)?
-        .into_iter()
-        .find(|c| c.runtime_kind == session.runtime_kind && c.provider_id == session.session_id);
+    let conversation =
+        crate::db::app_session_role::list_provider_conversations(state, &app_sess.id)?
+            .into_iter()
+            .find(|c| {
+                c.runtime_kind == session.runtime_kind && c.provider_id == session.session_id
+            });
     if let Some(conversation) = conversation {
         sync_transcript(state, &app_sess.id, &conversation, &session.file_path)?;
     }
@@ -682,8 +689,8 @@ mod tests {
     #[test]
     fn duplicate_source_ids_break_timestamp_ties_by_turn_count() {
         let sessions = deduplicate_sessions(vec![
-            session("claude-native", "same", 100, 2),
-            session("claude-native", "same", 100, 5),
+            session("claude-code", "same", 100, 2),
+            session("claude-code", "same", 100, 5),
         ]);
 
         assert_eq!(sessions.len(), 1);
@@ -705,9 +712,18 @@ mod tests {
     fn cwd_resolves_to_exact_then_deepest_project() {
         let projects = vec![project("outer", "/w/app"), project("inner", "/w/app/pkg")];
         assert_eq!(resolve_project(&projects, "/w/app").unwrap().id, "outer");
-        assert_eq!(resolve_project(&projects, "/w/app/pkg").unwrap().id, "inner");
-        assert_eq!(resolve_project(&projects, "/w/app/pkg/src").unwrap().id, "inner");
-        assert_eq!(resolve_project(&projects, "/w/app/other").unwrap().id, "outer");
+        assert_eq!(
+            resolve_project(&projects, "/w/app/pkg").unwrap().id,
+            "inner"
+        );
+        assert_eq!(
+            resolve_project(&projects, "/w/app/pkg/src").unwrap().id,
+            "inner"
+        );
+        assert_eq!(
+            resolve_project(&projects, "/w/app/other").unwrap().id,
+            "outer"
+        );
         assert!(resolve_project(&projects, "/w/app-two").is_none());
         assert!(resolve_project(&projects, "/elsewhere").is_none());
     }
@@ -719,12 +735,9 @@ mod tests {
     }
 
     fn test_state(dir: &tempfile::TempDir) -> AppState {
-        let pool = crate::db::DbPool::new(
-            dir.path().join("t.sqlite3"),
-            2,
-            "PRAGMA foreign_keys = ON;",
-        )
-        .expect("pool");
+        let pool =
+            crate::db::DbPool::new(dir.path().join("t.sqlite3"), 2, "PRAGMA foreign_keys = ON;")
+                .expect("pool");
         crate::db::init_db(&pool.get().expect("conn")).expect("init");
         AppState {
             db: pool,
@@ -752,7 +765,7 @@ mod tests {
         for (id, cwd) in [("s1", known.join("sub")), ("s2", fresh.clone())] {
             let transcript = root.join(format!("{id}.jsonl"));
             std::fs::write(&transcript, "").unwrap();
-            let mut found = session("claude-native", id, 10, 1);
+            let mut found = session("claude-code", id, 10, 1);
             found.agent = "Claude Code";
             found.cwd = cwd.to_string_lossy().to_string();
             found.file_path = transcript;
@@ -762,12 +775,15 @@ mod tests {
 
         let listed = scan_all_importable_sessions_internal(&state, false).unwrap();
         let by_id = |id: &str| listed.iter().find(|s| s.external_session_id == id).unwrap();
-        assert_eq!(by_id("s1").project_id.as_deref(), Some(existing.id.as_str()));
+        assert_eq!(
+            by_id("s1").project_id.as_deref(),
+            Some(existing.id.as_str())
+        );
         assert!(by_id("s2").project_id.is_none());
 
         let result = import_cli_sessions_internal(
             &state,
-            &["claude-native:s1".to_string(), "claude-native:s2".to_string()],
+            &["claude-code:s1".to_string(), "claude-code:s2".to_string()],
         )
         .unwrap();
         assert_eq!(result.sessions.len(), 2);
@@ -781,9 +797,14 @@ mod tests {
                 .and_then(|s| s.project_id.clone())
         };
         assert_eq!(project_of("s1").as_deref(), Some(existing.id.as_str()));
-        assert_eq!(project_of("s2"), Some(result.created_projects[0].id.clone()));
+        assert_eq!(
+            project_of("s2"),
+            Some(result.created_projects[0].id.clone())
+        );
 
         let again = scan_all_importable_sessions_internal(&state, false).unwrap();
-        assert!(again.iter().all(|s| s.imported && s.app_session_id.is_some()));
+        assert!(again
+            .iter()
+            .all(|s| s.imported && s.app_session_id.is_some()));
     }
 }

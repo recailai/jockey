@@ -18,7 +18,7 @@ export function useAgentData(
 
   const normalizeRuntimeKey = (runtimeKey: string): string => {
     const k = runtimeKey.trim().toLowerCase();
-    if (k === "claude") return "claude-native";
+    if (["claude", "claude-native", "native:claude", "claude-acp", "acp:claude-code"].includes(k)) return "claude-code";
     if (k === "claude-acp") return "claude-code";
     if (k === "agy" || k === "antigravity" || k === "gemini" || k === "gemini-cli") return "antigravity-cli";
     if (k === "codex" || k === "codex-acp") return "codex-cli";

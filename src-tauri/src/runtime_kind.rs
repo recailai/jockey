@@ -5,7 +5,6 @@ use serde::Serialize;
 pub enum RuntimeKind {
     Mock,
     ClaudeCode,
-    ClaudeNative,
     AntigravityCli,
     CodexCli,
     PiCli,
@@ -15,13 +14,14 @@ impl RuntimeKind {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "mock" => Some(Self::Mock),
-            "claude" | "native:claude" | "claude-native" => Some(Self::ClaudeNative),
-            "claude-code" | "claude-acp" | "acp:claude-code" => Some(Self::ClaudeCode),
-            "agy" | "native:agy" | "antigravity" | "antigravity-cli" | "gemini" | "gemini-cli" => {
-                Some(Self::AntigravityCli)
+            "claude" | "native:claude" | "claude-native" | "acp:claude-legacy" => {
+                Some(Self::ClaudeCode)
             }
-            "codex" | "codex-cli" | "native:codex" => Some(Self::CodexCli),
-            "pi" | "pi-cli" | "native:pi" => Some(Self::PiCli),
+            "claude-code" | "claude-acp" | "acp:claude-code" => Some(Self::ClaudeCode),
+            "agy" | "native:agy" | "acp:agy" | "antigravity" | "antigravity-cli" | "gemini"
+            | "gemini-cli" => Some(Self::AntigravityCli),
+            "codex" | "codex-cli" | "native:codex" | "acp:codex" => Some(Self::CodexCli),
+            "pi" | "pi-cli" | "native:pi" | "acp:pi" => Some(Self::PiCli),
             _ => None,
         }
     }
@@ -30,7 +30,6 @@ impl RuntimeKind {
         match self {
             Self::Mock => "mock",
             Self::ClaudeCode => "claude-code",
-            Self::ClaudeNative => "claude-native",
             Self::AntigravityCli => "antigravity-cli",
             Self::CodexCli => "codex-cli",
             Self::PiCli => "pi-cli",
@@ -43,11 +42,10 @@ impl RuntimeKind {
 
     pub fn install_hint(self) -> &'static str {
         match self {
-            Self::ClaudeCode => "npm install -g @anthropic-ai/claude-code",
-            Self::ClaudeNative => "curl -fsSL https://claude.ai/install.sh | bash",
-            Self::AntigravityCli => "curl -fsSL https://antigravity.google/cli/install.sh | bash",
-            Self::CodexCli => "npm install -g @openai/codex",
-            Self::PiCli => "npm install -g @mariozechner/pi-coding-agent",
+            Self::ClaudeCode => "npm install -g @agentclientprotocol/claude-agent-acp@0.94.0",
+            Self::AntigravityCli => "Install agy_acp_server.par from the official ACP registry",
+            Self::CodexCli => "npm install -g @agentclientprotocol/codex-acp@2.2.2",
+            Self::PiCli => "npm install -g pi-acp@0.0.34",
             Self::Mock => "",
         }
     }
@@ -65,7 +63,7 @@ mod tests {
         );
         assert_eq!(
             RuntimeKind::from_str("native:claude"),
-            Some(RuntimeKind::ClaudeNative)
+            Some(RuntimeKind::ClaudeCode)
         );
         assert_eq!(
             RuntimeKind::from_str("native:codex"),

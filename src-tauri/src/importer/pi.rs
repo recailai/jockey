@@ -27,7 +27,12 @@ fn scan_pi_root(root: &Path, project_cwd: Option<&str>) -> Vec<DiscoveredSession
 
 fn sessions_root() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(".pi").join("agent").join("sessions"))
+    Some(
+        PathBuf::from(home)
+            .join(".pi")
+            .join("agent")
+            .join("sessions"),
+    )
 }
 
 fn clean_pi_user_text(text: &str) -> Option<String> {

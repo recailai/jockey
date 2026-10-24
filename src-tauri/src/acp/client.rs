@@ -405,6 +405,24 @@ impl JockeyUiClient {
         args: acp::SessionNotification,
     ) -> acp::Result<()> {
         self.validate_session(&args.session_id)?;
+        // session/load replays history, and some adapters announce startup details
+        // during session/new. Neither belongs to the response of the next prompt.
+        let ready = self
+            .expected_session_id
+            .lock()
+            .map(|id| id.is_some())
+            .unwrap_or(false);
+        if !ready
+            && !matches!(
+                &args.update,
+                acp::SessionUpdate::CurrentModeUpdate(_)
+                    | acp::SessionUpdate::ConfigOptionUpdate(_)
+                    | acp::SessionUpdate::AvailableCommandsUpdate(_)
+                    | acp::SessionUpdate::SessionInfoUpdate(_)
+            )
+        {
+            return Ok(());
+        }
         let event = match args.update {
             acp::SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
                 acp::ContentBlock::Text(tc) if !tc.text.is_empty() => {
@@ -772,4 +790,56 @@ fn permission_cache_key(args: &acp::RequestPermissionRequest) -> String {
         .map(|v| v.to_string())
         .unwrap_or_default();
     format!("{kind}\n{title}\n{locations}\n{raw}")
+}
+
+#[cfg(test)]
+mod notification_tests {
+    use super::*;
+    #[tokio::test]
+    async fn setup_replay_is_not_recorded_as_a_new_response() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let expected = Arc::new(Mutex::new(None));
+        let client = JockeyUiClient {
+            delta_slot: Arc::new(Mutex::new(Some(tx))),
+            auto_approve: false,
+            runtime_key: "claude-code".into(),
+            role_name: "Developer".into(),
+            app_session_id: "app".into(),
+            expected_session_id: expected.clone(),
+            mode_state: Rc::new(RefCell::new(None)),
+            config_state: Rc::new(RefCell::new(vec![])),
+            terminals: Rc::new(RefCell::new(HashMap::new())),
+        };
+        let notification = |text: &str| {
+            serde_json::from_value(json!({ "sessionId": "s", "update": {
+                "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": text }
+            }}))
+            .unwrap()
+        };
+        client
+            .session_notification(notification("old history or startup banner"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        let commands = serde_json::from_value(json!({ "sessionId": "s", "update": {
+            "sessionUpdate": "available_commands_update", "availableCommands": []
+        }}))
+        .unwrap();
+        client.session_notification(commands).await.unwrap();
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            AcpEvent::AvailableCommands { .. }
+        ));
+        *expected.lock().unwrap() = Some(acp::SessionId::from("s"));
+        client
+            .session_notification(notification("new response"))
+            .await
+            .unwrap();
+        assert!(
+            matches!(rx.try_recv().unwrap(), AcpEvent::TextDelta { text } if text == "new response")
+        );
+    }
 }

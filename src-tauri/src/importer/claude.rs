@@ -82,7 +82,10 @@ pub(crate) fn scan_claude_sessions(project_path: &str) -> Vec<DiscoveredSession>
 
 /// `dirs` pairs a transcript directory with whether the cwd must come from the transcript
 /// itself. With a `project_root`, only transcripts inside it are kept.
-fn scan_claude_dirs(dirs: Vec<(PathBuf, bool)>, project_root: Option<&str>) -> Vec<DiscoveredSession> {
+fn scan_claude_dirs(
+    dirs: Vec<(PathBuf, bool)>,
+    project_root: Option<&str>,
+) -> Vec<DiscoveredSession> {
     let mut sessions = Vec::new();
     for (dir, verify_cwd) in dirs {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -120,7 +123,7 @@ fn scan_claude_dirs(dirs: Vec<(PathBuf, bool)>, project_root: Option<&str>) -> V
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or_else(crate::now_ms);
             sessions.push(DiscoveredSession {
-                runtime_kind: "claude-native",
+                runtime_kind: "claude-code",
                 agent: "Claude Code",
                 session_id,
                 file_path: path,
@@ -189,12 +192,15 @@ fn tag_body<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
 /// (`origin.kind == "task-notification"`) when a background task or subagent finishes. It is
 /// not human input; it is surfaced as a compact event row instead of a user bubble.
 fn task_notification_event(entry: &serde_json::Value, text: &str) -> Option<String> {
-    let flagged = entry.pointer("/origin/kind").and_then(|k| k.as_str()) == Some("task-notification");
+    let flagged =
+        entry.pointer("/origin/kind").and_then(|k| k.as_str()) == Some("task-notification");
     let trimmed = text.trim();
     if !flagged && !trimmed.starts_with("<task-notification>") {
         return None;
     }
-    let status = tag_body(trimmed, "status").filter(|s| !s.is_empty()).unwrap_or("finished");
+    let status = tag_body(trimmed, "status")
+        .filter(|s| !s.is_empty())
+        .unwrap_or("finished");
     let summary = tag_body(trimmed, "summary").filter(|s| !s.is_empty());
     let unescape = |s: &str| {
         s.replace("&lt;", "<")
@@ -630,7 +636,10 @@ mod subdir_tests {
         transcript(&projects.path().join("-b"), "two", "/work/b");
         let mut found = scan_all_claude_sessions_in(projects.path());
         found.sort_by(|x, y| x.session_id.cmp(&y.session_id));
-        let seen: Vec<_> = found.iter().map(|s| (s.session_id.as_str(), s.cwd.as_str())).collect();
+        let seen: Vec<_> = found
+            .iter()
+            .map(|s| (s.session_id.as_str(), s.cwd.as_str()))
+            .collect();
         assert_eq!(seen, [("one", "/work/a"), ("two", "/work/b")]);
     }
 }

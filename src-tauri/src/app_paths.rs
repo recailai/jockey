@@ -52,12 +52,7 @@ pub(crate) fn seed_dev_database(release_dir: &Path, data_dir: &Path) {
         &source,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
-    .and_then(|conn| {
-        conn.execute(
-            "VACUUM INTO ?1",
-            [target.to_string_lossy().as_ref()],
-        )
-    });
+    .and_then(|conn| conn.execute("VACUUM INTO ?1", [target.to_string_lossy().as_ref()]));
     match result {
         Ok(_) => eprintln!(
             "[app_paths] dev database seeded from {}",

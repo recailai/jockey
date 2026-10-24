@@ -206,24 +206,8 @@ export default function SettingsPage(props: SettingsPageProps) {
                 <h2 class="settings-section-heading">Permissions</h2>
                 <Panel class="settings-card-list">
                   <PanelBody class="settings-card-list-body">
-                  <ToggleRow
-                    title="Default permissions"
-                    description="Jockey can read and edit files in its workspace. It can ask for additional access when needed."
-                    enabled={prefs().defaultPermissions}
-                    onChange={(enabled) => patchPrefs({ defaultPermissions: enabled })}
-                  />
-                  <ToggleRow
-                    title="Auto-review"
-                    description="Jockey can automatically review requests for additional access before asking for approval."
-                    enabled={prefs().autoReview}
-                    onChange={(enabled) => patchPrefs({ autoReview: enabled })}
-                  />
-                  <ToggleRow
-                    title="Full access"
-                    description="When enabled, agents may run with broader filesystem and network permissions after approval."
-                    enabled={prefs().fullAccess}
-                    onChange={(enabled) => patchPrefs({ fullAccess: enabled })}
-                  />
+                  <p class="text-sm theme-text">Agent permission requests appear in the control center for approval or rejection.</p>
+                  <p class="mt-2 text-xs theme-muted">Approve directly on a request card, or allow all waiting one-time requests together.</p>
                   </PanelBody>
                 </Panel>
               </div>

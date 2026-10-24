@@ -498,7 +498,12 @@ mod tests {
 
     #[test]
     fn markers_and_codes() {
-        let e = error_event_row("t1", "boom", normalize_error_code(Some("PROCESS_CRASHED")), 5);
+        let e = error_event_row(
+            "t1",
+            "boom",
+            normalize_error_code(Some("PROCESS_CRASHED")),
+            5,
+        );
         assert_eq!(e["id"], "t1:error");
         assert_eq!(e["payload"]["kind"], "turnError");
         assert_eq!(e["payload"]["code"], "PROCESS_DIED");

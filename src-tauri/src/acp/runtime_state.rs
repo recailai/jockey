@@ -74,13 +74,6 @@ pub(super) fn remember_runtime_models(runtime_key: &str, mut models: Vec<String>
     with_catalog(runtime_key, |catalog| catalog.models = models);
 }
 
-pub(super) fn has_discovered_models(runtime_key: &str) -> bool {
-    runtime_catalogs()
-        .get(runtime_key)
-        .map(|c| !c.models.is_empty())
-        .unwrap_or(false)
-}
-
 pub(super) fn remember_runtime_modes(runtime_key: &str, mut modes: Vec<String>) {
     modes.sort_unstable();
     modes.dedup();
@@ -213,7 +206,7 @@ mod catalog_reuse_tests {
         clear_runtime(runtime);
         remember_runtime_models(runtime, vec!["m-1".to_string()]);
 
-        assert!(has_discovered_models(runtime));
+        assert!(!list_discovered_models(runtime).is_empty());
         assert!(
             fresh_config_options(runtime).is_none(),
             "a refresher asking this must be told to go discover, not handed an empty set"

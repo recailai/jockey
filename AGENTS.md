@@ -1,6 +1,6 @@
 # Repository Guidelines
 
-JockeyUI is a **Tauri 2 desktop app** — a multi-agent orchestrator ("Conductor") that coordinates AI CLI agents (Claude Code, Codex CLI, Pi CLI, Antigravity CLI). **ACP (Agent Client Protocol)** is the product-level event/permission envelope shown to the UI; not every runtime speaks ACP on the wire. Claude Code is reached through a headless `claude-native` runner or an ACP bridge, and Codex, Pi, and Antigravity use their native protocols (see [ACP Transport](#acp-transport-src-tauriacp)).
+JockeyUI is a **Tauri 2 desktop app** — a multi-agent orchestrator ("Conductor") that coordinates AI CLI agents (Claude Code, Codex CLI, Pi CLI, Antigravity CLI). **ACP (Agent Client Protocol)** is the only live agent protocol. Claude, Codex, Pi and Antigravity run through external ACP adapters; Jockey owns the shared client, session lifecycle and decision UI (see [ACP Transport](#acp-transport-src-tauriacp)).
 
 Further documentation is indexed in [docs/README.md](docs/README.md).
 
@@ -71,13 +71,14 @@ Workflows are legacy and minimal: `start_workflow` runs a workflow's steps seque
 - ACP 2.0 stable-v1 schema types are paired with Jockey's small JSONL JSON-RPC transport boundary in `acp/transport.rs`; this keeps request correlation, backpressure, stderr tails, cancellation, and process shutdown uniform across every adapter.
 - Provider process slots are scoped by `app_session_id:runtime_key:role_name`, and are evicted on cwd/launch-contract changes, errors, cancellation, or idle timeout.
 - Canonical runtime keys live in `runtime_kind.rs`: `claude-native`, `claude-code`, `codex-cli`, `pi-cli`, `antigravity-cli`. Legacy spellings (`claude`, `codex`, `pi`, `agy`, `gemini`, ...) are normalised. Custom ACP runtime profiles are stored via `db/profiles.rs` and `runtime_profile.rs`. A `mock` runtime is available for offline development.
-- Supported runtimes:
-  - `claude-native` → headless `claude -p` stream-json transport; permission requests come back through a bridge (`--__jockey-permission-bridge`, handled in `main.rs`).
-  - `claude-code` → ACP bridge `@agentclientprotocol/claude-agent-acp` (uses a pinned managed install in production; `pnpm dlx` / `npx -y` are only allowed in debug builds or when `JOCKEY_ALLOW_PACKAGE_RUNNER=1` is explicitly set for diagnostics).
-  - `codex-cli` → native `codex app-server` JSON-RPC transport.
-  - `pi-cli` → Pi's native `--mode rpc` JSONL transport.
-  - `antigravity-cli` → Antigravity's headless `stream-json` transport with a one-shot fallback for older builds.
-- Native CLIs are resolved from the user's interactive shell PATH so GUI launches see the same installations as a terminal.
+- Supported runtimes (all ACP):
+  - `claude-code` → `@agentclientprotocol/claude-agent-acp@0.94.0`.
+  - `codex-cli` → `@agentclientprotocol/codex-acp@2.2.2`.
+  - `pi-cli` → `pi-acp@0.0.34`.
+  - `antigravity-cli` → Google's `agy_acp_server.par` 1.4.1.
+- Rust ACP SDK is pinned to 3.5.0; stable ACP v1 is negotiated on the wire.
+- Old `claude-native` / `native:*` names are compatibility aliases, not execution modes. Schema v17 migrates active Claude bindings and preserves transcripts and provider handles.
+- Catalog detection does not launch provider processes or install packages. Managed adapters install on demand with exact version validation. There is no silent native fallback.
 
 ### Data Flow
 
@@ -89,7 +90,7 @@ Desktop UI / web companion / Jockey MCP
       → per-session loop (queue = `session_inbox_messages` table)
         → chat core (chat.rs, chat/session_runtime.rs)
           → acp::execute_runtime → WorkerMsg → ACP worker thread
-            → spawns CLI subprocess (ACP / native JSON-RPC / stream-json)
+            → spawns external ACP adapter subprocess
   live preview: "acp/delta", "acp/stream" → UI
   engine taps the same stream into TurnRecorder (engine/transcript.rs, checkpoint every 1.5 s) and persists
   engine events (engine/events.rs): turn/started, turn/finished, turn/progress, queue/changed,
@@ -105,7 +106,7 @@ Rule: the engine owns every durable write; views are thin and only render engine
 
 - **Engine-owned persistence and a single event emitter**: all transcript, queue, and session writes go through `engine/`; the UI and web companion never write messages themselves.
 - **Per-session serial, cross-session parallel turns**: `turns::reserve` rejects a second concurrent turn on a session; new input is queued in the inbox and drained in order.
-- **Interrupt-based cancel**: cancelling interrupts the turn and keeps the provider process warm (Claude interrupt control request, Codex `turn/interrupt`, Pi abort). The process is killed only if the same turn is still running after 3 s.
+- **Interrupt-based cancel**: cancelling sends ACP `session/cancel` and keeps a responsive adapter process warm. The process is killed only if the same turn is still running after 3 s.
 - **Built-in Jockey MCP bridge**: injected into agent sessions as a normal MCP server (`jockey_mcp/`), not a separate protocol path.
 - **SSE focus filter**: the web gateway sends high-frequency stream frames (`acp/delta`, `acp/stream`) only to clients focused on that session (`/api/events?focus=<sid>`); lifecycle events and permissions go to every client, and a lagging client gets `resync`.
 
@@ -122,11 +123,12 @@ Rule: the engine owns every durable write; views are thin and only render engine
 - **Strict semantic tokens**: Do NOT use hardcoded colors (e.g. `text-blue-500`, `bg-amber-500/15`). Rely on `--ui-*` tokens or semantic tone properties (`neutral`, `info`, `success`, `warning`, `danger`).
 - Refer to [docs/architecture/ui-design-and-components.md](docs/architecture/ui-design-and-components.md) for detailed UI component specifications.
 
-### Native Protocol Standards
+### ACP Protocol Standards
 
-- **PiRpc**: Fire-and-forget UI updates (`setStatus`, `notify`, `setWidget`) must NOT be answered with synthetic JSON-RPC results.
-- Interactive UI requests in Pi must be answered with `{"type": "extension_ui_response", ...}`.
-- In `extract_pi_session_id`, always prioritize clean `sessionId` over `sessionFile` paths.
+- Provider-specific wire conversion belongs to the external ACP adapters.
+- `session/new` startup messages and `session/load` transcript replay must not enter the next turn's transcript; configuration and command discovery still apply during setup.
+- Failed session loading preserves the original handle and history. Never silently create a replacement conversation.
+- Fork, rewind and provider listing require negotiated ACP extensions; do not advertise native-only controls.
 
 ## Testing Guidelines
 
@@ -146,7 +148,7 @@ Rule: the engine owns every durable write; views are thin and only render engine
 
 ## Current State & Roadmap
 
-Live adapters for Claude Code (native and ACP bridge), Codex CLI, Pi CLI, and Antigravity CLI are implemented under `src-tauri/src/acp/`; ACP remains the product-level event/permission envelope, while Codex/Pi/agy use their native or headless protocols where that is more reliable than a bridge. Model catalogs are discovered at runtime (`model/list` for Codex and `get_available_models` for Pi) and can be explicitly refreshed from the role editor. Mock transport remains available for offline development.
+Claude, Codex, Pi and Antigravity use external ACP adapters through one shared client. Configuration, models and modes come from ACP discovery. Mock transport remains available for offline development.
 
 Session recovery after restart: `engine::recover_after_restart` (run at startup in `lib.rs`) releases claimed inbox items and resets stale agent lifecycle rows; provider sessions are resumed from persisted handles (see `docs/architecture/runtime-adapters.md`).
 

@@ -1,11 +1,9 @@
 use serde_json::Value;
 use tokio::sync::oneshot;
 
-use super::super::adapter::{build_stdio_adapter, AdapterTransport};
+use super::super::adapter::build_stdio_adapter;
 use super::super::worker::{worker_tx, WorkerMsg};
-use super::headless::refresh_headless_catalog;
 use super::mcp::load_role_mcp_servers;
-use super::native::refresh_native_catalog;
 use crate::acp::protocol as acp;
 use crate::db::app_session_role::{load_app_session_role_cli_id, save_app_session_role_cli_id};
 use crate::types::AppState;
@@ -26,15 +24,9 @@ struct PrewarmOpts<'a> {
     role_mode: Option<String>,
     role_config_options: Vec<(String, String)>,
     force_refresh: bool,
-    /// The caller will bind the returned provider session id, so the native path has to spawn
-    /// even when its catalog is already known.
-    want_session_id: bool,
     /// The role's account env (`credentials::launch_env_for`). A process warmed without it
     /// would be evicted by the first turn, which launches with it.
     launch_env: Result<Vec<(String, String)>, String>,
-    /// Role prompt and rules for ACP bridges that take them at session creation; part of the
-    /// launch contract, so a warmed slot must carry exactly what the first turn will.
-    system_prompt: Option<String>,
 }
 
 fn role_launch_env(
@@ -69,51 +61,17 @@ async fn send_prewarm(
         .map(|id| id.to_string())
         .unwrap_or_else(|| format!("role-refresh:{}:{}", adapter.runtime_key, opts.role_name));
     let (tx, rx) = oneshot::channel();
-    if let AdapterTransport::HeadlessJson { protocol, .. } = adapter.transport {
-        // Headless CLIs have no control plane to hold open, so the catalog is the whole
-        // prewarm: there is no provider session id to bind.
-        let catalog = refresh_headless_catalog(
-            protocol,
-            adapter.runtime_key,
-            &adapter.binary,
-            &adapter.env,
-            opts.cwd,
-            opts.force_refresh,
-        )
-        .await;
-        let _ = tx.send((catalog.options, catalog.modes, String::new()));
-        return Some(rx);
+    if !opts.force_refresh && opts.app_session_id.is_none() {
+        if let Some(options) =
+            super::super::runtime_state::fresh_config_options(adapter.runtime_key)
+        {
+            let modes = super::super::runtime_state::list_discovered_modes(adapter.runtime_key);
+            let _ = tx.send((options, modes, String::new()));
+            return Some(rx);
+        }
     }
-    if let AdapterTransport::Native(protocol) = adapter.transport {
-        let catalog = refresh_native_catalog(
-            protocol,
-            adapter.runtime_key,
-            &adapter.binary,
-            &adapter.args,
-            &adapter.env,
-            opts.cwd,
-            &opts.role_config_options,
-            opts.resume_session_id.clone(),
-            true,
-            // Callers that bind a provider session id (Pi resume) must actually spawn, so they
-            // set `want_session_id`; catalog-only callers may reuse what was already read.
-            opts.force_refresh || opts.want_session_id,
-        )
-        .await;
-        let _ = tx.send((catalog.options, catalog.modes, catalog.session_id));
-        return Some(rx);
-    }
-    let mut env = adapter.env;
-    if let Some(text) = opts
-        .system_prompt
-        .as_deref()
-        .filter(|t| !t.trim().is_empty())
-    {
-        env.push((
-            super::cold_start::ACP_SYSTEM_PROMPT_ENV.to_string(),
-            text.trim().to_string(),
-        ));
-    }
+
+    let env = adapter.env;
     let mut mcp_servers = opts.mcp_servers;
     if let Some(app_session_id) = opts.app_session_id.filter(|id| !id.trim().is_empty()) {
         crate::jockey_mcp::binding::bind_jockey_servers(
@@ -221,11 +179,7 @@ async fn prewarm_config_impl(req: ConfigPrewarmRequest<'_>) -> (Vec<Value>, Vec<
         role_mode: req.role_mode,
         role_config_options: req.role_config_options,
         force_refresh: req.force_refresh,
-        want_session_id: req.persist_cli_id,
         launch_env,
-        system_prompt: req.state.and_then(|s| {
-            crate::chat::prompt_builder::role_instructions(s, req.role_name, project_id)
-        }),
     })
     .await
     else {
@@ -282,11 +236,7 @@ pub async fn prewarm_role(
         role_mode: None,
         role_config_options: vec![],
         force_refresh: false,
-        want_session_id: true,
         launch_env,
-        system_prompt: state.as_ref().and_then(|(s, _)| {
-            crate::chat::prompt_builder::role_instructions(s, role_name, project_id.as_deref())
-        }),
     })
     .await
     else {

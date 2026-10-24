@@ -4,7 +4,6 @@ use crate::runtime_kind::RuntimeKind;
 use crate::runtime_profile::{all_profiles, builtin_profiles, RuntimeCapabilities, RuntimeFamily};
 use crate::types::*;
 use serde_json::to_value;
-use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -17,22 +16,8 @@ fn catalog_cache() -> &'static Mutex<CatalogCache> {
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
-pub(crate) fn detect_binary_version(binary: &str) -> Option<String> {
-    match Command::new(binary).arg("--version").output() {
-        Ok(output) if output.status.success() => {
-            let text = String::from_utf8_lossy(&output.stdout);
-            text.lines()
-                .next()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        }
-        _ => None,
-    }
-}
-
 pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
     let kinds = [
-        RuntimeKind::ClaudeNative,
         RuntimeKind::ClaudeCode,
         RuntimeKind::AntigravityCli,
         RuntimeKind::CodexCli,
@@ -48,15 +33,7 @@ pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
             let fallback = format!("{} adapter unavailable", kind.runtime_key());
             let (available, binary) =
                 acp::probe_runtime(kind.runtime_key()).unwrap_or((false, fallback));
-            let version_binary = binary
-                .split_once(" (")
-                .map(|(path, _)| path)
-                .unwrap_or(&binary);
-            let version = if available && version_binary != "npx" {
-                detect_binary_version(version_binary)
-            } else {
-                None
-            };
+            let version = profile.version_requirement.clone();
             let transport = acp::adapter_transport(kind.runtime_key())
                 .unwrap_or_else(|| "unavailable".to_string());
             let launch_method = if available {
@@ -115,15 +92,7 @@ pub(crate) fn build_assistant_catalog() -> Vec<AssistantRuntime> {
     {
         let fallback = format!("{} adapter unavailable", profile.id);
         let (available, binary) = acp::probe_runtime(&profile.id).unwrap_or((false, fallback));
-        let version_binary = binary
-            .split_once(" (")
-            .map(|(path, _)| path)
-            .unwrap_or(&binary);
-        let version = if available {
-            detect_binary_version(version_binary)
-        } else {
-            None
-        };
+        let version = profile.version_requirement.clone();
         let transport =
             acp::adapter_transport(&profile.id).unwrap_or_else(|| "unavailable".to_string());
         let launch_method = if available {

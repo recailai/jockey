@@ -18,11 +18,6 @@ mod runtime_profile;
 mod types;
 pub mod web_gateway;
 
-/// Internal stdio MCP permission bridge used by the native Claude adapter
-/// (`current_exe --__jockey-permission-bridge`). See
-/// `acp::session::perm_bridge` for the protocol contract.
-pub use acp::permission_bridge_main;
-
 use dashmap::DashMap;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -86,7 +81,6 @@ pub fn run() {
             app_paths::seed_dev_database(&release_dir, &app_dir);
             eprintln!("[jockey] data dir: {}", app_dir.to_string_lossy());
             acp::set_app_data_dir(app_dir.clone());
-            acp::start_permission_bridge(app.handle().clone());
             engine::install(app.handle());
             git::set_app_handle(app.handle().clone());
 

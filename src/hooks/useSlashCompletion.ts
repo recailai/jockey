@@ -40,17 +40,6 @@ export function useSlashCompletion(
     const normalizedRuntime = normalizeRuntimeKey(runtimeKey);
     const s = activeSession();
     let cmds = s?.agentCommands.get(commandCacheKey(normalizedRuntime, roleName)) ?? [];
-    if (cmds.length === 0) {
-      const altRuntime =
-        normalizedRuntime === "claude-code"
-          ? "claude-native"
-          : normalizedRuntime === "claude-native"
-          ? "claude-code"
-          : "";
-      if (altRuntime) {
-        cmds = s?.agentCommands.get(commandCacheKey(altRuntime, roleName)) ?? [];
-      }
-    }
 
     const seen = new Set<string>();
     const out: AppMentionItem[] = [];

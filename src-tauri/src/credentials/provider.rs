@@ -62,11 +62,10 @@ impl CredentialProvider {
         }
     }
 
-    /// Both Claude runtimes (headless and the ACP bridge) run the same Claude Code install,
-    /// so they share one account.
+    /// Legacy runtime names share the same provider credentials after ACP migration.
     pub(crate) fn for_runtime(runtime_kind: &str) -> Option<Self> {
         match RuntimeKind::from_str(runtime_kind)? {
-            RuntimeKind::ClaudeNative | RuntimeKind::ClaudeCode => Some(Self::Claude),
+            RuntimeKind::ClaudeCode => Some(Self::Claude),
             RuntimeKind::CodexCli => Some(Self::Codex),
             RuntimeKind::PiCli => Some(Self::Pi),
             RuntimeKind::AntigravityCli => Some(Self::Antigravity),
@@ -176,9 +175,18 @@ impl CredentialProvider {
 
     pub(crate) fn suggested_env_keys(self) -> &'static [&'static str] {
         match self {
-            Self::Claude => &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"],
+            Self::Claude => &[
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_BASE_URL",
+            ],
             Self::Codex => &["OPENAI_API_KEY", "OPENAI_BASE_URL"],
-            Self::Pi => &["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY"],
+            Self::Pi => &[
+                "ANTHROPIC_API_KEY",
+                "OPENAI_API_KEY",
+                "GEMINI_API_KEY",
+                "OPENROUTER_API_KEY",
+            ],
             Self::Antigravity => &[
                 "GEMINI_API_KEY",
                 "AGY_ADC_AUTH",

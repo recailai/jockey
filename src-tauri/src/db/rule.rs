@@ -151,6 +151,7 @@ pub(crate) fn list_role_rules(state: &AppState, role_id: &str) -> Result<Vec<Rol
     })
 }
 
+#[allow(dead_code)]
 pub(crate) fn get_enabled_rules_for_role(
     state: &AppState,
     role_id: &str,

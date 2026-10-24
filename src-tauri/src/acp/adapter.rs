@@ -9,39 +9,19 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use which::which;
 
-const CLAUDE_ACP_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp@0.70.0";
+const CLAUDE_ACP_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp@0.94.0";
 
 #[derive(Clone)]
 struct AdapterResolution {
     binary: String,
     args: Vec<String>,
     env: Vec<(String, String)>,
-    launch_method: String,
     transport: AdapterTransport,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NativeProtocol {
-    CodexAppServer,
-    PiRpc,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HeadlessProtocol {
-    AgyStreamJson,
-    ClaudeStreamJson,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdapterTransport {
     Acp,
-    Native(NativeProtocol),
-    HeadlessJson {
-        protocol: HeadlessProtocol,
-        stream_input: bool,
-        output_format: bool,
-        conversation: bool,
-    },
 }
 
 static ADAPTER_CACHE: OnceLock<DashMap<RuntimeKind, Result<AdapterResolution, String>>> =
@@ -95,28 +75,39 @@ pub fn set_app_data_dir(path: PathBuf) {
     let _ = APP_DATA_DIR.set(path);
 }
 
-fn app_data_adapter_bin(binary: &str) -> Option<PathBuf> {
-    let base = APP_DATA_DIR.get()?;
-    let candidate = base
-        .join("adapters")
-        .join("node_modules")
-        .join(".bin")
-        .join(binary);
-    if candidate.exists() {
-        Some(candidate)
-    } else {
-        None
-    }
-}
-
 pub(crate) struct StdioAdapterSpec {
     pub(crate) kind: RuntimeKind,
     pub(crate) runtime_key: &'static str,
     pub(crate) binary: String,
     pub(crate) args: Vec<String>,
     pub(crate) env: Vec<(String, String)>,
-    pub(crate) launch_method: String,
     pub(crate) transport: AdapterTransport,
+}
+
+fn managed_package(kind: RuntimeKind) -> Option<(&'static str, &'static str)> {
+    match kind {
+        RuntimeKind::ClaudeCode => Some((CLAUDE_ACP_PACKAGE, "claude-agent-acp")),
+        RuntimeKind::CodexCli => Some(("@agentclientprotocol/codex-acp@2.2.2", "codex-acp")),
+        RuntimeKind::PiCli => Some(("pi-acp@0.0.34", "pi-acp")),
+        _ => None,
+    }
+}
+
+fn pinned_bridge_bin_at(base: &std::path::Path, package: &str, binary: &str) -> Option<PathBuf> {
+    let (name, version) = package.rsplit_once('@')?;
+    let manifest: Value = serde_json::from_slice(
+        &std::fs::read(base.join("node_modules").join(name).join("package.json")).ok()?,
+    )
+    .ok()?;
+    if manifest["version"].as_str()? != version {
+        return None;
+    }
+    let executable = base.join("node_modules/.bin").join(binary);
+    executable.is_file().then_some(executable)
+}
+
+fn managed_bridge_bin(package: &str, binary: &str) -> Option<PathBuf> {
+    pinned_bridge_bin_at(&APP_DATA_DIR.get()?.join("adapters"), package, binary)
 }
 
 pub(super) fn build_stdio_adapter(runtime: &str) -> Result<Option<StdioAdapterSpec>, String> {
@@ -149,7 +140,6 @@ pub(super) fn build_stdio_adapter(runtime: &str) -> Result<Option<StdioAdapterSp
         binary: resolved.binary,
         args: resolved.args,
         env: resolved.env,
-        launch_method: resolved.launch_method,
         transport: resolved.transport,
     }))
 }
@@ -198,14 +188,12 @@ fn build_custom_stdio_adapter(profile: RuntimeProfile) -> Result<Option<StdioAda
         binary,
         args: launch.args,
         env,
-        launch_method: "custom-acp-profile".to_string(),
         transport: AdapterTransport::Acp,
     }))
 }
 
 fn resolve_adapter_for_kind(kind: RuntimeKind) -> Result<AdapterResolution, String> {
     match kind {
-        RuntimeKind::ClaudeNative => resolve_headless_adapter(HeadlessProtocol::ClaudeStreamJson),
         RuntimeKind::ClaudeCode => resolve_node_adapter(
             "claude-code",
             "claude-agent-acp",
@@ -213,54 +201,33 @@ fn resolve_adapter_for_kind(kind: RuntimeKind) -> Result<AdapterResolution, Stri
             &[],
             None,
             None,
-            false,
+            true,
         ),
-        RuntimeKind::AntigravityCli => resolve_headless_adapter(HeadlessProtocol::AgyStreamJson),
-        RuntimeKind::CodexCli => resolve_native_adapter(
+        RuntimeKind::CodexCli => resolve_node_adapter(
             "codex-cli",
-            "codex",
-            vec!["app-server"],
-            NativeProtocol::CodexAppServer,
-            Some("app-server"),
+            "codex-acp",
+            "@agentclientprotocol/codex-acp@2.2.2",
+            &[],
+            None,
+            None,
+            true,
         ),
-        RuntimeKind::PiCli => resolve_native_adapter(
-            "pi-cli",
-            "pi",
-            vec!["--mode", "rpc"],
-            NativeProtocol::PiRpc,
-            Some("--mode"),
-        ),
+        RuntimeKind::PiCli => {
+            resolve_node_adapter("pi-cli", "pi-acp", "pi-acp@0.0.34", &[], None, None, true)
+        }
+        RuntimeKind::AntigravityCli => {
+            let binary = APP_DATA_DIR.get().map(|base| base.join("adapters/bin/agy_acp_server.par")).filter(|p| p.is_file())
+                .or_else(|| find_binary("agy_acp_server.par"))
+                .ok_or("Antigravity ACP server is not installed; install agy_acp_server.par from the official ACP registry.")?;
+            Ok(AdapterResolution {
+                binary: binary.to_string_lossy().into_owned(),
+                args: vec![],
+                env: agent_env_overrides(),
+                transport: AdapterTransport::Acp,
+            })
+        }
         RuntimeKind::Mock => unreachable!(),
     }
-}
-
-fn resolve_native_adapter(
-    runtime: &str,
-    binary_name: &str,
-    args: Vec<&str>,
-    protocol: NativeProtocol,
-    required_help_arg: Option<&str>,
-) -> Result<AdapterResolution, String> {
-    let path = find_binary(binary_name).ok_or_else(|| {
-        format!("{runtime} native adapter unavailable, missing executable: {binary_name}")
-    })?;
-    let binary = path.to_string_lossy().to_string();
-    if required_help_arg.is_some_and(|arg| !supports_arg_in_help(&binary, arg)) {
-        return Err(format!(
-            "{runtime} native adapter unavailable, installed {binary_name} does not support the required native mode"
-        ));
-    }
-    let launch_method = match protocol {
-        NativeProtocol::CodexAppServer => "native:codex-app-server",
-        NativeProtocol::PiRpc => "native:pi-rpc",
-    };
-    Ok(AdapterResolution {
-        binary,
-        args: args.into_iter().map(str::to_string).collect(),
-        env: agent_env_overrides(),
-        launch_method: launch_method.to_string(),
-        transport: AdapterTransport::Native(protocol),
-    })
 }
 
 fn resolve_node_adapter(
@@ -272,7 +239,7 @@ fn resolve_node_adapter(
     required_probe_contains: Option<(&str, &str)>,
     prefer_package: bool,
 ) -> Result<AdapterResolution, String> {
-    if let Some(path) = app_data_adapter_bin(adapter_binary) {
+    if let Some(path) = managed_bridge_bin(package, adapter_binary) {
         let binary = path.to_string_lossy().to_string();
         if required_help_arg
             .map(|arg| supports_arg_in_help(&binary, arg))
@@ -285,7 +252,6 @@ fn resolve_node_adapter(
                 binary,
                 args: package_args.iter().map(|s| s.to_string()).collect(),
                 env: agent_env_overrides(),
-                launch_method: "managed-binary".to_string(),
                 transport: AdapterTransport::Acp,
             });
         }
@@ -305,7 +271,7 @@ fn resolve_node_adapter(
     // Controlled install: pin the package into the app data dir instead of
     // relying on an ephemeral package-runner cache for production launches.
     if ensure_managed_bridge_install(package, adapter_binary) {
-        if let Some(path) = app_data_adapter_bin(adapter_binary) {
+        if let Some(path) = managed_bridge_bin(package, adapter_binary) {
             let binary = path.to_string_lossy().to_string();
             if required_help_arg
                 .map(|arg| supports_arg_in_help(&binary, arg))
@@ -318,7 +284,6 @@ fn resolve_node_adapter(
                     binary,
                     args: package_args.iter().map(|s| s.to_string()).collect(),
                     env: agent_env_overrides(),
-                    launch_method: "managed-install".to_string(),
                     transport: AdapterTransport::Acp,
                 });
             }
@@ -342,7 +307,6 @@ fn resolve_node_adapter(
                     binary: path.to_string_lossy().to_string(),
                     args,
                     env: agent_env_overrides(),
-                    launch_method: format!("package-runner:{binary}"),
                     transport: AdapterTransport::Acp,
                 });
             }
@@ -383,16 +347,26 @@ fn resolve_node_adapter(
 /// and npm version so a later run can detect a stale or foreign install.
 /// Returns true when `app_data_adapter_bin` can be expected to resolve.
 fn ensure_managed_bridge_install(package: &str, adapter_binary: &str) -> bool {
-    static INSTALL_ATTEMPTED: OnceLock<()> = OnceLock::new();
-    if app_data_adapter_bin(adapter_binary).is_some() {
+    static INSTALL_ATTEMPTED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    if managed_bridge_bin(package, adapter_binary).is_some() {
         return true;
     }
     let Some(base) = APP_DATA_DIR.get() else {
         return false;
     };
-    INSTALL_ATTEMPTED.get_or_init(|| {
+    let mut attempted = INSTALL_ATTEMPTED
+        .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .ok();
+    if !attempted
+        .as_mut()
+        .is_some_and(|set| set.insert(package.to_string()))
+    {
+        return false;
+    }
+    {
         let dir = base.join("adapters");
-        let manifest_path = dir.join("bridge-install.json");
+        let manifest_path = dir.join(format!("bridge-install-{adapter_binary}.json"));
         if manifest_path.exists() {
             // A manifest exists but the binary is missing: the install is
             // broken. Reinstall once.
@@ -406,7 +380,7 @@ fn ensure_managed_bridge_install(package: &str, adapter_binary: &str) -> bool {
                 "adapter.bridge.install.skipped",
                 serde_json::json!({ "reason": "npm not found" }),
             );
-            return;
+            return false;
         };
         let _ = std::fs::create_dir_all(&dir);
         let output = std::process::Command::new(npm)
@@ -414,6 +388,7 @@ fn ensure_managed_bridge_install(package: &str, adapter_binary: &str) -> bool {
                 "install",
                 "--prefix",
                 &dir.to_string_lossy(),
+                "--save-exact",
                 "--no-audit",
                 "--no-fund",
                 "--loglevel",
@@ -449,8 +424,8 @@ fn ensure_managed_bridge_install(package: &str, adapter_binary: &str) -> bool {
                 );
             }
         }
-    });
-    app_data_adapter_bin(adapter_binary).is_some()
+    }
+    managed_bridge_bin(package, adapter_binary).is_some()
 }
 
 fn detect_npm_version() -> Option<String> {
@@ -494,79 +469,7 @@ fn resolve_path_adapter(
         binary,
         args: package_args.iter().map(|s| s.to_string()).collect(),
         env: agent_env_overrides(),
-        launch_method: "path-binary".to_string(),
         transport: AdapterTransport::Acp,
-    })
-}
-
-fn resolve_headless_adapter(protocol: HeadlessProtocol) -> Result<AdapterResolution, String> {
-    let (runtime, binary_name) = match protocol {
-        HeadlessProtocol::AgyStreamJson => ("antigravity-cli", "agy"),
-        HeadlessProtocol::ClaudeStreamJson => ("claude-native", "claude"),
-    };
-    let path = find_binary(binary_name)
-        .ok_or_else(|| format!("{runtime} adapter unavailable, missing: {binary_name}"))?;
-    let binary = path.to_string_lossy().to_string();
-    if !supports_arg_in_help(&binary, "--print") {
-        return Err(format!(
-            "{runtime} adapter unavailable, installed {binary_name} does not support --print"
-        ));
-    }
-    if matches!(protocol, HeadlessProtocol::ClaudeStreamJson)
-        && (!supports_arg_in_help(&binary, "--resume")
-            || !supports_arg_in_help(&binary, "--permission-prompt-tool"))
-    {
-        return Err(
-            "claude-native adapter unavailable, installed claude lacks stream resume or permission handler support"
-                .to_string(),
-        );
-    }
-    if matches!(protocol, HeadlessProtocol::ClaudeStreamJson)
-        && !super::session::perm_bridge::is_ready()
-    {
-        return Err(
-            "claude-native adapter unavailable, Jockey permission bridge is not ready".to_string(),
-        );
-    }
-    let output_format = supports_arg_in_help(&binary, "--output-format");
-    let stream_input = supports_arg_in_help(&binary, "--input-format");
-    let conversation = match protocol {
-        HeadlessProtocol::AgyStreamJson => supports_arg_in_help(&binary, "--conversation"),
-        HeadlessProtocol::ClaudeStreamJson => supports_arg_in_help(&binary, "--resume"),
-    };
-    if matches!(protocol, HeadlessProtocol::ClaudeStreamJson) && (!output_format || !stream_input) {
-        return Err(
-            "claude-native adapter unavailable, installed claude lacks stream-json input/output support"
-                .to_string(),
-        );
-    }
-    let args = if matches!(protocol, HeadlessProtocol::ClaudeStreamJson) {
-        let mut args = vec![
-            "-p".to_string(),
-            "--verbose".to_string(),
-            "--include-partial-messages".to_string(),
-        ];
-        if supports_arg_in_help(&binary, "--forward-subagent-text") {
-            args.push("--forward-subagent-text".to_string());
-        }
-        args
-    } else {
-        Vec::new()
-    };
-    Ok(AdapterResolution {
-        binary,
-        args,
-        env: agent_env_overrides(),
-        launch_method: match protocol {
-            HeadlessProtocol::AgyStreamJson => "headless-binary".to_string(),
-            HeadlessProtocol::ClaudeStreamJson => "native:claude-stream-json".to_string(),
-        },
-        transport: AdapterTransport::HeadlessJson {
-            protocol,
-            stream_input,
-            output_format,
-            conversation,
-        },
     })
 }
 
@@ -652,71 +555,40 @@ fn load_interactive_shell_env() -> Vec<(String, String)> {
     Vec::new()
 }
 
-pub fn adapter_launch_method(runtime_kind: &str) -> Option<String> {
-    let n = runtime_kind.trim().to_ascii_lowercase();
-    if n.is_empty() || n == "mock" {
-        return Some("mock".to_string());
-    }
-    match build_stdio_adapter(&n) {
-        Ok(Some(a)) => Some(a.launch_method),
-        _ => None,
-    }
+pub fn adapter_launch_method(runtime: &str) -> Option<String> {
+    crate::runtime_profile::runtime_key_static(runtime).map(|_| "managed-acp".to_string())
 }
 
-pub fn adapter_transport(runtime_kind: &str) -> Option<String> {
-    let normalized = RuntimeKind::from_str(runtime_kind)
-        .map(|kind| kind.runtime_key().to_string())
-        .unwrap_or_else(|| runtime_kind.trim().to_ascii_lowercase());
-    match build_stdio_adapter(&normalized) {
-        Ok(Some(adapter)) => Some(match adapter.transport {
-            AdapterTransport::Acp => "acp".to_string(),
-            AdapterTransport::Native(protocol) => native_protocol_name(protocol).to_string(),
-            AdapterTransport::HeadlessJson { protocol, .. } => match protocol {
-                HeadlessProtocol::AgyStreamJson => "agy-stream-json".to_string(),
-                HeadlessProtocol::ClaudeStreamJson => "claude-stream-json".to_string(),
-            },
-        }),
-        _ => None,
-    }
+pub fn adapter_transport(runtime: &str) -> Option<String> {
+    crate::runtime_profile::runtime_key_static(runtime)
+        .map(|_| if runtime == "mock" { "mock" } else { "acp" }.to_string())
 }
 
-fn native_protocol_name(protocol: NativeProtocol) -> &'static str {
-    match protocol {
-        NativeProtocol::CodexAppServer => "native-codex-app-server",
-        NativeProtocol::PiRpc => "native-pi-rpc",
+pub fn probe_runtime(runtime: &str) -> Option<(bool, String)> {
+    if runtime == "mock" {
+        return Some((true, "mock".into()));
     }
-}
-
-/// Launch details for a resolved adapter, safe to consume outside the `acp`
-/// module (provider session administration, prewarm plumbing, etc.).
-pub struct ResolvedAdapterLaunch {
-    pub binary: String,
-    pub args: Vec<String>,
-    pub env: Vec<(String, String)>,
-}
-
-pub fn resolve_adapter_launch(runtime_kind: &str) -> Result<ResolvedAdapterLaunch, String> {
-    match build_stdio_adapter(runtime_kind) {
-        Ok(Some(spec)) => Ok(ResolvedAdapterLaunch {
-            binary: spec.binary,
-            args: spec.args,
-            env: spec.env,
-        }),
-        Ok(None) => Err(format!("unsupported runtime kind: {runtime_kind}")),
-        Err(error) => Err(error),
+    if let Some(profile) = runtime_profile::custom_profile(runtime) {
+        return Some(match build_custom_stdio_adapter(profile) {
+            Ok(Some(spec)) => (true, spec.binary),
+            Err(error) => (false, error),
+            _ => (false, "ACP executable unavailable".into()),
+        });
     }
-}
-
-pub fn probe_runtime(runtime_kind: &str) -> Option<(bool, String)> {
-    let n = runtime_kind.trim().to_ascii_lowercase();
-    if n.is_empty() || n == "mock" {
-        return Some((true, "mock".to_string()));
+    let kind = RuntimeKind::from_str(runtime)?;
+    if let Some((package, binary)) = managed_package(kind) {
+        if let Some(path) = managed_bridge_bin(package, binary) {
+            return Some((true, path.to_string_lossy().into_owned()));
+        }
+        if find_binary("npm").is_some() {
+            return Some((true, format!("{package} (installs on first use)")));
+        }
+        return Some((false, format!("Install Node.js and npm to run {package}")));
     }
-    match build_stdio_adapter(&n) {
-        Ok(Some(a)) => Some((true, format!("{} ({})", a.binary, a.launch_method))),
-        Ok(None) => Some((false, format!("unsupported runtime kind: {}", n))),
-        Err(e) => Some((false, e)),
-    }
+    Some(match resolve_adapter_for_kind(kind) {
+        Ok(spec) => (true, spec.binary),
+        Err(error) => (false, error),
+    })
 }
 
 pub(super) fn friendly_error_message(runtime: &str, raw: &str) -> String {
@@ -872,45 +744,22 @@ pub fn acp_log_snapshot(limit: Option<usize>) -> Vec<AcpLogEntry> {
 #[cfg(test)]
 mod transport_probe {
     use super::*;
-
-    /// Diagnostic: report the transport each installed runtime actually resolves to, including
-    /// the headless capability flags that decide between the persistent stream session and the
-    /// one-shot fallback. Ignored by default because it shells out to the real CLIs.
-    ///
-    /// Run with: cargo test --manifest-path src-tauri/Cargo.toml -- --ignored --nocapture
     #[test]
-    #[ignore = "requires the agent CLIs to be installed"]
-    fn report_resolved_transports() {
-        for runtime in [
-            "claude-native",
-            "claude-code",
-            "codex-cli",
-            "pi-cli",
-            "antigravity-cli",
-        ] {
-            match build_stdio_adapter(runtime) {
-                Ok(Some(adapter)) => {
-                    let detail = match adapter.transport {
-                        AdapterTransport::Acp => "acp".to_string(),
-                        AdapterTransport::Native(protocol) => {
-                            native_protocol_name(protocol).to_string()
-                        }
-                        AdapterTransport::HeadlessJson {
-                            protocol,
-                            stream_input,
-                            output_format,
-                            conversation,
-                        } => format!(
-                            "{:?} stream_input={stream_input} output_format={output_format} conversation={conversation} persistent={}",
-                            protocol,
-                            stream_input && output_format
-                        ),
-                    };
-                    println!("{runtime:<18} {detail}\n{:<18} args={:?}", "", adapter.args);
-                }
-                Ok(None) => println!("{runtime:<18} unsupported"),
-                Err(e) => println!("{runtime:<18} UNAVAILABLE: {e}"),
-            }
-        }
+    fn pinned_bridge_rejects_an_existing_outdated_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = dir
+            .path()
+            .join("node_modules/@agentclientprotocol/claude-agent-acp");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::create_dir_all(dir.path().join("node_modules/.bin")).unwrap();
+        std::fs::write(
+            dir.path().join("node_modules/.bin/claude-agent-acp"),
+            "fixture",
+        )
+        .unwrap();
+        std::fs::write(package.join("package.json"), r#"{"version":"0.70.0"}"#).unwrap();
+        assert!(pinned_bridge_bin_at(dir.path(), CLAUDE_ACP_PACKAGE, "claude-agent-acp").is_none());
+        std::fs::write(package.join("package.json"), r#"{"version":"0.94.0"}"#).unwrap();
+        assert!(pinned_bridge_bin_at(dir.path(), CLAUDE_ACP_PACKAGE, "claude-agent-acp").is_some());
     }
 }

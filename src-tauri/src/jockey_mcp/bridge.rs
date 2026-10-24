@@ -112,7 +112,10 @@ async fn handle_connection(
             content_length = val.trim().parse().unwrap_or(0);
         }
         if let Some((name, val)) = line.split_once(':') {
-            if name.trim().eq_ignore_ascii_case(super::binding::BINDING_HEADER) {
+            if name
+                .trim()
+                .eq_ignore_ascii_case(super::binding::BINDING_HEADER)
+            {
                 binding = super::binding::McpBinding::decode(val);
             }
         }

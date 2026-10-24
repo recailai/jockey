@@ -332,10 +332,6 @@ pub(crate) async fn invoke_role(
     let cwd = crate::db::app_session::get_app_session_cwd(state, &app_session_id)
         .unwrap_or_else(crate::resolve_chat_cwd);
 
-    let enabled_rules =
-        crate::db::rule::get_enabled_rules_for_role(state, &role.id).unwrap_or_default();
-    let append_system_prompt =
-        crate::chat::prompt_builder::build_system_prompt(Some(role.system_prompt.as_str()), &enabled_rules);
     let prepared = prompt.to_string();
 
     let mut mcp_servers: Vec<crate::acp::protocol::McpServer> = {
@@ -380,7 +376,11 @@ pub(crate) async fn invoke_role(
         });
     }
 
-    crate::jockey_mcp::binding::bind_jockey_servers(&mut mcp_servers, &app_session_id, &role.role_name);
+    crate::jockey_mcp::binding::bind_jockey_servers(
+        &mut mcp_servers,
+        &app_session_id,
+        &role.role_name,
+    );
 
     let role_config: Vec<(String, String)> =
         serde_json::from_str::<serde_json::Value>(&role.config_options_json)
@@ -397,7 +397,7 @@ pub(crate) async fn invoke_role(
     let auto_approve = role.auto_approve;
     let role_mode = role.mode;
 
-    let res = crate::acp::execute_runtime_with_system(
+    let res = crate::acp::execute_runtime(
         &role.runtime_kind,
         role_name,
         &prepared,
@@ -410,7 +410,6 @@ pub(crate) async fn invoke_role(
         role_config,
         Some((state, &app_session_id)),
         &app_session_id,
-        append_system_prompt.as_deref(),
     )
     .await;
 

@@ -36,7 +36,7 @@ const sessions: MockSession[] = [
     id: "s-chat",
     title: "Fix gateway SSE reconnect",
     activeRole: "Developer",
-    runtimeKind: "claude-native",
+    runtimeKind: "claude-code",
     projectId: "p1",
     lastActiveAt: min(3),
     preview: "The resync handler now reloads the focused session.",
@@ -68,7 +68,7 @@ const sessions: MockSession[] = [
     id: "s-stream",
     title: "Port companion to shared components",
     activeRole: "Developer",
-    runtimeKind: "claude-native",
+    runtimeKind: "claude-code",
     projectId: "p1",
     lastActiveAt: min(0),
     preview: "Ready for your next direction.",
@@ -90,7 +90,7 @@ const sessions: MockSession[] = [
     id: "s-ask",
     title: "Pick a deploy target",
     activeRole: "Planner",
-    runtimeKind: "claude-native",
+    runtimeKind: "claude-code",
     projectId: "p2",
     lastActiveAt: min(30),
     preview: "Question from the agent",
@@ -101,7 +101,7 @@ const sessions: MockSession[] = [
     id: "s-error",
     title: "Nightly import job",
     activeRole: "Developer",
-    runtimeKind: "claude-native",
+    runtimeKind: "claude-code",
     projectId: "p2",
     lastActiveAt: min(90),
     preview: "需要登录授权",
@@ -179,11 +179,11 @@ const summary = (s: MockSession) => ({
   externalActive: s.id === "s-chat" ? false : s.id === "s-ask",
 });
 
-const assistants = ["claude-native", "codex-cli"].map((key) => ({
+const assistants = ["claude-code", "codex-cli"].map((key) => ({
   key,
   profileId: key,
   label: key,
-  family: "native",
+  family: "acp",
   binary: key,
   available: true,
   version: "1.0",
@@ -211,7 +211,7 @@ export function createMockTransport(): HttpTransport {
     const assistantMessageId = input.assistantMessageId;
     const session = find(sid)!;
     session.running = true;
-    const base = { role: "Developer", appSessionId: sid, turnId, runtimeKind: "claude-native" };
+    const base = { role: "Developer", appSessionId: sid, turnId, runtimeKind: "claude-code" };
     const stream = (event: Record<string, unknown>) => emit("acp/stream", { ...base, event });
     const delta = (text: string) => emit("acp/delta", { role: "Developer", appSessionId: sid, turnId, delta: text });
     emit("turn/started", {
@@ -259,14 +259,14 @@ export function createMockTransport(): HttpTransport {
       case "unwatch_session": return undefined;
       case "list_session_inbox_cmd": return queued.filter((q) => q.appSessionId === args.sessionId);
       case "detect_assistants": return assistants;
-      case "list_roles": return [{ id: "Developer", name: "Developer", roleName: "Developer", runtimeKind: "claude-native", skills: [] }];
+      case "list_roles": return [{ id: "Developer", name: "Developer", roleName: "Developer", runtimeKind: "claude-code", skills: [] }];
       case "list_pending_prompts_cmd": return structuredClone(pending);
       case "create_app_session": {
         const session = {
           id: `new-${sessions.length}`,
           title: args.title || "Session_1",
           activeRole: "Developer",
-          runtimeKind: "claude-native",
+          runtimeKind: "claude-code",
           projectId: args.projectId,
           lastActiveAt: Date.now(),
           preview: "",

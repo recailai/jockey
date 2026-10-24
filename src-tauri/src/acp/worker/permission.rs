@@ -173,6 +173,7 @@ fn user_input_requests() -> &'static DashMap<String, PendingUserInput> {
     USER_INPUT_REQUESTS.get_or_init(DashMap::new)
 }
 
+#[cfg(test)]
 pub(crate) fn insert_user_input(
     info: PendingUserInputInfo,
     tx: oneshot::Sender<Option<UserInputAnswers>>,

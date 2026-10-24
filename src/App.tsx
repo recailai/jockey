@@ -85,7 +85,7 @@ export default function App() {
   const [showProjectModal, setShowProjectModal] = createSignal(false);
   const [importProject, setImportProject] = createSignal<Project | null>(null);
   const [importOpen, setImportOpen] = createSignal(false);
-  const [showControlCenter, setShowControlCenter] = createSignal(false);
+  const [showControlCenter, setShowControlCenter] = createSignal(true);
   const [importScope, setImportScope] = createSignal<"project" | "all">("project");
 
   const {
@@ -405,7 +405,7 @@ export default function App() {
     const session = activeSession();
     const role = session?.activeRole;
     const runtime = session?.runtimeKind;
-    if (!sid || !role || !runtime) return;
+    if (showControlCenter() || !sid || !role || !runtime) return;
     void fetchConfigOptions(runtime, role).then((opts) => {
       const current = activeSession();
       if (
@@ -569,6 +569,7 @@ export default function App() {
   };
 
   const openExistingSession = async (id: string) => {
+    setShowControlCenter(false);
     let known = sessions.find((s) => s.id === id);
     if (!known) {
       try {
@@ -727,6 +728,7 @@ export default function App() {
   };
 
   const newSession = async (targetProjectId?: string) => {
+    setShowControlCenter(false);
     const targetProj = targetProjectId
       ? projects().find((p) => p.id === targetProjectId) ?? currentProject()
       : currentProject();
@@ -1143,8 +1145,9 @@ export default function App() {
             currentProject={currentProject}
             sessions={() => sessions}
             activeSessionId={activeSessionId}
-            onSelectProject={handleSelectProject}
+            onSelectProject={(project) => { setShowControlCenter(false); return handleSelectProject(project); }}
             onSelectSession={async (sessionId, project) => {
+              setShowControlCenter(false);
               if (project && project.id !== currentProject()?.id) {
                 await handleSelectProject(project, sessionId);
               } else {
@@ -1168,7 +1171,7 @@ export default function App() {
         <SessionTopbar
           sessions={sessions}
           activeSessionId={activeSessionId}
-          setActiveSessionId={setActiveSessionId}
+          setActiveSessionId={(id) => { setShowControlCenter(false); setActiveSessionId(id); }}
           updateSession={updateSession}
           onNewSession={() => { void newSession(); }}
           onCloseSession={closeSession}
@@ -1179,8 +1182,9 @@ export default function App() {
           onToggleLeftSidebar={toggleLeftSidebar}
           currentProject={currentProject}
           projects={projects}
-          onSelectProject={handleSelectProject}
+          onSelectProject={(project) => { setShowControlCenter(false); return handleSelectProject(project); }}
           onSelectSession={async (sid, proj) => {
+            setShowControlCenter(false);
             if (proj && proj.id !== currentProject()?.id) {
               await handleSelectProject(proj, sid);
             } else {
@@ -1245,7 +1249,7 @@ export default function App() {
             project={importProject()}
             initialScope={importScope()}
             onClose={() => setImportOpen(false)}
-            onImported={(raw, created) => void mergeImportedSessions(raw, created)}
+            onImported={(raw, created) => { setShowControlCenter(false); void mergeImportedSessions(raw, created); }}
             onOpenExisting={(id) => void openExistingSession(id)}
           />
           <ProjectModal

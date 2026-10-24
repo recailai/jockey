@@ -1,7 +1,7 @@
 //! Continue a Jockey conversation in the agent's own terminal UI.
 //!
-//! Jockey drives Claude headless (`claude -p`), which records the transcript with an SDK
-//! entrypoint; Claude Code's `/resume` picker hides those, so the user resumes by id instead.
+//! Jockey coordinates agents via ACP, storing provider session handles so the user
+//! can resume the conversation in the agent's native CLI terminal interface.
 
 use rusqlite::{params, OptionalExtension};
 use tauri::State;
@@ -53,7 +53,7 @@ fn latest_conversation(
 fn resume_command(runtime: RuntimeKind, session_id: &str) -> Result<String, String> {
     let id = shell_quote(session_id);
     match runtime {
-        RuntimeKind::ClaudeNative | RuntimeKind::ClaudeCode => Ok(format!("claude --resume {id}")),
+        RuntimeKind::ClaudeCode => Ok(format!("claude --resume {id}")),
         RuntimeKind::CodexCli => Ok(format!("codex resume {id}")),
         RuntimeKind::PiCli | RuntimeKind::AntigravityCli | RuntimeKind::Mock => Err(format!(
             "{} sessions cannot be resumed in a terminal yet",
@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn claude_runtimes_resume_through_the_cli() {
         assert_eq!(
-            resume_command(RuntimeKind::ClaudeNative, "4273a6e0").unwrap(),
+            resume_command(RuntimeKind::ClaudeCode, "4273a6e0").unwrap(),
             "claude --resume '4273a6e0'"
         );
         assert_eq!(

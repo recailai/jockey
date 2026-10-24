@@ -1,4 +1,3 @@
-
 pub(crate) fn resolve_attach_path(cwd: &str, raw: &str) -> std::path::PathBuf {
     let input = raw.trim();
     let expanded = if input == "~" || input.starts_with("~/") {

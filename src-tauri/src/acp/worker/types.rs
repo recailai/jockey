@@ -57,6 +57,8 @@ pub struct AcpPromptResult {
     pub session_handle: Option<String>,
 }
 
+// The durable UI envelope also retains event kinds from older transcripts.
+#[allow(dead_code)]
 #[derive(Clone, Serialize)]
 #[serde(
     tag = "kind",

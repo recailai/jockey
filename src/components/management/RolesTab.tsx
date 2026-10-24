@@ -297,19 +297,8 @@ export function RolesTab(props: {
 
   // ── Create form state ───────────────────────────────────────────────────────
   const [cName, setCName] = createSignal("Developer");
-  const [cRuntime, setCRuntime] = createSignal("claude-native");
+  const [cRuntime, setCRuntime] = createSignal("claude-code");
 
-  // New roles default to the native Claude provider; fall back to ACP Claude
-  // when the native CLI is not detected on this machine.
-  createEffect(() => {
-    if (cRuntime() !== "claude-native") return;
-    const assistants = props.assistants();
-    const native = assistants.find((a) => a.profileId === "native:claude");
-    const acpClaude = assistants.find((a) => a.profileId === "acp:claude-code");
-    if (native && !native.available && acpClaude?.available) {
-      setCRuntime(acpClaude.key);
-    }
-  });
   const [cPrompt, setCPrompt] = createSignal("");
   const [cModel, setCModel] = createSignal("");
   const [cMode, setCMode] = createSignal("");
@@ -350,11 +339,7 @@ export function RolesTab(props: {
 
   // ── Open create ─────────────────────────────────────────────────────────────
   const openCreate = () => {
-    const nativeClaude = props.assistants().find((assistant) => assistant.profileId === "native:claude");
-    const acpClaude = props.assistants().find((assistant) => assistant.profileId === "acp:claude-code");
-    const defaultRuntime = nativeClaude && !nativeClaude.available && acpClaude?.available
-      ? acpClaude.key
-      : "claude-native";
+    const defaultRuntime = "claude-code";
     const reqSeq = ++createConfigReqSeq;
     setCName("Developer");
     setCRuntime(defaultRuntime);
@@ -583,7 +568,7 @@ export function RolesTab(props: {
         systemPrompt: cPrompt().trim(),
         model: cModel().trim() || null, mode: cMode().trim() || null,
         mcpServersJson: "[]", configOptionsJson: JSON.stringify(configMap),
-        autoApprove: true,
+        autoApprove: false,
         projectId: targetPid,
       } satisfies RoleUpsertInput);
       if (supportsCapability(cRuntime(), "mcpServers")) {
@@ -635,7 +620,7 @@ export function RolesTab(props: {
         systemPrompt: ePrompt().trim(), model: eModel().trim() || null,
         mode: newMode, mcpServersJson: "[]",
         configOptionsJson: JSON.stringify(parsedCfg),
-        autoApprove: true,
+        autoApprove: role.autoApprove,
         projectId: targetPid,
       } satisfies RoleUpsertInput);
       await props.refreshRoles(props.currentProject?.()?.id);

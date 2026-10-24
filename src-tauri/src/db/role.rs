@@ -228,7 +228,7 @@ pub(crate) fn upsert_role_with_id(
         .unwrap_or_else(|| "[]".to_string());
     let approve = auto_approve
         .or_else(|| existing.as_ref().and_then(|(_, _, _, _, v, _)| *v))
-        .unwrap_or(true);
+        .unwrap_or(false);
     let resolved_project_id = normalized_pid.or_else(|| {
         existing
             .as_ref()
@@ -551,7 +551,7 @@ fn role_from_row(row: &rusqlite::Row) -> rusqlite::Result<Role> {
         config_option_defs_json: row
             .get::<_, Option<String>>(9)?
             .unwrap_or_else(|| "[]".to_string()),
-        auto_approve: row.get::<_, Option<bool>>(10)?.unwrap_or(true),
+        auto_approve: row.get::<_, Option<bool>>(10)?.unwrap_or(false),
         project_id: row.get::<_, Option<String>>(11)?,
         created_at: row.get(12)?,
         updated_at: row.get(13)?,
@@ -943,14 +943,14 @@ pub(crate) fn seed_default_roles(state: &AppState) -> Result<(), String> {
         upsert_role(
             state,
             "Developer".to_string(),
-            "claude-native".to_string(),
+            "claude-code".to_string(),
             String::new(),
             None,
             None,
             None,
             None,
             None,
-            Some(true),
+            Some(false),
             None,
         )?;
     }
@@ -1085,11 +1085,11 @@ mod tests {
         );
 
         // A later global row must win immediately rather than being shadowed by the cache.
-        seed(&state, "Architect", "claude-native", None);
+        seed(&state, "Architect", "claude-code", None);
         let global = load_role_scoped(&state, "Architect", None)
             .expect("load")
             .expect("global row");
-        assert_eq!(global.runtime_kind, "claude-native");
+        assert_eq!(global.runtime_kind, "claude-code");
         assert!(global.project_id.is_none());
     }
 
@@ -1097,7 +1097,7 @@ mod tests {
     fn project_and_global_roles_sharing_a_name_do_not_shadow_each_other() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = test_state(&dir);
-        seed(&state, "Developer", "claude-native", None);
+        seed(&state, "Developer", "claude-code", None);
         seed(&state, "Developer", "codex-cli", Some("p1"));
 
         // Resolve in both directions, twice, so a poisoned cache entry would surface.
@@ -1110,7 +1110,7 @@ mod tests {
             let global = load_role_scoped(&state, "Developer", None)
                 .expect("load")
                 .expect("global row");
-            assert_eq!(global.runtime_kind, "claude-native");
+            assert_eq!(global.runtime_kind, "claude-code");
         }
     }
 
@@ -1118,12 +1118,12 @@ mod tests {
     fn a_project_without_its_own_role_resolves_to_the_global_one() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = test_state(&dir);
-        seed(&state, "Reviewer", "claude-native", None);
+        seed(&state, "Reviewer", "claude-code", None);
 
         let resolved = load_role_scoped(&state, "Reviewer", Some("p-unknown"))
             .expect("load")
             .expect("global fallback");
-        assert_eq!(resolved.runtime_kind, "claude-native");
+        assert_eq!(resolved.runtime_kind, "claude-code");
         // Caching that resolution per project is correct — it is the right answer for p-unknown.
         assert!(state.role_cache.contains_key("p-unknown:Reviewer"));
     }
@@ -1154,7 +1154,7 @@ mod tests {
         let role = upsert_role(
             &state,
             "Developer".to_string(),
-            "claude-native".to_string(),
+            "claude-code".to_string(),
             String::new(),
             None,
             None,
@@ -1222,7 +1222,7 @@ mod tests {
             &state,
             Some(role.id),
             "Builder".to_string(),
-            "claude-native".to_string(),
+            "claude-code".to_string(),
             String::new(),
             None,
             None,

@@ -65,43 +65,6 @@ pub async fn execute_runtime(
     state: Option<(&AppState, &str)>,
     app_session_id: &str,
 ) -> AcpPromptResult {
-    execute_runtime_with_system(
-        runtime_kind,
-        role_name,
-        prompt,
-        attachments,
-        cwd,
-        app,
-        auto_approve,
-        mcp_servers,
-        role_mode,
-        role_config_options,
-        state,
-        app_session_id,
-        None,
-    )
-    .await
-}
-
-/// `append_system_prompt` (role prompt + rules) travels through each runtime's native
-/// system-prompt channel: claude-native `--append-system-prompt`, pi `--append-system-prompt`,
-/// codex `developerInstructions`, claude-code bridge `_meta.systemPrompt.append`. Runtimes
-/// without one (Antigravity) drop it; the user's message is never wrapped.
-pub async fn execute_runtime_with_system(
-    runtime_kind: &str,
-    role_name: &str,
-    prompt: &str,
-    attachments: &[crate::types::ImageAttachment],
-    cwd: &str,
-    app: &tauri::AppHandle,
-    auto_approve: bool,
-    mcp_servers: Vec<acp::McpServer>,
-    role_mode: Option<String>,
-    role_config_options: Vec<(String, String)>,
-    state: Option<(&AppState, &str)>,
-    app_session_id: &str,
-    append_system_prompt: Option<&str>,
-) -> AcpPromptResult {
     let normalized = runtime_kind.trim().to_ascii_lowercase();
 
     if normalized.is_empty() || normalized == "mock" {
@@ -134,8 +97,7 @@ pub async fn execute_runtime_with_system(
 
     if let Some((s, app_sid)) = state {
         let project_id = crate::db::app_session::get_app_session_project_id(s, app_sid);
-        match crate::credentials::launch_env_for(s, role_name, project_id.as_deref(), &normalized)
-        {
+        match crate::credentials::launch_env_for(s, role_name, project_id.as_deref(), &normalized) {
             Ok(env) => adapter.env.extend(env),
             Err(e) => {
                 return AcpPromptResult {
@@ -174,7 +136,7 @@ pub async fn execute_runtime_with_system(
 
     // Unified adapter dispatch: lifecycle branches live behind the
     // RuntimeAdapter trait derived directly from the resolved transport.
-    let adapter_impl = RuntimeAdapterKind::from_transport(&adapter.transport);
+    let adapter_impl = RuntimeAdapterKind::from_transport(&adapter.transport, adapter.runtime_key);
     let prompt_request = super::adapter_runtime::PromptRequest {
         runtime_key: adapter.runtime_key,
         role_name,
@@ -187,14 +149,12 @@ pub async fn execute_runtime_with_system(
         auto_approve,
         role_mode: role_mode.as_deref(),
         role_config_options: &role_config_options,
-        transport: adapter.transport.clone(),
         agent_kind: adapter.kind,
         binary: &adapter.binary,
         adapter_args: &adapter.args,
         env: &adapter.env,
         resume_session_id: resume_session_id.as_deref(),
         mcp_servers: &mcp_servers,
-        append_system_prompt,
     };
     let result = RuntimeAdapter::prompt(&adapter_impl, prompt_request).await;
 

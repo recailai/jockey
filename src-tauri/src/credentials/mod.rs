@@ -407,7 +407,9 @@ pub(crate) fn get_role_credentials_cmd(
     state: State<'_, AppState>,
     role_id: String,
 ) -> Result<Vec<RoleCredentialBinding>, String> {
-    let bindings = with_db(get_state(&state), |conn| store::role_bindings(conn, &role_id))?;
+    let bindings = with_db(get_state(&state), |conn| {
+        store::role_bindings(conn, &role_id)
+    })?;
     Ok(bindings
         .into_iter()
         .map(|(provider, credential_id)| RoleCredentialBinding {
@@ -439,7 +441,13 @@ pub(crate) fn set_role_credential_cmd(
                 ));
             }
         }
-        store::set_binding(conn, &role_id, provider, credential_id.as_deref(), crate::now_ms())
+        store::set_binding(
+            conn,
+            &role_id,
+            provider,
+            credential_id.as_deref(),
+            crate::now_ms(),
+        )
     })
 }
 

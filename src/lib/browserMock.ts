@@ -86,8 +86,8 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
         title: "jockey",
         projectId: "proj-jockey",
         activeRole: "Developer",
-        runtimeKind: "claude-native",
-        runtimeProfileId: "claude-native",
+        runtimeKind: "claude-code",
+        runtimeProfileId: "claude-code",
         cwd: "/Users/sexy/Documents/GitHub/jockey",
         messages: [
           {
@@ -121,7 +121,7 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
         id: "r-developer",
         name: "Developer",
         roleName: "Developer",
-        runtimeKind: "claude-native",
+        runtimeKind: "claude-code",
         prompt: "",
         systemPrompt: "",
         skills: ["review"],
@@ -245,8 +245,8 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
             title: String(args.title || "New Session"),
             projectId: typeof args.projectId === "string" ? args.projectId : null,
             activeRole: "Developer",
-            runtimeKind: "claude-native",
-            runtimeProfileId: "claude-native",
+            runtimeKind: "claude-code",
+            runtimeProfileId: "claude-code",
             cwd: null,
             messages: [],
             createdAt: Date.now(),
@@ -299,7 +299,7 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
             id: targetId || (existingIdx !== -1 ? list[existingIdx].id : `r-${Date.now()}`),
             name: roleName,
             roleName,
-            runtimeKind: String(input.runtimeKind || "claude-native"),
+            runtimeKind: String(input.runtimeKind || "claude-code"),
             prompt: String(input.prompt || ""),
             systemPrompt: String(input.systemPrompt || ""),
             skills: Array.isArray(input.skills) ? input.skills.map(String) : [],
@@ -333,11 +333,11 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
         case "detect_assistants": {
           const caps = { mcpServers: true, sessionRestore: true, dynamicModes: true, modelCatalog: true, rewind: false, fork: false };
           return [
-            { key: "claude-native", name: "Claude Code", label: "Claude Code", family: "native", available: true, profileId: "claude-native", transport: "stdio", capabilities: caps },
-            { key: "codex-cli", name: "Codex CLI", label: "Codex CLI", family: "native", available: true, profileId: "codex-cli", transport: "stdio", capabilities: caps },
-            { key: "antigravity-cli", name: "Antigravity CLI", label: "Antigravity CLI", family: "native", available: true, profileId: "antigravity-cli", transport: "stdio", capabilities: caps },
-            { key: "pi-cli", name: "Pi CLI", label: "Pi CLI", family: "native", available: true, profileId: "pi-cli", transport: "stdio", capabilities: caps },
-            { key: "mock", name: "Mock Assistant", label: "Mock Assistant", family: "native", available: true, profileId: "mock", transport: "in-process", capabilities: caps },
+            { key: "claude-code", name: "Claude Code", label: "Claude Code", family: "acp", available: true, profileId: "claude-code", transport: "stdio", capabilities: caps },
+            { key: "codex-cli", name: "Codex CLI", label: "Codex CLI", family: "acp", available: true, profileId: "codex-cli", transport: "stdio", capabilities: caps },
+            { key: "antigravity-cli", name: "Antigravity CLI", label: "Antigravity CLI", family: "acp", available: true, profileId: "antigravity-cli", transport: "stdio", capabilities: caps },
+            { key: "pi-cli", name: "Pi CLI", label: "Pi CLI", family: "acp", available: true, profileId: "pi-cli", transport: "stdio", capabilities: caps },
+            { key: "mock", name: "Mock Assistant", label: "Mock Assistant", family: "acp", available: true, profileId: "mock", transport: "in-process", capabilities: caps },
           ];
         }
         case "list_available_commands_cmd": {

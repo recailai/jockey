@@ -1,24 +1,16 @@
 //! Unified `RuntimeAdapter` lifecycle contract.
 //!
-//! Every runtime resolves to exactly one adapter (see [`AnyRuntimeAdapter`]).
-//! The adapter owns the provider protocol boundary and the conversion of
-//! provider events into the canonical `AcpEvent` envelope; process slots,
-//! backpressure, event sequencing, stderr tails, and idle eviction stay with
-//! the existing per-transport runners until they are folded into the shared
-//! session runner. The trait fixes the entry points so callers (UI commands,
-//! execute dispatch, app teardown) never branch on transport kind.
+//! All real agents run through the shared ACP worker. Provider-specific wire
+//! conversion belongs to the external ACP adapters; the host owns session
+//! slots, cancellation, event delivery and process lifetime.
 
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::super::adapter::{AdapterTransport, HeadlessProtocol, NativeProtocol};
+use super::super::adapter::AdapterTransport;
 use super::super::protocol as acp;
 use super::super::worker::{worker_tx, AcpPromptResult, WorkerMsg};
 use super::execute::{mock_execute, AcpWorkerPromptContext};
-use super::headless::{cancel_headless, discard_headless_session, execute_headless_runtime};
-use super::native::{
-    cancel_native, discard_native_session, execute_native_runtime, steer_native, NativeRunRequest,
-};
 use crate::runtime_profile::RuntimeCapabilities;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,11 +122,10 @@ pub(crate) struct AdapterDescriptor {
 impl AdapterDescriptor {
     fn from_adapter(runtime_key: &str, transport: &str, capabilities: RuntimeCapabilities) -> Self {
         let strategy = match transport {
-            "native-codex-app-server" | "native-pi-rpc" => "steer",
             _ if capabilities.streaming => "interruptFollowUp",
             _ => "queue",
         };
-        let next_step = transport == "native-pi-rpc";
+        let next_step = false;
         Self {
             runtime_key: runtime_key.to_string(),
             transport: transport.to_string(),
@@ -164,14 +155,12 @@ pub(crate) struct PromptRequest<'a> {
     pub(crate) auto_approve: bool,
     pub(crate) role_mode: Option<&'a str>,
     pub(crate) role_config_options: &'a [(String, String)],
-    pub(crate) transport: AdapterTransport,
     pub(crate) agent_kind: crate::runtime_kind::RuntimeKind,
     pub(crate) binary: &'a str,
     pub(crate) adapter_args: &'a [String],
     pub(crate) env: &'a [(String, String)],
     pub(crate) resume_session_id: Option<&'a str>,
     pub(crate) mcp_servers: &'a [acp::McpServer],
-    pub(crate) append_system_prompt: Option<&'a str>,
 }
 
 /// Fixed lifecycle entry points shared by every runtime.
@@ -263,172 +252,60 @@ pub(crate) trait RuntimeAdapter {
     }
 }
 
-/// Concrete adapter variants. An enum keeps dispatch static and mirrors the
-/// existing transport resolution; a single runtime key maps to exactly one
-/// variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AnyRuntimeAdapter {
-    Headless { protocol: HeadlessProtocol },
-    Native { protocol: NativeProtocol },
-    AcpWorker,
+    AcpWorker { runtime_key: &'static str },
     Mock,
 }
 
 impl AnyRuntimeAdapter {
-    /// Every concrete adapter variant, for lifecycle sweeps that must cover
-    /// all runtimes (idle eviction, app teardown).
-    pub(crate) fn all() -> [Self; 6] {
+    pub(crate) fn all() -> [Self; 2] {
         [
-            Self::Headless {
-                protocol: HeadlessProtocol::AgyStreamJson,
+            Self::AcpWorker {
+                runtime_key: "claude-code",
             },
-            Self::Headless {
-                protocol: HeadlessProtocol::ClaudeStreamJson,
-            },
-            Self::Native {
-                protocol: NativeProtocol::CodexAppServer,
-            },
-            Self::Native {
-                protocol: NativeProtocol::PiRpc,
-            },
-            Self::AcpWorker,
             Self::Mock,
         ]
     }
-}
-
-impl AnyRuntimeAdapter {
-    /// Derive the adapter variant directly from a resolved transport without
-    /// re-probing the adapter cache or PATH.
-    pub(crate) fn from_transport(transport: &AdapterTransport) -> Self {
-        match transport {
-            AdapterTransport::HeadlessJson { protocol, .. } => Self::Headless {
-                protocol: *protocol,
-            },
-            AdapterTransport::Native(protocol) => Self::Native {
-                protocol: *protocol,
-            },
-            AdapterTransport::Acp => Self::AcpWorker,
-        }
+    pub(crate) fn from_transport(_: &AdapterTransport, runtime_key: &'static str) -> Self {
+        Self::AcpWorker { runtime_key }
     }
-
-    /// Resolve the adapter for a runtime key via the existing transport
-    /// resolution (binary probing is cached there).
-    pub(crate) fn resolve(runtime_kind: &str) -> Option<Self> {
-        let normalized = runtime_kind.trim().to_ascii_lowercase();
-        if normalized.is_empty() || normalized == "mock" {
+    pub(crate) fn resolve(runtime: &str) -> Option<Self> {
+        if runtime.trim().is_empty() || runtime == "mock" {
             return Some(Self::Mock);
         }
-        match super::super::adapter::build_stdio_adapter(&normalized) {
-            Ok(Some(spec)) => Some(Self::from_transport(&spec.transport)),
-            Ok(None) => Some(Self::Mock),
-            Err(_) => None,
-        }
+        crate::runtime_profile::runtime_key_static(runtime)
+            .map(|runtime_key| Self::AcpWorker { runtime_key })
     }
 }
 
 impl RuntimeAdapter for AnyRuntimeAdapter {
     fn transport_name(&self) -> &'static str {
         match self {
-            Self::Headless { protocol } => {
-                crate::acp::session::headless::protocol_transport_name(*protocol)
-            }
-            Self::Native { protocol } => protocol_display_name_for(*protocol),
-            Self::AcpWorker => "acp",
+            Self::AcpWorker { .. } => "acp",
             Self::Mock => "mock",
         }
     }
-
     fn runtime_key(&self) -> &'static str {
         match self {
-            Self::Headless { protocol } => match protocol {
-                HeadlessProtocol::AgyStreamJson => "antigravity-cli",
-                HeadlessProtocol::ClaudeStreamJson => "claude-native",
-            },
-            Self::Native { protocol } => match protocol {
-                NativeProtocol::CodexAppServer => "codex-cli",
-                NativeProtocol::PiRpc => "pi-cli",
-            },
-            Self::AcpWorker => "claude-code",
+            Self::AcpWorker { runtime_key } => runtime_key,
             Self::Mock => "mock",
         }
     }
-
     fn probe(&self) -> AdapterProbe {
-        let runtime_key = match self {
-            Self::Headless { protocol } => match protocol {
-                HeadlessProtocol::AgyStreamJson => "antigravity-cli",
-                HeadlessProtocol::ClaudeStreamJson => "claude-native",
-            },
-            Self::Native { protocol } => match protocol {
-                NativeProtocol::CodexAppServer => "codex-cli",
-                NativeProtocol::PiRpc => "pi-cli",
-            },
-            Self::AcpWorker => "claude-code",
-            Self::Mock => "mock",
-        };
-        match super::super::adapter::build_stdio_adapter(runtime_key) {
-            Ok(Some(spec)) => AdapterProbe {
-                available: true,
-                launch_method: Some(spec.launch_method),
-                transport: Some(self.transport_name().to_string()),
-                detail: Some(spec.binary),
-            },
-            Ok(None) => AdapterProbe {
-                available: false,
-                launch_method: None,
-                transport: Some(self.transport_name().to_string()),
-                detail: Some("unsupported runtime kind".to_string()),
-            },
-            Err(error) => AdapterProbe {
-                available: false,
-                launch_method: None,
-                transport: Some(self.transport_name().to_string()),
-                detail: Some(error),
-            },
+        let runtime = self.runtime_key();
+        let (available, detail) = super::super::adapter::probe_runtime(runtime)
+            .unwrap_or((false, "ACP runtime unavailable".into()));
+        AdapterProbe {
+            available,
+            launch_method: super::super::adapter::adapter_launch_method(runtime),
+            transport: Some(self.transport_name().into()),
+            detail: Some(detail),
         }
     }
-
     async fn prompt(&self, request: PromptRequest<'_>) -> AcpPromptResult {
         match self {
-            Self::Headless { .. } => execute_headless_runtime(&request).await,
-            Self::Native { protocol } => {
-                execute_native_runtime(NativeRunRequest {
-                    protocol: *protocol,
-                    runtime_key: request.runtime_key,
-                    role_name: request.role_name,
-                    prompt: request.prompt,
-                    attachments: request.attachments,
-                    cwd: request.cwd,
-                    app: request.app,
-                    auto_approve: request.auto_approve,
-                    role_mode: request.role_mode,
-                    role_config_options: request.role_config_options,
-                    binary: request.binary,
-                    adapter_args: request.adapter_args,
-                    env: request.env,
-                    resume_session_id: request.resume_session_id,
-                    mcp_servers: request.mcp_servers,
-                    app_session_id: request.app_session_id,
-                    turn_id: request.turn_id,
-                    append_system_prompt: request.append_system_prompt,
-                })
-                .await
-            }
-            // The ACP worker owns the shared delta-batching/heartbeat runner;
-            // its prompt path is delegated unchanged (see execute.rs).
-            Self::AcpWorker => {
-                let mut env = request.env.to_vec();
-                if let Some(text) = request
-                    .append_system_prompt
-                    .map(str::trim)
-                    .filter(|t| !t.is_empty())
-                {
-                    env.push((
-                        super::cold_start::ACP_SYSTEM_PROMPT_ENV.to_string(),
-                        text.to_string(),
-                    ));
-                }
+            Self::AcpWorker { .. } => {
                 let context = AcpWorkerPromptContext {
                     runtime_key: request.runtime_key,
                     role_name: request.role_name.to_string(),
@@ -437,7 +314,7 @@ impl RuntimeAdapter for AnyRuntimeAdapter {
                     agent_kind: request.agent_kind,
                     binary: request.binary.to_string(),
                     args: request.adapter_args.to_vec(),
-                    env,
+                    env: request.env.to_vec(),
                     prompt: request.prompt.to_string(),
                     attachments: request.attachments.to_vec(),
                     cwd: request.cwd.to_string(),
@@ -452,126 +329,46 @@ impl RuntimeAdapter for AnyRuntimeAdapter {
             Self::Mock => mock_execute(request.role_name, request.prompt),
         }
     }
-
     fn cancel(&self, key: &SessionKey) -> Result<(), AdapterError> {
-        let Some(runtime_key) = static_runtime_key(&key.runtime_key) else {
-            return Err(AdapterError::UnsupportedRuntime(key.runtime_key.clone()));
-        };
-        match self {
-            Self::Headless { .. } => {
-                cancel_headless(runtime_key, &key.role_name, &key.app_session_id);
-                Ok(())
-            }
-            Self::Native { .. } => {
-                cancel_native(runtime_key, &key.role_name, &key.app_session_id);
-                Ok(())
-            }
-            // Fire-and-forget: callers that need the drained confirmation use
-            // the cancel_session command path, which awaits the worker oneshot.
-            Self::AcpWorker => {
-                worker_tx()
-                    .send(WorkerMsg::Cancel {
-                        runtime_key,
-                        role_name: key.role_name.clone(),
-                        app_session_id: key.app_session_id.clone(),
-                        result_tx: None,
-                    })
-                    .map_err(|_| {
-                        AdapterError::Unavailable("ACP worker is unavailable".to_string())
-                    })?;
-                Ok(())
-            }
-            Self::Mock => Ok(()),
+        if *self == Self::Mock {
+            return Ok(());
         }
+        let runtime_key = static_runtime_key(&key.runtime_key)
+            .ok_or_else(|| AdapterError::UnsupportedRuntime(key.runtime_key.clone()))?;
+        worker_tx()
+            .send(WorkerMsg::Cancel {
+                runtime_key,
+                role_name: key.role_name.clone(),
+                app_session_id: key.app_session_id.clone(),
+                result_tx: None,
+            })
+            .map_err(|_| AdapterError::Unavailable("ACP worker is unavailable".into()))
     }
-
-    async fn steer(
-        &self,
-        key: &SessionKey,
-        prompt: &str,
-        attachments: &[crate::types::ImageAttachment],
-    ) -> Result<(), AdapterError> {
-        if !attachments.is_empty() {
-            return Err(AdapterError::unsupported("steerAttachments"));
-        }
-        let Some(runtime_key) = static_runtime_key(&key.runtime_key) else {
-            return Err(AdapterError::UnsupportedRuntime(key.runtime_key.clone()));
-        };
-        match self {
-            Self::Native { protocol }
-                if matches!(
-                    protocol,
-                    NativeProtocol::CodexAppServer | NativeProtocol::PiRpc
-                ) =>
-            {
-                steer_native(runtime_key, &key.role_name, &key.app_session_id, prompt)
-                    .await
-                    .map_err(AdapterError::from)
-            }
-            _ => Err(AdapterError::unsupported("steer")),
-        }
-    }
-
     async fn discard_slot(&self, key: &SessionKey) -> Result<(), AdapterError> {
-        let Some(runtime_key) = static_runtime_key(&key.runtime_key) else {
-            return Err(AdapterError::UnsupportedRuntime(key.runtime_key.clone()));
-        };
-        match self {
-            Self::Headless { .. } => {
-                discard_headless_session(runtime_key, &key.role_name, &key.app_session_id)
-                    .await
-                    .map_err(AdapterError::from)
-            }
-            Self::Native { .. } => {
-                discard_native_session(runtime_key, &key.role_name, &key.app_session_id)
-                    .await
-                    .map_err(AdapterError::from)
-            }
-            Self::AcpWorker | Self::Mock => {
-                acp_worker_reset(runtime_key, key, WorkerMsgKind::Reset)
-                    .await
-                    .map_err(AdapterError::from)
-            }
+        if *self == Self::Mock {
+            return Ok(());
         }
+        let runtime_key = static_runtime_key(&key.runtime_key)
+            .ok_or_else(|| AdapterError::UnsupportedRuntime(key.runtime_key.clone()))?;
+        acp_worker_reset(runtime_key, key, WorkerMsgKind::Reset)
+            .await
+            .map_err(AdapterError::from)
     }
-
     async fn reconnect_slot(&self, key: &SessionKey) -> Result<(), AdapterError> {
-        let Some(runtime_key) = static_runtime_key(&key.runtime_key) else {
-            return Err(AdapterError::UnsupportedRuntime(key.runtime_key.clone()));
-        };
-        match self {
-            Self::AcpWorker => acp_worker_reset(runtime_key, key, WorkerMsgKind::Reconnect)
-                .await
-                .map_err(AdapterError::from),
-            _ => RuntimeAdapter::discard_slot(self, key).await,
+        if *self == Self::Mock {
+            return Ok(());
         }
+        let runtime_key = static_runtime_key(&key.runtime_key)
+            .ok_or_else(|| AdapterError::UnsupportedRuntime(key.runtime_key.clone()))?;
+        acp_worker_reset(runtime_key, key, WorkerMsgKind::Reconnect)
+            .await
+            .map_err(AdapterError::from)
     }
-
-    async fn teardown(&self) {
-        match self {
-            Self::Headless { .. } => {
-                super::headless::shutdown_headless_sessions().await;
-            }
-            Self::Native { .. } => {
-                super::native::shutdown_native_sessions().await;
-            }
-            Self::AcpWorker | Self::Mock => {
-                // Worker teardown is owned by acp::shutdown (worker loop stop).
-            }
-        }
-    }
-
-    fn reclaim_idle(&self) {
-        match self {
-            Self::Headless { .. } => super::headless::reclaim_idle_headless_sessions(),
-            Self::Native { .. } => super::native::reclaim_idle_native_sessions(),
-            Self::AcpWorker | Self::Mock => {}
-        }
-    }
-
+    async fn teardown(&self) {}
+    fn reclaim_idle(&self) {}
     async fn set_mode(&self, key: &SessionKey, mode_id: &str) -> Result<(), AdapterError> {
         match self {
-            Self::AcpWorker => {
+            Self::AcpWorker { .. } => {
                 let Some(runtime_key) = static_runtime_key(&key.runtime_key) else {
                     return Err(AdapterError::UnsupportedRuntime(key.runtime_key.clone()));
                 };
@@ -605,7 +402,7 @@ impl RuntimeAdapter for AnyRuntimeAdapter {
         value: &str,
     ) -> Result<(), AdapterError> {
         match self {
-            Self::AcpWorker => {
+            Self::AcpWorker { .. } => {
                 let Some(runtime_key) = static_runtime_key(&key.runtime_key) else {
                     return Err(AdapterError::UnsupportedRuntime(key.runtime_key.clone()));
                 };
@@ -643,14 +440,6 @@ enum WorkerMsgKind {
 
 /// Normalize a runtime key to its `'static` form (builtin kinds resolve via
 /// `RuntimeKind`; custom ACP profiles leak-intern their key).
-#[allow(dead_code)]
-fn protocol_display_name_for(protocol: NativeProtocol) -> &'static str {
-    match protocol {
-        NativeProtocol::CodexAppServer => "native-codex-app-server",
-        NativeProtocol::PiRpc => "native-pi-rpc",
-    }
-}
-
 fn static_runtime_key(runtime_key: &str) -> Option<&'static str> {
     crate::runtime_kind::RuntimeKind::from_str(runtime_key)
         .map(|kind| kind.runtime_key())
@@ -795,74 +584,29 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_distinguishes_native_steer_from_interrupt_fallback() {
-        let codex = AnyRuntimeAdapter::Native {
-            protocol: NativeProtocol::CodexAppServer,
-        };
-        assert_eq!(codex.descriptor().input_delivery.strategy, "steer");
-
-        let claude = AnyRuntimeAdapter::Headless {
-            protocol: HeadlessProtocol::ClaudeStreamJson,
-        };
+    fn all_real_runtimes_use_the_acp_worker() {
+        for runtime in [
+            "claude-code",
+            "claude-native",
+            "codex-cli",
+            "pi-cli",
+            "antigravity-cli",
+        ] {
+            let adapter = AnyRuntimeAdapter::resolve(runtime).unwrap();
+            assert_eq!(adapter.transport_name(), "acp");
+            assert_eq!(
+                adapter.runtime_key(),
+                crate::runtime_profile::runtime_key_static(runtime).unwrap()
+            );
+        }
         assert_eq!(
-            claude.descriptor().input_delivery.strategy,
+            AnyRuntimeAdapter::AcpWorker {
+                runtime_key: "claude-code"
+            }
+            .descriptor()
+            .input_delivery
+            .strategy,
             "interruptFollowUp"
-        );
-    }
-
-    #[tokio::test]
-    async fn unsupported_live_controls_fail_explicitly() {
-        let adapter = AnyRuntimeAdapter::Native {
-            protocol: NativeProtocol::CodexAppServer,
-        };
-        assert_eq!(
-            RuntimeAdapter::set_mode(&adapter, &key(), "plan")
-                .await
-                .unwrap_err()
-                .to_string(),
-            "UnsupportedCapability(dynamicModes)"
-        );
-        assert_eq!(
-            RuntimeAdapter::set_config_option(&adapter, &key(), "model", "x")
-                .await
-                .unwrap_err()
-                .to_string(),
-            "UnsupportedCapability(dynamicConfig)"
-        );
-    }
-
-    #[test]
-    fn session_key_display_matches_headless_key_layout() {
-        let rendered = key().to_string();
-        assert_eq!(rendered, "sess-1:claude-native:reviewer");
-        let parsed = super::super::headless::headless_key("claude-native", "reviewer", "sess-1");
-        assert_eq!(rendered, parsed);
-    }
-
-    #[test]
-    fn from_transport_maps_variants_correctly() {
-        assert_eq!(
-            AnyRuntimeAdapter::from_transport(&AdapterTransport::Acp),
-            AnyRuntimeAdapter::AcpWorker
-        );
-        assert_eq!(
-            AnyRuntimeAdapter::from_transport(&AdapterTransport::Native(
-                NativeProtocol::CodexAppServer
-            )),
-            AnyRuntimeAdapter::Native {
-                protocol: NativeProtocol::CodexAppServer
-            }
-        );
-        assert_eq!(
-            AnyRuntimeAdapter::from_transport(&AdapterTransport::HeadlessJson {
-                protocol: HeadlessProtocol::ClaudeStreamJson,
-                stream_input: true,
-                output_format: true,
-                conversation: true,
-            }),
-            AnyRuntimeAdapter::Headless {
-                protocol: HeadlessProtocol::ClaudeStreamJson
-            }
         );
     }
 }

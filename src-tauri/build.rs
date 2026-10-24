@@ -39,10 +39,15 @@ fn embed_companion() {
     }
     for (rel, path) in &files {
         let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-        let _ = writeln!(code, "    ({rel:?}, include_bytes!({:?})),", abs.to_string_lossy());
+        let _ = writeln!(
+            code,
+            "    ({rel:?}, include_bytes!({:?})),",
+            abs.to_string_lossy()
+        );
     }
     code.push_str("];\n");
-    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap_or_default()).join("companion_assets.rs");
+    let out =
+        PathBuf::from(std::env::var("OUT_DIR").unwrap_or_default()).join("companion_assets.rs");
     std::fs::write(out, code).expect("write companion_assets.rs");
 }
 

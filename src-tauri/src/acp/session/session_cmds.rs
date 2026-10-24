@@ -30,15 +30,7 @@ pub async fn cancel_session(
     };
     let key = session_key(runtime_key, role_name, &resolved_session_id);
     match AnyRuntimeAdapter::resolve(runtime_key) {
-        Some(AnyRuntimeAdapter::Headless { .. }) => {
-            super::headless::cancel_headless_and_wait(runtime_key, role_name, &resolved_session_id)
-                .await
-        }
-        Some(AnyRuntimeAdapter::Native { .. }) => {
-            super::native::cancel_native_and_wait(runtime_key, role_name, &resolved_session_id)
-                .await
-        }
-        Some(adapter) if !matches!(adapter, AnyRuntimeAdapter::AcpWorker) => {
+        Some(adapter) if !matches!(adapter, AnyRuntimeAdapter::AcpWorker { .. }) => {
             RuntimeAdapter::cancel(&adapter, &key).map_err(AdapterError::into)
         }
         _ => {
