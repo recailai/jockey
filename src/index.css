@@ -4543,7 +4543,3 @@ pre:hover .jui-code-copy,
   contain-intrinsic-size: auto 160px;
 }
 
-/* Sidebar footer: three compact ghost buttons that must fit the narrowest sidebar width. */
-.sidebar-footer { display: flex; align-items: center; min-width: 0; padding: 6px 8px; border-top: 1px solid var(--ui-border); background: var(--ui-surface-muted); }
-.sidebar-footer-button.jui-button { height: 26px; gap: 5px; padding: 0 7px; font-size: 11.5px; color: var(--ui-muted); white-space: nowrap; }
-.sidebar-footer-button.jui-button:hover:not(:disabled) { color: var(--ui-text); }

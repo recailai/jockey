@@ -43,10 +43,10 @@ function SessionRow(props: { session: SessionSummary; onOpen: (id: string) => vo
         <span class="flex items-center gap-2">
           <StatusDot status={status()} />
           <span class="min-w-0 flex-1 truncate text-sm font-medium">{displayTitle(s().title)}</span>
-          <span class="shrink-0 text-[11px] theme-muted">{fmtRelative(s().lastActiveAt)}</span>
+          <span class="companion-session-time">{fmtRelative(s().lastActiveAt)}</span>
         </span>
         <Show when={s().preview}>
-          <span class="truncate text-xs theme-muted">{s().preview}</span>
+          <span class="companion-session-preview">{s().preview}</span>
         </Show>
         <span class="flex items-center gap-1.5">
           <Badge tone="neutral">@{s().activeRole}</Badge>
@@ -109,7 +109,7 @@ export default function SessionList(props: SessionListProps) {
           <div class="flex flex-col gap-2 p-3">
             <For each={props.projects()}>
               {(project) => (
-                <section class="rounded-lg border border-[var(--ui-border)] bg-[var(--ui-surface)]">
+                <section class="companion-project-card">
                   <button
                     type="button"
                     class="flex w-full items-center gap-2 px-3 py-2.5 text-left"
@@ -123,14 +123,14 @@ export default function SessionList(props: SessionListProps) {
                     />
                     <span class="min-w-0 flex-1">
                       <span class="block truncate text-sm font-semibold">{project.name}</span>
-                      <span class="block truncate text-[11px] theme-muted">{project.rootPath}</span>
+                      <span class="block truncate text-[11px] text-[var(--ui-text-caption)]">{project.rootPath}</span>
                     </span>
                     <Show when={byProject(project.id).length > 0}>
                       <Badge tone="neutral">{byProject(project.id).length}</Badge>
                     </Show>
                   </button>
                   <Show when={isOpen(project.id)}>
-                    <div class="flex flex-col gap-0.5 border-t border-[var(--ui-border)] p-1.5">
+                    <div class="companion-project-sessions">
                       <Show
                         when={byProject(project.id).length > 0}
                         fallback={<p class="px-2 py-2 text-xs theme-muted">No open sessions</p>}
@@ -156,7 +156,7 @@ export default function SessionList(props: SessionListProps) {
               )}
             </For>
             <Show when={unassigned().length > 0}>
-              <section class="rounded-lg border border-[var(--ui-border)] bg-[var(--ui-surface)]">
+              <section class="companion-project-card">
                 <button
                   type="button"
                   class="flex w-full items-center gap-2 px-3 py-2.5 text-left"
@@ -167,7 +167,7 @@ export default function SessionList(props: SessionListProps) {
                   <Badge tone="neutral">{unassigned().length}</Badge>
                 </button>
                 <Show when={open().has(UNASSIGNED)}>
-                  <div class="flex flex-col gap-0.5 border-t border-[var(--ui-border)] p-1.5">
+                  <div class="companion-project-sessions">
                     <For each={unassigned()}>{(s) => <SessionRow session={s} onOpen={props.onOpen} />}</For>
                   </div>
                 </Show>

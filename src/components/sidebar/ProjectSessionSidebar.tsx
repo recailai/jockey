@@ -9,7 +9,6 @@ import {
   FolderGit2,
   Download,
   FolderPlus,
-  LoaderCircle,
   Plus,
   Settings,
   SquareTerminal,
@@ -22,7 +21,9 @@ import {
 import type { AppSession } from "../types";
 import type { Project } from "../../lib/tauriApi";
 import { appSessionApi } from "../../lib/tauriApi";
-import { Button, ContextMenuSurface, ContextMenuItem, ContextMenuSeparator, IconButton } from "../ui";
+import { Button, ContextMenuSurface, ContextMenuItem, ContextMenuSeparator, IconButton, RowButton, StatusDot } from "../ui";
+import { sessionStatus, type SessionStatus } from "../../lib/sessionStatus";
+import { displayTitle } from "../../lib/formatHelpers";
 
 type ProjectSessionSidebarProps = {
   projects: Accessor<Project[]>;
@@ -124,13 +125,88 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
     return { map, unassigned };
   });
 
-  return (
-    <aside class="jockey-tree-sidebar flex flex-col w-60 shrink-0 border-r theme-border bg-[var(--ui-surface)] select-none text-xs">
-      {/* ── Header ── */}
-      <div class="flex items-center justify-between px-3 h-10 border-b theme-border">
-        <span class="font-mono text-[11px] font-bold uppercase tracking-wider theme-text">
-          Projects
+  const statusOf = (session: AppSession): SessionStatus =>
+    sessionStatus({
+      running: session.status === "running",
+      submitting: session.submitting,
+      externalActive: session.externalActive,
+      error: session.status === "error",
+      pendingPermissions: session.pendingPermissions?.length,
+      pendingUserInputs: session.pendingUserInput?.length,
+    });
+
+  const sessionRow = (session: AppSession, project: Project | null) => {
+    const isActive = () => session.id === props.activeSessionId();
+    const renaming = () => renamingSessionId() === session.id;
+    return (
+      <div
+        role="button"
+        tabindex="0"
+        aria-current={isActive() ? "true" : undefined}
+        onClick={() => props.onSelectSession(session.id, project)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            props.onSelectSession(session.id, project);
+          }
+        }}
+        onDblClick={(e) => {
+          e.stopPropagation();
+          setRenamingSessionId(session.id);
+          setRenameValue(session.title);
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setProjectContextMenu(null);
+          setSessionContextMenu({ x: e.clientX, y: e.clientY, session, project });
+        }}
+        class="sidebar-session-row"
+        classList={{ "is-active": isActive() }}
+        title={session.cwd ?? session.title}
+      >
+        <span class="sidebar-row-slot">
+          <StatusDot status={statusOf(session)} />
         </span>
+        <Show
+          when={renaming()}
+          fallback={<span class="sidebar-row-title">{displayTitle(session.title)}</span>}
+        >
+          <input
+            type="text"
+            autofocus
+            value={renameValue()}
+            onInput={(e) => setRenameValue(e.currentTarget.value)}
+            onBlur={() => void commitRename(session.id)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void commitRename(session.id);
+              if (e.key === "Escape") setRenamingSessionId(null);
+            }}
+            onClick={(e) => e.stopPropagation()}
+            class="jui-field sidebar-rename-input"
+          />
+        </Show>
+        <Show when={!renaming()}>
+          <span class="sidebar-row-actions" onClick={(e) => e.stopPropagation()}>
+            <IconButton
+              size="sm"
+              title="Close session"
+              aria-label={`Close session ${session.title}`}
+              onClick={() => props.onCloseSession(session.id)}
+            >
+              <X size={12} />
+            </IconButton>
+          </span>
+        </Show>
+      </div>
+    );
+  };
+
+  return (
+    <aside class="jockey-tree-sidebar sidebar-shell">
+      {/* ── Header ── */}
+      <div class="sidebar-header">
+        <span class="sidebar-header-title">Projects</span>
         <div class="flex items-center gap-0.5">
           <Show when={props.onImportSessions}>
             <IconButton
@@ -162,12 +238,12 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
       </div>
 
       {/* ── Project & Session Tree Body ── */}
-      <div class="flex-1 overflow-y-auto p-1.5 space-y-1">
+      <div class="sidebar-tree">
         <Show when={props.projects().length === 0}>
-          <div class="p-4 text-center">
-            <p class="text-[11px] theme-muted mb-2">No projects added yet.</p>
+          <div class="sidebar-empty">
+            <p>No projects added yet.</p>
             <Button variant="outline" size="sm" onClick={props.onOpenAddProject}>
-              + Add Project
+              Add project
             </Button>
           </div>
         </Show>
@@ -179,14 +255,20 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
             const projectSessions = () => sessionsByProject().map.get(project.id) ?? [];
 
             return (
-              <div class="project-tree-node rounded-lg overflow-hidden transition-colors">
-                {/* Project Header Row */}
+              <div class="project-tree-node">
                 <div
                   role="button"
                   tabindex="0"
+                  aria-expanded={!collapsed()}
                   onClick={() => {
                     if (!isCurrent()) void props.onSelectProject(project);
                     toggleProject(project.id);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      toggleProject(project.id);
+                    }
                   }}
                   onContextMenu={(e) => {
                     e.preventDefault();
@@ -194,172 +276,53 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
                     setSessionContextMenu(null);
                     setProjectContextMenu({ x: e.clientX, y: e.clientY, project });
                   }}
-                  class={`group flex items-center gap-1.5 px-2 py-1.5 rounded-md cursor-pointer transition-colors ${
-                    isCurrent()
-                      ? "bg-[var(--ui-surface-muted)] text-[var(--ui-text)] font-semibold"
-                      : "hover:bg-[var(--ui-surface-muted)] theme-muted hover:theme-text"
-                  }`}
+                  class="sidebar-project-row"
+                  classList={{ "is-current": isCurrent() }}
                   title={project.rootPath}
                 >
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleProject(project.id);
-                    }}
-                    class="p-0.5 theme-muted hover:theme-text transition-transform"
-                  >
+                  <span class="sidebar-row-slot sidebar-project-icon">
                     <Show when={collapsed()} fallback={<ChevronDown size={12} />}>
                       <ChevronRight size={12} />
                     </Show>
-                  </button>
-
-                  <FolderGit2
-                    size={14}
-                    class={isCurrent() ? "text-[var(--ui-state-info-text)] shrink-0" : "theme-muted shrink-0"}
-                  />
-
-                  <span class="truncate flex-1 min-w-0 font-medium text-[11.5px]">
-                    {project.name}
                   </span>
-
-                  {/* Actions on hover */}
-                  <div
-                    class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <button
-                      type="button"
+                  <FolderGit2 size={14} class="sidebar-folder-icon" />
+                  <span class="sidebar-row-title">{project.name}</span>
+                  <Show when={projectSessions().length > 0}>
+                    <span class="sidebar-row-count">{projectSessions().length}</span>
+                  </Show>
+                  <span class="sidebar-row-actions" onClick={(e) => e.stopPropagation()}>
+                    <IconButton
+                      size="sm"
+                      title="New session in this project"
+                      aria-label={`New session in ${project.name}`}
                       onClick={() => {
                         if (!isCurrent()) void props.onSelectProject(project);
                         props.onNewSession(project.id);
                       }}
-                      title="New Session in this Project"
-                      class="p-1 rounded theme-muted hover:theme-text hover:bg-[var(--ui-surface)] transition-colors"
                     >
                       <Plus size={12} />
-                    </button>
-                  </div>
+                    </IconButton>
+                  </span>
                 </div>
 
-                {/* Nested Sessions List */}
                 <Show when={!collapsed()}>
-                  <div class="ml-4 pl-2 border-l border-[var(--ui-border)] mt-0.5 space-y-0.5 py-0.5">
+                  <div class="sidebar-session-list">
                     <Show
                       when={projectSessions().length > 0}
                       fallback={
-                        <button
-                          type="button"
+                        <RowButton
+                          class="sidebar-new-session"
                           onClick={() => {
                             if (!isCurrent()) void props.onSelectProject(project);
                             props.onNewSession(project.id);
                           }}
-                          class="block w-full text-left px-2 py-1 text-[10.5px] theme-muted italic hover:theme-text hover:underline"
                         >
-                          + New session
-                        </button>
+                          <Plus size={12} />
+                          New session
+                        </RowButton>
                       }
                     >
-                      <For each={projectSessions()}>
-                        {(session) => {
-                          const isActive = () => session.id === props.activeSessionId();
-                          const isRunning = () => session.submitting || session.status === "running";
-                          const isNative = () =>
-                            session.runtimeKind?.includes("native") ||
-                            session.runtimeKind === "antigravity-cli" ||
-                            session.runtimeKind === "codex-cli" ||
-                            session.runtimeKind === "pi-cli";
-
-                          return (
-                            <div
-                              role="button"
-                              tabindex="0"
-                              onClick={() => props.onSelectSession(session.id, project)}
-                              onDblClick={(e) => {
-                                e.stopPropagation();
-                                setRenamingSessionId(session.id);
-                                setRenameValue(session.title);
-                              }}
-                              onContextMenu={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setProjectContextMenu(null);
-                                setSessionContextMenu({ x: e.clientX, y: e.clientY, session, project });
-                              }}
-                              class={`group/session flex items-center justify-between gap-1.5 px-2 py-1 rounded cursor-pointer transition-colors text-[11px] ${
-                                isActive()
-                                  ? "bg-[var(--ui-accent-muted)] text-[var(--ui-accent)] font-medium"
-                                  : "hover:bg-[var(--ui-surface-muted)] theme-text"
-                              }`}
-                              title={session.cwd ?? session.title}
-                            >
-                              <div class="flex items-center gap-1.5 min-w-0 flex-1">
-                                <Show
-                                  when={isRunning()}
-                                  fallback={
-                                    <span
-                                      class={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                                        session.status === "error"
-                                          ? "bg-[var(--ui-state-danger-text)]"
-                                          : isActive()
-                                          ? "bg-[var(--ui-accent)]"
-                                          : "bg-[var(--ui-muted)] opacity-50"
-                                      }`}
-                                    />
-                                  }
-                                >
-                                  <LoaderCircle size={10} class="animate-spin text-[var(--ui-accent)] shrink-0" />
-                                </Show>
-
-                                <Show
-                                  when={renamingSessionId() === session.id}
-                                  fallback={
-                                    <span class="truncate font-mono text-[11px]">
-                                      {session.title}
-                                    </span>
-                                  }
-                                >
-                                  <input
-                                    type="text"
-                                    autofocus
-                                    value={renameValue()}
-                                    onInput={(e) => setRenameValue(e.currentTarget.value)}
-                                    onBlur={() => void commitRename(session.id)}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter") void commitRename(session.id);
-                                      if (e.key === "Escape") setRenamingSessionId(null);
-                                    }}
-                                    onClick={(e) => e.stopPropagation()}
-                                    class="h-5 w-full bg-[var(--ui-surface)] border border-[var(--ui-border)] px-1 rounded text-[11px] font-mono theme-text outline-none"
-                                  />
-                                </Show>
-                              </div>
-
-                              {/* Right side: Role/Mode badge or Close button */}
-                              <div class="flex items-center gap-1 shrink-0">
-                                <Show
-                                  when={renamingSessionId() !== session.id}
-                                >
-                                  <span class="font-mono text-[8.5px] px-1 py-0.2 rounded border border-[var(--ui-border)] opacity-60 group-hover/session:opacity-0 transition-opacity">
-                                    {isNative() ? "⚡" : "🔌"}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      props.onCloseSession(session.id);
-                                    }}
-                                    title="Close Session"
-                                    class="opacity-0 group-hover/session:opacity-100 p-0.5 rounded theme-muted hover:text-[var(--ui-state-danger-text)] hover:bg-[var(--ui-surface)] transition-all"
-                                  >
-                                    <X size={10} />
-                                  </button>
-                                </Show>
-                              </div>
-                            </div>
-                          );
-                        }}
-                      </For>
+                      <For each={projectSessions()}>{(session) => sessionRow(session, project)}</For>
                     </Show>
                   </div>
                 </Show>
@@ -370,52 +333,31 @@ export default function ProjectSessionSidebar(props: ProjectSessionSidebarProps)
 
         {/* Unassigned / Global Sessions node if any */}
         <Show when={sessionsByProject().unassigned.length > 0}>
-          <div class="project-tree-node rounded-lg overflow-hidden transition-colors mt-2 pt-2 border-t theme-border">
+          <div class="project-tree-node sidebar-unassigned">
             <div
               role="button"
               tabindex="0"
+              aria-expanded={!isCollapsed("__unassigned__")}
               onClick={() => toggleProject("__unassigned__")}
-              class="flex items-center gap-1.5 px-2 py-1.5 rounded-md cursor-pointer theme-muted hover:theme-text hover:bg-[var(--ui-surface-muted)] transition-colors"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  toggleProject("__unassigned__");
+                }
+              }}
+              class="sidebar-project-row"
             >
-              <Show when={isCollapsed("__unassigned__")} fallback={<ChevronDown size={12} />}>
-                <ChevronRight size={12} />
-              </Show>
-              <span class="font-mono text-[11px] font-medium truncate flex-1">Global / Other</span>
+              <span class="sidebar-row-slot sidebar-project-icon">
+                <Show when={isCollapsed("__unassigned__")} fallback={<ChevronDown size={12} />}>
+                  <ChevronRight size={12} />
+                </Show>
+              </span>
+              <span class="sidebar-row-title">Other sessions</span>
+              <span class="sidebar-row-count">{sessionsByProject().unassigned.length}</span>
             </div>
             <Show when={!isCollapsed("__unassigned__")}>
-              <div class="ml-4 pl-2 border-l border-[var(--ui-border)] mt-0.5 space-y-0.5 py-0.5">
-                <For each={sessionsByProject().unassigned}>
-                  {(session) => (
-                    <div
-                      role="button"
-                      tabindex="0"
-                      onClick={() => props.onSelectSession(session.id, null)}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setProjectContextMenu(null);
-                        setSessionContextMenu({ x: e.clientX, y: e.clientY, session, project: null });
-                      }}
-                      class={`flex items-center justify-between gap-1.5 px-2 py-1 rounded cursor-pointer transition-colors text-[11px] ${
-                        session.id === props.activeSessionId()
-                          ? "bg-[var(--ui-accent-muted)] text-[var(--ui-accent)] font-medium"
-                          : "hover:bg-[var(--ui-surface-muted)] theme-text"
-                      }`}
-                    >
-                      <span class="truncate font-mono text-[11px]">{session.title}</span>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          props.onCloseSession(session.id);
-                        }}
-                        class="p-0.5 rounded theme-muted hover:text-[var(--ui-state-danger-text)]"
-                      >
-                        <X size={10} />
-                      </button>
-                    </div>
-                  )}
-                </For>
+              <div class="sidebar-session-list">
+                <For each={sessionsByProject().unassigned}>{(session) => sessionRow(session, null)}</For>
               </div>
             </Show>
           </div>

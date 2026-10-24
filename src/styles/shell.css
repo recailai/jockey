@@ -1,0 +1,254 @@
+/* ─── App shell: sidebar, topbar, settings, companion lists ─────────────────
+   Loaded after index.css and design-system.css. Same language as the primitive layer:
+   surfaces from the --ui ladder, hairline edges, hover = selection fill (no accent bars),
+   status through StatusDot, radii from --ui-radius-* only.
+──────────────────────────────────────────────────────────────────────────── */
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+.sidebar-shell {
+  display: flex;
+  width: 248px;
+  flex-shrink: 0;
+  flex-direction: column;
+  border-right: 0.5px solid var(--ui-sidebar-border);
+  background: var(--ui-sidebar-bg);
+  color: var(--ui-text);
+  user-select: none;
+}
+.sidebar-header {
+  display: flex;
+  height: var(--ui-bar-height);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px 0 14px;
+}
+.sidebar-header-title {
+  color: var(--ui-text-caption);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.sidebar-tree {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  padding: 4px 8px 12px;
+  scrollbar-color: transparent transparent;
+}
+.sidebar-tree:hover { scrollbar-color: color-mix(in srgb, var(--ui-text) 18%, transparent) transparent; }
+.sidebar-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 12px;
+  color: var(--ui-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.sidebar-project-row,
+.sidebar-session-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 4px 0 6px;
+  border-radius: var(--ui-radius-md);
+  color: var(--ui-text);
+  cursor: pointer;
+  transition: background-color var(--ui-duration-fast) var(--ui-ease);
+}
+.sidebar-project-row { height: 34px; color: var(--ui-text-secondary); font-size: 13px; font-weight: 500; }
+.sidebar-project-row.is-current { color: var(--ui-text); }
+.sidebar-session-row { height: 32px; font-size: 13px; }
+.sidebar-project-row:hover,
+.sidebar-session-row:hover { background: var(--ui-sidebar-hover); }
+.sidebar-session-row.is-active { background: var(--ui-sidebar-active); font-weight: 500; }
+
+.sidebar-row-slot {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+}
+.sidebar-project-icon { color: var(--ui-text-caption); }
+.sidebar-folder-icon { flex-shrink: 0; color: var(--ui-muted); }
+.sidebar-project-row.is-current .sidebar-folder-icon { color: var(--ui-text); }
+.sidebar-row-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-row-count {
+  flex-shrink: 0;
+  color: var(--ui-text-caption);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+/* Row actions take the place of secondary info on hover; touch screens always show them. */
+.sidebar-row-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--ui-duration-fast) var(--ui-ease);
+}
+.sidebar-project-row:hover .sidebar-row-actions,
+.sidebar-session-row:hover .sidebar-row-actions,
+.sidebar-project-row:focus-within .sidebar-row-actions,
+.sidebar-session-row:focus-within .sidebar-row-actions { opacity: 1; }
+.sidebar-project-row:hover .sidebar-row-count { display: none; }
+@media (hover: none) {
+  .sidebar-row-actions { opacity: 1; }
+}
+.sidebar-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 1px 0 4px 14px;
+  padding-left: 6px;
+  border-left: 0.5px solid var(--ui-border);
+}
+.sidebar-new-session.jui-row-button {
+  gap: 6px;
+  height: 30px;
+  min-height: 30px;
+  color: var(--ui-text-caption);
+  font-size: 12.5px;
+}
+.sidebar-new-session.jui-row-button:hover { color: var(--ui-text); }
+.sidebar-rename-input.jui-field { height: 24px; padding: 0 6px; font-size: 12.5px; }
+.sidebar-unassigned { margin-top: 6px; padding-top: 6px; border-top: 0.5px solid var(--ui-border); }
+
+.sidebar-footer {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 6px 8px;
+  border-top: 0.5px solid var(--ui-sidebar-border);
+  background: transparent;
+}
+.sidebar-footer-button.jui-button {
+  height: 26px;
+  gap: 5px;
+  padding: 0 7px;
+  color: var(--ui-muted);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.sidebar-footer-button.jui-button:hover:not(:disabled) { color: var(--ui-text); }
+
+/* ── Topbar ──────────────────────────────────────────────────────────────── */
+.session-topbar { border-bottom: 0.5px solid var(--ui-border); }
+.session-topbar-divider { width: 0.5px; background: var(--ui-border); }
+.session-topbar-action.jui-toolbar-button,
+.session-topbar-dock-tab.jui-toolbar-button { border-radius: var(--ui-radius-sm); color: var(--ui-muted); }
+.session-topbar-action.jui-toolbar-button:hover:not(:disabled),
+.session-topbar-action.jui-toolbar-button.is-active,
+.session-topbar-action.jui-toolbar-button[data-expanded],
+.session-topbar-dock-tab.jui-toolbar-button:hover:not(:disabled),
+.session-topbar-dock-tab.jui-toolbar-button.is-active { background: var(--ui-row-hover); color: var(--ui-text); }
+.session-chip { color: var(--ui-muted); font-size: 12.5px; }
+.session-chip:hover { background: var(--ui-row-hover); color: var(--ui-text); }
+.session-chip.is-active { background: var(--ui-row-active); color: var(--ui-text); }
+
+/* ── Settings ────────────────────────────────────────────────────────────── */
+.settings-nav {
+  width: 248px;
+  border-right: 0.5px solid var(--ui-sidebar-border);
+  background: var(--ui-sidebar-bg);
+}
+.settings-back.jui-row-button,
+.settings-nav-row.jui-row-button {
+  gap: 10px;
+  min-height: 36px;
+  border-radius: var(--ui-radius-md);
+  color: var(--ui-text-secondary);
+  font-size: 13px;
+}
+.settings-back.jui-row-button { margin: 0 12px; color: var(--ui-muted); }
+.settings-nav-row.jui-row-button.is-active { background: var(--ui-row-active); color: var(--ui-text); font-weight: 500; }
+.settings-content { width: min(860px, calc(100vw - 340px)); padding: 64px 0 64px; }
+.settings-title { color: var(--ui-text); font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
+.settings-section { margin-top: 28px; }
+.settings-section-heading { margin-bottom: 10px; color: var(--ui-text); font-size: 13px; font-weight: 600; }
+.settings-section-lead { color: var(--ui-muted); font-size: 13px; }
+
+/* Cards: elevation, not borders. */
+.settings-workmode-card,
+.settings-theme-card,
+.settings-card-list,
+.settings-management-panel {
+  border: 0;
+  border-radius: var(--ui-radius-lg);
+  background: var(--ui-surface);
+  box-shadow: var(--ui-elevation-panel);
+}
+.settings-workmode-card,
+.settings-theme-card { transition: box-shadow var(--ui-duration) var(--ui-ease); }
+.settings-workmode-card:hover,
+.settings-theme-card:hover { box-shadow: var(--ui-elevation-soft); }
+.settings-workmode-card.is-active,
+.settings-theme-card.is-active {
+  background: var(--ui-surface);
+  box-shadow: 0 0 0 1.5px var(--ui-brand), var(--ui-elevation-soft);
+}
+.settings-workmode-preview { border: 0; border-radius: var(--ui-radius-md); box-shadow: var(--ui-elevation-stroke); }
+.settings-theme-grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+.settings-theme-card { min-height: 96px; padding: 16px; }
+.theme-swatch { box-shadow: inset 0 0 0 0.5px var(--ui-border-strong); }
+.settings-card-list-body { gap: 0; padding: 4px 16px; }
+.settings-toggle-row.jui-row-button,
+.settings-runtime-row.jui-row-button {
+  min-height: 52px;
+  padding: 12px 0;
+  border-radius: 0;
+  background: transparent;
+}
+.settings-toggle-row + .settings-toggle-row,
+.settings-runtime-row + .settings-runtime-row { border-top: 0.5px solid var(--ui-border); }
+.settings-runtime-row.jui-row-button:hover:not(:disabled) { background: transparent; }
+.settings-runtime-dot { width: 6px; height: 6px; }
+.settings-empty { border: 0.5px dashed var(--ui-border-strong); border-radius: var(--ui-radius-md); }
+.settings-custom-app-row { border: 0; border-radius: var(--ui-radius-md); }
+.settings-custom-app-row:not(.is-readonly):hover { background: var(--ui-row-hover); }
+.settings-custom-app-input { border-radius: var(--ui-radius-md); }
+
+/* Management tabs inside settings share the field-row rhythm. */
+.management-error-box { border: 0; border-radius: var(--ui-radius-md); background: var(--ui-state-danger-bg); color: var(--ui-state-danger-text); }
+
+/* ── Companion lists ─────────────────────────────────────────────────────── */
+.companion-header {
+  border-bottom: 0.5px solid var(--ui-border);
+  background: var(--ui-topbar-bg);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  backdrop-filter: blur(20px) saturate(1.2);
+}
+.companion-project-card {
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--ui-radius-lg);
+  background: var(--ui-surface);
+  box-shadow: var(--ui-elevation-panel);
+}
+.companion-project-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px;
+  border-top: 0.5px solid var(--ui-border);
+}
+.companion-session-row.jui-row-button { min-height: 44px; padding: 8px 10px; border-radius: var(--ui-radius-md); }
+.companion-session-time { flex-shrink: 0; color: var(--ui-text-caption); font-size: 11px; font-variant-numeric: tabular-nums; }
+.companion-session-preview { overflow: hidden; color: var(--ui-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+
