@@ -1,13 +1,12 @@
 import { For, Index, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { Accessor } from "solid-js";
 import type { AppSession, AppMessage, AppSegment, AppPermission, InputDeliveryCapabilities, RuntimeCapabilities } from "./types";
-import { RUNTIME_COLOR, MESSAGE_RENDER_WINDOW, fmt } from "./types";
+import { MESSAGE_RENDER_WINDOW, fmt } from "./types";
 import SessionTelemetry from "./SessionTelemetry";
 import CapabilityGate from "./CapabilityGate";
 import { ProviderEventGroup } from "./ProviderEventGroup";
 import { AgentBlockRenderer } from "./AgentBlockRenderer";
 import UserInputModal from "./UserInputModal";
-import { identicon } from "../lib/identicon";
 import { renderMd, renderMdCached } from "../lib/markdown";
 import { ToolCallGroup, type ToolCallGroupItem } from "./ToolCallGroup";
 import { PermissionModal } from "./PermissionModal";
@@ -17,7 +16,7 @@ import { openExternal } from "../lib/transport";
 import { copyText } from "../lib/clipboard";
 import { responseSession } from "../lib/messagePresentation";
 import { isTransparentProviderEvent } from "../lib/providerEventPolicy";
-import { Badge, Button, ContextMenuItem, ContextMenuSurface } from "./ui";
+import { Badge, Button, ContextMenuItem, ContextMenuSurface, StateDot } from "./ui";
 import { Check, Copy } from "lucide-solid";
 
 /** Failed turns are persisted as `event` rows with the id `<turnId>:error`; background task
@@ -80,7 +79,7 @@ function AgentStatusIndicator(props: { stateText?: string; fallback?: string }) 
 
   return (
     <span class="inline-flex items-center gap-1.5 flex-wrap">
-      <span class="text-[10px] theme-muted italic">{parsed().prefix}</span>
+      <span class="jui-shimmer chat-status-text">{parsed().prefix}</span>
       <Show when={parsed().sessionTag}>
         {(tag) => (
           <Badge tone={badgeTone()} variant="subtle" class="font-mono text-[9px] px-1 py-0 tracking-tight">
@@ -89,7 +88,7 @@ function AgentStatusIndicator(props: { stateText?: string; fallback?: string }) 
         )}
       </Show>
       <Show when={parsed().suffix}>
-        <span class="text-[10px] theme-muted italic">{parsed().suffix}</span>
+        <span class="chat-status-text theme-muted">{parsed().suffix}</span>
       </Show>
     </span>
   );
@@ -199,10 +198,6 @@ function MessageWindowContent(props: MessageWindowProps) {
     const groups = collectToolGroups(props.activeSession()?.streamSegments ?? []);
     return groups[groups.length - 1]?.kind === "tools";
   });
-  const isNativeRuntime = () => {
-    const kind = props.activeSession()?.runtimeKind;
-    return !!kind && (kind.includes("native") || kind === "antigravity-cli" || kind === "codex-cli" || kind === "pi-cli");
-  };
   const queuedItems = () => props.activeSession()?.queuedItems.filter((item) => item.status === "queued") ?? [];
 
   createEffect(() => {
@@ -383,7 +378,7 @@ function MessageWindowContent(props: MessageWindowProps) {
       style={{ "background-color": "transparent" }}
       onClick={handleContainerClick}
     >
-      <div class="message-list-inner flex min-h-full flex-col justify-end gap-4">
+      <div class="message-list-inner chat-column flex min-h-full flex-col justify-end">
       <Show when={hiddenMessageCount() > 0}>
         <div class="py-1 text-center text-xs theme-muted opacity-40">
           {hiddenMessageCount()} older messages hidden for performance
@@ -393,40 +388,17 @@ function MessageWindowContent(props: MessageWindowProps) {
         <div class="py-8 text-center text-xs theme-muted opacity-60">No messages match "{searchQuery()}"</div>
       </Show>
       <Show when={visibleMessages().length === 0 && !props.activeSession()?.streamingMessage && !searchQuery()}>
-        <div class="my-auto py-10 flex flex-col items-center justify-center text-center max-w-sm mx-auto px-4 select-none">
-          <div class="w-10 h-10 rounded-xl bg-[var(--ui-surface-muted)] border border-[var(--ui-border)] flex items-center justify-center mb-2 shadow-sm">
-            <span class="text-sm font-mono font-bold text-[var(--ui-accent)]">⚡</span>
-          </div>
-          <h3 class="font-mono text-xs font-bold theme-text uppercase tracking-wider mb-1">
-            {props.activeSession()?.title ?? "Session"}
-          </h3>
-          <p class="text-[11px] theme-muted mb-3">
-            Ready to assist with your codebase. Type instructions below.
-          </p>
+        <div class="chat-empty">
+          <h3 class="chat-empty-title">{props.activeSession()?.title ?? "Session"}</h3>
+          <p class="chat-empty-text">Ready when you are. Describe the change or ask a question below.</p>
           <Show when={props.presentation !== "responses"}>
-          <div class="w-full rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-2.5 text-left space-y-1.5">
-            <div class="flex items-center justify-between text-[11px]">
-              <span class="theme-muted">Role</span>
-              <span class="font-mono font-semibold theme-text text-[11px]">{props.activeSession()?.activeRole ?? "Developer"}</span>
-            </div>
-            <div class="flex items-center justify-between text-[11px]">
-              <span class="theme-muted">Engine</span>
-              <div class="flex items-center gap-1.5 font-mono">
-                <Badge tone={isNativeRuntime() ? "warning" : "info"} variant="outline" class="text-[8.5px] font-semibold">
-                  {isNativeRuntime() ? "⚡ Native" : "🔌 ACP"}
-                </Badge>
-                <span class="theme-text text-[10px]">{props.activeSession()?.runtimeKind ?? "default"}</span>
-              </div>
-            </div>
-            <Show when={props.activeSession()?.cwd}>
-              <div class="flex items-center justify-between text-[10px] pt-1 border-t theme-border">
-                <span class="theme-muted">Workspace</span>
-                <span class="font-mono text-[9.5px] theme-muted truncate max-w-[200px]" title={props.activeSession()?.cwd ?? ""}>
-                  {props.activeSession()?.cwd}
-                </span>
-              </div>
-            </Show>
-          </div>
+            <dl class="chat-empty-facts">
+              <div><dt>Role</dt><dd>@{props.activeSession()?.activeRole ?? "Developer"}</dd></div>
+              <div><dt>Agent</dt><dd>{props.activeSession()?.runtimeKind ?? "default"}</dd></div>
+              <Show when={props.activeSession()?.cwd}>
+                <div><dt>Workspace</dt><dd title={props.activeSession()?.cwd ?? ""}>{props.activeSession()?.cwd}</dd></div>
+              </Show>
+            </dl>
           </Show>
         </div>
       </Show>
@@ -437,9 +409,9 @@ function MessageWindowContent(props: MessageWindowProps) {
           if (msg.roleName === "user") {
             const segments = buildUserSegments(msg.text);
             return (
-              <div class="flex flex-col items-end w-full mb-3 group/user">
-                <div class="user-bubble max-w-[85%] px-4 py-2 text-[13px]">
-                  <div class="whitespace-pre-wrap break-words leading-relaxed font-mono">
+              <div class="chat-turn chat-turn-user group/user">
+                <div class="user-bubble">
+                  <div class="whitespace-pre-wrap break-words">
                     <For each={segments}>
                       {(seg) => {
                         if (seg.kind === "image") {
@@ -466,7 +438,7 @@ function MessageWindowContent(props: MessageWindowProps) {
                     </For>
                   </div>
                 </div>
-                <div class="flex items-center gap-1.5 mt-1.5 text-[10px] theme-muted mr-1 opacity-0 transition-opacity duration-200 group-hover/user:opacity-100 tracking-wide">
+                <div class="chat-actions">
                   <Show when={msg.text}>
                     <MessageCopyButton text={msg.text} class="user-action-button" />
                   </Show>
@@ -541,20 +513,17 @@ function MessageWindowContent(props: MessageWindowProps) {
           });
 
           return (
-            <div class="flex gap-4 w-full max-w-[95%] mb-6 group/agent">
-              <button
-                type="button"
-                onContextMenu={handleResetContextMenu}
-                class="agent-avatar"
-                title="Right-click to reset current agent CLI context"
-                innerHTML={identicon(msg.roleName || props.activeSession()?.activeRole || "assistant")}
-              />
-              <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-2.5 mb-1.5 opacity-90">
-                  <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.runtimeKind ?? ""] ?? "theme-text"}`}>
+            <div class="chat-turn chat-turn-agent group/agent">
+              <div class="min-w-0">
+                <div class="chat-agent-header">
+                  <span
+                    class="chat-role"
+                    onContextMenu={handleResetContextMenu}
+                    title="Right-click to reset current agent CLI context"
+                  >
                     {msg.roleName || props.activeSession()?.activeRole || "Assistant"}
                   </span>
-                  <span class="text-[10px] theme-muted font-medium">{fmt(msg.at)}</span>
+                  <span class="chat-time">{fmt(msg.at)}</span>
                   <Show when={props.activeSession()?.currentMode}>
                     <span class="message-mode-badge">{props.activeSession()?.currentMode}</span>
                   </Show>
@@ -592,7 +561,7 @@ function MessageWindowContent(props: MessageWindowProps) {
                 </Show>
                 <Show when={getMessageCopyableText(msg)}>
                   {(copyText) => (
-                    <div class="flex items-center gap-1.5 mt-1.5 text-[10px] theme-muted opacity-0 transition-opacity duration-200 group-hover/agent:opacity-100 tracking-wide">
+                    <div class="chat-actions">
                       <MessageCopyButton text={copyText()} class="user-action-button" />
                     </div>
                   )}
@@ -604,28 +573,13 @@ function MessageWindowContent(props: MessageWindowProps) {
       </For>
       <Show when={props.activeSession()?.streamingMessage}>
         {(streaming) => (
-          <div class="flex gap-4 w-full max-w-[95%] mb-6">
-            <button
-              type="button"
-              onContextMenu={handleResetContextMenu}
-              class="agent-avatar is-streaming"
-              title="Right-click to reset current agent CLI context"
-            >
-              <svg class="agent-streaming-orb absolute inset-0 h-full w-full" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-                <circle cx="16" cy="16" r="13" class="agent-streaming-ring-outer" stroke-width="0.5" />
-                <circle cx="16" cy="16" r="10" class="agent-streaming-ring-inner" stroke-width="0.5" />
-                <path d="M16 3a13 13 0 0 1 13 13" class="agent-streaming-arc origin-center" stroke-width="1.5" stroke-linecap="round" style={{ animation: "uiSpin 1.5s linear infinite" }} />
-                <path d="M16 5a11 11 0 0 0-11 11" class="agent-streaming-arc agent-streaming-arc-2 origin-center" stroke-width="1" stroke-linecap="round" style={{ animation: "uiSpin 2.5s linear infinite reverse" }} />
-                <path d="M16 7a9 9 0 0 1 9 9" class="agent-streaming-arc agent-streaming-arc-3 origin-center" stroke-width="0.8" stroke-linecap="round" style={{ animation: "uiSpin 3.5s linear infinite" }} />
-                <circle cx="16" cy="16" r="2.5" class="agent-streaming-core" />
-                <circle cx="16" cy="16" r="4" class="agent-streaming-halo" stroke-width="0.5" />
-              </svg>
-            </button>
+          <div class="chat-turn chat-turn-agent is-streaming">
             <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-2.5 mb-2">
-                <span class={`text-[12px] font-bold tracking-wider uppercase ${RUNTIME_COLOR[props.activeSession()?.runtimeKind ?? ""] ?? "theme-text"}`}>
+              <div class="chat-agent-header">
+                <span class="chat-role" onContextMenu={handleResetContextMenu} title="Right-click to reset current agent CLI context">
                   {streaming().roleName || props.activeSession()?.activeRole || "Agent"}
                 </span>
+                <StateDot state="ongoing" size={11} />
               </div>
               <Show when={(props.activeSession()?.streamSegments ?? []).length > 0} fallback={
                 <>
@@ -685,10 +639,7 @@ function MessageWindowContent(props: MessageWindowProps) {
                   streaming
                 />
               </Show>
-              <div class="flex items-center gap-2 mt-2 pt-1.5">
-                <svg class="h-3 w-3 animate-spin shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-                  <path d="M12 2a10 10 0 0 1 7.07 2.93" stroke="var(--ui-accent)" /><path d="M22 12a10 10 0 0 1-2.93 7.07" stroke="var(--ui-accent)" opacity="0.6" /><path d="M12 22a10 10 0 0 1-7.07-2.93" stroke="var(--ui-accent)" opacity="0.3" /><path d="M2 12a10 10 0 0 1 2.93-7.07" stroke="var(--ui-accent)" opacity="0.1" />
-                </svg>
+              <div class="chat-running">
                 <AgentStatusIndicator stateText={props.activeSession()?.agentState} fallback="running" />
               </div>
             </div>
@@ -771,9 +722,9 @@ function MessageWindowContent(props: MessageWindowProps) {
         }}
       </Show>
       <Show when={props.activeSession()?.submitting && !props.activeSession()?.streamingMessage}>
-        <div class="flex items-center gap-2 px-1 text-xs theme-muted opacity-80 mt-2">
-          <span class="h-2 w-2 rounded-full bg-white/60 animate-pulse shrink-0" />
-          <AgentStatusIndicator stateText={props.activeSession()?.agentState} fallback="Agent is thinking..." />
+        <div class="chat-running chat-column">
+          <StateDot state="ongoing" size={11} />
+          <AgentStatusIndicator stateText={props.activeSession()?.agentState} fallback="Thinking…" />
         </div>
       </Show>
       <Show when={queuedItems().length > 0}>
@@ -1069,9 +1020,8 @@ function AgentStreamList(props: {
         data-agent-role={group.roleName}
       >
         <Show when={showRoleBoundary()}>
-          <div class="flex items-center gap-2.5 px-3 pt-2.5 text-[11px] font-bold tracking-wider uppercase theme-muted">
-            <span class="agent-avatar-mini" innerHTML={identicon(group.roleName)} />
-            {group.roleName}
+          <div class="chat-agent-header chat-role-boundary">
+            <span class="chat-role">{group.roleName}</span>
           </div>
         </Show>
         <div class={showRoleBoundary() ? "px-3 pb-3" : ""}>

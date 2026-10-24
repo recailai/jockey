@@ -2,8 +2,14 @@ import { marked } from "marked";
 
 const COPY_BTN = `<button data-copy-code class="jui-code-copy" title="Copy code">Copy</button>`;
 
+/** Each code block gets a sticky banner with its language and a copy button. The banner sits
+ *  in the <pre> but outside <code>, so copying (which reads <code>) never includes it. */
 function injectCopyButtons(html: string): string {
-  return html.replace(/<pre\b([^>]*)>/g, `<pre$1 class="group/pre relative">${COPY_BTN}`);
+  return html.replace(
+    /<pre\b([^>]*)>(<code(?: class="language-([\w+#.-]+)")?)/g,
+    (_m, attrs: string, code: string, lang?: string) =>
+      `<pre${attrs} class="md-code group/pre relative"><span class="md-code-banner"><span class="md-code-lang">${lang ?? "code"}</span>${COPY_BTN}</span>${code}`,
+  );
 }
 
 export const renderMd = (text: string): string => {
