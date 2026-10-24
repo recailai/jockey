@@ -1,3 +1,4 @@
+mod acp_list;
 pub(crate) mod claude;
 pub(crate) mod codex;
 pub(crate) mod pi;
@@ -26,6 +27,8 @@ pub(crate) struct DiscoveredSession {
     pub(crate) runtime_kind: &'static str,
     pub(crate) agent: &'static str,
     pub(crate) session_id: String,
+    /// The transcript import copies history from. Empty for conversations only an ACP adapter
+    /// lists (no transcript reader for that runtime): importing binds them without history.
     pub(crate) file_path: PathBuf,
     pub(crate) cwd: String,
     pub(crate) title: String,
@@ -125,6 +128,7 @@ fn scan_sessions(project_path: &str) -> Vec<DiscoveredSession> {
     let mut sessions = claude::scan_claude_sessions(project_path);
     sessions.extend(codex::scan_codex_sessions(project_path));
     sessions.extend(pi::scan_pi_sessions(project_path));
+    acp_list::enrich(&mut sessions, |cwd| cwd_in_project(cwd, project_path));
     finish_scan(sessions)
 }
 
@@ -132,6 +136,7 @@ fn scan_all_sessions() -> Vec<DiscoveredSession> {
     let mut sessions = claude::scan_all_claude_sessions();
     sessions.extend(codex::scan_all_codex_sessions());
     sessions.extend(pi::scan_all_pi_sessions());
+    acp_list::enrich(&mut sessions, |_| true);
     finish_scan(sessions)
 }
 
@@ -274,12 +279,14 @@ fn cached_sessions(state: &AppState, project_id: &str) -> Result<Vec<DiscoveredS
                             "claude-code" | "claude-native" => "claude-code",
                             "codex-cli" => "codex-cli",
                             "pi-cli" => "pi-cli",
+                            "antigravity-cli" => "antigravity-cli",
                             _ => return None,
                         },
                         agent: match agent.as_str() {
                             "Claude Code" => "Claude Code",
                             "Codex" => "Codex",
                             "Pi" => "Pi",
+                            "Antigravity" => "Antigravity",
                             _ => return None,
                         },
                         session_id,
@@ -592,7 +599,9 @@ fn import_one(
             .find(|c| {
                 c.runtime_kind == session.runtime_kind && c.provider_id == session.session_id
             });
-    if let Some(conversation) = conversation {
+    // An ACP-only conversation has no transcript here; the binding alone lets the next turn
+    // resume it with `session/load`, and its history stays with the agent.
+    if let Some(conversation) = conversation.filter(|_| !session.file_path.as_os_str().is_empty()) {
         sync_transcript(state, &app_sess.id, &conversation, &session.file_path)?;
     }
     Ok(app_sess.id)

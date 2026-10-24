@@ -144,6 +144,46 @@ pub(super) fn build_stdio_adapter(runtime: &str) -> Result<Option<StdioAdapterSp
     }))
 }
 
+/// The launch spec of an adapter that is already on disk, or `None`. Unlike
+/// [`build_stdio_adapter`] it never installs anything: listing sessions for the import dialog
+/// must not pull packages for runtimes the user does not use.
+pub(crate) fn installed_stdio_adapter(kind: RuntimeKind) -> Option<StdioAdapterSpec> {
+    let resolved = match adapter_cache().get(&kind).and_then(|r| r.clone().ok()) {
+        Some(resolved) => resolved,
+        None => match kind {
+            RuntimeKind::AntigravityCli => APP_DATA_DIR
+                .get()
+                .map(|base| base.join("adapters/bin/agy_acp_server.par"))
+                .filter(|p| p.is_file())
+                .map(|binary| AdapterResolution {
+                    binary: binary.to_string_lossy().into_owned(),
+                    args: vec![],
+                    env: agent_env_overrides(),
+                    transport: AdapterTransport::Acp,
+                })?,
+            _ => {
+                let (package, binary) = managed_package(kind)?;
+                AdapterResolution {
+                    binary: managed_bridge_bin(package, binary)?
+                        .to_string_lossy()
+                        .into_owned(),
+                    args: vec![],
+                    env: agent_env_overrides(),
+                    transport: AdapterTransport::Acp,
+                }
+            }
+        },
+    };
+    Some(StdioAdapterSpec {
+        kind,
+        runtime_key: kind.runtime_key(),
+        binary: resolved.binary,
+        args: resolved.args,
+        env: resolved.env,
+        transport: resolved.transport,
+    })
+}
+
 fn build_custom_stdio_adapter(profile: RuntimeProfile) -> Result<Option<StdioAdapterSpec>, String> {
     let launch = profile
         .launch_spec

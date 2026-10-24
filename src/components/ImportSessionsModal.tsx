@@ -33,7 +33,7 @@ type ImportSessionsModalProps = {
   onOpenExisting?: (appSessionId: string) => void;
 };
 
-const AGENTS = ["Claude Code", "Codex", "Pi"] as const;
+const AGENTS = ["Claude Code", "Codex", "Pi", "Antigravity"] as const;
 
 const shortenPath = (path: string) => path.replace(/^(\/Users|\/home)\/[^/]+/, "~");
 
@@ -277,10 +277,15 @@ export default function ImportSessionsModal(props: ImportSessionsModalProps) {
           </Show>
         </div>
         <Badge tone="neutral" variant="outline" label={row.agent} />
-        <span class="inline-flex items-center gap-1 text-[11px] theme-muted shrink-0">
-          <MessageSquare size={10} />
-          {row.turnCount}
-        </span>
+        {/* ACP-only conversations (Antigravity) have no local transcript to count. */}
+        <Show when={row.turnCount > 0} fallback={
+          <span class="text-[11px] theme-muted shrink-0" title="History stays with the agent; importing continues the conversation">no local history</span>
+        }>
+          <span class="inline-flex items-center gap-1 text-[11px] theme-muted shrink-0">
+            <MessageSquare size={10} />
+            {row.turnCount}
+          </span>
+        </Show>
         <span class="text-[11px] theme-muted shrink-0 w-14 text-right" title={fmtDate(row.lastActiveAt)}>
           {fmtRelative(row.lastActiveAt)}
         </span>
@@ -306,7 +311,7 @@ export default function ImportSessionsModal(props: ImportSessionsModalProps) {
       <DialogContent
         class="max-w-[720px]"
         title="Import CLI Sessions"
-        description="Bring conversations from Claude Code, Codex and Pi into Jockey"
+        description="Bring conversations from Claude Code, Codex, Pi and Antigravity into Jockey"
         icon={<DownloadCloud size={20} class="text-[var(--ui-accent)]" />}
       >
         <DialogBody class="space-y-3" onKeyDown={onKeyDown}>
@@ -382,7 +387,7 @@ export default function ImportSessionsModal(props: ImportSessionsModalProps) {
               emptyDescription={
                 (scanned() ?? []).length === 0
                   ? scope() === "all"
-                    ? "No Claude Code, Codex or Pi transcripts were found on this machine."
+                    ? "No Claude Code, Codex, Pi or Antigravity conversations were found on this machine."
                     : "No CLI sessions were found for this project directory."
                   : "Adjust the search or filters, or show already imported sessions."
               }

@@ -33,7 +33,14 @@ Schema v17 canonicalizes old Claude runtime bindings, copies the active provider
 
 The client does not record startup announcements or `session/load` history replay as a new turn's response. Configuration and command updates still apply during setup. Failed `session/load`, or a missing load capability for an existing handle, returns an explicit error while preserving the transcript and handle. A replacement conversation requires an explicit context reset.
 
-Provider listing, fork and rewind previously implemented through native Codex commands are not advertised. Their command boundaries return an explicit unsupported result until an ACP extension is negotiated. Historical CLI import remains available.
+Fork and rewind previously implemented through native Codex commands are not advertised. Their command boundaries return an explicit unsupported result until an ACP extension is negotiated.
+
+Session discovery for import combines two sources (`src-tauri/src/importer/`):
+
+- **Transcript scanners** (Claude, Codex, Pi) decide which conversations exist and supply history and turn counts. They skip probe, empty and sub-agent transcripts (Codex guardian rollouts share the parent's `session_id`, so threads are keyed by `id`), and a git worktree counts as part of the project whose checkout its `.git` file points to.
+- **ACP `session/list`** (`acp/session/list.rs`), negotiated through `sessionCapabilities.list`, runs only when the import dialog refreshes its catalog and only for adapters already installed (it never installs). It supplies Claude's generated titles and the full list for runtimes without a transcript reader (Antigravity). Codex and Pi list the raw first message as the title, so their scanner titles are kept. Importing an ACP-only conversation binds it without history; the next turn resumes it with `session/load`.
+
+ACP cannot replace the scanners: it has no transcript read (only `session/load`, which resumes and replays without timestamps), no per-session change notification for the external-sync watcher, no turn counts, and adapter filters differ (Claude matches the exact cwd; codex-acp lists only the configured model provider's threads from its state DB).
 
 ## Validation
 

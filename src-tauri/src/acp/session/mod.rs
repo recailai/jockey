@@ -1,6 +1,7 @@
 pub(crate) mod adapter_runtime;
 mod cold_start;
 mod execute;
+pub(crate) mod list;
 mod mcp;
 mod prewarm;
 mod session_cmds;

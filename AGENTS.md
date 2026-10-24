@@ -79,6 +79,7 @@ Workflows are legacy and minimal: `start_workflow` runs a workflow's steps seque
 - Rust ACP SDK is pinned to 3.5.0; stable ACP v1 is negotiated on the wire.
 - Old `claude-native` / `native:*` names are compatibility aliases, not execution modes. Schema v17 migrates active Claude bindings and preserves transcripts and provider handles.
 - Catalog detection does not launch provider processes or install packages. Managed adapters install on demand with exact version validation. There is no silent native fallback.
+- Import discovery = transcript scanners + ACP `session/list` from installed adapters only (never installs); see `docs/architecture/runtime-adapters.md`.
 
 ### Data Flow
 
