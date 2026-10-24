@@ -200,7 +200,10 @@ function MessageWindowContent(props: MessageWindowProps) {
     const groups = collectToolGroups(props.activeSession()?.streamSegments ?? []);
     return groups[groups.length - 1]?.kind === "tools";
   });
-  const queuedItems = () => props.activeSession()?.queuedItems.filter((item) => item.status === "queued") ?? [];
+  // A claimed item is on its way into the turn (a steer can wait for the running step to
+  // finish); it stays listed until it appears in the transcript.
+  const queuedItems = () =>
+    props.activeSession()?.queuedItems.filter((item) => item.status === "queued" || item.status === "claimed") ?? [];
 
   createEffect(() => {
     const id = props.activeSessionId();
@@ -708,6 +711,7 @@ function MessageWindowContent(props: MessageWindowProps) {
                 onClick={() => props.onSendQueuedNow!()}
                 disabled={props.activeSession()?.turnPhase === "sending"
                   || props.activeSession()?.queueRunActive === true
+                  || queuedItems().some((item) => item.status === "claimed")
                   || props.activeSession()?.turnPhase === "cancelling"}
                 class="queued-flush-button"
                 title={props.inputDelivery?.()?.strategy === "steer"
@@ -727,16 +731,23 @@ function MessageWindowContent(props: MessageWindowProps) {
             <div class="px-2 py-1.5 space-y-1">
               <For each={queuedItems()}>{(item, i) => (
                 <div class="group flex items-start gap-2 px-2 py-1 rounded-md hover:bg-[var(--ui-accent-soft)] transition-colors">
-                  <span class="text-[9px] theme-muted font-mono mt-0.5 shrink-0 w-4 text-right">{i() + 1}</span>
-                  <span class="flex-1 text-[11px] theme-text font-mono break-all leading-relaxed">{item.text}</span>
-                  <button
-                    type="button"
-                    onClick={() => props.onRemoveQueuedMessage(item.id)}
-                    class="queued-remove-button"
-                    title="Remove from queue"
+                  <Show
+                    when={item.status === "claimed"}
+                    fallback={<span class="text-[9px] theme-muted font-mono mt-0.5 shrink-0 w-4 text-right">{i() + 1}</span>}
                   >
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                  </button>
+                    <span class="mt-1 shrink-0 w-4 flex justify-end"><StateDot state="ongoing" size={8} /></span>
+                  </Show>
+                  <span class="flex-1 text-[11px] theme-text font-mono break-all leading-relaxed">{item.text}</span>
+                  <Show when={item.status !== "claimed"}>
+                    <button
+                      type="button"
+                      onClick={() => props.onRemoveQueuedMessage(item.id)}
+                      class="queued-remove-button"
+                      title="Remove from queue"
+                    >
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                  </Show>
                 </div>
               )}</For>
             </div>

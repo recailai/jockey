@@ -202,6 +202,8 @@ pub(super) struct JockeyUiClient {
     pub(super) terminals: TerminalMap,
     /// Child sessions announced on this connection (`unstable_subagents`).
     pub(super) subagents: Rc<RefCell<super::subagents::Subagents>>,
+    /// Tool calls still running; "Send now" waits for it to go idle.
+    pub(super) tool_activity: Rc<RefCell<super::activity::ToolActivity>>,
 }
 
 impl Drop for JockeyUiClient {
@@ -674,6 +676,9 @@ impl JockeyUiClient {
     }
 
     pub(super) async fn emit(&self, event: AcpEvent) {
+        if let Ok(mut activity) = self.tool_activity.try_borrow_mut() {
+            activity.observe(&event);
+        }
         let tx = self
             .delta_slot
             .lock()
@@ -930,6 +935,7 @@ mod notification_tests {
             config_state: Rc::new(RefCell::new(vec![])),
             terminals: Rc::new(RefCell::new(HashMap::new())),
             subagents: Default::default(),
+            tool_activity: Default::default(),
         };
         let notification = |text: &str| {
             serde_json::from_value(json!({ "sessionId": "s", "update": {

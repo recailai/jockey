@@ -17,13 +17,16 @@ pub use types::{
 pub(crate) use handlers::build_prompt_blocks;
 pub(crate) use permission::{
     cached_approval, cancel_all_permissions, cancel_all_user_input, cancel_permissions_for,
-    insert_permission, permission_requests, PendingPermission,
+    has_pending_permissions, insert_permission, permission_requests, PendingPermission,
 };
 pub(crate) use pool::{
     pool_key, register_child_pid, ConfigStateCell, DeltaSlot, LiveConnection, ModeStateCell,
     CANCEL_HANDLES, CONN_MAP, DELTA_CHANNEL_CAPACITY,
 };
 pub(crate) use types::{SteerOutcome, WorkerMsg};
+
+/// How often a pending steer re-checks for a step boundary.
+const STEER_POLL: std::time::Duration = std::time::Duration::from_millis(150);
 
 use crate::acp::protocol as acp;
 use handlers::{
@@ -301,11 +304,16 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                 // Only a prompt in flight can be steered; its cancel handle exists exactly then.
                 let running = CANCEL_HANDLES.with(|m| m.borrow().contains_key(&key));
                 let live = CONN_MAP.with(|m| {
-                    m.borrow()
-                        .get(&key)
-                        .map(|c| (c.conn.clone(), c.session_id.clone(), c.steering))
+                    m.borrow().get(&key).map(|c| {
+                        (
+                            c.conn.clone(),
+                            c.session_id.clone(),
+                            c.steering,
+                            c.tool_activity.clone(),
+                        )
+                    })
                 });
-                let Some((conn, session_id, steering)) = live.filter(|_| running) else {
+                let Some((conn, session_id, steering, activity)) = live.filter(|_| running) else {
                     let _ = result_tx.send(SteerOutcome::NoRunningTurn);
                     continue;
                 };
@@ -314,6 +322,26 @@ async fn run_worker(mut rx: mpsc::UnboundedReceiver<WorkerMsg>) {
                     continue;
                 }
                 tokio::task::spawn_local(async move {
+                    // Wait for a step boundary: injecting while a tool runs cuts it off (see
+                    // `acp::activity`). A pending permission prompt needs no wait — the
+                    // adapter then queues the message behind it instead of pre-empting.
+                    let waited = std::time::Instant::now();
+                    loop {
+                        if !CANCEL_HANDLES.with(|m| m.borrow().contains_key(&key)) {
+                            let _ = result_tx.send(SteerOutcome::NoRunningTurn);
+                            return;
+                        }
+                        if activity.borrow().is_idle()
+                            || has_pending_permissions(runtime_key, &role_name, &app_session_id)
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(STEER_POLL).await;
+                    }
+                    acp_log(
+                        "steer.ready",
+                        json!({ "runtime": runtime_key, "waitedMs": waited.elapsed().as_millis() }),
+                    );
                     // `promptRequired`: if the turn ended meanwhile the adapter hands the input
                     // back instead of starting a detached turn the engine would not own.
                     let params = json!({

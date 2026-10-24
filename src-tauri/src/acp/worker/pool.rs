@@ -50,6 +50,8 @@ pub(crate) struct LiveConnection {
     pub(crate) system_prompt: Option<String>,
     /// Shared with the owning `JockeyUiClient`: the turn lifecycle settles it from here.
     pub(crate) subagents: Rc<RefCell<super::super::subagents::Subagents>>,
+    /// Shared with the owning `JockeyUiClient`; see `acp::activity`.
+    pub(crate) tool_activity: Rc<RefCell<super::super::activity::ToolActivity>>,
     pub(crate) last_active: Instant,
     pub(crate) _child: tokio::process::Child,
     pub(crate) _io_task: tokio::task::JoinHandle<()>,

@@ -471,7 +471,10 @@ pub(crate) async fn send_queued_now(app: &AppHandle, session_id: &str) -> Result
     let head = load_head(&state, session_id)?;
     let items = crate::db::inbox::list_inbox_internal(&state, session_id, false)?;
     let steerable_batch = queue::select_batch(&items).filter(|b| {
-        b.attachments.is_empty() && b.role_name.as_deref().is_none_or(|r| r == head.active_role)
+        b.attachments.is_empty()
+            && b.role_name
+                .as_deref()
+                .is_none_or(|r| r.eq_ignore_ascii_case(&head.active_role))
     });
     if steerable_batch.is_none() {
         // A batch for another persona, or with images, cannot join this turn.
@@ -480,6 +483,8 @@ pub(crate) async fn send_queued_now(app: &AppHandle, session_id: &str) -> Result
     let Some(batch) = queue::claim_next(&state, session_id)? else {
         return Ok(());
     };
+    // The steer can wait for the running step to finish; show the item as on its way meanwhile.
+    queue::announce_steering(app, &state, session_id);
     let steered = crate::commands::runtime_cmd::steer_acp_session(
         app.state::<AppState>(),
         head.active_role.clone(),

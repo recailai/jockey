@@ -230,6 +230,19 @@ pub fn respond_to_user_input(
     }
 }
 
+/// Whether the slot has a permission prompt waiting on the user.
+pub(crate) fn has_pending_permissions(
+    runtime_key: &str,
+    role_name: &str,
+    app_session_id: &str,
+) -> bool {
+    permission_requests().iter().any(|entry| {
+        entry.runtime_key == runtime_key
+            && entry.role_name == role_name
+            && entry.app_session_id == app_session_id
+    })
+}
+
 pub(crate) fn cancel_permissions_for(runtime_key: &str, role_name: &str, app_session_id: &str) {
     let request_ids = permission_requests()
         .iter()

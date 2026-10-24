@@ -106,6 +106,7 @@ where
         config_state: Rc::new(RefCell::new(Vec::new())),
         terminals: Rc::new(RefCell::new(std::collections::HashMap::new())),
         subagents: Default::default(),
+        tool_activity: Default::default(),
     });
     let conn = Rc::new(AcpConnection::new(stdin));
     let io = tokio::task::spawn_local(run_io(stdout, conn.clone(), client));

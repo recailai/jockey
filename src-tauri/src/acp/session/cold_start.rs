@@ -183,6 +183,7 @@ pub(crate) async fn cold_start(spec: ColdStartSpec) -> Result<LiveConnection, St
     let terminals: super::super::client::TerminalMap =
         Rc::new(RefCell::new(std::collections::HashMap::new()));
     let subagents: Rc<RefCell<super::super::subagents::Subagents>> = Default::default();
+    let tool_activity: Rc<RefCell<super::super::activity::ToolActivity>> = Default::default();
     let client = Rc::new(JockeyUiClient {
         delta_slot: delta_slot.clone(),
         auto_approve,
@@ -194,6 +195,7 @@ pub(crate) async fn cold_start(spec: ColdStartSpec) -> Result<LiveConnection, St
         config_state: config_state.clone(),
         terminals,
         subagents: subagents.clone(),
+        tool_activity: tool_activity.clone(),
     });
     let conn = Rc::new(AcpConnection::new(stdin));
     let io_conn = conn.clone();
@@ -536,6 +538,7 @@ pub(crate) async fn cold_start(spec: ColdStartSpec) -> Result<LiveConnection, St
         providers_rev,
         system_prompt: requested_prompt,
         subagents,
+        tool_activity,
         last_active: Instant::now(),
         _child: child,
         _io_task: io_handle,

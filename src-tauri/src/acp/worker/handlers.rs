@@ -596,6 +596,7 @@ pub(crate) async fn handle_execute(
 
     let live = CONN_MAP.with(|m| {
         m.borrow().get(&key).map(|c| {
+            c.tool_activity.borrow_mut().clear();
             (
                 c.session_id.clone(),
                 c.delta_slot.clone(),

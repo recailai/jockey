@@ -18,6 +18,16 @@ pub(crate) fn announce(app: &AppHandle, state: &AppState, session_id: &str) {
     );
 }
 
+/// Like `announce`, but lists claimed items too: a batch being steered into the running turn
+/// stays visible until it lands. A turn's own batch is not shown this way; it is the turn.
+pub(crate) fn announce_steering(app: &AppHandle, state: &AppState, session_id: &str) {
+    let items = crate::db::inbox::list_inbox_internal(state, session_id, true).unwrap_or_default();
+    let _ = app.emit(
+        QUEUE_CHANGED_EVENT,
+        json!({ "appSessionId": session_id, "items": items }),
+    );
+}
+
 pub(crate) fn enqueue(
     app: &AppHandle,
     state: &AppState,
