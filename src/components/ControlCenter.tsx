@@ -132,6 +132,7 @@ export default function ControlCenter(props: ControlCenterProps) {
     <main class="control-center">
       <header class="control-center-header"><strong>Jockey</strong><span>Control center</span><IconButton title="Refresh" aria-label="Refresh control center" onClick={() => void data.refresh()}><RefreshCw size={17} /></IconButton></header>
       <div class="control-center-scroll">
+        <div class="control-center-column">
         <div class="control-center-intro"><span>YOUR AGENTS</span><h1>{data.loading() ? "Connecting to your agents…" : data.error() ? "Connection needs attention." : decisionCount() ? `${decisionCount()} decision${decisionCount() === 1 ? "" : "s"} waiting.` : attention().length ? "Your agents need attention." : "You’re all caught up."}</h1><p>{working().length} working · {data.sessions().length} open sessions</p></div>
         <Show when={data.error() || actionError()}><Alert tone="danger">{data.error() || actionError()} <Button variant="ghost" onClick={() => { setActionError(null); void data.refresh(); }}>Retry</Button></Alert></Show>
         <Show when={batchable().length > 1}><div class="control-center-batch"><Button variant="secondary" disabled={batching() || individualBusy() > 0 || !!data.error()} onClick={() => void allowAllOnce()}>{batching() ? "Submitting decisions…" : `Allow all once (${batchable().length})`}</Button><span>Across all projects · one-time permissions only</span></div></Show>
@@ -143,6 +144,7 @@ export default function ControlCenter(props: ControlCenterProps) {
         </AsyncContent>
         <Button variant="secondary" class="control-center-browse" onClick={props.onBrowseSessions}>All projects & sessions</Button>
         <p class="control-center-hint">Hold a session for a quick message.</p>
+        </div>
       </div>
       <Show when={chosen()}>
         <UserInputModal activeSession={chosen} onDefer={() => setSelected(null)} patchActiveSession={() => { setSelected(null); void data.refresh(); }} />

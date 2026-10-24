@@ -5,6 +5,7 @@ import {
   ChevronDown,
   Ellipsis,
   FolderGit2,
+  LayoutDashboard,
   LoaderCircle,
   PanelLeft,
   PanelRight,
@@ -45,6 +46,8 @@ type SessionTopbarProps = {
   onSelectSession?: (sessionId: string, project?: Project | null) => void;
   onOpenAddProject?: () => void;
   onImportSessions?: () => void;
+  controlCenterOpen?: Accessor<boolean>;
+  onToggleControlCenter?: () => void;
 };
 
 function sessionStatusClass(session: AppSession): string {
@@ -312,6 +315,17 @@ export default function SessionTopbar(props: SessionTopbarProps) {
       <div class="session-topbar-drag" data-tauri-drag-region />
 
       <div class="session-topbar-actions" data-tauri-drag-region="false">
+        <Show when={props.onToggleControlCenter}>
+          <ToolbarButton
+            class="session-topbar-action"
+            title={props.controlCenterOpen?.() ? "Back to chat" : "Control center"}
+            aria-label="Toggle control center"
+            active={props.controlCenterOpen?.()}
+            onClick={() => props.onToggleControlCenter?.()}
+          >
+            <LayoutDashboard size={15} stroke-width={1.75} />
+          </ToolbarButton>
+        </Show>
         <ToolbarButton
           class="session-topbar-action"
           title="Search archived sessions"

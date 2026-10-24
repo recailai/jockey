@@ -729,7 +729,7 @@ mod resolver_tests {
         .unwrap();
         let err =
             crate::db::role::delete_role_internal(&state, "Reviewer", None, None).unwrap_err();
-        assert!(err.contains("active in 1 open session"), "{err}");
+        assert!(err.contains("active in 1 open session(s): s;"), "{err}");
     }
 
     #[test]

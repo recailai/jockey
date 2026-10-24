@@ -388,6 +388,7 @@ export default function SettingsPage(props: SettingsPageProps) {
                     pushMessage={props.pushMessage}
                     initialRoleName={initialRoleName()}
                     currentProject={props.currentProject}
+                    onOpenSession={(id) => void props.onRestoreSession(id)}
                   />
                 </div>
               </div>

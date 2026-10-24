@@ -214,7 +214,11 @@ export const roleApi = {
     call<Role>("reassign_role_project_cmd", { roleName, projectId, roleId }),
   remove: (roleName: string, projectId?: string | null, roleId?: string | null) =>
     call<void>("delete_role_cmd", { roleName, projectId, roleId }),
+  activeSessions: () => call<RoleActiveSessions[]>("list_role_active_sessions_cmd"),
 };
+
+export type RoleSessionRef = { id: string; title: string; projectId: string | null };
+export type RoleActiveSessions = { roleId: string; sessions: RoleSessionRef[] };
 
 export type RuntimeProfile = {
   id: string;

@@ -6,7 +6,7 @@ import { RUNTIME_COLOR, RUNTIMES, flattenConfigValues } from "../types";
 import { FieldRow, TextInput, InlineSelect, ActionButton } from "./primitives";
 import { RoleAccountField } from "./RoleAccountField";
 import { roleApi, assistantApi, globalMcpApi, ruleApi, skillApi, parseError } from "../../lib/tauriApi";
-import type { RoleMcpEntry, RoleRule, RoleSkill } from "../../lib/tauriApi";
+import type { RoleMcpEntry, RoleRule, RoleSessionRef, RoleSkill } from "../../lib/tauriApi";
 import { isModeOption, isModelOption, optionCurrentValue } from "../../lib/configOptions";
 import {
   appliesToModel,
@@ -18,7 +18,7 @@ import {
   valuesForModel,
   type RuntimeOption,
 } from "../../lib/runtimeOptions";
-import { ContextMenuSurface, ContextMenuItem, ContextMenuSeparator, EmptyState } from "../ui";
+import { Badge, ContextMenuSurface, ContextMenuItem, ContextMenuSeparator, EmptyState, RowButton } from "../ui";
 
 function ToggleField(props: { label: string; on: boolean; onChange: (on: boolean) => void }) {
   return (
@@ -164,8 +164,19 @@ export function RolesTab(props: {
   pushMessage: (role: string, text: string) => void;
   initialRoleName?: string;
   currentProject?: Accessor<Project | null>;
+  onOpenSession?: (id: string) => void;
 }) {
   const userRoles = createMemo(() => props.roles());
+  const [activeSessions, setActiveSessions] = createSignal<Map<string, RoleSessionRef[]>>(new Map());
+  const refreshActiveSessions = async () => {
+    const rows = await roleApi.activeSessions().catch(() => []);
+    setActiveSessions(new Map(rows.map((r) => [r.roleId, r.sessions])));
+  };
+  const sessionsUsing = (roleId: string) => activeSessions().get(roleId) ?? [];
+  createEffect(() => {
+    props.roles();
+    void refreshActiveSessions();
+  });
 
   // "creating" = create form open; selectedId = which role is being edited
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
@@ -663,6 +674,7 @@ export function RolesTab(props: {
       props.pushMessage("event", `Failed to delete role: ${err.message}`);
     } finally {
       setDeletingRole(null);
+      void refreshActiveSessions();
     }
   };
 
@@ -842,6 +854,13 @@ export function RolesTab(props: {
                         >
                           overridden
                         </span>
+                      </Show>
+                      <Show when={sessionsUsing(role.id).length}>
+                        {(count) => (
+                          <Badge tone="info" title={sessionsUsing(role.id).map((s) => s.title).join("\n")}>
+                            {count()} active
+                          </Badge>
+                        )}
                       </Show>
                     </div>
                     <Show when={deletingId() === role.id} fallback={
@@ -1204,6 +1223,26 @@ export function RolesTab(props: {
                 <Show when={deleteError()}>
                   <div class="management-error-box font-mono">
                     {deleteError()}
+                  </div>
+                </Show>
+                <Show when={sessionsUsing(role().id).length}>
+                  <div class="space-y-1 rounded-lg border theme-border bg-[var(--ui-surface-muted)] p-3">
+                    <div class="flex items-center gap-2 text-xs theme-text">
+                      <Badge tone="info">{sessionsUsing(role().id).length} active</Badge>
+                      <span class="theme-muted">Open sessions using this role. Switch their role before deleting it.</span>
+                    </div>
+                    <For each={sessionsUsing(role().id)}>
+                      {(session) => (
+                        <RowButton
+                          class="w-full justify-between text-xs"
+                          disabled={!props.onOpenSession}
+                          onClick={() => props.onOpenSession?.(session.id)}
+                          title="Open session"
+                        >
+                          <span class="truncate theme-text">{session.title}</span>
+                        </RowButton>
+                      )}
+                    </For>
                   </div>
                 </Show>
 

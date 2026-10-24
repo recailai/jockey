@@ -169,6 +169,7 @@ pub fn run() {
             db::role::upsert_role_cmd,
             db::role::reassign_role_project_cmd,
             db::role::delete_role_cmd,
+            db::role::list_role_active_sessions_cmd,
             db::role::list_roles,
             db::workflow::create_workflow,
             db::workflow::list_workflows,

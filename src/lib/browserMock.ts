@@ -223,6 +223,8 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
         case "list_session_summaries_cmd": {
           return [];
         }
+        case "list_pending_prompts_cmd":
+          return { permissions: [], userInputs: [] };
         case "list_closed_app_sessions": {
           const list = getStorage<MockSession[]>(STORAGE_KEY_SESSIONS, []);
           return list.filter((s: { closedAt?: number | null }) => !!s.closedAt);
@@ -316,6 +318,8 @@ if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
           setStorage(STORAGE_KEY_ROLES, list);
           return roleObj;
         }
+        case "list_role_active_sessions_cmd":
+          return [];
         case "delete_role_cmd": {
           let list = getStorage<MockRole[]>(STORAGE_KEY_ROLES, []);
           list = list.filter(

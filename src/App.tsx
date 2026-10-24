@@ -1054,7 +1054,6 @@ export default function App() {
   return (
     <AppShell
       showControlCenter={showControlCenter()}
-      onToggleControlCenter={() => setShowControlCenter((v) => !v)}
       controlCenter={
         <ControlCenter
           projects={projects}
@@ -1105,6 +1104,7 @@ export default function App() {
                 if (raw && getSessionIndex(id) === -1) setSessions((prev) => [...prev, sessionFromRaw(raw)]);
               }
               setActiveSessionId(id);
+              setShowControlCenter(false);
               setShowSettings(false);
             }}
             onBack={() => setShowSettings(false)}
@@ -1193,6 +1193,8 @@ export default function App() {
           }}
           onOpenAddProject={() => setShowProjectModal(true)}
           onImportSessions={() => openImportSessions("project")}
+          controlCenterOpen={showControlCenter}
+          onToggleControlCenter={() => setShowControlCenter((v) => !v)}
         />
       }
       conversation={

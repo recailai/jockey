@@ -735,32 +735,13 @@ pub(crate) fn delete_role_internal(
         };
 
         if !has_global_fallback {
-            let is_global = target_pid.as_deref().is_none_or(|p| p.is_empty());
-            // A global persona backs every project that has no copy of its own, so its guard
-            // spans those projects' sessions too, not only project-less ones.
-            let active_using_count: i64 = if is_global {
-                conn.query_row(
-                    "SELECT COUNT(1) FROM app_sessions s
-                     WHERE s.closed_at IS NULL AND lower(s.active_role) = lower(?1)
-                       AND NOT EXISTS (
-                         SELECT 1 FROM roles r
-                         WHERE lower(r.role_name) = lower(?1)
-                           AND r.project_id IS NOT NULL AND r.project_id <> ''
-                           AND r.project_id = s.project_id)",
-                    params![&target_name],
-                    |row| row.get(0),
-                )
-            } else {
-                conn.query_row(
-                    "SELECT COUNT(1) FROM app_sessions WHERE closed_at IS NULL AND lower(active_role) = lower(?1) AND project_id = ?2",
-                    params![&target_name, &target_pid],
-                    |row| row.get(0),
-                )
-            }
-            .map_err(|e| AppError::db(e.to_string()).to_string())?;
-            if active_using_count > 0 {
+            let using = open_sessions_using_role(conn, &target_name, target_pid.as_deref())?;
+            if !using.is_empty() {
+                let titles: Vec<&str> = using.iter().map(|s| s.title.as_str()).collect();
                 return Err(AppError::invalid_input(format!(
-                    "role is active in {active_using_count} open session(s); switch role first",
+                    "role is active in {} open session(s): {}; switch role first",
+                    using.len(),
+                    titles.join(", "),
                 ))
                 .to_string());
             }
@@ -796,6 +777,94 @@ pub(crate) fn delete_role_internal(
     })?;
     state.role_cache.clear();
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RoleSessionRef {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) project_id: Option<String>,
+}
+
+/// Open sessions whose active persona resolves to this role row. A global persona backs every
+/// project that has no copy of its own, so it covers those projects' sessions too.
+fn open_sessions_using_role(
+    conn: &rusqlite::Connection,
+    role_name: &str,
+    project_id: Option<&str>,
+) -> Result<Vec<RoleSessionRef>, String> {
+    let project_id = project_id.filter(|p| !p.is_empty());
+    let sql = if project_id.is_none() {
+        "SELECT s.id, s.title, s.project_id FROM app_sessions s
+         WHERE s.closed_at IS NULL AND lower(s.active_role) = lower(?1)
+           AND NOT EXISTS (
+             SELECT 1 FROM roles r
+             WHERE lower(r.role_name) = lower(?1)
+               AND r.project_id IS NOT NULL AND r.project_id <> ''
+               AND r.project_id = s.project_id)
+         ORDER BY s.last_active_at DESC"
+    } else {
+        "SELECT id, title, project_id FROM app_sessions
+         WHERE closed_at IS NULL AND lower(active_role) = lower(?1) AND project_id = ?2
+         ORDER BY last_active_at DESC"
+    };
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| AppError::db(e.to_string()).to_string())?;
+    let map = |r: &rusqlite::Row<'_>| {
+        Ok(RoleSessionRef {
+            id: r.get(0)?,
+            title: r.get(1)?,
+            project_id: r.get(2)?,
+        })
+    };
+    let rows = match project_id {
+        None => stmt.query_map(params![role_name], map),
+        Some(pid) => stmt.query_map(params![role_name, pid], map),
+    }
+    .map_err(|e| AppError::db(e.to_string()).to_string())?;
+    rows.collect::<Result<_, _>>()
+        .map_err(|e| AppError::db(e.to_string()).to_string())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RoleActiveSessions {
+    role_id: String,
+    sessions: Vec<RoleSessionRef>,
+}
+
+/// Open sessions per role row, so the role editor can show what a delete would interrupt.
+#[tauri::command]
+pub(crate) fn list_role_active_sessions_cmd(
+    state: State<'_, AppState>,
+) -> Result<Vec<RoleActiveSessions>, String> {
+    with_db(get_state(&state), |conn| {
+        let mut stmt = conn
+            .prepare("SELECT id, role_name, project_id FROM roles")
+            .map_err(|e| AppError::db(e.to_string()).to_string())?;
+        let roles = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(|e| AppError::db(e.to_string()).to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AppError::db(e.to_string()).to_string())?;
+        roles
+            .into_iter()
+            .map(|(role_id, name, pid)| {
+                Ok(RoleActiveSessions {
+                    role_id,
+                    sessions: open_sessions_using_role(conn, &name, pid.as_deref())?,
+                })
+            })
+            .collect()
+    })
 }
 
 #[tauri::command]
