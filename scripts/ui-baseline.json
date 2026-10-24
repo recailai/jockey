@@ -1,4 +1,10 @@
 {
+  "offScaleRadius": {
+    "src/components/catalog/catalog.css": 2,
+    "src/components/controlCenter.css": 2,
+    "src/index.css": 41,
+    "src/styles/design-system.css": 17
+  },
   "rawButton": {
     "src/companion/SessionList.tsx": 2,
     "src/components/ChatInput.tsx": 2,

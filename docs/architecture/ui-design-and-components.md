@@ -11,7 +11,23 @@ This specification establishes the frontend design system, component hierarchy, 
 3. **Check both themes and both shells.** Dark is the default and light must stay equivalent (every `--ui-*` token is defined for both). Desktop and the phone companion share components, so check a phone width (390px) and a desktop pane.
 4. **`pnpm lint:ui` must pass.** It runs before every `pnpm build` (`scripts/check-ui.mjs`):
    - Hard rules, zero allowed anywhere in `src/`: Tailwind palette colour classes (`text-blue-400`, `bg-amber-500/15`, ...) and raw hex colours in markup.
-   - Ratchet: raw `<button>` outside `components/ui/` may only decrease per file (`scripts/ui-baseline.json`). After removing some, run `pnpm lint:ui:update` to lock the lower count in. Never raise a count to make a check pass.
+   - Ratchets (`scripts/ui-baseline.json`, may only decrease per file): raw `<button>` outside `components/ui/`, and CSS `border-radius` values off the radius scale. After removing some, run `pnpm lint:ui:update` to lock the lower count in. Never raise a count to make a check pass.
+5. **Primitives are styled in one place.** `src/styles/design-system.css` holds every `.jui-*` rule inside Tailwind's `@layer components`; `index.css` holds tokens and view/context classes (unlayered). A context class on a primitive (`.composer-send-button.jui-icon-button`, `.session-topbar-action`) therefore overrides it, as do Tailwind utilities. Never add `.jui-*` rules to `index.css`.
+
+## Visual Language
+
+Adopted from deepseek-harness's client (values, not code; no branding):
+
+- **Surfaces**: dark is a cool near-black ladder, never `#000` — canvas `--ui-bg` `#151517`, sidebar/preview `#1b1b1c`, raised `--ui-surface` `#232324`, popovers/composer `#2c2c2e`. Light is white with `#f9fafb` side surfaces. Elevation is the next step up, not a darker border.
+- **Lines and fills are translucent**: `--ui-border-subtle`/`--ui-border`/`--ui-border-strong` are white at 6/12/16% (black at 4/10/12% in light); hover/active fills are `--ui-row-hover`/`--ui-row-active` (8/14%). Prefer 0.5px hairlines.
+- **Raised surfaces draw their edge in `box-shadow`**: `--ui-elevation-panel | soft | prominent` combine a 0.5px stroke (`--ui-elevation-stroke-color`, re-tintable per surface) with a soft glow; use them with `border: 0`.
+- **Text ladder**: `--ui-text` → `--ui-text-secondary` → `--ui-muted` → `--ui-text-caption`. Process detail (tool rows, meta lines) sits at muted/caption so replies stand out.
+- **Colour is spent sparingly**: the primary action is ink (`--ui-accent`, off-white in dark); blue `--ui-brand` is only for send, links, focus rings, selection and the caret. Status tones tint their own colour at ~10–12% (`--ui-state-*-bg`).
+- **Radius scale**: `--ui-radius-xs|sm|md|lg|xl|panel` = 4/8/12/16/20/28 (pills 999px). Rows and inputs 10–12, cards 16, bubbles 20, dialogs and the composer 28.
+- **Type**: system sans (`--ui-font-sans`), mono `--ui-font-mono`; chat prose 14/24, UI 13/20, meta 11–12; weights 400/500/600 only.
+- **Motion**: `--ui-ease` with 100–180ms; running state is a breathing arc (`StateDot` `ongoing`), "thinking" text uses `.jui-shimmer`; everything is disabled under `prefers-reduced-motion`.
+- **Focus**: one 2px `--ui-focus-ring` outline for keyboard use (`lib/inputModality.ts` marks `html[data-input-modality]`); pointer clicks show no ring.
+
 
 ## 1. Core Design Principles
 

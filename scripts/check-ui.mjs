@@ -30,6 +30,13 @@ const HARD = [
 
 const RATCHETED = [
   {
+    key: "offScaleRadius",
+    name: "off-scale border-radius",
+    hint: "use var(--ui-radius-*) (4/8/12/16/20/28), 999px for pills or 50% for circles",
+    re: /border-radius:\s*(?!(?:0|4|8|12|16|20|28|999)px\b)[0-9.]+px/g,
+    css: true,
+  },
+  {
     key: "rawButton",
     name: "raw <button>",
     hint: "use Button / IconButton / ToolbarButton / RowButton / Pill from components/ui",
@@ -42,7 +49,7 @@ function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {
     const path = join(dir, name);
     if (statSync(path).isDirectory()) walk(path, out);
-    else if (/\.(tsx|ts)$/.test(name)) out.push(path);
+    else if (/\.(tsx|ts|css)$/.test(name)) out.push(path);
   }
   return out;
 }
@@ -51,9 +58,11 @@ const files = walk(SRC).map((p) => ({ rel: relative(ROOT, p), text: readFileSync
 const lineOf = (text, index) => text.slice(0, index).split("\n").length;
 
 let failed = false;
+const appliesTo = (rule, file) => (rule.css ? file.endsWith(".css") : !file.endsWith(".css"));
+
 for (const rule of HARD) {
   for (const f of files) {
-    if (rule.skip?.(f.rel)) continue;
+    if (!appliesTo(rule, f.rel) || rule.skip?.(f.rel)) continue;
     for (const m of f.text.matchAll(rule.re)) {
       failed = true;
       console.error(`${f.rel}:${lineOf(f.text, m.index)}  ${rule.name}: ${m[0].slice(0, 60)}  → ${rule.hint}`);
@@ -72,7 +81,7 @@ const next = {};
 for (const rule of RATCHETED) {
   next[rule.key] = {};
   for (const f of files) {
-    if (rule.skip?.(f.rel)) continue;
+    if (!appliesTo(rule, f.rel) || rule.skip?.(f.rel)) continue;
     const count = [...f.text.matchAll(rule.re)].length;
     if (!count) continue;
     next[rule.key][f.rel] = count;
