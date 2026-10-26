@@ -80,7 +80,7 @@ Contributors: see [AGENTS.md](AGENTS.md) for architecture, conventions, and PR g
 
 ## Commands
 
-- `pnpm dev`: Run Vite dev server for frontend iteration.
+- `pnpm dev`: Run Vite dev server for frontend iteration. For a named LAN/proxy host, set `JOCKEY_ALLOWED_HOSTS=jockey.example,preview.example` (comma-separated hostnames). IP hosts remain supported; other domains are rejected.
 - `pnpm tauri dev`: Run the full desktop app.
 - `pnpm build`: Build production frontend assets into `dist/`.
 - `pnpm tauri build`: Build distributable desktop bundles.

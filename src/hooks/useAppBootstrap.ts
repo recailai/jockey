@@ -101,6 +101,7 @@ export function useAppBootstrap(input: UseAppBootstrapInput) {
 
     const available = assistants().filter((a) => a.available);
     for (let i = 0; i < loaded.length; i++) {
+      if (loaded[i].runtimeKind) continue;
       const sessionRole = loaded[i].activeRole || DEFAULT_ROLE_ALIAS;
       const sessionPid = loaded[i].projectId || pid || null;
       let pinned: string | null = null;
@@ -112,9 +113,9 @@ export function useAppBootstrap(input: UseAppBootstrapInput) {
       }
       const personaDefault = roles().find((r) => r.roleName === sessionRole)?.runtimeKind ?? null;
       const chosen =
+        available.find((a) => a.key === loaded[i].runtimeKind) ??
         available.find((a) => a.key === pinned) ??
         available.find((a) => a.key === personaDefault) ??
-        available.find((a) => a.key === loaded[i].runtimeKind) ??
         available[0] ??
         null;
 

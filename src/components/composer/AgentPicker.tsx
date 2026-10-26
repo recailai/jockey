@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { Check, ChevronDown, ChevronRight } from "lucide-solid";
 import type { Accessor } from "solid-js";
 import type { AcpConfigOption, AppSession, AssistantRuntime, Role } from "../types";
@@ -93,19 +93,21 @@ export default function AgentPicker(props: AgentPickerProps) {
       setConfig({});
       return;
     }
+    const sid = sessionId();
+    let cancelled = false;
+    onCleanup(() => { cancelled = true; });
     void projectAgentApi
       .getConfig(pid, role)
       .then((res) => {
+        if (cancelled || sessionId() !== sid || activeRole() !== role) return;
         setConfig(res.configOptions ?? {});
-        // The project's pinned engine wins over whatever the session was last left on, so
-        // switching persona visibly moves the Agent row too. If the project has not pinned
-        // an engine, fall back to the persona's template runtime.
+        // A saved selection survives even when its adapter is temporarily unavailable.
+        if (runtimeKind()) return;
         const roleObj = props.roles().find((r) => r.roleName === role);
         const available = props.assistants().filter((a) => a.available);
         const targetAssistant =
           available.find((a) => a.key === res.runtimeKind) ??
           available.find((a) => a.key === roleObj?.runtimeKind) ??
-          available.find((a) => a.key === runtimeKind()) ??
           available[0] ??
           null;
         if (targetAssistant && targetAssistant.key !== runtimeKind()) {
@@ -121,7 +123,7 @@ export default function AgentPicker(props: AgentPickerProps) {
           }
         }
       })
-      .catch(() => setConfig({}));
+      .catch(() => { if (!cancelled) setConfig({}); });
   });
 
   // A persona's template runtime is only its seed; the project pin is what actually runs.

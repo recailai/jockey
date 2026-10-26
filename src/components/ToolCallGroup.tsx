@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createContext, createEffect, createMemo, createSignal, onCleanup, onMount, useContext } from "solid-js";
+import { For, Index, Match, Show, Switch, createContext, createEffect, createMemo, createSignal, onCleanup, onMount, useContext } from "solid-js";
 import { Check, ChevronDown, Square } from "lucide-solid";
 import { PermissionBody } from "./PermissionModal";
 import type { AppPermission, AppToolCall, TerminalEntry } from "./types";
@@ -446,17 +446,14 @@ export function ToolCallGroup(props: {
       .map((item) => item.tool),
   );
   const hasPendingPermission = () => !!props.pendingPermission;
-  const [expanded, setExpanded] = createSignal(false);
+  const [userExpanded, setUserExpanded] = createSignal<boolean | null>(null);
+  const expanded = () => hasPendingPermission() || (userExpanded() ?? props.streaming);
 
   const treeIndex = createMemo(() => buildToolTree(tools(), props.pendingPermission));
   const topItems = createMemo(() =>
     groupItems().filter((item) => item.kind !== "tool" || !treeIndex().nestedIds.has(item.tool.toolCallId)),
   );
   const topTools = createMemo(() => tools().filter((t) => !treeIndex().nestedIds.has(t.toolCallId)));
-
-  createEffect(() => {
-    if (hasPendingPermission()) setExpanded(true);
-  });
 
   // Counted over the same top-level rows the title counts; a sub-agent's own calls are
   // summarised by its row.
@@ -505,7 +502,7 @@ export function ToolCallGroup(props: {
       <button
         class="tool-call-summary select-none"
         aria-expanded={expanded()}
-        onClick={() => setExpanded(v => !v)}
+        onClick={() => setUserExpanded(!expanded())}
       >
         {/* Status at rest; on hover the slot cross-fades to the disclosure chevron. */}
         <span class="tool-call-summary-icon" aria-hidden="true">
@@ -539,17 +536,22 @@ export function ToolCallGroup(props: {
       <Show when={expanded()}>
         <ToolTreeContext.Provider value={tree}>
         <div class="tool-call-list">
-          <For each={topItems()}>{(item) => {
-            return item.kind === "tool" ? (
-              <ToolCallItem tc={item.tool} />
-            ) : item.kind === "events" ? (
-              <ProviderEventGroup events={item.events} />
-            ) : item.kind === "thought" ? (
-              <ToolGroupThought text={item.text} />
-            ) : (
-              <ToolGroupExecutionText text={item.text} />
-            );
-          }}</For>
+          <Index each={topItems()}>{(item) => (
+            <Switch>
+              <Match when={item().kind === "tool"}>
+                <ToolCallItem tc={(item() as { kind: "tool"; tool: AppToolCall }).tool} />
+              </Match>
+              <Match when={item().kind === "events"}>
+                <ProviderEventGroup events={(item() as { kind: "events"; events: Array<{ type: string; payload: unknown }> }).events} />
+              </Match>
+              <Match when={item().kind === "thought"}>
+                <ToolGroupThought text={(item() as { kind: "thought"; text: string }).text} />
+              </Match>
+              <Match when={item().kind === "executionText"}>
+                <ToolGroupExecutionText text={(item() as { kind: "executionText"; text: string }).text} />
+              </Match>
+            </Switch>
+          )}</Index>
         </div>
         </ToolTreeContext.Provider>
       </Show>

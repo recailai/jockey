@@ -11,6 +11,10 @@ export default defineConfig(() => ({
     port: 1420,
     strictPort: true,
     host: host || false,
+    allowedHosts: (process.env.JOCKEY_ALLOWED_HOSTS ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
     hmr: host
       ? {
           protocol: "ws",

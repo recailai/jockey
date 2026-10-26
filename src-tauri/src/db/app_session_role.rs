@@ -29,6 +29,15 @@ fn ensure_app_session_role_row(
             app_session_id, role_name, runtime_kind, runtime_profile_id
          ) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(app_session_id, role_name) DO UPDATE SET
+           acp_session_id = CASE WHEN EXISTS (
+             SELECT 1 FROM app_session_role_runtime_configs
+             WHERE app_session_id = excluded.app_session_id AND role_name = excluded.role_name
+               AND runtime_kind = excluded.runtime_kind)
+             THEN (SELECT acp_session_id FROM app_session_role_runtime_configs
+                   WHERE app_session_id = excluded.app_session_id
+                     AND role_name = excluded.role_name AND runtime_kind = excluded.runtime_kind)
+             WHEN app_session_roles.runtime_kind = excluded.runtime_kind THEN app_session_roles.acp_session_id
+             ELSE NULL END,
            runtime_kind = excluded.runtime_kind,
            runtime_profile_id = excluded.runtime_profile_id",
         params![app_session_id, role_name, runtime_kind, runtime_profile_id],
@@ -317,7 +326,7 @@ pub(crate) fn load_app_session_role_cli_id(
         return None;
     }
     with_db(state, |conn| {
-        let hit: Option<String> = conn
+        let hit: Option<Option<String>> = conn
             .query_row(
                 "SELECT acp_session_id FROM app_session_role_runtime_configs
                  WHERE app_session_id = ?1 AND role_name = ?2 AND runtime_kind = ?3",
@@ -325,17 +334,19 @@ pub(crate) fn load_app_session_role_cli_id(
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|e| e.to_string())?
-            .flatten();
+            .map_err(|e| e.to_string())?;
 
-        if hit.is_some() {
-            return Ok(hit);
+        if let Some(handle) = hit {
+            return Ok(handle.filter(|id| !id.trim().is_empty()));
         }
 
         // Fallback to app_session_roles
         conn.query_row(
             "SELECT acp_session_id FROM app_session_roles
-             WHERE app_session_id = ?1 AND role_name = ?2 AND runtime_kind = ?3",
+             WHERE app_session_id = ?1 AND role_name = ?2 AND runtime_kind = ?3
+               AND NOT EXISTS (SELECT 1 FROM app_session_role_runtime_configs c
+                 WHERE c.app_session_id = ?1 AND c.role_name = ?2
+                   AND c.runtime_kind <> ?3 AND c.acp_session_id = app_session_roles.acp_session_id)",
             params![app_session_id, role_name, runtime_key],
             |row| row.get(0),
         )
@@ -705,6 +716,52 @@ mod binding_tests {
             .into_iter()
             .map(|c| c.provider_id)
             .collect()
+    }
+
+    #[test]
+    fn a_contaminated_legacy_binding_cannot_cross_provider_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(&dir);
+        let sid = imported(&state);
+        with_db(&state, |conn| {
+            conn.execute("UPDATE app_session_roles SET runtime_kind = 'dsh-cli'", [])
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert_eq!(
+            load_app_session_role_cli_id(&state, &sid, "dsh-cli", "Developer"),
+            None
+        );
+        assert_eq!(
+            load_app_session_role_cli_id(&state, &sid, "claude-code", "Developer").as_deref(),
+            Some("ext-1")
+        );
+    }
+
+    #[test]
+    fn switching_engines_never_reuses_another_providers_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(&dir);
+        let sid = imported(&state);
+        for runtime in ["dsh-cli", "pi-cli"] {
+            bind_app_session_role_runtime(&state, &sid, "Developer", runtime).unwrap();
+            assert_eq!(
+                load_app_session_role_cli_id(&state, &sid, runtime, "Developer"),
+                None
+            );
+            save_app_session_role_cli_id(&state, &sid, runtime, "Developer", runtime).unwrap();
+        }
+        for (runtime, handle) in [
+            ("claude-code", "ext-1"),
+            ("dsh-cli", "dsh-cli"),
+            ("pi-cli", "pi-cli"),
+        ] {
+            bind_app_session_role_runtime(&state, &sid, "Developer", runtime).unwrap();
+            assert_eq!(
+                load_app_session_role_cli_id(&state, &sid, runtime, "Developer").as_deref(),
+                Some(handle)
+            );
+        }
     }
 
     #[test]

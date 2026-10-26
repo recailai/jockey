@@ -214,6 +214,11 @@ export function useSessionManager(
     if (session.persisted) return Promise.resolve();
     const inFlight = persistInFlight.get(id);
     if (inFlight) return inFlight;
+    const selection = {
+      activeRole: session.activeRole,
+      runtimeKind: session.runtimeKind,
+      runtimeProfileId: session.runtimeProfileId,
+    };
     const promise = (async () => {
       const created = await appSessionApi.create(
         session.title,
@@ -222,7 +227,8 @@ export function useSessionManager(
         session.runtimeProfileId ?? undefined,
         session.id,
       );
-      updateSession(id, { persisted: true, title: created.title || session.title });
+      await appSessionApi.update(id, selection);
+      updateSession(id, { ...selection, persisted: true, title: created.title || session.title });
     })();
     persistInFlight.set(id, promise);
     void promise.finally(() => persistInFlight.delete(id));

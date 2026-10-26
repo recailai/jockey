@@ -224,6 +224,19 @@ export default function Catalog() {
         </For>
       </Section>
 
+      <Section title="Tool rows at phone width">
+        <div class="catalog-frame catalog-frame-phone">
+          <ToolCallGroup streaming tools={[{
+            ...tool("narrow-shell", "Bash", "execute", "running"),
+            toolName: "Bash",
+            rawInput: {
+              description: "Check session recovery and role bindings across every configured runtime",
+              command: "cargo test --manifest-path src-tauri/Cargo.toml db::app_session_role::binding_tests",
+            },
+          }]} />
+        </div>
+      </Section>
+
       <Section title="Plan approval" note="A plan approval shows every option as the agent sent it, with no Remember switch.">
         <Panel class="permission-panel my-2 px-3 py-2">
           <PermissionBody permission={PLAN_APPROVAL} onChoose={() => {}} onDeny={() => {}} />
