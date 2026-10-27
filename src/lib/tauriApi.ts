@@ -170,6 +170,7 @@ export const appSessionApi = {
   /** Branch the session through the provider's `session/fork`; resolves to the new session. */
   fork: (id: string) => call<RawSession>("fork_app_session", { id }),
   update: (id: string, update: SessionUpdate) => call<void>("update_app_session", { id, update }),
+  selectRole: (id: string, role: string) => call<RawSession>("select_app_session_role", { id, role }),
   remove: (id: string) => call<void>("delete_app_session", { id }),
   list: (projectId?: string) => call<RawSession[]>("list_app_sessions", { projectId }),
   listClosed: () => call<RawSession[]>("list_closed_app_sessions"),

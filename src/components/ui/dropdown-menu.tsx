@@ -94,7 +94,7 @@ export function DropdownItem(props: ParentProps<{
  * (agent / model / effort) to one short top-level list instead of one long flat one.
  */
 export function DropdownSub(props: ParentProps<{ overlap?: boolean }>) {
-  return <KDropdown.Sub overlap={props.overlap}>{props.children}</KDropdown.Sub>;
+  return <KDropdown.Sub overlap={props.overlap} gutter={0}>{props.children}</KDropdown.Sub>;
 }
 
 export function DropdownSubTrigger(props: ParentProps<{ class?: string; disabled?: boolean }>) {

@@ -192,7 +192,7 @@ const assistants = ["claude-code", "codex-cli"].map((key) => ({
   launchMethod: null,
   transport: "stdio",
   capabilities: { attachments: true },
-  inputDelivery: { nextTurn: true, nextStep: true },
+  inputDelivery: { nextTurn: true, nextStep: true, runNow: true, strategy: "steer" },
 }));
 
 const queued = [
@@ -239,7 +239,13 @@ export function createMockTransport(): HttpTransport {
       session.lastActiveAt = Date.now();
       emit("turn/finished", { appSessionId: sid, turnId, ok: true, cancelled: false, messages: [userMessage, message] });
       timers.delete(sid);
-    }, 1100));
+      const index = queued.findIndex((entry) => entry.appSessionId === sid);
+      if (index >= 0) {
+        const [item] = queued.splice(index, 1);
+        emit("queue/changed", { appSessionId: sid, items: queued.filter((entry) => entry.appSessionId === sid) });
+        streamTurn(sid, { text: item.text, userMessageId: item.id, assistantMessageId: `assistant-${item.id}` });
+      }
+    }, new URLSearchParams(window.location.search).has("slow") ? 15_000 : 1100));
     timers.set(sid, scheduled);
   };
 
@@ -259,7 +265,19 @@ export function createMockTransport(): HttpTransport {
       case "unwatch_session": return undefined;
       case "list_session_inbox_cmd": return queued.filter((q) => q.appSessionId === args.sessionId);
       case "detect_assistants": return assistants;
-      case "list_roles": return [{ id: "Developer", name: "Developer", roleName: "Developer", runtimeKind: "claude-code", skills: [] }];
+      case "list_roles": return [
+        { id: "Developer", roleName: "Developer", runtimeKind: "claude-code", configOptionsJson: "{}", model: null, mode: null },
+        { id: "Reviewer", roleName: "Reviewer", runtimeKind: "codex-cli", configOptionsJson: "{}", model: null, mode: null },
+      ];
+      case "get_project_agent_config_cmd":
+      case "set_project_agent_runtime_cmd":
+      case "set_project_agent_config_cmd":
+        return { projectId: args.projectId ?? null, roleName: args.roleName, runtimeKind: args.runtimeKind ?? null, configOptions: args.value ? { [args.configId]: args.value } : {} };
+      case "list_project_agent_pins_cmd": return {};
+      case "bind_session_agent_cmd": return args.runtimeKind;
+      case "complete_mentions": return [];
+      case "list_all_rules_for_role_cmd":
+      case "list_all_skills_for_role_cmd": return [];
       case "list_pending_prompts_cmd": return structuredClone(pending);
       case "create_app_session": {
         const session = {
@@ -277,8 +295,32 @@ export function createMockTransport(): HttpTransport {
         return summary(session);
       }
       case "submit_input": {
+        const session = find(args.input.sessionId);
+        if (!session) throw new Error("Session not found");
+        if (session.running) {
+          const item = { id: `q-${Date.now()}`, appSessionId: session.id, roleName: null, delivery: "nextTurn", text: args.input.text, attachments: [], createdAt: Date.now() };
+          queued.push(item);
+          emit("queue/changed", { appSessionId: session.id, items: queued.filter((entry) => entry.appSessionId === session.id) });
+          return { status: "queued", item };
+        }
         streamTurn(args.input.sessionId, args.input);
         return { status: "started" };
+      }
+      case "send_queued_input_now": {
+        const index = queued.findIndex((entry) => entry.appSessionId === args.sessionId);
+        if (index < 0) throw new Error("No queued message");
+        const [item] = queued.splice(index, 1);
+        emit("queue/changed", { appSessionId: args.sessionId, items: queued.filter((entry) => entry.appSessionId === args.sessionId) });
+        const message = { id: item.id, roleName: "user", text: item.text, at: Date.now() };
+        find(args.sessionId)?.messages.push(message);
+        emit("message/added", { appSessionId: args.sessionId, message });
+        return;
+      }
+      case "remove_queued_input": {
+        const index = queued.findIndex((entry) => entry.appSessionId === args.sessionId && entry.id === args.id);
+        if (index >= 0) queued.splice(index, 1);
+        emit("queue/changed", { appSessionId: args.sessionId, items: queued.filter((entry) => entry.appSessionId === args.sessionId) });
+        return;
       }
       case "respond_permission":
       case "respond_user_input_cmd": {
@@ -288,6 +330,13 @@ export function createMockTransport(): HttpTransport {
         if (index >= 0) rows.splice(index, 1);
         emit("permission_update", { status: "resolved" });
         return { ok: true };
+      }
+      case "select_app_session_role": {
+        const s = find(args.id);
+        if (!s) throw new Error("session not found");
+        s.activeRole = args.role;
+        s.runtimeKind = args.role === "Reviewer" ? "codex-cli" : "claude-code";
+        return s;
       }
       case "update_app_session": {
         const s = find(args.id);

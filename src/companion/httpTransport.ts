@@ -126,7 +126,7 @@ export function createHttpTransport(initialToken: string): HttpTransport {
   };
 
   const q = (params: Record<string, string | undefined | null>) => {
-    const entries = Object.entries(params).filter(([, v]) => v) as [string, string][];
+    const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== null) as [string, string][];
     return entries.length ? `?${new URLSearchParams(entries)}` : "";
   };
   const enc = encodeURIComponent;
@@ -136,6 +136,7 @@ export function createHttpTransport(initialToken: string): HttpTransport {
   };
 
   const connect = () => {
+    const needsResync = source !== null;
     source?.close();
     if (!token || handlers.size === 0) {
       source = null;
@@ -153,7 +154,7 @@ export function createHttpTransport(initialToken: string): HttpTransport {
     es.addEventListener("resync", () => resyncs.forEach((cb) => cb()));
     es.onerror = () => { hadError = true; };
     es.onopen = () => {
-      if (hadError) {
+      if (hadError || needsResync) {
         hadError = false;
         resyncs.forEach((cb) => cb());
       }
@@ -201,6 +202,9 @@ export function createHttpTransport(initialToken: string): HttpTransport {
         await api(`/sessions/${enc(a.id)}/reopen`, { body: {} });
         return api(`/sessions/${enc(a.id)}`);
       }
+      case "select_app_session_role":
+        await api(`/sessions/${enc(a.id)}/role`, { body: { role: a.role } });
+        return api(`/sessions/${enc(a.id)}`);
       case "update_app_session": {
         if (Object.keys(a.update).length === 1 && a.update.activeRole) {
           await api(`/sessions/${enc(a.id)}/role`, { body: { role: a.update.activeRole } });
@@ -235,10 +239,10 @@ export function createHttpTransport(initialToken: string): HttpTransport {
       case "remove_queued_input":
         return api(`/sessions/${enc(a.sessionId)}/queue/${enc(a.id)}/remove`, { body: {} });
       case "list_roles": {
-        const rows = await api<Array<{ roleName: string; runtimeKind: string; projectScoped: boolean }>>(
+        const rows = await api<Array<{ id: string; roleName: string; runtimeKind: string; projectScoped: boolean }>>(
           `/roles${q({ projectId: a.projectId })}`,
         );
-        return rows.map((r) => ({ id: r.roleName, name: r.roleName, skills: [], ...r })) as T;
+        return rows.map((r) => ({ systemPrompt: "", mcpServersJson: "[]", autoApprove: false, name: r.roleName, ...r })) as T;
       }
       case "detect_assistants":
         return api("/assistants");
@@ -257,10 +261,29 @@ export function createHttpTransport(initialToken: string): HttpTransport {
       case "append_app_message":
         return undefined as T;
       case "list_app_skills":
+        return api("/skills");
+      case "list_all_rules_for_role_cmd":
+        return api(`/roles/${enc(a.roleId)}/rules`);
+      case "list_all_skills_for_role_cmd":
+        return api(`/roles/${enc(a.roleId)}/skills`);
       case "list_available_commands_cmd":
-        return [] as T;
+        return api(`/sessions/${enc(a.appSessionId)}/agent/commands${q({ roleName: a.roleName, projectId: a.projectId })}`);
       case "prewarm_role_config_cmd":
-        return { configOptions: [], modes: [] } as T;
+        return api(`/sessions/${enc(a.appSessionId)}/agent/discover`, { body: a });
+      case "get_project_agent_config_cmd":
+        return api(`/agent/config${q({ roleName: a.roleName, projectId: a.projectId })}`);
+      case "list_project_agent_pins_cmd":
+        return api(`/agent/pins${q({ projectId: a.projectId })}`);
+      case "set_project_agent_config_cmd":
+        return api("/agent/config", { body: a });
+      case "set_project_agent_runtime_cmd":
+        return api("/agent/runtime", { body: a });
+      case "bind_session_agent_cmd":
+        return api(`/sessions/${enc(a.appSessionId)}/agent/bind`, { body: a });
+      case "set_acp_mode":
+        return api(`/sessions/${enc(a.appSessionId)}/agent/mode`, { body: a });
+      case "complete_mentions":
+        return api(`/sessions/${enc(a.appSessionId)}/mentions${q({ query: a.query, limit: String(a.limit ?? 12) })}`);
       case "gateway_list_dirs":
         return api(`/fs/dirs${q({ path: a.path })}`);
       case "gateway_list_sessions": {

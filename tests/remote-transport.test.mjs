@@ -129,3 +129,50 @@ test("HTTP session operations retain runtime selection, updates, imports and ful
   await transport.call("get_app_sessions", { ids: ["s1"] });
   assert.equal(requests.at(-1).url, "/api/sessions/s1");
 });
+
+
+test("changing focus resynchronizes queue and live state after the SSE connection reopens", async (t) => {
+  const streams = [];
+  class FakeEventSource {
+    constructor(url) { this.url = url; streams.push(this); }
+    addEventListener() {}
+    close() { this.closed = true; }
+  }
+  replaceGlobal(t, "EventSource", FakeEventSource);
+  const transport = createHttpTransport("test-token");
+  let resyncs = 0;
+  transport.onResync(() => { resyncs++; });
+  const off = await transport.listen("queue/changed", () => {});
+  streams[0].onopen();
+  assert.equal(resyncs, 0);
+  transport.setFocus("running-session");
+  assert.equal(streams[0].closed, true);
+  streams[1].onopen();
+  assert.equal(resyncs, 1);
+  streams[1].onerror();
+  streams[1].onopen();
+  assert.equal(resyncs, 2);
+  off();
+});
+
+test("HTTP transport sends queued input and all shared agent controls through authenticated routes", async (t) => {
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    requests.push({ url, method: init.method, body: init.body && JSON.parse(init.body), auth: init.headers.Authorization });
+    return Response.json(url.endsWith("/chat") ? { status: "queued", item: { id: "q1" } } : {});
+  });
+  const transport = createHttpTransport("test-token");
+  const input = { sessionId: "s1", text: "Add this", runtimeKind: "dsh-cli", userMessageId: "u1", assistantMessageId: "a1" };
+  assert.deepEqual(await transport.call("submit_input", { input }), { status: "queued", item: { id: "q1" } });
+  assert.equal(requests.at(-1).url, "/api/sessions/s1/chat");
+  assert.equal(requests.at(-1).body.input, "Add this");
+  await transport.call("send_queued_input_now", { sessionId: "s1" });
+  assert.equal(requests.at(-1).url, "/api/sessions/s1/send-now");
+  await transport.call("get_project_agent_config_cmd", { projectId: "p1", roleName: "Reviewer" });
+  assert.equal(requests.at(-1).url, "/api/agent/config?roleName=Reviewer&projectId=p1");
+  await transport.call("prewarm_role_config_cmd", { roleName: "Reviewer", appSessionId: "s1", projectId: "p1", runtimeKind: "dsh-cli" });
+  assert.equal(requests.at(-1).url, "/api/sessions/s1/agent/discover");
+  await transport.call("complete_mentions", { query: "", limit: 12, appSessionId: "s1" });
+  assert.equal(requests.at(-1).url, "/api/sessions/s1/mentions?query=&limit=12");
+  assert.ok(requests.every((request) => request.auth === "Bearer test-token"));
+});

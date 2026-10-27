@@ -248,6 +248,7 @@ pub fn run() {
             engine::commands::create_app_session,
             engine::commands::fork_app_session,
             engine::commands::update_app_session,
+            engine::commands::select_app_session_role,
             engine::commands::delete_app_session,
             engine::commands::reopen_app_session,
             engine::commands::get_app_sessions,

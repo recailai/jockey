@@ -49,6 +49,19 @@ pub(crate) fn update_app_session(
     sessions::update_session(get_state(&state), &id, update)
 }
 
+#[tauri::command]
+pub(crate) fn select_app_session_role(
+    state: State<'_, AppState>,
+    id: String,
+    role: String,
+) -> Result<AppSession, String> {
+    let state = get_state(&state);
+    sessions::select_role(state, &id, role.trim())?;
+    crate::db::app_session::get_app_sessions_by_ids(state, &[id])?
+        .pop()
+        .ok_or_else(|| "session not found".to_string())
+}
+
 /// Close (not delete): the row stays and can be reopened. Closing an already-closed session is
 /// a no-op, which is what the desktop's close button relies on.
 #[tauri::command]

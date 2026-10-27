@@ -324,7 +324,7 @@ export default function AgentPicker(props: AgentPickerProps) {
           <span class="jui-agent-header-key">{runtimeKind() ?? "—"}</span>
         </div>
 
-        <DropdownSub>
+        <DropdownSub overlap>
           <DropdownSubTrigger>
             <SummaryRow label="Persona" value={activeRole()} />
           </DropdownSubTrigger>
@@ -360,7 +360,7 @@ export default function AgentPicker(props: AgentPickerProps) {
           </DropdownSubContent>
         </DropdownSub>
         <DropdownSeparator />
-        <DropdownSub>
+        <DropdownSub overlap>
           <DropdownSubTrigger>
             <SummaryRow label="Agent" value={agent()?.label ?? runtimeKind() ?? "none"} />
           </DropdownSubTrigger>
@@ -392,7 +392,7 @@ export default function AgentPicker(props: AgentPickerProps) {
         </DropdownSub>
 
         <Show when={models().length > 0}>
-          <DropdownSub>
+          <DropdownSub overlap>
             <DropdownSubTrigger>
               <SummaryRow
                 label="Model"
@@ -458,7 +458,7 @@ export default function AgentPicker(props: AgentPickerProps) {
               }
             >
               <Show when={choicesOf(option).length > 0}>
-                <DropdownSub>
+                <DropdownSub overlap>
                   <DropdownSubTrigger>
                     <SummaryRow
                       label={option.name}

@@ -1,3 +1,11 @@
+import ConversationLayout from "../components/ConversationLayout";
+import AgentPicker from "../components/composer/AgentPicker";
+import { useCompletions } from "../hooks/useCompletions";
+import { useComposerCommands } from "../hooks/useComposerCommands";
+import { useSessionAgentSelection } from "../hooks/useSessionAgentSelection";
+import { handleCompletionKeyDown } from "../lib/completionKeyboard";
+import { hasConversationContent } from "../lib/conversationHelpers";
+import { getRichInputCaretOffset, setRichInputSelection } from "../components/RichInput";
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
 import { ArrowLeft, List, Square, X } from "lucide-solid";
 import MessageWindow from "../components/MessageWindow";
@@ -13,7 +21,7 @@ import type {
   RuntimeCapabilities,
   SessionSummary,
 } from "../components/types";
-import { IconButton, Pill, StatusBadge, ThemeToggle } from "../components/ui";
+import { IconButton, StatusBadge, ThemeToggle } from "../components/ui";
 import { sessionStatus } from "../lib/sessionStatus";
 import { useTheme } from "../lib/useTheme";
 import { useSessionManager } from "../hooks/useSessionManager";
@@ -27,6 +35,7 @@ import { hydratePendingPrompts } from "../lib/pendingPrompts";
 import { createSessionEventBuffer } from "../lib/sessionEventBuffer";
 import { sessionFromRaw, uniqueName } from "../lib/sessionHelpers";
 import {
+  assistantApi,
   appSessionApi,
   engineApi,
   type InboxMessage,
@@ -41,7 +50,6 @@ import {
   ClosedSessionsDialog,
   ConfirmDialog,
   DirectoryBrowserDialog,
-  RolePickerDialog,
   TokenGate,
 } from "./dialogs";
 import type { HttpTransport } from "./httpTransport";
@@ -106,8 +114,8 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
   const { projects, createProject, refreshProjects } = useProjects(showToast);
   const { sendRaw, cancelCurrentRun, sendQueuedNow } = useMessageSend({
     sessionManager,
-    closeMentionMenu: () => {},
-    closeSlashMenu: () => {},
+    closeMentionMenu: () => completions.closeMentionMenu(),
+    closeSlashMenu: () => completions.closeSlashMenu(),
     showToast,
   });
   const sessionEventBuffer = createSessionEventBuffer({
@@ -125,16 +133,46 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
   const [importAll, setImportAll] = createSignal(false);
   const [showProjectModal, setShowProjectModal] = createSignal(false);
   const [browseOpen, setBrowseOpen] = createSignal(false);
-  const [roleOpen, setRoleOpen] = createSignal(false);
   const [closeOpen, setCloseOpen] = createSignal(false);
   const [browseSessions, setBrowseSessions] = createSignal(false);
   const theme = useTheme();
   const themeToggle = () => <ThemeToggle preference={theme.preference} onCycle={theme.cycle} size={17} />;
   const drafts = new Map<string, RichNode[]>();
   const [richNodes, setRichNodes] = createSignal<RichNode[]>([]);
+  let richInputEl: HTMLDivElement | undefined;
+  const input = () => getPlainText(richNodes());
+  const setInput = (value: string) => setRichNodes((nodes) => [
+    ...nodes.filter(isImageNode), { kind: "text", text: value },
+  ]);
+  const inputElement = () => ({
+    value: input(),
+    get selectionStart() { return richInputEl ? getRichInputCaretOffset(richInputEl) : input().length; },
+    focus: () => richInputEl?.focus(),
+    setSelectionRange: (start: number, end: number) => {
+      if (richInputEl) setRichInputSelection(richInputEl, start, end);
+    },
+  } as HTMLInputElement);
+  const { commandRegistry, popupSelectState, handleTriggerCommandUi, handleClosePopupSelect } = useComposerCommands({
+    activeSession,
+    patchActiveSession,
+    roles,
+    resetActiveAgentContext,
+    showToast: (message, tone) => showToast(message, tone === "danger" || tone === "warning" ? "error" : "info"),
+    pushMessage,
+    sendRaw: async (text, silent) => { await sendRaw(text, silent); },
+    prewarmRoleConfig: assistantApi.prewarmRoleConfig,
+  }, () => completions.closeSlashMenu(), () => richInputEl?.focus());
+  const completions = useCompletions(agentContext, sessionManager, input, setInput, inputElement, handleTriggerCommandUi, commandRegistry.getCommandList);
+  const agentSelection = useSessionAgentSelection(sessionManager, agentContext, showToast);
+  createEffect(on(() => activeSession()?.projectId, (id) => {
+    void refreshRoles(id ?? undefined);
+  }));
   createEffect(on(activeSessionId, (sid, previous) => {
     if (previous) drafts.set(previous, richNodes());
     setRichNodes(sid ? drafts.get(sid) ?? [] : []);
+    completions.closeMentionMenu();
+    completions.closeSlashMenu();
+    handleClosePopupSelect(false);
   }));
   let browseResolver: ((path: string | null) => void) | null = null;
 
@@ -252,7 +290,7 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
     void refreshProjects();
     void refreshSummaries();
     void refreshAssistants();
-    void refreshRoles();
+    void agentContext.refreshSkills();
     hydratePending();
 
     track(registerAcpEventListeners({
@@ -343,7 +381,6 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
     void openSession(raw.id);
   };
 
-  const noTimer = { current: null as number | null };
   const handleSend = async (e: SubmitEvent) => {
     e.preventDefault();
     const nodes = richNodes();
@@ -370,18 +407,6 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
       dropSessionLocally(sid);
     } catch (e) {
       showToast(`Could not close session: ${String(e)}`);
-    }
-  };
-
-  const pickRole = async (roleName: string) => {
-    const sid = activeSessionId();
-    if (!sid) return;
-    try {
-      await appSessionApi.update(sid, { activeRole: roleName });
-      await loadSession(sid);
-    } catch (e) {
-      showToast(`Could not switch persona: ${String(e)}`);
-      throw e;
     }
   };
 
@@ -465,19 +490,13 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
                   })} />
                 </div>
               </div>
-              <Pill onClick={() => setRoleOpen(true)} title="Choose agent & persona">{activeAssistant()?.label ?? session().runtimeKind ?? "Agent"} · @{session().activeRole || DEFAULT_ROLE_ALIAS}</Pill>
-              <Show when={session().submitting}>
-                <IconButton title="Stop" aria-label="Stop" onClick={() => void cancelCurrentRun()}>
-                  <Square size={16} />
-                </IconButton>
-              </Show>
               <IconButton title="Close session" aria-label="Close session" onClick={() => setCloseOpen(true)}>
                 <X size={18} />
               </IconButton>
             </header>
-            <div class="companion-chat-body">
-              <MessageWindow
-                presentation="responses"
+            <ConversationLayout
+              activeSession={activeSession}
+              messages={<MessageWindow
                 activeSessionId={activeSessionId}
                 activeSession={activeSession}
                 activeBackendRole={activeBackendRole}
@@ -493,58 +512,73 @@ function Shell(props: { transport: HttpTransport; showToast: (m: string, s?: "er
                 onReconnectAgent={reconnectActiveAgent}
                 onListMounted={sessionManager.onListMounted}
                 onListUnmounted={sessionManager.onListUnmounted}
-              />
-              <ChatInput
-                layout="active"
+              />}
+              composer={<ChatInput
+                layout={hasConversationContent(session()) ? "active" : "empty"}
                 placeholder={`Message ${session().activeRole || DEFAULT_ROLE_ALIAS}…`}
                 richNodes={richNodes}
                 setRichNodes={setRichNodes}
                 activeRole={() => session().activeRole ?? DEFAULT_ROLE_ALIAS}
                 submitting={() => session().submitting}
                 queuedCount={queuedCount}
-                onResetRole={() => {}}
-                isCustomRole={() => true}
+                onResetRole={() => void agentSelection.selectRole(DEFAULT_ROLE_ALIAS)}
+                isCustomRole={agentContext.isCustomRole}
                 onSubmit={handleSend}
-                onInputKeyDown={() => {}}
-                refreshInputCompletions={() => {}}
-                mentionOpen={() => false}
-                mentionItems={() => []}
-                mentionActiveIndex={() => 0}
-                slashOpen={() => false}
-                slashItems={() => []}
-                slashActiveIndex={() => 0}
-                applyMentionCandidate={() => {}}
-                applySlashCandidate={() => {}}
-                closeMentionMenu={() => {}}
-                closeSlashMenu={() => {}}
-                richInputRef={() => {}}
-                mentionCloseTimerRef={noTimer}
-                mentionDebounceTimerRef={noTimer}
+                onInputKeyDown={(event) => {
+                  if (handleCompletionKeyDown(event, completions)) return;
+                  if (event.key === "Escape" && session().submitting) {
+                    event.preventDefault();
+                    void cancelCurrentRun();
+                  }
+                }}
+                refreshInputCompletions={completions.refreshInputCompletions}
+                mentionOpen={completions.mentionOpen}
+                mentionItems={completions.mentionItems}
+                mentionActiveIndex={completions.mentionActiveIndex}
+                slashOpen={completions.slashOpen}
+                slashItems={completions.slashItems}
+                slashActiveIndex={completions.slashActiveIndex}
+                applyMentionCandidate={completions.applyMentionCandidate}
+                applySlashCandidate={completions.applySlashCandidate}
+                closeMentionMenu={completions.closeMentionMenu}
+                closeSlashMenu={completions.closeSlashMenu}
+                richInputRef={(element) => { richInputEl = element; }}
+                mentionCloseTimerRef={completions.mentionCloseTimerRef}
+                mentionDebounceTimerRef={completions.mentionDebounceTimerRef}
+                activeSession={activeSession}
+                popupSelectOpen={() => popupSelectState().open}
+                popupSelectCommandName={() => popupSelectState().commandName}
+                popupSelectSpec={() => popupSelectState().spec}
+                onClosePopupSelect={handleClosePopupSelect}
+                onTriggerCommandUi={handleTriggerCommandUi}
+                contextFooter={
+                  <footer class="composer-context-footer">
+                    <div class="composer-context-footer-inner">
+                      <div class="composer-context-footer-actions">
+                        <AgentPicker
+                          activeSession={activeSession}
+                          assistants={assistants}
+                          roles={roles}
+                          configOptions={() => activeSession()?.discoveredConfigOptions ?? []}
+                          onSelectAgent={agentSelection.selectAgent}
+                          onSelectRole={(name) => void agentSelection.selectRole(name)}
+                        />
+                      </div>
+                      <Show when={session().submitting}>
+                        <IconButton title="Stop" aria-label="Stop" onClick={() => void cancelCurrentRun()}><Square size={16} /></IconButton>
+                      </Show>
+                    </div>
+                  </footer>
+                }
                 hasImages={() => richNodes().some(isImageNode)}
                 onPasteImage={handlePasteImage}
                 onRemoveImage={(index) => setRichNodes((prev) => prev.filter((n) => !isImageNode(n) || n.index !== index))}
-              />
-            </div>
+              />}
+            />
           </>
         )}
       </Show>
 
-      <RolePickerDialog
-        open={roleOpen()}
-        projectId={activeSession()?.projectId ?? null}
-        activeRole={activeSession()?.activeRole ?? DEFAULT_ROLE_ALIAS}
-        assistants={assistants()}
-        runtimeKind={activeSession()?.runtimeKind ?? null}
-        disabled={activeSession()?.submitting ?? false}
-        onPickRuntime={async (agent) => {
-          const sid = activeSessionId();
-          if (!sid) throw new Error("Open a session first.");
-          await appSessionApi.update(sid, { runtimeKind: agent.key, runtimeProfileId: agent.profileId });
-          await loadSession(sid);
-        }}
-        onPick={pickRole}
-        onClose={() => setRoleOpen(false)}
-      />
       <ConfirmDialog
         open={closeOpen()}
         title="Close this session?"

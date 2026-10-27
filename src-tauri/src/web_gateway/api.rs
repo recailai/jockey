@@ -1,3 +1,5 @@
+mod chat_controls;
+
 use axum::{
     extract::{Path, Query, Request, State},
     http::{HeaderMap, StatusCode},
@@ -58,6 +60,7 @@ pub(super) fn router(ctx: ServerContext) -> Router {
         .route("/permissions/respond", post(respond_permission))
         .route("/user-input/respond", post(respond_user_input))
         .route("/events", get(events))
+        .merge(chat_controls::router())
         .route_layer(middleware::from_fn_with_state(ctx.clone(), require_token));
 
     Router::new()
@@ -525,6 +528,11 @@ async fn session_close(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RoleOption {
+    id: String,
+    model: Option<String>,
+    mode: Option<String>,
+    config_options_json: String,
+    config_option_defs_json: String,
     role_name: String,
     runtime_kind: String,
     project_scoped: bool,
@@ -545,6 +553,11 @@ async fn list_roles(
         roles
             .into_iter()
             .map(|r| RoleOption {
+                id: r.id,
+                model: r.model,
+                mode: r.mode,
+                config_options_json: r.config_options_json,
+                config_option_defs_json: r.config_option_defs_json,
                 project_scoped: r.project_id.as_deref().is_some_and(|p| !p.is_empty()),
                 runtime_kind: r.runtime_kind,
                 role_name: r.role_name,

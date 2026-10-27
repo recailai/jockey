@@ -1,3 +1,6 @@
+import { useComposerCommands } from "./hooks/useComposerCommands";
+import { useSessionAgentSelection } from "./hooks/useSessionAgentSelection";
+import { handleCompletionKeyDown } from "./lib/completionKeyboard";
 import { For, Show, Suspense, createEffect, createMemo, createSignal, lazy, on, onCleanup, onMount } from "solid-js";
 
 import MessageWindow from "./components/MessageWindow";
@@ -40,8 +43,6 @@ import { adoptLiveTurn, registerEngineEvents } from "./lib/engineEvents";
 import { hydratePendingPrompts } from "./lib/pendingPrompts";
 import { createSessionEventBuffer } from "./lib/sessionEventBuffer";
 import { appSessionApi, assistantApi, engineApi, projectAgentApi, workspaceApi } from "./lib/tauriApi";
-import { createCommandUiRegistry } from "./lib/commandUi/registry";
-import type { PopupSelectSpec } from "./lib/commandUi/contract";
 import type { RichNode } from "./components/RichInput";
 import {
   getPlainText,
@@ -314,7 +315,7 @@ export default function App() {
 
   let sendRawFn: ((text: string, silent?: boolean) => Promise<boolean>) | undefined;
 
-  const commandRegistry = createCommandUiRegistry({
+  const { commandRegistry, popupSelectState, handleTriggerCommandUi, handleClosePopupSelect } = useComposerCommands({
     activeSession,
     patchActiveSession,
     roles,
@@ -328,47 +329,7 @@ export default function App() {
       return Promise.resolve();
     },
     prewarmRoleConfig: assistantApi.prewarmRoleConfig,
-  });
-
-  const [popupSelectState, setPopupSelectState] = createSignal<{
-    open: boolean;
-    commandName: string;
-    spec: PopupSelectSpec | null;
-  }>({
-    open: false,
-    commandName: "",
-    spec: null,
-  });
-
-  const handleTriggerCommandUi = (commandName: string): boolean => {
-    const ui = commandRegistry.getCommandUi(commandName);
-    if (!ui) return false;
-    const s = activeSession();
-    if (!s) return false;
-    if (ui.kind === "action") {
-      void ui.run(s);
-      return true;
-    }
-    if (ui.kind === "popupSelect") {
-      completions?.closeSlashMenu?.();
-      setPopupSelectState({
-        open: true,
-        commandName,
-        spec: ui,
-      });
-      return true;
-    }
-    return false;
-  };
-
-  const handleClosePopupSelect = (focusComposer = true) => {
-    setPopupSelectState({ open: false, commandName: "", spec: null });
-    if (focusComposer) {
-      queueMicrotask(() => {
-        richInputEl?.focus();
-      });
-    }
-  };
+  }, () => completions.closeSlashMenu(), () => richInputEl?.focus());
 
   const completions = useCompletions(
     agentContext,
@@ -394,28 +355,7 @@ export default function App() {
   } = completions;
   const { registerAcpEventListeners, clearSessionStream } = useAcpEventListeners();
 
-  // The single owner of the agent's option catalog (models / effort / toggles). It is a pure
-  // function of (session, persona, engine), so it is pulled here whenever that triple moves
-  // rather than pushed from each switch handler — every push site needed its own staleness
-  // check, and the one that was missing is how a persona's model list kept showing another
-  // persona's engine. A response is applied only if its triple is still the current one.
-  createEffect(() => {
-    const sid = activeSessionId();
-    const session = activeSession();
-    const role = session?.activeRole;
-    const runtime = session?.runtimeKind;
-    if (showControlCenter() || !sid || !role || !runtime) return;
-    void fetchConfigOptions(runtime, role).then((opts) => {
-      const current = activeSession();
-      if (
-        activeSessionId() === sid &&
-        current?.activeRole === role &&
-        current?.runtimeKind === runtime
-      ) {
-        patchActiveSession({ discoveredConfigOptions: opts });
-      }
-    });
-  });
+  const agentSelection = useSessionAgentSelection(sessionManager, agentContext, showToast, () => !showControlCenter());
 
   const { bootstrapApp } = useAppBootstrap({
     setSessions,
@@ -673,53 +613,7 @@ export default function App() {
       void cancelCurrentRun();
       return;
     }
-    const slash = slashItems();
-    if (slashOpen() && slash.length > 0) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        completions._setSlashActiveIndex((i: number) => (i + 1) % slash.length);
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        completions._setSlashActiveIndex((i: number) => (i - 1 + slash.length) % slash.length);
-        return;
-      }
-      if (e.key === "Tab" || e.key === "Enter") {
-        e.preventDefault();
-        applySlashCandidate(slash[slashActiveIndex()] ?? slash[0]);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        closeSlashMenu();
-        return;
-      }
-    }
-
-    const items = mentionItems();
-    if (mentionOpen() && items.length > 0) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        completions._setMentionActiveIndex((i: number) => (i + 1) % items.length);
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        completions._setMentionActiveIndex((i: number) => (i - 1 + items.length) % items.length);
-        return;
-      }
-      if (e.key === "Tab" || e.key === "Enter") {
-        e.preventDefault();
-        applyMentionCandidate(items[mentionActiveIndex()] ?? items[0]);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        closeMentionMenu();
-        return;
-      }
-    }
+    if (handleCompletionKeyDown(e, completions)) return;
 
     if (inputHistory.handleKey(e, input)) {
       e.preventDefault();
@@ -904,40 +798,8 @@ export default function App() {
           onRunAction={runToolbarAction}
           onRefreshGit={refetchGitStatus}
           onManagePersonas={() => openSettings("roles")}
-          onSelectAgent={(runtimeKind, profileId) => {
-            // Switching agent keeps the persona; only the engine underneath changes.
-            // The catalog for the new engine is loaded by syncConfigOptions' effect.
-            patchActiveSession({ runtimeKind, runtimeProfileId: profileId, discoveredConfigOptions: [] });
-            const sid = activeSessionId();
-            if (sid) {
-              void appSessionApi.update(sid, { runtimeKind, runtimeProfileId: profileId }).catch(() => {});
-            }
-          }}
-          onSelectRole={(roleName) => {
-            const role = roles().find((r) => r.roleName === roleName);
-            const fallbackRuntime = assistants().find((a) => a.available);
-            // A persona owns its engine: switching persona must visibly switch the CLI, or
-            // the picker shows one persona's name over another's engine. The project's pin
-            // for this persona is applied right after, by AgentPicker's load effect.
-            const nextRuntimeKind =
-              role?.runtimeKind ?? activeSession()?.runtimeKind ?? fallbackRuntime?.key ?? null;
-            const nextProfileId =
-              role?.runtimeProfileId ?? activeSession()?.runtimeProfileId ?? fallbackRuntime?.profileId ?? null;
-            patchActiveSession({
-              activeRole: roleName,
-              runtimeKind: nextRuntimeKind,
-              runtimeProfileId: nextProfileId,
-              discoveredConfigOptions: [],
-            });
-            const sid = activeSessionId();
-            if (sid) {
-              void appSessionApi.update(sid, {
-                activeRole: roleName,
-                runtimeKind: nextRuntimeKind,
-                runtimeProfileId: nextProfileId,
-              }).catch(() => {});
-            }
-          }}
+          onSelectAgent={agentSelection.selectAgent}
+          onSelectRole={(name) => void agentSelection.selectRole(name)}
         />
       }
     />

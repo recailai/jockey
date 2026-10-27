@@ -1,7 +1,7 @@
 import { Show, Suspense, createEffect, createMemo, lazy, onCleanup } from "solid-js";
 import type { Accessor, JSX } from "solid-js";
 import type { AppSession } from "./types";
-import { hasConversationContent, CONVERSATION_HERO_TITLE } from "../lib/conversationHelpers";
+import ConversationLayout from "./ConversationLayout";
 import { loadUiPrefs } from "../lib/uiPrefs";
 import { useResize } from "../lib/useResize";
 import { closeAllPreviewTabs, closeOtherPreviewTabs, closePreviewTab, setActivePreviewTab } from "../lib/previewTabs";
@@ -39,17 +39,17 @@ export default function ConversationCanvas(props: ConversationCanvasProps) {
     onCleanup(() => ro.disconnect());
   });
 
-  const isEmpty = createMemo(() => !hasConversationContent(props.activeSession()));
   const showPreview = createMemo(
     () => (props.activeSession()?.previewTabs.length ?? 0) > 0 && loadUiPrefs().openDiffsInMain,
   );
 
   return (
-    <div
-      class="conversation-canvas"
-      classList={{ "is-empty": isEmpty() }}
-    >
-      <div class="conversation-canvas-body" ref={bodyEl}>
+    <ConversationLayout
+      activeSession={props.activeSession}
+      messages={props.messages}
+      composer={props.composer}
+      bodyRef={(el) => { bodyEl = el; }}
+      preview={
         <Show when={showPreview()}>
           <div
             class="preview-shell shrink-0 overflow-hidden"
@@ -93,31 +93,7 @@ export default function ConversationCanvas(props: ConversationCanvasProps) {
             />
           </Show>
         </Show>
-
-        <Show when={isEmpty()} fallback={
-          <div class="conversation-stream">
-            {props.messages}
-          </div>
-        }>
-          <div class="conversation-hero">
-            <div class="conversation-hero-copy">
-              <h1 class="conversation-hero-title">{CONVERSATION_HERO_TITLE}</h1>
-              <Show when={props.activeSession()?.cwd}>
-                {(cwd) => <p class="conversation-hero-cwd">{cwd()}</p>}
-              </Show>
-            </div>
-            <div class="conversation-hero-composer">
-              {props.composer}
-            </div>
-          </div>
-        </Show>
-      </div>
-
-      <Show when={!isEmpty()}>
-        <div class="conversation-composer-anchor">
-          {props.composer}
-        </div>
-      </Show>
-    </div>
+      }
+    />
   );
 }
